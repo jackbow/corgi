@@ -503,6 +503,7 @@ export class Controller {
   private giveKeyboard(to: Keyboard): void {
     const from = this.keyboard;
     if (from === to) return;
+    if (to !== "review" && this.review.open) this.review.unzoom();
     this.keyboard = to;
     if (typeof from === "object" && from.sidebar.drawer) this.sidebar_open = false;
     this.dirty = true;
@@ -1490,7 +1491,12 @@ export class Controller {
   }
   /** Whether a full-screen view hides every pane, so nothing on them was seen. */
   coversPanes(): boolean {
-    return this.moonlander !== null || this.onboarding !== null || (this.prefix && this.help_visible);
+    return (
+      this.review.fullscreen ||
+      this.moonlander !== null ||
+      this.onboarding !== null ||
+      (this.prefix && this.help_visible)
+    );
   }
   private openHelp(): void {
     this.beginPrefix();
@@ -4643,7 +4649,7 @@ export class Controller {
     }
     if (await this.linkMouse(button, x, y, release)) return;
     // A press gives the keyboard back to the panes, or to the review panel below when it lands there.
-    if (!release && (button & 0xe0) === 0) this.giveKeyboard("pane");
+    if (!release && (button & 0xe0) === 0 && !this.review.fullscreen) this.giveKeyboard("pane");
     // The prefix bar has no mouse targets. A click resumes normal UI input.
     if (this.prefix && !release && (button & 0xe0) === 0) this.closeMenu();
     const moved = this.pointer === null || this.pointer.x !== x || this.pointer.y !== y;
@@ -4917,7 +4923,7 @@ export class Controller {
       if (!release && (button & 0xe0) === 0) this.giveKeyboard("review");
       if (!release && button === 0) {
         this.ui_mouse_down = true;
-        if (x === review_rect.x) this.review_drag = true;
+        if (x === review_rect.x && !this.review.fullscreen) this.review_drag = true;
         else {
           this.review_pressed = true;
           this.review.mouse("press", x, y);
@@ -6673,6 +6679,7 @@ export class Controller {
     if (!held) this.review.pinned = false;
     this.review.follow(this.reviewTarget(held ?? this.focused()));
     this.review.dest = current;
+    if (this.review.fullscreen && this.keyboard === "pane") this.giveKeyboard("review");
     if (!this.review.open && this.keyboard === "review") this.giveKeyboard("pane");
   }
   private closeReview(): void {
@@ -6733,7 +6740,6 @@ export class Controller {
         this.closeReview();
         break;
       case "leave":
-        this.review.unzoom();
         this.giveKeyboard("pane");
         break;
       case "none":
