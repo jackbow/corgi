@@ -429,7 +429,7 @@ function uiFor(s: ReturnType<typeof scene>, width: number, fields: Partial<Ui> =
   const u = uiOf({
     message: "",
     copy_mode: false,
-    corgi_badge: "image",
+    corgi_badge: "mark",
     supports_kitty_graphics: true,
     scope_label: "corgi",
     agents: s.entries,
@@ -700,7 +700,7 @@ function pickerFrames() {
     const u = uiOf({
       message: "",
       copy_mode: false,
-      corgi_badge: "image",
+      corgi_badge: "mark",
       supports_kitty_graphics: true,
       scope_label: "corgi",
       agents: entries,

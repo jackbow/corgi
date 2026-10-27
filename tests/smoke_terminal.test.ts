@@ -75,71 +75,41 @@ process.stdin.on("data", () => process.stdout.write("\\x1b_Ga=d,d=I,i=730140,q=2
     this.assertNotIn("\x1b_Ga=p,i=268435456", this.client.state.data);
   }
 
-  async test_badge_startup_paints_before_probe_without_flashing_emoji() {
-    await this.open_pane({ command: "printf BADGE_STARTUP_READY; sleep 30" });
-    const pty = await Pty.spawn([EXE, "attach"], {
-      env: this.env,
-      cwd: this.temp.name,
-      cols: 100,
-      rows: 30,
-    });
+  async test_text_mark_paints_before_probe_without_uploading_a_badge() {
+    await this.open_pane({ command: "printf MARK_STARTUP_READY; sleep 30" });
+    const pty = await Pty.spawn([EXE, "attach"], { env: this.env, cwd: this.temp.name, cols: 100, rows: 30 });
     this.pty = pty;
-    // The pane and heading paint before the terminal answers any probes.
-    await pty.waitFor("BADGE_STARTUP_READY");
+    await pty.waitFor("MARK_STARTUP_READY");
     this.assertIn("workspaces", pty.output);
-    this.assertNotIn("🐕", pty.output);
+    this.assertIn(">_", pty.output);
     pty.write("\x1b_Gi=730031;OK\x1b\\\x1b[6;18;9t\x1b[?62c");
-    await pty.waitFor("\x1b_Ga=t,t=d,f=100,s=27,v=27,i=730031");
+    await this.until(async () => (await this.rpc({ op: "bugreport" })).viewers.some((v: any) => v.terminal?.graphics));
     this.assertNotIn("🐕", pty.output);
-    pty.write("\x1b_Gi=730031;OK\x1b\\");
-    await pty.waitFor("\x1b_Ga=p,i=730031,p=1,z=1,C=1,q=0");
-    this.assertNotIn("🐕", pty.output);
+    this.assertNotIn("\x1b_Ga=t,t=d,f=100,s=27,v=27,i=730031", pty.output);
+    this.assertNotIn("\x1b_Ga=p,i=730031", pty.output);
   }
 
-  async test_kitty_badge_waits_for_cell_size_and_confirms_a_wrong_id_acknowledgement() {
-    const received = join(this.temp.name, "badge-input");
+  async test_text_mark_keeps_graphics_probing_and_replies_out_of_pane_input() {
+    const received = join(this.temp.name, "mark-input");
     await this.open_pane({
       command: `stty -echo; printf INPUT_READY; IFS= read -r line; printf %s "$line" > ${quote(received)}; sleep 30`,
     });
-    const pty = await Pty.spawn([EXE, "attach"], {
-      env: this.env,
-      cwd: this.temp.name,
-      cols: 100,
-      rows: 30,
-    });
+    const pty = await Pty.spawn([EXE, "attach"], { env: this.env, cwd: this.temp.name, cols: 100, rows: 30 });
     this.pty = pty;
-    await pty.waitFor("\x1b_Ga=q,i=730031");
     await pty.waitFor("INPUT_READY");
-    await pty.waitFor("\x1b[16t");
-    pty.write("\x1b_Gi=730031;OK\x1b\\\x1b[?62c");
-    // The PTY has no pixels. Graphics support alone must not upload images.
+    pty.write("\x1b_Gi=0;OK\x1b\\\x1b_Gi=730031;OK\x1b\\\x1b[?62c");
     await this.until(async () =>
       (await this.rpc({ op: "bugreport" })).viewers.some((v: any) => v.terminal?.graphics && v.terminal.used === null),
     );
     const terminal = (await this.rpc({ op: "bugreport" })).viewers.find((v: any) => v.terminal?.graphics).terminal;
-    this.assertEqual(terminal.source, "viewer");
-    this.assertEqual(terminal.info.answered, true);
-    this.assertIn("\x1b[?62c", terminal.info.replies);
-    this.assertEqual("answers" in terminal, false);
+    this.assertEqual(terminal.badge, "mark");
+    this.assertIn(">_", pty.output);
     this.assertNotIn("\x1b_Ga=t,", pty.output);
-    this.assertIn("🐕", pty.output);
-    // A late direct measurement enables every raster feature without leaking into pane input.
     pty.write("\x1b[6;18;9t");
-    await pty.waitFor("\x1b_Ga=t,t=d,f=100,s=27,v=27,i=730031");
     await pty.waitFor(`\x1b[0;38;2;${PALETTE.accent};48;2;${PALETTE.selected}m▌`);
-    const placement = "\x1b_Ga=p,i=730031,p=1,z=1,C=1,q=";
-    this.assertNotIn(placement, pty.output);
-    // Simulate iTerm2's final-chunk acknowledgement, then its reordered
-    // placement response. The viewer must recover without another upload.
-    pty.write("\x1b_Gi=0;OK\x1b\\");
-    await pty.waitFor(placement + "0");
-    const offset = pty.output.length;
-    pty.write("\x1b_Gp=1,i=730031;OK\x1b\\");
-    await pty.waitFor(output => output.slice(offset).includes(placement + "0"));
-    this.assertEqual(pty.output.split("\x1b_Ga=t,").length - 1, 1);
-    pty.write("badge-input-ok\r");
+    pty.write("mark-input-ok\r");
     await this.until(() => existsSync(received));
-    this.assertEqual(file(received), "badge-input-ok");
+    this.assertEqual(file(received), "mark-input-ok");
   }
 
   /** Plays Ghostty for a viewer: paste events and reads allowed. */

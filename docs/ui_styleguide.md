@@ -75,6 +75,7 @@ The palette and status tables below describe the current implementation.
 - Preserve informative feedback for thinking, digging, and compaction. A quiet
   interface still needs to show that work is continuing; a spinner is not a
   progress estimate.
+- The top-left `>_` mark uses `muted` and bold, matching the current theme.
 - The decorative corgi uses gray, never a status color. Its normal tones are
   `faint`, `muted` on a selected sleeping row, and `text` during fetch.
 - Sidebar intensity defaults to 50. Lower settings blend decoration toward

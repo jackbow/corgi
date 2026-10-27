@@ -456,18 +456,6 @@ function noOverlay(u: Ui): boolean {
     !u.sidebar_focus
   );
 }
-/** An open overlay reaches the badge. The launcher and scope menu open clear of it. */
-function badgeCovered(u: Ui, side: SidebarView, width: number, height: number): boolean {
-  // The agents drawer has no title row for the badge.
-  if (u.sidebar_drawer === "agents") return true;
-  const boxes = menuBoxes(u, width, height);
-  if (u.agent_search) boxes.push(new Rect(0, side.middle() + 1, side.width, 1));
-  if (u.dialog) {
-    const d = NameView.init(width, height, u.dialog);
-    boxes.push(new Rect(d.x, d.y, d.width, d.height));
-  }
-  return boxes.some(corgiBadge.overlaps);
-}
 /** The open menus that can reach past the sidebar. */
 function menuBoxes(u: Ui, width: number, height: number): Rect[] {
   const boxes: Rect[] = [];
@@ -841,9 +829,6 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
   if (u.review_draw) {
     u.review_draw(w);
     if (u.review_fullscreen) cover(new Rect(0, 0, width, height));
-  }
-  if (u.corgi_badge === "image") {
-    w.write(side.width > 0 && !badgeCovered(u, side, width, height) ? corgiBadge.place() : corgiBadge.hide);
   }
   const paste_at = u.paste_card ? placeCard(view, panes, area, u.paste_card, u) : null;
   if (paste_at && u.pointer && pasteCard.linkAt(u.paste_card!, paste_at, u.pointer.x, u.pointer.y)) link_pointer = true;

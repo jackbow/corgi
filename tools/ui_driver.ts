@@ -442,12 +442,12 @@ export async function begin(s: Session) {
   await s.start();
   const until = Date.now() + 8000;
   while (s.bytes === 0 && Date.now() < until) await Bun.sleep(20);
-  // Let the timing-driven parts settle the same way on both sides: the
-  // badge falls back to the emoji once the graphics probe times out,
-  // and CPU readings appear after the daemon's second sample.
+  // Wait for the header mark (or an older build's emoji fallback) and the
+  // CPU reading after the daemon's second sample.
   const ready = Date.now() + 5000;
   const screen = () => s.text().join("\n");
-  while (Date.now() < ready && !(screen().includes("🐕") && screen().includes("CPU "))) await Bun.sleep(30);
+  while (Date.now() < ready && !((screen().includes(">_") || screen().includes("🐕")) && screen().includes("CPU ")))
+    await Bun.sleep(30);
   await s.settle(400, 5000);
 }
 export async function runScript(

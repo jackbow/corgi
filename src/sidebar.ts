@@ -1011,7 +1011,7 @@ export class View {
     const v = this;
     w.write(`\x1b[1;${v.width - 4}H${panel} < `);
     if (v.corgi_badge !== "none") {
-      if (v.corgi_badge === "emoji") w.write(`\x1b[1;2H${panel}${corgiBadge.emoji}`);
+      w.write(`\x1b[1;3H${panel}\x1b[1m${fg("muted")}${corgiBadge.mark}`);
       w.write("\x1b[1;6H\x1b[1m" + fg("strong"));
       writeEllipsis(w, "workspaces", sat(v.width, 17));
     } else v.line(w, 0, "workspaces", "\x1b[1m" + fg("strong"));

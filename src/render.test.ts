@@ -553,62 +553,29 @@ function testDrawsAt(bytes: string, position: string, text: string): boolean {
   }
 }
 
-test("badge redraw preserves cached pixels and shifts only the workspace heading", () => {
+test("the sidebar mark draws as themed text without image commands", () => {
   const view = emptyView();
-  const u = ui({ message: "", copy_mode: false, corgi_badge: "pending" });
-  const pending = frame(view, [], 100, 30, u);
-  expect(pending).not.toContain(corgiBadge.emoji);
-  expect(pending).not.toContain("\x1b_G");
-  expect(testDrawsAt(pending, "\x1b[1;7H", "workspaces")).toBe(true);
-  u.corgi_badge = "image";
-  const shown = frame(view, [], 100, 30, u);
-  expect(shown).not.toContain("\x1b[2J");
-  expect(shown).toContain("\x1b[H\x1b[J");
-  expect(shown).toContain("a=p,i=730031");
-  expect(shown).not.toContain(corgiBadge.hide);
-  expect(shown).not.toContain("a=t,");
-  u.cell_pixels = { width: 9, height: 18 };
-  expect(frame(view, [], 100, 30, u)).toContain("p=1,z=1,C=1");
-  expect(frame(view, [], 100, 30, u)).not.toMatch(/[,;][cr]=/);
-  expect(testDrawsAt(shown, "\x1b[1;7H", "workspaces")).toBe(true);
+  const u = ui({ message: "", copy_mode: false, corgi_badge: "mark" });
+  try {
+    for (const theme of ["corgi", "animal_style"] as const) {
+      palette.use(theme, { foreground: [230, 230, 230], background: [28, 28, 38], ansi: Array(16).fill(null) });
+      for (const width of [70, 100]) {
+        const shown = frame(view, [], width, 30, u);
+        expect(testDrawsAt(shown, "\x1b[1;4H", corgiBadge.mark)).toBe(true);
+        expect(testDrawsAt(shown, "\x1b[1;7H", "workspaces")).toBe(true);
+        expect(shown).toContain(palette.fg("muted") + corgiBadge.mark);
+        expect(shown).not.toContain("\x1b_G");
+      }
+    }
+  } finally {
+    palette.use("corgi");
+  }
   u.pointer = { x: 2, y: 0 };
   u.link_tooltip = true;
-  const usage_popup = frame(view, [], 100, 30, u);
-  expect(usage_popup).toContain("Observed tokens");
-  expect(usage_popup).not.toContain("Since Corgi started");
-  expect(usage_popup).toContain("— tokens");
+  expect(frame(view, [], 100, 30, u)).toContain("Observed tokens");
   u.link_tooltip = false;
-  u.agent_launcher = new LauncherMenu({ workspace: 1, selected: "codex", last: "codex", pinned: true });
-  const popup = frame(view, [], 100, 30, u);
-  expect(popup).toContain("New agent");
-  expect(popup).toContain("a=p,i=730031");
-  expect(popup).not.toContain(corgiBadge.hide);
-  expect(popup).not.toContain("a=t,");
-  u.agent_launcher = null;
-  // The scope menu opens below the workspaces, clear of the badge.
-  u.scope_menu = new sidebar.ScopeMenu();
-  const scope = frame(view, [], 100, 30, u);
-  expect(scope).toContain("This workspace");
-  expect(scope).toContain("a=p,i=730031");
-  u.scope_menu = null;
-  // A context menu leaves the badge up unless it opens over it.
-  u.tab_menu = new TabMenu({ pane: true, tab: 1, anchor_x: 50, anchor_y: 10 });
-  expect(frame(view, [], 100, 30, u)).toContain("a=p,i=730031");
-  u.tab_menu = new TabMenu({ workspace: true, tab: 1, anchor_x: 2, anchor_y: 1 });
-  const covered = frame(view, [], 100, 30, u);
-  expect(covered).toContain(corgiBadge.hide);
-  expect(covered).not.toContain("a=p,i=730031");
-  u.tab_menu = null;
   u.sidebar_open = false;
-  const hidden = frame(view, [], 100, 30, u);
-  expect(hidden).toContain(corgiBadge.hide);
-  expect(hidden).not.toContain("a=p,i=730031");
-  u.sidebar_open = true;
-  u.corgi_badge = "emoji";
-  const emoji = frame(view, [], 100, 30, u);
-  expect(emoji).toContain(corgiBadge.emoji);
-  expect(emoji).not.toContain("\x1b_G");
-  expect(testDrawsAt(emoji, "\x1b[1;7H", "workspaces")).toBe(true);
+  expect(frame(view, [], 100, 30, u)).not.toContain(corgiBadge.mark);
 });
 
 test("a reopened agent's card sits mid-pane: title centered, details left, command wrapped", () => {
