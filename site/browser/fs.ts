@@ -9,3 +9,6 @@ export async function stat(_path: string): Promise<never> {
 export async function realpath(_path: string): Promise<never> {
   throw Error("FileNotFound");
 }
+export async function readdir(_path: string, _options: unknown): Promise<never> {
+  throw Error("FileNotFound");
+}

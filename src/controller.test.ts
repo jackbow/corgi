@@ -1154,6 +1154,28 @@ test("Command shortcuts open review and zoom it without changing pane layout", a
   }
 });
 
+test("folder completion arrows and Tab stay in the review field", async () => {
+  const { s, sent } = steering();
+  try {
+    await s.perform({ name: "review" });
+    await s.input(bytes("r"));
+    const input = s.review.review(s.focused().id).folder_input;
+    expect(input.selection()).toBeNull();
+    input.matches = ["/tmp/alpha/", "/tmp/beta/"];
+    await s.input(bytes("\x1b[B\x1b[B\x1b[A\t"));
+    expect(input.text).toBe("/tmp/alpha/");
+    input.matches = ["/tmp/alpha/child/"];
+    await s.input(bytes("\x1b[C"));
+    expect(input.text).toBe("/tmp/alpha/child/");
+    expect(sent).toEqual([]);
+    await s.input(bytes("\x1b[27u"));
+    expect(s.review.typing).toBe(false);
+  } finally {
+    s.review.hide();
+    viewer.close(s);
+  }
+});
+
 test("sending notes from fullscreen review reveals the receiving pane", async () => {
   const { s, sent } = steering();
   const paste = spyOn(s.pane(1).terminal, "bracketedPaste").mockReturnValue(true);

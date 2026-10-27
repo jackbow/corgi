@@ -114,7 +114,8 @@ test("a chosen folder filters changed files and survives closing and reopening",
     expect(screen(p, 90, 50).join("\n")).not.toContain("outside.ts");
     key(p, "r");
     expect(screen(p).join("\n")).toContain("Repo / folder");
-    expect(p.typingArea()?.text).toBe(join(dir, "src"));
+    expect(p.typingArea()?.text).toBe(join(dir, "src") + "/");
+    expect(p.typingArea()?.selection()).toBeNull();
     key(p, "escape");
     expect(p.typing).toBe(false);
     expect(await p.setFolder("")).toBe(true);
@@ -141,6 +142,85 @@ test("folder selection validates paths without replacing the current view", asyn
       expect(p.review(101).folder).toBe(join(dir, "src"));
       expect(p.review(101).folder_error).toBeTruthy();
     }
+  } finally {
+    p.hide();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the folder selector fuzzy completes with arrows and Tab without selecting its text", async () => {
+  const dir = folderCheckout(),
+    p = new panel.Panel();
+  try {
+    p.follow({ pane: 113, conversation: 1013, cwd: dir, name: "Agent" });
+    p.show();
+    await settle(p);
+    key(p, "r");
+    const input = p.review(113).folder_input!;
+    expect(input.selection()).toBeNull();
+    expect(input.caret).toBe(input.text.length);
+    key(p, "s");
+    key(p, "c");
+    await input.refresh();
+    expect(input.matches).toEqual([join(dir, "src") + "/", join(dir, "src-other") + "/"]);
+    key(p, "down");
+    key(p, "down");
+    expect(input.chosen()).toBe(join(dir, "src-other") + "/");
+    expect(input.text).toBe(dir + "/sc");
+    key(p, "up");
+    key(p, "tab");
+    await input.refresh();
+    expect(input.text).toBe(join(dir, "src") + "/");
+    expect(screen(p, 40).join("\n")).toContain("nested/");
+    key(p, "left");
+    key(p, "right");
+    expect(input.text).toBe(join(dir, "src") + "/");
+    key(p, "right");
+    await input.refresh();
+    expect(input.text).toBe(join(dir, "src/nested") + "/");
+    expect(input.selection()).toBeNull();
+    key(p, "escape");
+    expect(p.review(113).folder).toBeNull();
+    key(p, "r");
+    for (const byte of Buffer.from("src/n")) p.pasteByte(byte);
+    await p.review(113).folder_input!.refresh();
+    key(p, "down");
+    key(p, "enter");
+    await settle(p);
+    expect(p.review(113).folder).toBe(join(dir, "src/nested"));
+    expect(p.typing).toBe(false);
+  } finally {
+    p.hide();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("folder suggestions can be clicked and Enter opens the typed folder without selecting a child", async () => {
+  const dir = folderCheckout(),
+    p = new panel.Panel();
+  try {
+    p.follow({ pane: 114, cwd: dir, name: "Agent" });
+    p.show();
+    await settle(p);
+    key(p, "r");
+    const input = p.review(114).folder_input!;
+    await input.refresh();
+    let rows = screen(p, 40);
+    const row = rows.findIndex(line => line.includes("src/"));
+    expect(row).toBeGreaterThan(0);
+    p.mouse("press", 5, row);
+    p.mouse("release", 5, row);
+    await input.refresh();
+    expect(input.text).toBe(join(dir, "src") + "/");
+    expect(input.matches).toEqual([join(dir, "src/nested") + "/"]);
+    rows = screen(p, 40);
+    const y = rows.findIndex(line => line.includes("Repo / folder")) + 2;
+    p.mouse("press", 5, y);
+    p.mouse("release", 5, y);
+    expect(input.caret).toBeLessThan(input.text.length);
+    key(p, "enter");
+    await settle(p);
+    expect(p.review(114).folder).toBe(join(dir, "src"));
   } finally {
     p.hide();
     rmSync(dir, { recursive: true, force: true });

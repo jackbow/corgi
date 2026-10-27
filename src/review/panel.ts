@@ -4,13 +4,14 @@
 //! is focused. Browsing follows herdr-reviewr: scopes, hunk walking across
 //! files, folds, changed words, find, and a commit picker.
 import { realpath, stat } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import * as dropdown from "../dropdown";
 import { Rect, type Direction } from "../layout";
 import * as palette from "../palette";
-import { codepointWidth, compactCount, Writer } from "../text";
+import { codepointWidth, compactCount, displayWidth, Writer } from "../text";
 import * as diff from "./diff";
 import * as folding from "./folding";
+import * as folders from "./folders";
 import * as funcname from "./funcname";
 import * as git from "./git";
 import * as notes from "./notes";
@@ -188,7 +189,7 @@ class Review {
   full_context = false;
   hide_tests = false;
   folder: string | null = null;
-  folder_input: textArea.TextArea | null = null;
+  folder_input: folders.Input | null = null;
   folder_error: string | null = null;
   folder_request = 0;
   scope: Scope = "all";
@@ -483,7 +484,7 @@ export class Panel {
     return r.folder_input ?? r.compose?.area ?? r.find?.query ?? null;
   }
   /** The note box's text as last drawn: its first cell, and how many rows and columns it shows. */
-  private compose_at: { x: number; y: number; rows: number; w: number } | null = null;
+  private compose_at: { x: number; y: number; rows: number; w: number; start?: number } | null = null;
   /** A press in the note box is dragging a selection. */
   private placing = false;
   /** A pasted character's bytes so far, and whether the last was a carriage return. */
@@ -519,8 +520,11 @@ export class Panel {
       if (text.includes("\ufffd")) text = null;
     }
     if (text === null) return;
-    if (r.folder_input) r.folder_input.insert(text === "\n" ? " " : text);
-    else if (r.compose) r.compose.area.insert(text);
+    if (r.folder_input) {
+      r.folder_input.insert(text === "\n" ? " " : text);
+      r.folder_error = null;
+      void r.folder_input.refresh();
+    } else if (r.compose) r.compose.area.insert(text);
     else if (r.find) {
       r.find.query.insert(text === "\n" ? " " : text);
       const now = this.current(),
@@ -673,8 +677,11 @@ export class Panel {
     this.timer = null;
   }
   private openFolder(r: Review): void {
-    r.folder_input = new textArea.TextArea(this.target?.cwd ?? "", false);
-    r.folder_input.apply("select_all");
+    const input = new folders.Input(this.target?.cwd ?? "", () => {
+      if (r.folder_input === input) this.changed();
+    });
+    r.folder_input = input;
+    void input.refresh();
     r.folder_error = null;
   }
   /** Chooses a checkout, optionally limited to one of its folders. Empty restores the agent's directory. */
@@ -1119,11 +1126,21 @@ export class Panel {
       named = "named" in k ? k.named : null,
       text = "text" in k ? k.text : "";
     if (r.folder_input) {
-      const edit = named && typed(named);
+      const area = r.folder_input,
+        before = area.text,
+        edit = named && typed(named);
       if (named === "escape") r.folder_input = null;
-      else if (named === "enter") void this.setFolder(r.folder_input.text);
-      else if (edit) r.folder_input.apply(edit);
-      else if (text) r.folder_input.insert(text);
+      else if (named === "enter") void this.setFolder(area.chosen());
+      else if (named === "up" || named === "down") area.moveSuggestion(named === "down" ? 1 : -1);
+      else if (named === "tab" || (named === "right" && area.caret === area.text.length && !area.selection())) {
+        r.folder_error = null;
+        area.complete();
+      } else if (edit) area.apply(edit);
+      else if (text) area.insert(text);
+      if (area.text !== before && named !== "tab" && named !== "right") {
+        r.folder_error = null;
+        void area.refresh();
+      }
       return { kind: "none" };
     }
     if (r.compose) {
@@ -1765,19 +1782,26 @@ export class Panel {
       if (kind === "press") r.keys = false;
       return;
     }
-    // In the note box a press places the caret and a drag selects.
+    // In a text box a press places the caret and a drag selects.
     const box = this.compose_at;
-    if (r.compose && box && (this.placing || kind === "press")) {
+    const area = r.folder_input ?? r.compose?.area;
+    if (area && box && (this.placing || kind === "press")) {
       const inside = y >= box.y && y < box.y + box.rows && x >= box.x - 1 && x <= box.x + box.w;
+      const offset = r.folder_input ? displayWidth(area.text.slice(0, box.start ?? 0)) : 0;
       if (kind === "press" && inside) {
-        r.compose.area.place(y - box.y, x - box.x);
+        area.place(y - box.y, x - box.x + offset);
         this.placing = true;
         return;
       }
       if (kind === "drag" && this.placing) {
-        r.compose.area.place(y - box.y, x - box.x, true);
+        area.place(y - box.y, x - box.x + offset, true);
         return;
       }
+    }
+    if (r.folder_input) {
+      if (kind === "press") hit?.act?.();
+      if (kind === "wheel_up" || kind === "wheel_down") r.folder_input.moveSuggestion(kind === "wheel_down" ? 1 : -1);
+      return;
     }
     const co = this.checkout();
     if (r.picker && co) {
@@ -2004,32 +2028,57 @@ export class Panel {
     if (to && to.pane !== t.pane) c.text(col, 0, `→ ${to.name}`, colors.warm, null, false, right - col - 1);
     if (r.folder_input) {
       const y = head + 1,
-        area = r.folder_input;
+        area = r.folder_input,
+        count = Math.max(0, Math.min(6, c.h - y - 9)),
+        height = count + 8,
+        view = area.viewport(Math.max(1, c.w - 8));
       area.width = Math.max(1, c.w - 8);
-      this.box(c, 1, y, c.w - 2, 7, " Repo / folder ");
-      this.drawTyped(
-        c,
-        area,
-        area.lines()[0],
-        3,
-        y + 2,
-        focused ? area.position().col : null,
-        colors.strong,
-        colors.selected,
-      );
+      this.box(c, 1, y, c.w - 2, height, " Repo / folder ");
+      this.compose_at = { x: c.x + 3, y: c.y + y + 2, rows: 1, w: area.width, start: view.line.start };
+      this.drawTyped(c, area, view.line, 3, y + 2, focused ? view.caret : null, colors.strong, colors.selected);
+      const first = Math.max(0, (area.selected ?? 0) - count + 1);
+      for (let row = 0; row < count; row++) {
+        const index = first + row,
+          path = area.matches[index];
+        if (!path) break;
+        const on = area.selected === index;
+        c.fill(y + 4 + row, on ? colors.selected : colors.surface, 2, c.w - 2);
+        c.text(
+          3,
+          y + 4 + row,
+          (on ? "› " : "  ") + basename(path) + "/",
+          on ? colors.strong : colors.muted,
+          on ? colors.selected : colors.surface,
+          on,
+          c.w - 7,
+        );
+        c.hit(2, y + 4 + row, c.w - 4, 1, {
+          act: () => {
+            area.selected = index;
+            r.folder_error = null;
+            area.complete();
+          },
+        });
+      }
       c.text(
         3,
         y + 3,
-        r.folder_error ?? "Blank restores the agent's folder.",
+        r.folder_error ??
+          area.problem ??
+          (area.loading
+            ? "Reading folders…"
+            : area.matches.length
+              ? "↑/↓ choose · tab/→ complete · enter open"
+              : "No matching folders. Enter opens the typed path."),
         r.folder_error ? colors.hot : colors.faint,
         colors.surface,
         false,
         c.w - 7,
       );
-      c.text(3, y + 5, "[ Open ]", colors.strong, colors.selected, true);
-      c.hit(3, y + 5, 8, 1, { act: () => void this.setFolder(area.text) });
-      c.text(14, y + 5, "[ Cancel ]", colors.muted, colors.surface);
-      c.hit(14, y + 5, 10, 1, { act: () => (r.folder_input = null) });
+      c.text(3, y + height - 2, "[ Open ]", colors.strong, colors.selected, true);
+      c.hit(3, y + height - 2, 8, 1, { act: () => void this.setFolder(area.chosen()) });
+      c.text(14, y + height - 2, "[ Cancel ]", colors.muted, colors.surface);
+      c.hit(14, y + height - 2, 10, 1, { act: () => (r.folder_input = null) });
       this.drawFooter(c, r, null, focused);
       return;
     }
@@ -2943,6 +2992,8 @@ export class Panel {
     if (!focused) return;
     if (r.folder_input)
       return hints([
+        ["↑/↓", "choose"],
+        ["tab/→", "complete"],
         ["enter", "open"],
         ["esc", "cancel"],
       ]);
