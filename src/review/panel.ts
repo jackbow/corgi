@@ -2040,6 +2040,9 @@ export class Panel {
     if (root === null) {
       c.text(1, 2, "Not in a git checkout:", colors.muted);
       c.text(1, 3, t.cwd || "(no directory)", colors.faint);
+      const hint = "Press r to open another repo by path.";
+      c.text(1, 5, hint, colors.muted);
+      c.hit(1, 5, hint.length, 1, { act: () => this.openFolder(r) });
       return;
     }
     if (!co) {
