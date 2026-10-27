@@ -140,6 +140,7 @@ drag the panel's left edge to resize.
 | Move between hunks | `[` / `]` |
 | Search / toggle wrapping | `/` / `w` |
 | Select lines / add a note | `v` / `c` |
+| Comment on the current file | `C` |
 | Paste notes into the pane / copy notes | `s` / `y` |
 | Pin the checkout while changing agents | `p` |
 | Choose a repo or restrict changes to a subfolder | `r` |
@@ -162,6 +163,9 @@ state for each LLM conversation while the viewer runs, including when that
 conversation resumes in another pane. Changing conversations does not open
 the review for the new conversation. Notes from explicitly chosen repos include
 their checkout path so the agent can tell matching filenames apart.
+File comments also work on binary, generated and folded files. Use `l` to list
+notes, then `e` to edit or `d` to delete. Sending notes keeps the existing
+paste-without-submitting behavior.
 
 ## Script Corgi
 

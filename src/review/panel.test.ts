@@ -244,6 +244,71 @@ test("opens on all: commits and working copy together", async () => {
   p.hide();
 });
 
+test("file comments can be composed, edited and sent without selecting a line", async () => {
+  const p = new panel.Panel();
+  p.follow({ pane: 106, conversation: 1006, cwd: root, name: "Agent" });
+  p.show();
+  try {
+    await settle(p);
+    key(p, "C");
+    expect(screen(p).join("\n")).toContain("file note · app.ts");
+    for (const ch of "review the module") key(p, ch);
+    key(p, "enter");
+    expect(p.review(106).notes[0].file).toBe(true);
+    key(p, "x");
+    expect(screen(p).join("\n")).toContain("review the module");
+    key(p, "l");
+    key(p, "e");
+    expect(p.typingArea()?.text).toBe("review the module");
+    key(p, "select_all");
+    for (const ch of "split the module") key(p, ch);
+    key(p, "enter");
+    expect(p.noteCount(106)).toBe(1);
+    const effect = key(p, "s");
+    expect(effect.kind).toBe("send");
+    if (effect.kind === "send") {
+      expect(effect.pane).toBe(106);
+      expect(effect.text).toBe("app.ts (file)\nsplit the module");
+      expect(effect.notes[0].snippet).toBe("");
+    }
+    expect(p.noteCount(106)).toBe(0);
+  } finally {
+    p.hide();
+  }
+});
+
+test("binary and generated files accept file comments without loading a text diff", async () => {
+  const dir = folderCheckout(),
+    p = new panel.Panel();
+  try {
+    writeFileSync(join(dir, "binary.dat"), Buffer.from([0, 1, 2, 0]));
+    writeFileSync(join(dir, "bun.lock"), "{}\n");
+    p.follow({ pane: 107, cwd: dir, name: "Agent" });
+    p.show();
+    await settle(p);
+    for (const path of ["binary.dat", "bun.lock"]) {
+      const r = p.review(107);
+      Object.assign(r, { all: false, path, part: "diff", cur: 0, top: 0 });
+      await settle(p);
+      key(p, "C");
+      expect(screen(p).join("\n")).toContain("file note · " + path);
+      for (const ch of "file feedback") key(p, ch);
+      key(p, "enter");
+      expect(screen(p).join("\n")).toContain("file feedback");
+      expect(r.loaded.has(path)).toBe(false);
+      key(p, "e");
+      expect(p.typingArea()?.text).toBe("file feedback");
+      key(p, "escape");
+      key(p, "d");
+      expect(p.noteCount(107)).toBe(0);
+    }
+  } finally {
+    p.hide();
+    await settle(p);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("walks hunks across files and writes a note that sends", async () => {
   const p = new panel.Panel();
   p.follow({ pane: 7, cwd: root, name: "Fix app" });
