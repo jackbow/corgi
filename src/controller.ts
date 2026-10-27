@@ -448,6 +448,7 @@ export class Controller {
     this.message = "";
     this.headless_notice = null;
     this.rememberAgent();
+    this.followReview();
     this.dirty = true;
   }
   private async closeWorkspace(id: number, close_contents: boolean): Promise<void> {
@@ -660,6 +661,7 @@ export class Controller {
     this.nav().focus(this.model(), id);
     this.headless_notice = null;
     this.rememberAgent();
+    this.followReview();
   }
   area(): Rect {
     return this.sidebarView([]).area();
@@ -6417,13 +6419,7 @@ export class Controller {
     this.review.preview(ghost && git_ws ? { cwd: git_ws.cwd, name: git_ws.name, ...ghost } : null);
     const card = this.paste_card;
     const focused = this.focused();
-    if (this.review.open) {
-      this.review.keep(new Set(this.runtime.panes.map(p => p.id)));
-      const held = this.review.pinned && this.review.pane !== null ? this.pane(this.review.pane) : null;
-      if (!held) this.review.pinned = false;
-      this.review.follow(this.reviewTarget(held ?? this.focused()));
-      this.review.dest = this.reviewTarget();
-    }
+    this.followReview();
     const review_width = this.sidebarView([]).panel,
       review_focused = this.keyboard === "review" && review_width > 0,
       ghost_width = this.review.ghosted ? review_width || this.ghostWidth(git_ws) : 0;
@@ -6624,6 +6620,7 @@ export class Controller {
     const agent = p.agent;
     return {
       pane: p.id,
+      conversation: p.agent.conversation,
       cwd: this.reviewCwd(p),
       name:
         p.label.length > 0
@@ -6637,6 +6634,7 @@ export class Controller {
   }
   /** Opens the panel, gives it the keyboard, and then closes it. */
   private toggleReview(): void {
+    this.followReview();
     if (!this.review.open) return this.openReview();
     if (this.keyboard !== "review") return this.giveKeyboard("review");
     this.closeReview();
@@ -6653,6 +6651,21 @@ export class Controller {
     this.selection = null;
     this.cancelDividers();
     this.dirty = true;
+  }
+  private followReview(): void {
+    const current = this.reviewTarget();
+    this.review.keep(new Set(this.runtime.panes.map(p => p.id)));
+    const held =
+      this.review.open &&
+      this.review.pinned &&
+      this.review.conversation === (current?.conversation ?? 0) &&
+      this.review.pane !== null
+        ? this.pane(this.review.pane)
+        : null;
+    if (!held) this.review.pinned = false;
+    this.review.follow(this.reviewTarget(held ?? this.focused()));
+    this.review.dest = current;
+    if (!this.review.open && this.keyboard === "review") this.giveKeyboard("pane");
   }
   private closeReview(): void {
     this.review.hide();

@@ -142,6 +142,7 @@ drag the panel's left edge to resize.
 | Select lines / add a note | `v` / `c` |
 | Paste notes into the pane / copy notes | `s` / `y` |
 | Pin the checkout while changing agents | `p` |
+| Choose a repo or restrict changes to a subfolder | `r` |
 | Show all review keys | `?` |
 
 The default comparison includes changes since the branch diverged from the
@@ -153,6 +154,14 @@ Pasting notes does not press Enter. For a pane without bracketed paste,
 such as a bare shell, notes are copied instead. Notes belong to the viewer
 and disappear when it exits. The panel reads Git without modifying the
 repository; binary and oversized files show a notice instead of a diff.
+
+Press `r` or click **r folder** to enter a repo or subfolder path. Relative
+paths start at the folder currently shown; a blank path restores the agent's
+folder. The review remembers its chosen folder, position, notes and open/closed
+state for each LLM conversation while the viewer runs, including when that
+conversation resumes in another pane. Changing conversations does not open
+the review for the new conversation. Notes from explicitly chosen repos include
+their checkout path so the agent can tell matching filenames apart.
 
 ## Script Corgi
 

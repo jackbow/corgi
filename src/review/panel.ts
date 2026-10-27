@@ -3,8 +3,8 @@
 //! the window's right edge, outside the layout, so it follows whichever pane
 //! is focused. Browsing follows herdr-reviewr: scopes, hunk walking across
 //! files, folds, changed words, find, and a commit picker.
-import { stat } from "node:fs/promises";
-import { join } from "node:path";
+import { realpath, stat } from "node:fs/promises";
+import { join, relative, resolve } from "node:path";
 import * as dropdown from "../dropdown";
 import { Rect, type Direction } from "../layout";
 import * as palette from "../palette";
@@ -56,6 +56,7 @@ export interface Target {
   pane: number;
   cwd: string;
   name: string;
+  conversation?: number;
 }
 /** The reviews ghosts keep, apart from every pane's: the one shown and the one read next. */
 const ghost_panes = [-1, -2];
@@ -115,6 +116,7 @@ const key_groups: KeyGroup[] = [
       ["Fold file", "x"],
       ["Wrap", "w"],
       ["Pin review", "p"],
+      ["Open repo / folder", "r"],
     ],
   ],
   [
@@ -156,6 +158,7 @@ interface Section {
 const stops = (s: Section) => Math.max(1, s.units.length);
 interface Compose {
   path: string;
+  root?: string;
   rev: notes.Rev;
   side: notes.Side;
   start: number;
@@ -174,6 +177,11 @@ interface Find {
 }
 /** One pane's review: what it looks at and the notes it will send. */
 class Review {
+  visible = false;
+  folder: string | null = null;
+  folder_input: textArea.TextArea | null = null;
+  folder_error: string | null = null;
+  folder_request = 0;
   scope: Scope = "all";
   /** The "All files" slot: every file's diff in one flow, in the list's order. */
   all = true;
@@ -404,12 +412,18 @@ export class Panel {
   /** The focused pane, where a pinned panel's notes go. */
   dest: Target | null = null;
   private reviews = new Map<number, Review>();
+  private sessions = new Map<number, Review>();
+  private pane_sessions = new Map<number, number>();
   private checkouts = new Map<string, Checkout>();
   private roots = new Map<string, string | null>();
   /** The pane whose checkout is shown. */
   get pane(): number | null {
     return this.target?.pane ?? null;
   }
+  get conversation(): number {
+    return this.target?.conversation ?? 0;
+  }
+  private followed: Target | null = null;
   private target: Target | null = null;
   /** The ghost shown over whatever the panel follows, and the one asked for
    * next, which takes its place once read so hovering on never shows a blank. */
@@ -446,7 +460,7 @@ export class Panel {
   typingArea(): textArea.TextArea | null {
     if (!this.open || !this.target) return null;
     const r = this.review(this.target.pane);
-    return r.compose?.area ?? r.find?.query ?? null;
+    return r.folder_input ?? r.compose?.area ?? r.find?.query ?? null;
   }
   /** The note box's text as last drawn: its first cell, and how many rows and columns it shows. */
   private compose_at: { x: number; y: number; rows: number; w: number } | null = null;
@@ -485,7 +499,8 @@ export class Panel {
       if (text.includes("\ufffd")) text = null;
     }
     if (text === null) return;
-    if (r.compose) r.compose.area.insert(text);
+    if (r.folder_input) r.folder_input.insert(text === "\n" ? " " : text);
+    else if (r.compose) r.compose.area.insert(text);
     else if (r.find) {
       r.find.query.insert(text === "\n" ? " " : text);
       const now = this.current(),
@@ -523,7 +538,11 @@ export class Panel {
   }
   /** Forgets panes that closed. */
   keep(panes: Set<number>): void {
-    for (const id of this.reviews.keys()) if (!ghost_panes.includes(id) && !panes.has(id)) this.reviews.delete(id);
+    for (const id of this.reviews.keys())
+      if (!ghost_panes.includes(id) && !panes.has(id)) {
+        this.reviews.delete(id);
+        this.pane_sessions.delete(id);
+      }
   }
   /** Whether a ghost is shown, open or not. */
   get ghosted(): boolean {
@@ -584,22 +603,108 @@ export class Panel {
     return width >= min_width ? width : 0;
   }
   follow(target: Target | null): void {
-    const before = this.target;
-    this.target = target;
+    const before = this.target,
+      was_open = this.open;
+    this.followed = target;
+    if (target) {
+      const session = target.conversation ?? 0;
+      if (session !== (this.pane_sessions.get(target.pane) ?? 0)) {
+        this.pane_sessions.set(target.pane, session);
+        if (session) {
+          let r = this.sessions.get(session);
+          if (!r) this.sessions.set(session, (r = new Review()));
+          this.reviews.set(target.pane, r);
+        } else this.reviews.delete(target.pane);
+      }
+    }
+    const r = target ? this.review(target.pane) : null;
+    this.target = target ? { ...target, cwd: r?.folder ?? target.cwd } : null;
+    if (before?.conversation || target?.conversation) this.open = r?.visible ?? false;
+    if ((before?.conversation ?? 0) !== (target?.conversation ?? 0)) this.pinned = false;
+    if (was_open !== this.open) {
+      if (this.open) this.schedule();
+      else {
+        if (this.timer) clearTimeout(this.timer);
+        this.timer = null;
+      }
+    }
     if (!target) return;
-    if (!before || before.pane !== target.pane || before.cwd !== target.cwd) void this.refresh();
+    if (
+      !before ||
+      before.pane !== target.pane ||
+      before.cwd !== this.target!.cwd ||
+      before.conversation !== target.conversation ||
+      was_open !== this.open
+    )
+      void this.refresh();
   }
   show(): void {
     this.open = true;
+    if (this.target) this.review(this.target.pane).visible = true;
     this.schedule();
     void this.refresh();
   }
   hide(): void {
     this.open = false;
+    if (this.target) this.review(this.target.pane).visible = false;
     this.pinned = false;
     this.splitting = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+  }
+  private openFolder(r: Review): void {
+    r.folder_input = new textArea.TextArea(this.target?.cwd ?? "", false);
+    r.folder_input.apply("select_all");
+    r.folder_error = null;
+  }
+  /** Chooses a checkout, optionally limited to one of its folders. Empty restores the agent's directory. */
+  async setFolder(path: string): Promise<boolean> {
+    const t = this.target;
+    if (!t) return false;
+    const r = this.review(t.pane),
+      old_root = this.checkout()?.root,
+      default_cwd = this.followed?.cwd ?? t.cwd,
+      ticket = ++r.folder_request;
+    try {
+      const input = path.trim(),
+        home = process.env.HOME;
+      const expanded = home && (input === "~" || input.startsWith("~/")) ? home + input.slice(1) : input;
+      const folder = input ? await realpath(resolve(t.cwd, expanded)) : null;
+      const cwd = folder ?? default_cwd;
+      if (folder && !(await stat(folder)).isDirectory()) throw Error("Choose a directory, not a file.");
+      const root = await git.toplevel(cwd);
+      if (folder && !root) throw Error("That folder is not in a Git checkout.");
+      if (ticket !== r.folder_request) return false;
+      if (old_root) for (const note of r.notes) note.root ??= old_root;
+      r.folder = folder;
+      r.folder_input = null;
+      r.folder_error = null;
+      r.path = null;
+      r.pick = null;
+      r.cur = r.top = r.tree_top = 0;
+      r.tree_sel = "all";
+      r.landmark = null;
+      r.anchor = null;
+      r.find = null;
+      r.opened.clear();
+      r.collapsed.clear();
+      r.loaded.clear();
+      r.toggled.clear();
+      this.roots.set(cwd, root);
+      if (this.target?.pane === t.pane && this.review(t.pane) === r) {
+        this.target = { ...this.target, cwd };
+        await this.refresh();
+      }
+      this.changed();
+      return true;
+    } catch (error) {
+      if (ticket !== r.folder_request) return false;
+      const code = (error as NodeJS.ErrnoException).code;
+      r.folder_error =
+        code === "ENOENT" || code === "ENOTDIR" ? "That folder does not exist." : (error as Error).message;
+      this.changed();
+      return false;
+    }
   }
   private schedule(): void {
     if (this.timer) clearTimeout(this.timer);
@@ -625,7 +730,14 @@ export class Panel {
     const source = this.source(co, r);
     if (!source) return null;
     const listed = co.listings.get(sourceKey(source));
-    return listed ? { source, ...listed } : null;
+    if (!listed) return null;
+    const prefix = r.folder ? relative(co.root, r.folder) : "";
+    const inside = (path: string) => path === prefix || path.startsWith(prefix + "/");
+    return {
+      source,
+      ...listed,
+      changes: prefix ? listed.changes.filter(ch => inside(ch.path) || (!!ch.from && inside(ch.from))) : listed.changes,
+    };
   }
   /** Rereads git for the followed pane: its checkout, base, commits, the
    * scope's changed files, then the selected file. A call while one runs
@@ -679,6 +791,7 @@ export class Panel {
   }
   private async read(t: Target | null): Promise<void> {
     if (!t) return;
+    const r = t.conversation ? this.sessions.get(t.conversation)! : this.review(t.pane);
     let root = this.roots.get(t.cwd);
     if (root === undefined) {
       root = await git.toplevel(t.cwd);
@@ -690,7 +803,6 @@ export class Panel {
       co = new Checkout(root);
       this.checkouts.set(root, co);
     }
-    const r = this.review(t.pane);
     try {
       [co.head, co.branch, co.base] = await Promise.all([git.head(root), git.branch(root), git.base(root)]);
       co.commits = await git.commits(root, co.base);
@@ -751,10 +863,11 @@ export class Panel {
     const sig = `${change.kind}|${change.from}|${change.adds}|${change.dels}|${stamp}`;
     const key = `${sourceKey(source)}\0${change.path}`;
     if (co.files.get(key)?.sig === sig) return;
-    const ticket = (this.reading.get(key) ?? 0) + 1;
-    this.reading.set(key, ticket);
+    const read_key = `${co.root}\0${key}`;
+    const ticket = (this.reading.get(read_key) ?? 0) + 1;
+    this.reading.set(read_key, ticket);
     const loaded = await git.fileDiff(co.root, source, change);
-    if (this.reading.get(key) !== ticket && co.files.has(key)) return;
+    if (this.reading.get(read_key) !== ticket && co.files.has(key)) return;
     const lang = syntax.language(change.path);
     co.files.set(key, {
       sig,
@@ -968,6 +1081,14 @@ export class Panel {
       units = flow.find(s => s.change.path === r.path)?.units ?? [],
       named = "named" in k ? k.named : null,
       text = "text" in k ? k.text : "";
+    if (r.folder_input) {
+      const edit = named && typed(named);
+      if (named === "escape") r.folder_input = null;
+      else if (named === "enter") void this.setFolder(r.folder_input.text);
+      else if (edit) r.folder_input.apply(edit);
+      else if (text) r.folder_input.insert(text);
+      return { kind: "none" };
+    }
     if (r.compose) {
       const c = r.compose,
         edit = named && typed(named);
@@ -983,6 +1104,7 @@ export class Panel {
             r.notes.push({
               id: r.seq++,
               path: c.path,
+              ...(c.root ? { root: c.root } : {}),
               rev: c.rev,
               side: c.side,
               start: c.start,
@@ -1037,6 +1159,10 @@ export class Panel {
       return { kind: "none" };
     }
     r.status = null;
+    if (text === "r") {
+      this.openFolder(r);
+      return { kind: "none" };
+    }
     if (!now) {
       if (named === "escape") return { kind: "leave" };
       if (text === "q") return { kind: "hide" };
@@ -1211,6 +1337,7 @@ export class Panel {
           const range = this.rangeOf(r, d, units, n) ?? [r.cur, r.cur];
           r.compose = {
             path: n.path,
+            ...(n.root ? { root: n.root } : {}),
             rev: n.rev,
             side: n.side,
             start: n.start,
@@ -1318,7 +1445,15 @@ export class Panel {
       r.status = { text: "Folded lines take no notes; → opens them.", warm: false };
       return;
     }
-    r.compose = { path, rev, ...anchor, area: new textArea.TextArea(), edit: null, range: [a, b] };
+    r.compose = {
+      path,
+      rev,
+      ...anchor,
+      ...(r.folder ? { root: this.checkout()?.root } : {}),
+      area: new textArea.TextArea(),
+      edit: null,
+      range: [a, b],
+    };
     r.anchor = null;
   }
   private noteAt(r: Review, d: diff.FileDiff, units: diff.Unit[], now: { source: git.Source }): notes.Note | null {
@@ -1326,7 +1461,7 @@ export class Panel {
     if (unit?.kind !== "row" || !r.path) return null;
     const row = d.rows[unit.row],
       rev = revOf(now.source);
-    return r.notes.find(n => n.path === r.path && notes.sameRev(n.rev, rev) && notes.covers(n, row)) ?? null;
+    return r.notes.find(n => notes.inFile(n, r.path!, rev, this.checkout()?.root) && notes.covers(n, row)) ?? null;
   }
   private rangeOf(r: Review, d: diff.FileDiff, units: diff.Unit[], n: notes.Note): [number, number] | null {
     let a = -1,
@@ -1340,6 +1475,17 @@ export class Panel {
     return a < 0 ? null : [a, b];
   }
   private jumpToNote(r: Review, n: notes.Note): void {
+    const co = this.checkout();
+    if (
+      n.root &&
+      (co?.root !== n.root ||
+        (r.folder && relative(n.root, r.folder) && !n.path.startsWith(relative(n.root, r.folder) + "/")))
+    ) {
+      void this.setFolder(n.root).then(ok => {
+        if (ok && this.target && this.review(this.target.pane) === r) this.jumpToNote(r, n);
+      });
+      return;
+    }
     const wanted: Scope = n.rev.kind === "commit" ? "commits" : r.scope === "commits" ? "all" : r.scope;
     if (n.rev.kind === "commit") r.pick = n.rev.hash;
     if (wanted !== r.scope) r.scope = wanted;
@@ -1349,7 +1495,6 @@ export class Panel {
     r.part = "diff";
     r.free = false;
     r.tree_free = false;
-    const co = this.checkout();
     const listed = co && this.listing(co, r);
     if (!r.all) {
       if (listed)
@@ -1768,6 +1913,37 @@ export class Panel {
     // Pinned elsewhere, where the notes go.
     const to = this.destination();
     if (to && to.pane !== t.pane) c.text(col, 0, `→ ${to.name}`, colors.warm, null, false, right - col - 1);
+    if (r.folder_input) {
+      const y = head + 1,
+        area = r.folder_input;
+      area.width = Math.max(1, c.w - 8);
+      this.box(c, 1, y, c.w - 2, 7, " Repo / folder ");
+      this.drawTyped(
+        c,
+        area,
+        area.lines()[0],
+        3,
+        y + 2,
+        focused ? area.position().col : null,
+        colors.strong,
+        colors.selected,
+      );
+      c.text(
+        3,
+        y + 3,
+        r.folder_error ?? "Blank restores the agent's folder.",
+        r.folder_error ? colors.hot : colors.faint,
+        colors.surface,
+        false,
+        c.w - 7,
+      );
+      c.text(3, y + 5, "[ Open ]", colors.strong, colors.selected, true);
+      c.hit(3, y + 5, 8, 1, { act: () => void this.setFolder(area.text) });
+      c.text(14, y + 5, "[ Cancel ]", colors.muted, colors.surface);
+      c.hit(14, y + 5, 10, 1, { act: () => (r.folder_input = null) });
+      this.drawFooter(c, r, null, focused);
+      return;
+    }
     if (root === undefined) {
       c.text(1, 2, "Reading git…", colors.faint);
       return;
@@ -1831,10 +2007,13 @@ export class Panel {
       ];
     }
     const width = (list: [string, palette.Rgb][]) => list.reduce((s, [part]) => s + [...part].length, 0);
+    if (r.folder) parts.unshift([`${relative(root, r.folder) || r.folder} · `, colors.muted]);
     if (extra && width(parts) + width([extra]) <= room) parts.push(extra);
     let dx = 1;
     for (const [part, fg] of parts) dx = c.text(dx, head, part, fg, null, false, room + 1 - dx);
     for (let i = 0; i < c.w; i++) c.put(i, head + 1, "─", colors.line);
+    c.text(1, head + 1, " r folder ", colors.muted);
+    c.hit(1, head + 1, 10, 1, { act: () => this.openFolder(r) });
     // How the files are listed, on the rule above them.
     if (listed?.edited && listed.changes.length && !r.tree_hidden) {
       const sorts: ["name" | "edited", string][] = [
@@ -2005,7 +2184,8 @@ export class Panel {
           // On "All files", the file the cursor is in.
           here = r.all && row.path === r.path;
         c.text(indent, y, letter, fg, bg, true);
-        if (r.notes.some(n => n.path === row.path)) right.push(["•", colors.warm]);
+        if (r.notes.some(n => n.path === row.path && (!n.root || n.root === this.checkout()?.root)))
+          right.push(["•", colors.warm]);
         if (ch.binary) right.push(["bin", colors.faint]);
         else {
           if (ch.generated) right.push(["gen", colors.faint]);
@@ -2155,7 +2335,7 @@ export class Panel {
       const after = new Map<string, notes.Note[]>(),
         lines = new Set<string>();
       for (const n of r.notes) {
-        if (n.path !== path || !notes.sameRev(n.rev, rev) || r.compose?.edit === n.id) continue;
+        if (!notes.inFile(n, path, rev, now.co.root) || r.compose?.edit === n.id) continue;
         const k = `${n.side}:${n.end}`;
         after.set(k, [...(after.get(k) ?? []), n]);
         for (let line = n.start; line <= n.end; line++) lines.add(`${n.side}:${line}`);
@@ -2387,8 +2567,7 @@ export class Panel {
     const origin = r.scope === "all" || ch.kind === "untracked" ? this.originOf(now.co, r, now.source, ch) : "";
     if (origin) extra.push([origin + " ", colors.faint]);
     const counts: [string, palette.Rgb][] = [];
-    if (r.notes.some(n => n.path === ch.path && notes.sameRev(n.rev, revOf(now.source))))
-      counts.push(["•", colors.warm]);
+    if (r.notes.some(n => notes.inFile(n, ch.path, revOf(now.source), now.co.root))) counts.push(["•", colors.warm]);
     if (ch.binary) counts.push(["bin", colors.faint]);
     else {
       if (ch.generated) counts.push(["gen", colors.faint]);
@@ -2644,6 +2823,11 @@ export class Panel {
     if (r.status)
       return void c.text(1, y, r.status.text, r.status.warm ? colors.warm : colors.muted, null, false, c.w - 2);
     if (!focused) return;
+    if (r.folder_input)
+      return hints([
+        ["enter", "open"],
+        ["esc", "cancel"],
+      ]);
     if (r.compose)
       return hints([
         ["enter", "save"],

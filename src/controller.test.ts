@@ -1083,6 +1083,35 @@ test("prefixed arrows walk past the last pane into the review panel, and left go
   }
 });
 
+test("review visibility follows the LLM conversation without taking keyboard focus", async () => {
+  const { s } = steering();
+  try {
+    s.pane(1).agent.conversation = 101;
+    s.pane(2).agent.conversation = 102;
+    s.focusPane(1);
+    await s.input(bytes("\x02e"));
+    expect(s.review.open).toBe(true);
+    s.review.review(1).folder = "/chosen/repo";
+    s.focusPane(2);
+    expect(s.review.open).toBe(false);
+    expect(s.keyboard).toBe("pane");
+    s.focusPane(1);
+    expect(s.review.open).toBe(true);
+    expect(s.review.review(1).folder).toBe("/chosen/repo");
+    expect(s.keyboard).toBe("pane");
+    await s.input(bytes("\x02eq"));
+    expect(s.review.open).toBe(false);
+    s.focusPane(2);
+    await s.input(bytes("\x02e"));
+    expect(s.review.open).toBe(true);
+    s.focusPane(1);
+    expect(s.review.open).toBe(false);
+  } finally {
+    s.review.hide();
+    viewer.close(s);
+  }
+});
+
 test("the keyboard has one holder: the sidebar, the review panel and a press hand it between them", async () => {
   const update = spyOn(preferences, "update").mockImplementation(() => {});
   const { s } = steering();
