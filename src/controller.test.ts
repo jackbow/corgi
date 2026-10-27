@@ -1108,6 +1108,15 @@ test("Command shortcuts open review and zoom it without changing pane layout", a
     const pane_zoom = s.nav().tab().zoom;
     await s.input(bytes("\x1b[13;10u"));
     expect(s.review.fullscreen).toBe(true);
+    expect(s.coversPanes()).toBe(true);
+    await s.mouse("\x1b[<0;1;10M");
+    await s.mouse("\x1b[<0;1;10m");
+    expect(s.review_drag).toBe(false);
+    expect(s.review.fullscreen).toBe(true);
+    await s.input(bytes("\x1b[98;10u"));
+    expect(s.review.open).toBe(false);
+    await s.input(bytes("\x1b[98;10u"));
+    expect(s.review.fullscreen).toBe(true);
     expect(s.nav().tab().zoom).toBe(pane_zoom);
     expect(s.area()).toEqual(area);
     expect(s.reviewRect()).toMatchObject({ x: 0, y: 0, w: s.width, h: s.height });
@@ -1140,6 +1149,26 @@ test("Command shortcuts open review and zoom it without changing pane layout", a
     expect(s.review.open).toBe(false);
     expect(sent).toEqual([]);
   } finally {
+    s.review.hide();
+    viewer.close(s);
+  }
+});
+
+test("sending notes from fullscreen review reveals the receiving pane", async () => {
+  const { s, sent } = steering();
+  const paste = spyOn(s.pane(1).terminal, "bracketedPaste").mockReturnValue(true);
+  try {
+    s.focusPane(1);
+    await s.perform({ name: "review" });
+    await s.perform({ name: "zoom" });
+    await s.reviewEffect({ kind: "send", pane: 1, from: 1, notes: [], text: "app.ts (file)\nPlease simplify" });
+    expect(s.keyboard).toBe("pane");
+    expect(s.review.open).toBe(true);
+    expect(s.review.fullscreen).toBe(false);
+    expect(s.coversPanes()).toBe(false);
+    expect(sent).toEqual([[1, "\x1b[200~app.ts (file)\nPlease simplify\x1b[201~"]]);
+  } finally {
+    paste.mockRestore();
     s.review.hide();
     viewer.close(s);
   }
