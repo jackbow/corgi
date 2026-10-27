@@ -114,6 +114,8 @@ const key_groups: KeyGroup[] = [
       ["Commit", "g G"],
       ["Expand lines", "enter"],
       ["Fold file", "x"],
+      ["Hunks / full file", "Z"],
+      ["Fullscreen", "cmd+shift+enter"],
       ["Wrap", "w"],
       ["Pin review", "p"],
       ["Open repo / folder", "r"],
@@ -180,6 +182,8 @@ interface Find {
 /** One pane's review: what it looks at and the notes it will send. */
 class Review {
   visible = false;
+  fullscreen = false;
+  full_context = false;
   folder: string | null = null;
   folder_input: textArea.TextArea | null = null;
   folder_error: string | null = null;
@@ -424,6 +428,17 @@ export class Panel {
   }
   get conversation(): number {
     return this.target?.conversation ?? 0;
+  }
+  get fullscreen(): boolean {
+    return this.open && this.target !== null && this.review(this.target.pane).fullscreen;
+  }
+  toggleFullscreen(): void {
+    if (!this.target) return;
+    const r = this.review(this.target.pane);
+    r.fullscreen = !r.fullscreen;
+  }
+  unzoom(): void {
+    if (this.target) this.review(this.target.pane).fullscreen = false;
   }
   private followed: Target | null = null;
   private target: Target | null = null;
@@ -975,7 +990,7 @@ export class Panel {
     if (file?.loaded.kind === "diff") r.cur = this.firstChange(r, file.loaded.diff, path);
   }
   private isCollapsed(r: Review, now: Now, path: string): boolean {
-    return r.all && (r.collapsed.get(path) ?? now.auto_collapsed.has(path));
+    return !r.full_context && r.all && (r.collapsed.get(path) ?? now.auto_collapsed.has(path));
   }
   /** The flow's next or previous hunk, across files. A file not read yet
    * stops the walk until it is. */
@@ -1022,7 +1037,9 @@ export class Panel {
     else [r.sort, r.reversed] = [by, false];
   }
   private units(r: Review, d: diff.FileDiff, path: string): diff.Unit[] {
-    return diff.shown(d, r.opened.get(path) ?? new Set());
+    return r.full_context
+      ? d.rows.map((_, row) => ({ kind: "row", row }))
+      : diff.shown(d, r.opened.get(path) ?? new Set());
   }
   private firstChange(r: Review, d: diff.FileDiff, path: string): number {
     const units = this.units(r, d, path);
@@ -1318,6 +1335,24 @@ export class Panel {
       case "x":
         if (r.all && r.path) this.collapse(r, now, r.path);
         break;
+      case "Z": {
+        const unit = units[r.cur],
+          row = unit?.kind === "row" ? unit.row : unit?.start;
+        r.full_context = !r.full_context;
+        r.opened.clear();
+        r.anchor = null;
+        r.landmark = null;
+        r.top = 0;
+        r.free = false;
+        if (d && r.path)
+          r.cur = Math.max(
+            0,
+            this.units(r, d, r.path).findIndex(u =>
+              u.kind === "row" ? u.row === row : row !== undefined && row >= u.start && row < u.end,
+            ),
+          );
+        break;
+      }
       case "w":
         r.wrap = !r.wrap;
         r.shift = 0;

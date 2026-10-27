@@ -130,6 +130,7 @@ tmux tab numbering starts at zero; other presets start at one.
 **prefix e** opens the review panel for the focused pane's checkout. Press it
 again to focus the panel, and a third time to close it. Esc returns to the pane;
 drag the panel's left edge to resize.
+**Cmd+Shift+B** does the same without the prefix.
 
 | Task | Key |
 | --- | --- |
@@ -141,6 +142,8 @@ drag the panel's left edge to resize.
 | Search / toggle wrapping | `/` / `w` |
 | Select lines / add a note | `v` / `c` |
 | Comment on the current file | `C` |
+| Toggle full-window review while it has focus | Cmd+Shift+Enter |
+| Toggle compact hunks / full-file context | `Z` |
 | Paste notes into the pane / copy notes | `s` / `y` |
 | Pin the checkout while changing agents | `p` |
 | Choose a repo or restrict changes to a subfolder | `r` |
@@ -166,6 +169,10 @@ their checkout path so the agent can tell matching filenames apart.
 File comments also work on binary, generated and folded files. Use `l` to list
 notes, then `e` to edit or `d` to delete. Sending notes keeps the existing
 paste-without-submitting behavior.
+Fullscreen covers the panes without changing their layout. Esc returns to the
+split view and gives focus back to the agent. `Z` expands unchanged context and
+folded file headings together; pressing it again restores compact hunks.
+Generated files still require an explicit load.
 
 ## Script Corgi
 

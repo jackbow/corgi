@@ -651,6 +651,11 @@ const tables: Record<Preset, Binding[]> = {
     ...corgiPrefix,
   ],
 };
+for (const [preset, list] of Object.entries(tables)) {
+  list.push({ key: 98, mods: { super: true, shift: true }, prefixed: false, action: { name: "review" } });
+  if (preset !== "cmux")
+    list.push({ key: 13, mods: { super: true, shift: true }, prefixed: false, action: { name: "zoom" } });
+}
 export function table(preset: Preset): Binding[] {
   return tables[preset];
 }

@@ -22,6 +22,13 @@ test("presets preserve first shortcuts and held chords", () => {
   });
 });
 
+test("review and focused zoom have Command shortcuts in every preset", () => {
+  for (const preset of ["corgi", "tmux", "herdr", "cmux"] as Preset[]) {
+    expect(chord(preset, false, { codepoint: 98, mods: { super: true, shift: true } })).toEqual({ name: "review" });
+    expect(chord(preset, false, { codepoint: 13, mods: { super: true, shift: true } })).toEqual({ name: "zoom" });
+  }
+});
+
 test("each action shows its first binding", () => {
   const cases: [Preset, import("./action").Action, number, import("./keyboard").Mods, boolean][] = [
     ["corgi", { name: "new" }, 99, {}, true],

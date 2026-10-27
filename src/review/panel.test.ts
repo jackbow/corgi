@@ -244,6 +244,40 @@ test("opens on all: commits and working copy together", async () => {
   p.hide();
 });
 
+test("Z switches every file between hunks and full context and remembers the mode", async () => {
+  const p = new panel.Panel();
+  try {
+    p.follow({ pane: 108, conversation: 1008, cwd: root, name: "Agent" });
+    p.show();
+    await settle(p);
+    key(p, "tab");
+    expect(screen(p, 100, 100).join("\n")).toContain("unmodified lines");
+    key(p, "Z");
+    let body = screen(p, 100, 100).join("\n");
+    expect(body).not.toContain("unmodified lines");
+    expect(body).toContain("export const v0 = 0;");
+    expect(body).toContain("export const v39 = 39;");
+    expect(body).toContain("Generated file");
+    await settle(p);
+    expect(p.review(108).full_context).toBe(true);
+    p.hide();
+    p.show();
+    p.toggleFullscreen();
+    p.follow({ pane: 109, conversation: 1009, cwd: root, name: "Other" });
+    expect(p.open).toBe(false);
+    expect(p.fullscreen).toBe(false);
+    p.follow({ pane: 108, conversation: 1008, cwd: root, name: "Agent" });
+    expect(p.fullscreen).toBe(true);
+    expect(p.review(108).full_context).toBe(true);
+    key(p, "Z");
+    body = screen(p, 100, 100).join("\n");
+    expect(body).toContain("unmodified lines");
+    expect(body).not.toContain("export const v0 = 0;");
+  } finally {
+    p.hide();
+  }
+});
+
 test("file comments can be composed, edited and sent without selecting a line", async () => {
   const p = new panel.Panel();
   p.follow({ pane: 106, conversation: 1006, cwd: root, name: "Agent" });

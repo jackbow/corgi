@@ -2081,6 +2081,12 @@ export class Controller {
       case "zoom":
       case "close":
       case "close-tab":
+        if (act.name === "zoom" && this.reviewKeys()) {
+          this.review.toggleFullscreen();
+          this.cancelDividers();
+          this.dirty = true;
+          break;
+        }
         if (this.model().count === 0) throw Error("NoPane");
         if (act.name === "split")
           await this.create(act.value === "down" ? "vertical" : "horizontal", this.currentCwd(), null, "");
@@ -6420,7 +6426,7 @@ export class Controller {
     const card = this.paste_card;
     const focused = this.focused();
     this.followReview();
-    const review_width = this.sidebarView([]).panel,
+    const review_width = this.review.fullscreen ? this.width : this.sidebarView([]).panel,
       review_focused = this.keyboard === "review" && review_width > 0,
       ghost_width = this.review.ghosted ? review_width || this.ghostWidth(git_ws) : 0;
     return render.frame(
@@ -6515,6 +6521,7 @@ export class Controller {
           : this.workspaceEntries(),
         workspace_offset: this.workspace_offset,
         review_width,
+        review_fullscreen: this.review.fullscreen,
         review_split: review_width > 0 ? this.review.splitRow : null,
         review_focused,
         review_keys: review_width > 0 && this.review.keysOpen,
@@ -6546,16 +6553,17 @@ export class Controller {
     return this.review.open ? panel.Panel.fit(this.prefs.review_width, this.width - sidebar_width) : 0;
   }
   private reviewRect(): Rect | null {
+    if (this.review.fullscreen) return new Rect(0, 0, this.width, this.height);
     const width = this.sidebarView([]).panel;
     return width > 0 ? new Rect(this.width - width, 0, width, this.height) : null;
   }
   /** Whether keys go to the review panel: it has the keyboard and room to show. */
   private reviewKeys(): boolean {
-    return this.keyboard === "review" && this.sidebarView([]).panel > 0;
+    return this.keyboard === "review" && (this.review.fullscreen || this.sidebarView([]).panel > 0);
   }
   /** Gives the keyboard to the review panel, when it is open and has room to show. */
   private enterReview(): void {
-    if (this.sidebarView([]).panel > 0) this.giveKeyboard("review");
+    if (this.review.fullscreen || this.sidebarView([]).panel > 0) this.giveKeyboard("review");
   }
   /** A pane, the focused one unless named, as the review panel shows it. */
   /** Reads the menus' diff line ahead of them: for the focused agent, the
@@ -6642,7 +6650,7 @@ export class Controller {
   private openReview(): void {
     this.review.follow(this.reviewTarget());
     this.review.show();
-    if (this.sidebarView([]).panel === 0) {
+    if (!this.review.fullscreen && this.sidebarView([]).panel === 0) {
       this.review.hide();
       this.notice(" Review needs a wider window");
       return;
@@ -6725,6 +6733,7 @@ export class Controller {
         this.closeReview();
         break;
       case "leave":
+        this.review.unzoom();
         this.giveKeyboard("pane");
         break;
       case "none":
