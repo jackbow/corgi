@@ -538,6 +538,13 @@ test("outside a checkout it says so", async () => {
   p.show();
   await settle(p);
   expect(screen(p).join("\n")).toContain("Not in a git checkout");
+  expect(screen(p, 40).join("\n")).toContain("Press r to open another repo by path.");
+  key(p, "r");
+  expect(screen(p).join("\n")).toContain("Repo / folder");
+  key(p, "escape");
+  screen(p);
+  p.mouse("press", 4, 5);
+  expect(screen(p).join("\n")).toContain("Repo / folder");
   p.hide();
 });
 
