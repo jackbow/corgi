@@ -9,6 +9,8 @@ export type Rev = { kind: "worktree" } | { kind: "commit"; hash: string };
 export interface Note {
   id: number;
   path: string;
+  /** Explicit checkout when a review chooses a different folder. */
+  root?: string;
   rev: Rev;
   side: Side;
   start: number;
@@ -19,6 +21,9 @@ export interface Note {
 }
 export const sameRev = (a: Rev, b: Rev) =>
   a.kind === "worktree" ? b.kind === "worktree" : b.kind === "commit" && a.hash === b.hash;
+export function inFile(note: Note, path: string, rev: Rev, root?: string): boolean {
+  return note.path === path && sameRev(note.rev, rev) && (!note.root || note.root === root);
+}
 
 /** The line `row` sits at on `side`, or 0 when it has no line there. */
 export function lineOn(row: Row, side: Side): number {
@@ -47,7 +52,7 @@ export function covers(note: Note, row: Row): boolean {
 export function location(note: Note): string {
   const range = note.start === note.end ? `${note.start}` : `${note.start}-${note.end}`;
   const at = note.rev.kind === "commit" ? ` in ${note.rev.hash.slice(0, 7)}` : "";
-  return `${note.path}:${range}${note.side === "old" ? " (removed)" : ""}${at}`;
+  return `${note.root ? note.root + "/" : ""}${note.path}:${range}${note.side === "old" ? " (removed)" : ""}${at}`;
 }
 /** Every note as one block of location, snippet and text, sorted by file
  * and line, a blank line between blocks. Blank lines inside a note's text

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Terminal } from "../pane/terminal";
@@ -64,6 +64,147 @@ const settle = async (p: panel.Panel) => {
 };
 const key = (p: panel.Panel, k: string | panel.Named) =>
   p.key(k.length === 1 ? { text: k } : { named: k as panel.Named });
+
+function folderCheckout(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "corgi-review-folder-")));
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", dir, ...args], {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@t",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@t",
+      },
+    });
+  mkdirSync(join(dir, "src/nested"), { recursive: true });
+  mkdirSync(join(dir, "src-other"));
+  for (const file of ["src/inside.ts", "src/nested/child.ts", "src-other/outside.ts", "app.ts"])
+    writeFileSync(join(dir, file), "before\n");
+  git("init", "-q", "-b", "main");
+  git("add", ".");
+  git("commit", "-qm", "base");
+  for (const file of ["src/inside.ts", "src/nested/child.ts", "src-other/outside.ts", "app.ts"])
+    writeFileSync(join(dir, file), "after\n");
+  return dir;
+}
+
+test("a chosen folder filters changed files and survives closing and reopening", async () => {
+  const dir = folderCheckout(),
+    p = new panel.Panel();
+  try {
+    p.follow({ pane: 100, conversation: 1000, cwd: dir, name: "Agent" });
+    p.show();
+    await settle(p);
+    expect(await p.setFolder("src")).toBe(true);
+    await settle(p);
+    let body = screen(p, 90, 50).join("\n");
+    expect(body).toContain("inside.ts");
+    expect(body).toContain("child.ts");
+    expect(body).not.toContain("outside.ts");
+    expect(body).not.toContain("app.ts");
+    key(p, "u");
+    await settle(p);
+    expect(screen(p, 90, 50).join("\n")).not.toContain("outside.ts");
+    p.hide();
+    p.follow({ pane: 100, conversation: 1000, cwd: dir, name: "Agent" });
+    p.show();
+    await settle(p);
+    expect(p.review(100).folder).toBe(join(dir, "src"));
+    expect(screen(p, 90, 50).join("\n")).not.toContain("outside.ts");
+    key(p, "r");
+    expect(screen(p).join("\n")).toContain("Repo / folder");
+    expect(p.typingArea()?.text).toBe(join(dir, "src"));
+    key(p, "escape");
+    expect(p.typing).toBe(false);
+    expect(await p.setFolder("")).toBe(true);
+    await settle(p);
+    expect(screen(p, 90, 50).join("\n")).toContain("outside.ts");
+  } finally {
+    p.hide();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("folder selection validates paths without replacing the current view", async () => {
+  const dir = folderCheckout(),
+    p = new panel.Panel();
+  try {
+    p.follow({ pane: 101, cwd: dir, name: "Agent" });
+    p.show();
+    await settle(p);
+    symlinkSync(join(dir, "src"), join(dir, "source link"));
+    expect(await p.setFolder("source link")).toBe(true);
+    expect(p.review(101).folder).toBe(join(dir, "src"));
+    for (const path of [join(dir, "missing"), join(dir, "app.ts"), tmpdir()]) {
+      expect(await p.setFolder(path)).toBe(false);
+      expect(p.review(101).folder).toBe(join(dir, "src"));
+      expect(p.review(101).folder_error).toBeTruthy();
+    }
+  } finally {
+    p.hide();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("each LLM conversation keeps its own visibility, folder and notes, even when resumed in another pane", async () => {
+  const dir = folderCheckout(),
+    p = new panel.Panel();
+  try {
+    p.follow({ pane: 102, conversation: 1001, cwd: dir, name: "First" });
+    p.show();
+    await settle(p);
+    await p.setFolder("src");
+    const first = p.review(102);
+    first.top = 12;
+    p.follow({ pane: 103, conversation: 1002, cwd: dir, name: "Second" });
+    expect(p.open).toBe(false);
+    expect(p.review(103)).not.toBe(first);
+    expect(p.review(103).folder).toBeNull();
+    p.show();
+    p.hide();
+    p.follow({ pane: 102, conversation: 1001, cwd: dir, name: "First" });
+    expect(p.open).toBe(true);
+    expect(p.review(102)).toBe(first);
+    expect(first.folder).toBe(join(dir, "src"));
+    expect(first.top).toBe(12);
+    p.follow({ pane: 102, conversation: 1003, cwd: dir, name: "Replacement" });
+    expect(p.open).toBe(false);
+    expect(p.review(102).folder).toBeNull();
+    p.keep(new Set([103]));
+    p.follow({ pane: 104, conversation: 1001, cwd: dir, name: "Resumed" });
+    expect(p.open).toBe(true);
+    expect(p.review(104)).toBe(first);
+  } finally {
+    p.hide();
+    await settle(p);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("notes retain their checkout when switching to a repo with the same file name", async () => {
+  const dir = folderCheckout(),
+    p = new panel.Panel();
+  try {
+    p.follow({ pane: 105, cwd: root, name: "Agent" });
+    p.show();
+    await settle(p);
+    key(p, "tab");
+    key(p, "c");
+    for (const ch of "original checkout") key(p, ch);
+    key(p, "enter");
+    expect(p.noteCount(105)).toBe(1);
+    expect(await p.setFolder(dir)).toBe(true);
+    await settle(p);
+    expect(screen(p, 90, 50).join("\n")).not.toContain("original checkout");
+    const effect = key(p, "y");
+    expect(effect.kind).toBe("copy");
+    if (effect.kind === "copy") expect(effect.text).toContain(root + "/app.ts:");
+  } finally {
+    p.hide();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("opens on all: commits and working copy together", async () => {
   const p = new panel.Panel();
