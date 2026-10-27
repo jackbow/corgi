@@ -161,8 +161,12 @@ and disappear when it exits. The panel reads Git without modifying the
 repository; binary and oversized files show a notice instead of a diff.
 
 Press `r` or click **r folder** to enter a repo or subfolder path. Relative
-paths start at the folder currently shown; a blank path restores the agent's
-folder. The review remembers its chosen folder, position, notes and open/closed
+paths start at the folder currently shown. The field starts unselected, with
+the caret at the end. Type a fuzzy folder name after the last slash; Up/Down
+chooses a suggestion and Tab or Right at the end completes it. Enter opens
+the typed path, or the chosen suggestion. Click a suggestion to complete it.
+A blank path restores the agent's folder. The review remembers its chosen
+folder, position, notes and open/closed
 state for each LLM conversation while the viewer runs, including when that
 conversation resumes in another pane. Changing conversations does not open
 the review for the new conversation. Notes from explicitly chosen repos include
