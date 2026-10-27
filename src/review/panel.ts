@@ -75,6 +75,7 @@ export const min_width = 40;
 const min_diff_rows = 5;
 /** Diffs "All files" reads at once. */
 const parallel_reads = 4;
+const test_path = /(^|\/)(tests?\/|[^/]*\.test\.[^/]*$)/;
 /** Keys under a heading: what each row does, and its keys. */
 type KeyGroup = [string, [string, string][]];
 const key_groups: KeyGroup[] = [
@@ -115,6 +116,7 @@ const key_groups: KeyGroup[] = [
       ["Expand lines", "enter"],
       ["Fold file", "x"],
       ["Hunks / full file", "Z"],
+      ["Show / hide tests", "t"],
       ["Fullscreen", "cmd+shift+enter"],
       ["Wrap", "w"],
       ["Pin review", "p"],
@@ -184,6 +186,7 @@ class Review {
   visible = false;
   fullscreen = false;
   full_context = false;
+  hide_tests = false;
   folder: string | null = null;
   folder_input: textArea.TextArea | null = null;
   folder_error: string | null = null;
@@ -753,7 +756,10 @@ export class Panel {
     return {
       source,
       ...listed,
-      changes: prefix ? listed.changes.filter(ch => inside(ch.path) || (!!ch.from && inside(ch.from))) : listed.changes,
+      changes: listed.changes.filter(
+        ch =>
+          (!prefix || inside(ch.path) || (!!ch.from && inside(ch.from))) && (!r.hide_tests || !test_path.test(ch.path)),
+      ),
     };
   }
   /** Rereads git for the followed pane: its checkout, base, commits, the
@@ -1073,6 +1079,18 @@ export class Panel {
     r.landmark = null;
     void this.refresh();
   }
+  private toggleTests(r: Review): void {
+    r.hide_tests = !r.hide_tests;
+    r.landmark = null;
+    r.tree_top = 0;
+    r.find = null;
+    const now = this.current(),
+      paths = now?.changes.map(ch => ch.path) ?? [],
+      order = this.fileOrder(r, paths, now?.edited ?? null);
+    this.select(r, r.path && paths.includes(r.path) ? r.path : (order[0] ?? null), paths);
+    if (r.all) r.tree_sel = "all";
+    void this.refresh();
+  }
   private pickable(co: Checkout): git.Commit[] {
     return co.commits;
   }
@@ -1357,6 +1375,9 @@ export class Panel {
         r.wrap = !r.wrap;
         r.shift = 0;
         break;
+      case "t":
+        this.toggleTests(r);
+        break;
       case "v":
         r.part = "diff";
         r.anchor = r.anchor === null ? r.cur : null;
@@ -1542,6 +1563,7 @@ export class Panel {
     return a < 0 ? null : [a, b];
   }
   private jumpToNote(r: Review, n: notes.Note): void {
+    if (test_path.test(n.path)) r.hide_tests = false;
     const co = this.checkout();
     if (
       n.root &&
@@ -2081,6 +2103,9 @@ export class Panel {
     for (let i = 0; i < c.w; i++) c.put(i, head + 1, "─", colors.line);
     c.text(1, head + 1, " r folder ", colors.muted);
     c.hit(1, head + 1, 10, 1, { act: () => this.openFolder(r) });
+    const tests_label = r.hide_tests ? " t show tests " : " t hide tests ",
+      tests_end = c.text(11, head + 1, tests_label, r.hide_tests ? colors.strong : colors.muted, null, r.hide_tests);
+    c.hit(11, head + 1, tests_label.length, 1, { act: () => this.toggleTests(r) });
     // How the files are listed, on the rule above them.
     if (listed?.edited && listed.changes.length && !r.tree_hidden) {
       const sorts: ["name" | "edited", string][] = [
@@ -2097,15 +2122,17 @@ export class Panel {
         " sort: ".length -
         " · ".length -
         1;
-      sx = c.text(sx, head + 1, " sort: ", colors.faint);
-      for (const [sort, label] of sorts) {
-        if (sort !== "name") sx = c.text(sx, head + 1, " · ", colors.faint);
-        const on = r.sort === sort,
-          shown = on ? label + arrow : label;
-        c.hit(sx, head + 1, shown.length, 1, { act: () => this.setSort(r, sort) });
-        sx = c.text(sx, head + 1, shown, on ? colors.text : colors.faint, null, on);
+      if (sx > tests_end) {
+        sx = c.text(sx, head + 1, " sort: ", colors.faint);
+        for (const [sort, label] of sorts) {
+          if (sort !== "name") sx = c.text(sx, head + 1, " · ", colors.faint);
+          const on = r.sort === sort,
+            shown = on ? label + arrow : label;
+          c.hit(sx, head + 1, shown.length, 1, { act: () => this.setSort(r, sort) });
+          sx = c.text(sx, head + 1, shown, on ? colors.text : colors.faint, null, on);
+        }
+        c.put(sx, head + 1, " ", colors.line);
       }
-      c.put(sx, head + 1, " ", colors.line);
     }
     let ty = head + 2;
     const changes = listed?.changes ?? [];
@@ -2118,11 +2145,13 @@ export class Panel {
       c.text(
         2,
         ty,
-        r.scope === "all"
-          ? `Nothing changed on ${name} yet.`
-          : r.scope === "uncommitted"
-            ? "No uncommitted changes."
-            : "This commit changed nothing.",
+        r.hide_tests
+          ? "No changes match this view. t shows tests."
+          : r.scope === "all"
+            ? `Nothing changed on ${name} yet.`
+            : r.scope === "uncommitted"
+              ? "No uncommitted changes."
+              : "This commit changed nothing.",
         colors.muted,
       );
       ty += 1;

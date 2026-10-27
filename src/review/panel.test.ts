@@ -147,6 +147,117 @@ test("folder selection validates paths without replacing the current view", asyn
   }
 });
 
+test("test filtering matches only test filenames and test folders and stays with the conversation", async () => {
+  const dir = folderCheckout(),
+    p = new panel.Panel(),
+    hidden = [
+      "unit.test.ts",
+      "src/check.test.py",
+      "test/unit.rb",
+      "tests/integration.ts",
+      "src/nested/tests/helper.ts",
+    ],
+    kept = [
+      "contest/entry.ts",
+      "src/test_helper.py",
+      "src/check.spec.ts",
+      "__tests__/special.ts",
+      "src/WidgetTest.java",
+    ];
+  try {
+    for (const file of [...hidden, ...kept]) {
+      mkdirSync(join(dir, file, ".."), { recursive: true });
+      writeFileSync(join(dir, file), "export const value = 1;\n");
+    }
+    p.tree_rows = 30;
+    p.follow({ pane: 110, conversation: 1010, cwd: dir, name: "Agent" });
+    p.show();
+    await settle(p);
+    const body = () => screen(p, 120, 130).join("\n");
+    for (const file of hidden) expect(body()).toContain(file.split("/").pop()!);
+    key(p, "t");
+    await settle(p);
+    expect(body()).toContain("t show tests");
+    for (const file of hidden) expect(body()).not.toContain(file.split("/").pop()!);
+    for (const file of kept) expect(body()).toContain(file.split("/").pop()!);
+    expect(screen(p, 40, 40).join("\n")).toContain("r folder  t show tests");
+    key(p, "u");
+    await settle(p);
+    for (const file of hidden) expect(body()).not.toContain(file.split("/").pop()!);
+    expect(await p.setFolder("src")).toBe(true);
+    await settle(p);
+    expect(body()).toContain("check.spec.ts");
+    expect(body()).not.toContain("check.test.py");
+    p.hide();
+    p.follow({ pane: 111, conversation: 1011, cwd: dir, name: "Other" });
+    p.show();
+    await settle(p);
+    expect(p.review(111).hide_tests).toBe(false);
+    expect(body()).toContain("unit.test.ts");
+    p.follow({ pane: 110, conversation: 1010, cwd: dir, name: "Agent" });
+    p.show();
+    expect(p.review(110).hide_tests).toBe(true);
+    expect(body()).not.toContain("check.test.py");
+    key(p, "t");
+    await settle(p);
+    expect(body()).toContain("check.test.py");
+  } finally {
+    p.hide();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("filtering a selected test keeps its notes and note navigation reveals it", async () => {
+  const dir = folderCheckout(),
+    p = new panel.Panel();
+  try {
+    const file = "app.test.ts";
+    writeFileSync(join(dir, file), "export const value = 1;\n");
+    p.follow({ pane: 112, conversation: 1012, cwd: dir, name: "Agent" });
+    p.show();
+    await settle(p);
+    const r = p.review(112);
+    r.all = false;
+    r.path = file;
+    r.tree_sel = "f:" + file;
+    await settle(p);
+    key(p, "C");
+    for (const ch of "Keep this note") key(p, ch);
+    key(p, "enter");
+    key(p, "t");
+    await settle(p);
+    expect(r.path).not.toBe(file);
+    expect(r.all).toBe(false);
+    expect(p.noteCount(112)).toBe(1);
+    expect(screen(p).join("\n")).not.toContain(file);
+    key(p, "l");
+    expect(screen(p).join("\n")).toContain(file);
+    key(p, "enter");
+    await settle(p);
+    expect(r.hide_tests).toBe(false);
+    expect(r.path).toBe(file);
+    expect(screen(p).join("\n")).toContain("Keep this note");
+    expect(await p.setFolder("")).toBe(true);
+    expect(await p.setFolder("src/nested")).toBe(true);
+    writeFileSync(join(dir, "src/nested/child.ts"), "before\n");
+    writeFileSync(join(dir, "src/nested/only.test.ts"), "export const test = 1;\n");
+    await settle(p);
+    key(p, "t");
+    await settle(p);
+    expect(r.path).toBeNull();
+    const rows = screen(p);
+    expect(rows.join("\n")).toContain("No changes match this view");
+    const toggle = rows.findIndex(row => row.includes("t show tests"));
+    p.mouse("press", rows[toggle].indexOf("t show tests") + 3, toggle);
+    await settle(p);
+    expect(r.hide_tests).toBe(false);
+    expect(screen(p).join("\n")).toContain("only.test.ts");
+  } finally {
+    p.hide();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("each LLM conversation keeps its own visibility, folder and notes, even when resumed in another pane", async () => {
   const dir = folderCheckout(),
     p = new panel.Panel();
