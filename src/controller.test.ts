@@ -1083,6 +1083,55 @@ test("prefixed arrows walk past the last pane into the review panel, and left go
   }
 });
 
+test("Command shortcuts open review and zoom it without changing pane layout", async () => {
+  const { s, sent } = steering();
+  try {
+    s.prefs.preset = "cmux";
+    s.focusPane(1);
+    await s.input(bytes("\x1b[98;10u"));
+    expect(s.review.open).toBe(true);
+    expect(s.keyboard).toBe("review");
+    const area = s.area();
+    const pane_zoom = s.nav().tab().zoom;
+    await s.input(bytes("\x1b[13;10u"));
+    expect(s.review.fullscreen).toBe(true);
+    expect(s.nav().tab().zoom).toBe(pane_zoom);
+    expect(s.area()).toEqual(area);
+    expect(s.reviewRect()).toMatchObject({ x: 0, y: 0, w: s.width, h: s.height });
+    const terminal = new NativeTerminal(s.width, s.height);
+    try {
+      terminal.feed(s.frame());
+      const body = terminal.text();
+      expect(body).toContain("Review");
+      expect(body).not.toContain("workspaces");
+      expect(body).not.toContain("agents");
+    } finally {
+      terminal.destroy();
+    }
+    await s.input(bytes("\x1b[13;10u"));
+    expect(s.review.fullscreen).toBe(false);
+    await s.input(bytes("\x1b[13;10u"));
+    s.width = 60;
+    expect(s.reviewKeys()).toBe(true);
+    expect(s.frame()).toContain("Review");
+    s.width = 120;
+    await s.input(bytes("\x1b[27u"));
+    expect(s.review.open).toBe(true);
+    expect(s.review.fullscreen).toBe(false);
+    expect(s.keyboard).toBe("pane");
+    await s.input(bytes("\x1b[13;10u"));
+    expect(s.nav().tab().zoom).toBe(!pane_zoom);
+    await s.input(bytes("\x1b[98;10u"));
+    expect(s.keyboard).toBe("review");
+    await s.input(bytes("\x1b[98;10u"));
+    expect(s.review.open).toBe(false);
+    expect(sent).toEqual([]);
+  } finally {
+    s.review.hide();
+    viewer.close(s);
+  }
+});
+
 test("review visibility follows the LLM conversation without taking keyboard focus", async () => {
   const { s } = steering();
   try {

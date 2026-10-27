@@ -194,6 +194,7 @@ export interface Ui {
   workspace_offset: number;
   /** Columns the review panel takes at the right edge; 0 while it is closed. */
   review_width: number;
+  review_fullscreen: boolean;
   /** The row of the rule under the review panel's file list, which drags its height. */
   review_split: number | null;
   /** The review panel has the keyboard, so no pane shows its cursor. */
@@ -263,6 +264,7 @@ export function ui(fields: Partial<Ui> & { message: string; copy_mode: boolean }
     workspaces: [],
     workspace_offset: 0,
     review_width: 0,
+    review_fullscreen: false,
     review_split: null,
     review_focused: false,
     review_keys: false,
@@ -611,6 +613,10 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
   side.focus = u.sidebar_focus;
   side = side.withWorkspaces(u.workspaces.length, u.workspace_offset).withEntries(entries);
   side.corgi_badge = u.corgi_badge;
+  if (u.review_fullscreen) {
+    side.width = 0;
+    side.drawer = null;
+  }
   side.supports_kitty_graphics = u.supports_kitty_graphics;
   side.cell = u.cell_pixels;
   side.scope_label = u.scope_label;
@@ -832,7 +838,10 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
   if (u.supports_kitty_graphics) w.write(rowGlide.hide + linkThumbnail.hide);
   side.draw(w, entries, workspaces);
   if (u.git_hover !== null) sidebar.drawGitAction(w, side, u.workspaces, u.git_hover);
-  if (u.review_draw) u.review_draw(w);
+  if (u.review_draw) {
+    u.review_draw(w);
+    if (u.review_fullscreen) cover(new Rect(0, 0, width, height));
+  }
   if (u.corgi_badge === "image") {
     w.write(side.width > 0 && !badgeCovered(u, side, width, height) ? corgiBadge.place() : corgiBadge.hide);
   }
