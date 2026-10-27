@@ -11,6 +11,8 @@ export interface Note {
   path: string;
   /** Explicit checkout when a review chooses a different folder. */
   root?: string;
+  /** A whole-file comment, without a line range or code snippet. */
+  file?: boolean;
   rev: Rev;
   side: Side;
   start: number;
@@ -46,13 +48,15 @@ export function anchor(diff: FileDiff, rows: Row[]): Pick<Note, "side" | "start"
   };
 }
 export function covers(note: Note, row: Row): boolean {
+  if (note.file) return false;
   const line = lineOn(row, note.side);
   return line !== 0 && line >= note.start && line <= note.end;
 }
 export function location(note: Note): string {
   const range = note.start === note.end ? `${note.start}` : `${note.start}-${note.end}`;
   const at = note.rev.kind === "commit" ? ` in ${note.rev.hash.slice(0, 7)}` : "";
-  return `${note.root ? note.root + "/" : ""}${note.path}:${range}${note.side === "old" ? " (removed)" : ""}${at}`;
+  const path = `${note.root ? note.root + "/" : ""}${note.path}`;
+  return note.file ? `${path} (file)${at}` : `${path}:${range}${note.side === "old" ? " (removed)" : ""}${at}`;
 }
 /** Every note as one block of location, snippet and text, sorted by file
  * and line, a blank line between blocks. Blank lines inside a note's text
@@ -68,7 +72,7 @@ export function format(notes: Note[]): string {
         .map(l => l.trimEnd())
         .filter(l => l.trim().length > 0)
         .join("\n");
-      return `${location(n)}\n${n.snippet}\n${text}`;
+      return n.file ? `${location(n)}\n${text}` : `${location(n)}\n${n.snippet}\n${text}`;
     })
     .join("\n\n")
     .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "\ufffd");

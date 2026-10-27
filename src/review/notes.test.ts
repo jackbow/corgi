@@ -48,3 +48,22 @@ test("a note covers the rows on its side and range", () => {
   };
   expect(d.rows.map(r => notes.covers(note, r))).toEqual([false, false, true, false]);
 });
+
+test("file notes name the checkout and commit without inventing a line or snippet", () => {
+  const note: notes.Note = {
+    id: 1,
+    path: "app.ts",
+    root: "/chosen/repo",
+    file: true,
+    rev: { kind: "commit", hash: "abcdef0123" },
+    side: "new",
+    start: 0,
+    end: 0,
+    snippet: "",
+    text: "Split this module.",
+  };
+  expect(notes.format([note])).toBe("/chosen/repo/app.ts (file) in abcdef0\nSplit this module.");
+  expect(d.rows.some(row => notes.covers(note, row))).toBe(false);
+  expect(notes.inFile(note, "app.ts", note.rev, "/chosen/repo")).toBe(true);
+  expect(notes.inFile(note, "app.ts", note.rev, "/other/repo")).toBe(false);
+});

@@ -124,6 +124,7 @@ const key_groups: KeyGroup[] = [
     [
       ["Select", "v shift+↑↓"],
       ["Comment", "c"],
+      ["Comment on file", "C"],
       ["New line", "shift+enter"],
       ["Edit, delete", "e d"],
       ["Navigation", "n N"],
@@ -159,6 +160,7 @@ const stops = (s: Section) => Math.max(1, s.units.length);
 interface Compose {
   path: string;
   root?: string;
+  file?: boolean;
   rev: notes.Rev;
   side: notes.Side;
   start: number;
@@ -1105,6 +1107,7 @@ export class Panel {
               id: r.seq++,
               path: c.path,
               ...(c.root ? { root: c.root } : {}),
+              ...(c.file ? { file: true } : {}),
               rev: c.rev,
               side: c.side,
               start: c.start,
@@ -1151,6 +1154,11 @@ export class Panel {
       } else if (text === "d" && n) {
         r.notes.splice(r.list.at, 1);
         r.list.at = Math.min(r.list.at, Math.max(0, r.notes.length - 1));
+      } else if (text === "e" && n) {
+        const note = r.notes[r.list.at];
+        this.jumpToNote(r, note);
+        this.editNote(r, note, d, units);
+        r.list = null;
       }
       return { kind: "none" };
     }
@@ -1331,27 +1339,17 @@ export class Panel {
         r.part = "diff";
         if (d && now.change) this.startCompose(r, d, units, now.change.path, revOf(now.source));
         break;
+      case "C":
+        if (now.change) this.startFileCompose(r, now.change.path, revOf(now.source));
+        break;
       case "e": {
-        const n = d ? this.noteAt(r, d, units, now) : null;
-        if (n && d) {
-          const range = this.rangeOf(r, d, units, n) ?? [r.cur, r.cur];
-          r.compose = {
-            path: n.path,
-            ...(n.root ? { root: n.root } : {}),
-            rev: n.rev,
-            side: n.side,
-            start: n.start,
-            end: n.end,
-            snippet: n.snippet,
-            area: new textArea.TextArea(n.text),
-            edit: n.id,
-            range,
-          };
-        } else r.status = { text: "No note on this line. c adds one.", warm: false };
+        const n = this.noteAt(r, d, units, now);
+        if (n) this.editNote(r, n, d, units);
+        else r.status = { text: "No note here. c adds a line note; C a file note.", warm: false };
         break;
       }
       case "d": {
-        const n = d ? this.noteAt(r, d, units, now) : null;
+        const n = this.noteAt(r, d, units, now);
         if (n) {
           r.notes = r.notes.filter(x => x !== n);
           r.status = { text: `Deleted the note on ${notes.location(n)}.`, warm: false };
@@ -1456,12 +1454,46 @@ export class Panel {
     };
     r.anchor = null;
   }
-  private noteAt(r: Review, d: diff.FileDiff, units: diff.Unit[], now: { source: git.Source }): notes.Note | null {
+  private startFileCompose(r: Review, path: string, rev: notes.Rev): void {
+    r.part = "diff";
+    r.anchor = null;
+    r.compose = {
+      path,
+      rev,
+      ...(r.folder ? { root: this.checkout()?.root } : {}),
+      file: true,
+      side: "new",
+      start: 0,
+      end: 0,
+      snippet: "",
+      area: new textArea.TextArea(),
+      edit: null,
+      range: [0, 0],
+    };
+  }
+  private editNote(r: Review, n: notes.Note, d: diff.FileDiff | null, units: diff.Unit[]): void {
+    r.compose = {
+      ...n,
+      area: new textArea.TextArea(n.text),
+      edit: n.id,
+      range: d && !n.file ? (this.rangeOf(r, d, units, n) ?? [r.cur, r.cur]) : [0, 0],
+    };
+  }
+  private noteAt(
+    r: Review,
+    d: diff.FileDiff | null,
+    units: diff.Unit[],
+    now: { source: git.Source },
+  ): notes.Note | null {
     const unit = units[r.cur];
-    if (unit?.kind !== "row" || !r.path) return null;
-    const row = d.rows[unit.row],
-      rev = revOf(now.source);
-    return r.notes.find(n => notes.inFile(n, r.path!, rev, this.checkout()?.root) && notes.covers(n, row)) ?? null;
+    if (!r.path) return null;
+    const rev = revOf(now.source);
+    const matching = r.notes.filter(n => notes.inFile(n, r.path!, rev, this.checkout()?.root));
+    return (
+      (d && unit?.kind === "row" ? matching.find(n => notes.covers(n, d.rows[unit.row])) : null) ??
+      matching.find(n => n.file) ??
+      null
+    );
   }
   private rangeOf(r: Review, d: diff.FileDiff, units: diff.Unit[], n: notes.Note): [number, number] | null {
     let a = -1,
@@ -2235,7 +2267,11 @@ export class Panel {
     c.hit(0, dy, c.w, dh, { wheel: "diff" });
     // A file alone without lines to show says why in a box.
     const ch = now.change;
-    if (!r.all) {
+    if (
+      !r.all &&
+      !r.compose?.file &&
+      !r.notes.some(n => n.file && ch && notes.inFile(n, ch.path, revOf(now.source), now.co.root))
+    ) {
       if (!ch) return;
       if (ch.generated && !r.loaded.has(ch.path))
         return this.notice(
@@ -2326,16 +2362,21 @@ export class Panel {
         heads.set(path, items.length);
         items.push({ kind: "head", s, h: items.length ? 2 : 1 });
       }
+      for (const note of r.notes) {
+        if (note.file && notes.inFile(note, path, rev, now.co.root) && r.compose?.edit !== note.id)
+          items.push({ kind: "note", s, note, h: 2 + wrapText(note.text, box_w - 4).length });
+      }
+      if (r.compose?.file && r.compose.path === path) items.push({ kind: "compose", s, h: 2 + composed.length });
       if (s.collapsed) continue;
       const d = s.d;
       if (!d || s.units.length === 0) {
-        if (r.all) items.push({ kind: "notice", s, h: 1 });
+        items.push({ kind: "notice", s, h: 1 });
         continue;
       }
       const after = new Map<string, notes.Note[]>(),
         lines = new Set<string>();
       for (const n of r.notes) {
-        if (!notes.inFile(n, path, rev, now.co.root) || r.compose?.edit === n.id) continue;
+        if (n.file || !notes.inFile(n, path, rev, now.co.root) || r.compose?.edit === n.id) continue;
         const k = `${n.side}:${n.end}`;
         after.set(k, [...(after.get(k) ?? []), n]);
         for (let line = n.start; line <= n.end; line++) lines.add(`${n.side}:${line}`);
@@ -2360,7 +2401,13 @@ export class Panel {
           if (line === 0) continue;
           for (const n of after.get(`${side}:${line}`) ?? [])
             items.push({ kind: "note", s, note: n, h: 2 + wrapText(n.text, box_w - 4).length });
-          if (r.compose && r.compose.path === path && r.compose.side === side && r.compose.end === line)
+          if (
+            r.compose &&
+            !r.compose.file &&
+            r.compose.path === path &&
+            r.compose.side === side &&
+            r.compose.end === line
+          )
             items.push({ kind: "compose", s, h: 2 + composed.length });
         }
       });
@@ -2406,11 +2453,13 @@ export class Panel {
     const shown = items[first]?.s.change.path,
       shown_head = shown === undefined ? undefined : heads.get(shown);
     r.landmark = shown !== undefined && shown_head !== undefined ? { path: shown, y: ys[shown_head] } : null;
-    const sel = r.compose
-        ? r.compose.range
-        : r.anchor !== null
-          ? [Math.min(r.anchor, r.cur), Math.max(r.anchor, r.cur)]
-          : null,
+    const sel = r.compose?.file
+        ? null
+        : r.compose
+          ? r.compose.range
+          : r.anchor !== null
+            ? [Math.min(r.anchor, r.cur), Math.max(r.anchor, r.cur)]
+            : null,
       sel_path = r.compose ? r.compose.path : r.path;
     for (let i = first; i < items.length && ys[i] < top + dh; i++) {
       const item = items[i],
@@ -2496,7 +2545,9 @@ export class Panel {
       const is_note = item.kind === "note";
       const title = is_note
         ? notes.location(item.note)
-        : `${r.compose!.edit !== null ? "edit note" : "note"} · ${r.compose!.path}:${r.compose!.start}`;
+        : r.compose!.file
+          ? `file note · ${r.compose!.path}`
+          : `${r.compose!.edit !== null ? "edit note" : "note"} · ${r.compose!.path}:${r.compose!.start}`;
       const border = is_note ? colors.line : palette.outline;
       const body = is_note ? wrapText(item.note.text, box_w - 4) : [];
       if (!is_note) this.compose_at = { x: c.x + box_x + 2, y: c.y + y0 + 1, rows: composed.length, w: box_w - 4 };
@@ -2837,6 +2888,7 @@ export class Panel {
     if (r.list)
       return hints([
         ["enter", "jump"],
+        ["e", "edit"],
         ["d", "delete"],
         ["esc", "close"],
       ]);
@@ -2860,7 +2912,23 @@ export class Panel {
     ];
     const close: [string, string] = ["q", "close"];
     if (r.part === "tree" && !r.tree_hidden)
-      return hints([["j/k", "file"], ["enter", "open"], ["tab", "diff"], ["]", "hunk"], send, ["?", "keys"]], close);
+      return hints(
+        [
+          ["j/k", "file"],
+          ["enter", "open"],
+          [
+            "C",
+            "file note",
+            () => {
+              if (now?.change) this.startFileCompose(r, now.change.path, revOf(now.source));
+            },
+          ],
+          ["]", "hunk"],
+          send,
+          ["?", "keys"],
+        ],
+        close,
+      );
     const d = now?.file?.loaded.kind === "diff" ? now.file.loaded.diff : null;
     const units = d && r.path ? this.units(r, d, r.path) : [];
     if (now && r.path && this.isCollapsed(r, now, r.path))
