@@ -245,6 +245,19 @@ test("moving between hover menus starts a new wait and keyboard opening bypasses
   }
 });
 
+test("clicking the text mark opens setup", async () => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.corgi_badge = "mark";
+  s.input_state.attached = true;
+  try {
+    await s.mouse("\x1b[<0;4;1M");
+    expect(s.corgi_setup).not.toBeNull();
+  } finally {
+    viewer.close(s);
+  }
+});
+
 test.each(setupItems.filter(item => item !== "flourishes"))("Escape closes setup from %s", async item => {
   const s = controller();
   s.receiveSnapshot(folders("/a"));

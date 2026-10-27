@@ -6363,7 +6363,7 @@ export class Controller {
     if (this.moonlander) {
       const frame = this.moonlander.frame(this.width, this.height, this.cell_pixels, this.supports_kitty_graphics);
       for (const write of this.moonlander.takeWrites()) this.queueEffect({ write_terminal: write });
-      return corgiBadge.hide + frame;
+      return frame;
     }
     if (this.onboarding) return this.onboarding.frame(this.width, this.height);
     if (this.prefix && this.help_visible) {

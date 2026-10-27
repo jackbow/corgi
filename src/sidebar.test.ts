@@ -784,7 +784,7 @@ test("grouped list draws one-row headers with a margin guide and measures rows p
   // Without Kitty graphics there is no separator; with it, a dotted one under the text.
   expect(has(out, "\x1b[4:4m")).toBe(false);
   const rich = view.clone();
-  rich.corgi_badge = "emoji";
+  rich.corgi_badge = "mark";
   rich.supports_kitty_graphics = true;
   const richOut = draw(rich, entries, []);
   expect(has(richOut, `\x1b[${top + 3};6H\x1b[4:4m`)).toBe(true);

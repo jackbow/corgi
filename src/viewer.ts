@@ -267,7 +267,7 @@ export async function run(
     // The host has not taken the last output yet (a slow SSH link): later
     // frames wait, and the next one written carries all their changes.
     let held = false;
-    probe.badge = new corgiBadge.State(() => view.wake?.());
+    probe.badge = new corgiBadge.State();
     probe.size = new terminal_info.Size();
     writeAll(corgiBadge.query);
     // Measure the host terminal once on attachment.
@@ -317,8 +317,6 @@ export async function run(
         if (query) writeAll(query);
         const cell = probe.size.pixels(size.pty),
           graphics = probe.badge.supports_kitty_graphics && cell !== null;
-        const images = probe.badge.upload(Date.now(), graphics ? cell : null);
-        if (images.length > 0) writeAll(images);
         const badge_mode = probe.badge.mode();
         if (view.supports_kitty_graphics && !graphics) {
           writeAll(rowGlide.hide + linkThumbnail.hide);
@@ -341,11 +339,11 @@ export async function run(
         }
         const cell_changed = view.cell_pixels?.width !== cell?.width || view.cell_pixels?.height !== cell?.height;
         view.cell_pixels = cell;
-        // Sent once the answers and the first image upload have settled.
+        // Sent once the terminal answers and graphics probe have settled.
         if (
           !terminal_sent &&
           probe.info.status === "done" &&
-          (badge_mode === "image" || Date.now() - probed_at > 3000)
+          (probe.badge.status !== "probing" || Date.now() - probed_at > 3000)
         ) {
           terminal_sent = true;
           void publishTerminal(view, connection, probe).catch(() => {});
@@ -469,7 +467,6 @@ export async function run(
       stdin.close();
       waker?.destroy();
       host?.destroy();
-      if (probe.badge.uploaded) writeAll(corgiBadge.remove);
       if (view.thumbnails.sent !== null) writeAll(linkThumbnail.remove);
       writeAll(view.images.clear());
       writeAll(view.tab_icons.clear());

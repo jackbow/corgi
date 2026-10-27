@@ -72,9 +72,9 @@ terminal metadata but do not interpret the new measurements.
 Raster drawing requires Kitty graphics support and a measured cell size.
 Terminal information prefers the terminal's cell-size reply, with PTY pixels
 and a window-size reply as fallbacks, and asks again on resize. Without a usable
-size, the viewer keeps text and emoji fallbacks. The sidebar badge is resized
-with `Bun.Image` and displayed at its native pixel size, like thumbnails and
-tab icons, without terminal-specific scaling commands.
+size, the viewer keeps text and emoji fallbacks. The sidebar uses a theme-colored
+`>_` text mark, independent of graphics support and font size. Thumbnails and tab
+icons display at their native pixel size without terminal-specific scaling commands.
 
 Agent-derived tab labels keep Unicode names, including emoji, while replacing
 terminal controls with printable placeholders. Tabs measure and clip labels in

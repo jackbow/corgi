@@ -83,7 +83,7 @@ export interface Terminal {
   /** The cell in pixels Corgi drew with; null where it had none, or outside a viewer. */
   used: { width: number; height: number } | null;
   graphics: boolean;
-  /** How the sidebar's corgi badge drew: "image", "emoji", "pending" or "none". */
+  /** How the sidebar's corgi badge drew: "mark" or "none"; older viewers used "image", "emoji" or "pending". */
   badge: string;
   colors: terminalPalette.Colors | null;
   tmux: Tmux | null;

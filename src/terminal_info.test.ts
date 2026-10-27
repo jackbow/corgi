@@ -42,19 +42,14 @@ test("badge replies are consumed across fragments but not inside pasted text", (
   const pasted = "\x1b[200~" + reply + "\x1b[201~";
   expect(p.feed(pasted).toString()).toBe(pasted);
 });
-test("graphics replies never leak into input and only matching IDs confirm the badge", async () => {
+test("graphics replies never leak into input and only matching IDs confirm support", () => {
   const p = new terminal_info.Probe();
-  p.badge.accept("\x1b_Gi=730031;OK\x1b\\");
-  p.badge.upload(0, { width: 9, height: 18 });
-  await p.badge.loading;
-  p.badge.upload(0, { width: 9, height: 18 });
-  p.badge.status = "confirming";
   const wrong = "\x1b_Gi=0;OK\x1b\\",
     reply = "\x1b_Gp=1,i=730031;OK\x1b\\";
   expect(fragmented(p, "x" + wrong + "y")).toBe("xy");
-  expect(p.badge.status).toBe("confirming");
+  expect(p.badge.status).toBe("probing");
   expect(fragmented(p, reply + "z")).toBe("z");
-  expect(p.badge.mode()).toBe("image");
+  expect(p.badge.mode()).toBe("mark");
   expect(p.badge.supports_kitty_graphics).toBe(true);
   const pasted = "\x1b[200~" + wrong + "\x1b[201~";
   expect(fragmented(p, pasted)).toBe(pasted);

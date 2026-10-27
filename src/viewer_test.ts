@@ -32,14 +32,8 @@ export async function runTest(connection: Transport, cwd = process.cwd()): Promi
       if (op === "workspace") view.switchWorkspace(typedId(value, "workspace"));
       // The stdio driver has no host terminal to negotiate image support.
       if (op === "badge") {
-        view.corgi_badge = !value.visible
-          ? "none"
-          : value.emoji !== undefined
-            ? value.emoji
-              ? "emoji"
-              : "image"
-            : "image";
-        view.supports_kitty_graphics = view.corgi_badge === "image";
+        view.corgi_badge = value.visible ? "mark" : "none";
+        view.supports_kitty_graphics = !!value.visible && value.emoji !== true;
       }
       if (op === "size") {
         view.width = Number(value.cols);
