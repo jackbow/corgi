@@ -40,6 +40,9 @@ to create it. Missing folders can be created from the folder picker.
 Click a tab, pane or sidebar agent to focus it. Drag split dividers to resize.
 Right-click tabs, panes and agents for their actions; hold Shift when an
 application captures the mouse. Drag workspace or agent rows to reorder them.
+Choose **Move tab to workspace…** on a tab or agent to move its whole tab,
+including splits and running processes, and follow it to the chosen workspace.
+Use Up/Down and Enter, a number key, or a click to choose; Esc goes back.
 Workspace and agent order is shared; rearranging agents does not move panes.
 
 Use **prefix w** to choose a workspace, **prefix a** to choose an agent, and
@@ -190,6 +193,7 @@ IDs from `corgi list`. `current` means the pane running the command, not UI focu
 ```sh
 corgi list
 corgi tab new --workspace 1 --name Tests --command 'bun test src'
+corgi tab move 3 --workspace 2
 corgi pane split current --right
 corgi pane read 3 --lines 100
 corgi pane send 3 --stdin --enter < /path/to/prompt.txt

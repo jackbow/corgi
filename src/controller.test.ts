@@ -39,6 +39,7 @@ function controller(): any {
   });
 }
 const bytes = (text: string) => new TextEncoder().encode(text);
+const c = (text: string) => text.charCodeAt(0);
 
 test.each(["typing", "kitty key", "click", "resize", "flourishes off"])(
   "%s finishes the sign-in exit without swallowing input",
@@ -680,6 +681,103 @@ test("an agent marked unread stays unread in view until focus moves onto it", as
     s.switchWorkspace(2);
     await acknowledged();
     expect(s.marked_unread.size).toBe(0);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test.each(["tab key", "tab click", "agent key"])(
+  "%s moves the clicked tab and follows it to another workspace",
+  async input => {
+    const commands: any[] = [];
+    let snapshot = pair();
+    const s: any = new Controller({
+      socket: "",
+      request: transport(async (op, fields) => {
+        if (op !== "session.command") return snapshot;
+        commands.push(protocol.decode("session.command", fields).command);
+        snapshot = pair();
+        snapshot.workspaces[1].model = snapshot.workspaces[0].model;
+        snapshot.workspaces[0].model = { nodes: [], tabs: [], revision: 1 };
+        snapshot.panes = snapshot.panes.filter(p => p.id !== 3).map(p => ({ ...p, workspace: 2 }));
+        return { result: { pane: 1, workspace: 2 } };
+      }).request,
+    });
+    s.receiveSnapshot(snapshot);
+    s.input_state.attached = true;
+    s.width = 100;
+    s.height = 30;
+    try {
+      // The clicked agent need not be focused or have the tab's ID.
+      if (input === "agent key") await s.openAgentMenu(2, 3, 3);
+      else s.openTabMenu(0, 30);
+      commands.length = 0;
+      await s.key(c("m"));
+      expect(s.tab_menu.destinations).toEqual([{ id: 2, name: "/b" }]);
+      expect(commands).toEqual([]);
+      if (input === "tab click") {
+        const menu = s.tab_menu,
+          b = menu.bounds(100, 30);
+        // Hover is not required before clicking the destination.
+        menu.highlighted = 1;
+        await s.input(bytes(`\x1b[<0;${b.x + 4};${b.y + b.padding + 1}M`));
+      } else await s.key(c("1"));
+      expect(commands).toEqual([{ "tab.move": { target: 1, destination: { workspace: 2 } } }]);
+      expect(s.tab_menu).toBeNull();
+      expect(s.current().id).toBe(2);
+      expect(s.focused().id).toBe(input === "agent key" ? 2 : 1);
+    } finally {
+      viewer.close(s);
+    }
+  },
+);
+
+test("move destinations page, cancel without moving, and disable without another workspace", async () => {
+  const s = controller();
+  s.receiveSnapshot(folders(...Array.from({ length: 12 }, (_, i) => `/workspace-${i}`)));
+  s.height = 12;
+  try {
+    s.openTabMenu(0, 30);
+    await s.key(c("m"));
+    expect(s.tab_menu.destination_capacity).toBe(6);
+    expect(
+      s.tab_menu
+        .entries()
+        .map((e: Row) => e.workspace)
+        .filter(Boolean),
+    ).toEqual([2, 3, 4, 5, 6, 7]);
+    await s.key(c("n"));
+    expect(s.tab_menu.entries()[0].workspace).toBe(8);
+    await s.key(c("p"));
+    expect(s.tab_menu.entries()[0].workspace).toBe(2);
+    await s.key(27);
+    expect(s.tab_menu.destinations).toBeNull();
+    await s.key(27);
+    expect(s.tab_menu).toBeNull();
+    expect(s.current().id).toBe(1);
+    s.receiveSnapshot(folders("/only"));
+    s.openTabMenu(0, 30);
+    expect(s.tab_menu.itemFor(c("m"))).toBeNull();
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a missing destination reports a move failure without changing workspace", async () => {
+  const s: any = new Controller({
+    socket: "",
+    request: transport(async () => {
+      throw Error("NoWorkspace");
+    }).request,
+  });
+  s.receiveSnapshot(folders("/a", "/b"));
+  try {
+    s.openTabMenu(0, 30);
+    await s.key(c("m"));
+    await s.key(c("1"));
+    expect(s.current().id).toBe(1);
+    expect(s.message).toContain("Could not move tab");
+    expect(s.tab_menu).toBeNull();
   } finally {
     viewer.close(s);
   }

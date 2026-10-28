@@ -1195,6 +1195,7 @@ export class Controller {
     this.cancelDividers();
     this.selection = null;
     this.tab_menu = new TabMenu({ tab: this.model().tabs[index].id, anchor_x: x });
+    if (this.runtime.workspaces.items.length < 2) this.tab_menu.off.add("move");
   }
   /** Opens agent pane `id`'s menu. The daemon says whether its agent can
    * be renamed now, and whether it has a conversation to fork. */
@@ -1206,6 +1207,7 @@ export class Controller {
     const p = this.pane(id);
     if (!p) return;
     const opened = new TabMenu({ tab: id, agent: true, anchor_x: x, anchor_y: y });
+    if (this.runtime.workspaces.items.length < 2) opened.off.add("move");
     // Review changes says what it would show: the line read ahead, checked
     // again now, or placeholder bars until git answers.
     this.review_summaries.ask(this.reviewCwd(p));
@@ -1320,6 +1322,51 @@ export class Controller {
   private async tabMenuAction(item: TabMenuItem): Promise<void> {
     const context = this.tab_menu;
     if (!context) return;
+    if (["move", "move-here", "move-next", "move-prev", "move-back"].includes(item)) {
+      if (context.workspace || context.worktree !== null || context.pane) return;
+      const owner = context.agent
+        ? this.runtime.workspaces.owner(context.tab)
+        : this.runtime.workspaces.items.find(ws => ws.model.tabIndex(context.tab) !== null);
+      const index = context.agent ? owner?.model.tabForPane(context.tab) : owner?.model.tabIndex(context.tab);
+      if (!owner || index === null || index === undefined) return this.closeMenu();
+      switch (item) {
+        case "move":
+          const destinations = this.runtime.workspaces.items
+            .filter(ws => ws.id !== owner.id)
+            .map(ws => ({ id: ws.id, name: ws.name }));
+          if (!destinations.length) return;
+          context.destinations = destinations;
+          context.destination_page = 0;
+          context.destination_capacity = Math.max(1, Math.min(9, this.height - 6));
+          break;
+        case "move-next":
+          context.destination_page++;
+          break;
+        case "move-prev":
+          context.destination_page--;
+          break;
+        case "move-back":
+          context.destinations = null;
+          break;
+        case "move-here": {
+          const destination = context.entries()[context.highlighted]?.workspace;
+          if (destination === undefined) return;
+          this.closeMenu();
+          try {
+            const result = await this.execute({
+              "tab.move": { target: owner.model.tabs[index].id, destination: { workspace: destination } },
+            });
+            this.focusPane(context.agent ? context.tab : result.pane);
+          } catch {
+            this.notice(" Could not move tab to workspace");
+          }
+          return;
+        }
+      }
+      context.highlightFirst();
+      this.dirty = true;
+      return;
+    }
     this.closeMenu();
     if (context.worktree !== null) {
       const selection = { workspace: context.tab, path: context.worktree };
@@ -3835,7 +3882,8 @@ export class Controller {
       const context = this.tab_menu;
       switch (byte) {
         case 27:
-          this.closeMenu();
+          if (context.destinations !== null) await this.tabMenuAction("move-back");
+          else this.closeMenu();
           break;
         case 13: {
           const item = context.highlightedItem();
@@ -5193,6 +5241,7 @@ export class Controller {
         this.ui_mouse_down = true;
         const index = context.hit(this.width, this.height, x, y);
         if (index !== null) {
+          context.highlighted = index;
           const item = context.entries()[index].item;
           if (!context.off.has(item)) await this.tabMenuAction(item);
         } else this.closeMenu();
