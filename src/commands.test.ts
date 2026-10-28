@@ -14,12 +14,14 @@ test("menu keys pick the rows each menu shows", () => {
   expect(tab.itemFor(c("n"))).toBe("new");
   expect(tab.itemFor(c("r"))).toBe("rename");
   expect(tab.itemFor(c("x"))).toBe("close");
+  expect(tab.itemFor(c("m"))).toBe("move");
   // Shift picks the same row.
   expect(tab.itemFor(c("R"))).toBe("rename");
   expect(tab.itemFor(c("X"))).toBe("close");
   expect(tab.itemFor(c("v"))).toBeNull();
   const workspace = new TabMenu({ tab: 1, anchor_x: 0, workspace: true });
   expect(workspace.itemFor(c("n"))).toBeNull();
+  expect(workspace.itemFor(c("m"))).toBeNull();
   const pane = new TabMenu({ tab: 1, anchor_x: 0, pane: true });
   expect(pane.itemFor(c("d"))).toBe("split-down");
   expect(pane.itemFor(c("c"))).toBe("clear-name");
@@ -34,6 +36,52 @@ test("menu keys pick the rows each menu shows", () => {
   expect(agent.itemFor(c("u"))).toBe("mark-unread");
   expect(agent.itemFor(c("x"))).toBe("close");
   expect(agent.itemFor(c("n"))).toBeNull();
+  expect(agent.itemFor(c("m"))).toBe("move");
+});
+
+test("workspace destinations keep stable IDs for keys and clicks and page past nine", () => {
+  const menu = new TabMenu({
+    tab: 1,
+    anchor_x: 5,
+    destinations: Array.from({ length: 12 }, (_, i) => ({ id: 100 + i, name: `workspace ${i}` })),
+  });
+  expect(
+    menu
+      .entries()
+      .slice(0, 9)
+      .map(e => e.workspace),
+  ).toEqual([100, 101, 102, 103, 104, 105, 106, 107, 108]);
+  expect(menu.itemFor(c("2"))).toBe("move-here");
+  expect(menu.entries()[menu.highlighted].workspace).toBe(101);
+  const b = menu.bounds(80, 24);
+  expect(menu.hit(80, 24, b.x + 3, b.y + b.padding + 1)).toBe(1);
+  expect(menu.itemFor(c("n"))).toBe("move-next");
+  menu.destination_page = 1;
+  expect(menu.entries().map(e => e.workspace ?? e.item)).toEqual([109, 110, 111, "move-prev", "move-back"]);
+  expect(menu.itemFor(c("3"))).toBe("move-here");
+  expect(menu.entries()[menu.highlighted].workspace).toBe(111);
+  expect(menu.itemFor(c("9"))).toBeNull();
+  expect(menu.itemFor(c("p"))).toBe("move-prev");
+  expect(menu.itemFor(c("b"))).toBe("move-back");
+});
+
+test.each([80, 24])("workspace names fit the move menu at width %s", width => {
+  const menu = new TabMenu({
+    tab: 1,
+    anchor_x: 0,
+    destinations: [{ id: 2, name: "🐕 café workspace with a very long name" }],
+  });
+  const w = new Writer(),
+    terminal = new Terminal(width, 24);
+  try {
+    menu.draw(w, width, 24);
+    terminal.feed(w.buffered());
+    const line = terminal.text().split("\n")[1];
+    expect(line).toContain("🐕 café");
+    expect(line.trimEnd().endsWith("│")).toBe(true);
+  } finally {
+    terminal.destroy();
+  }
 });
 
 test("a worktree group's menu opens on Review changes and keeps Close all below a rule", () => {
@@ -82,7 +130,7 @@ test("crossed-out rows take no key, click or highlight", () => {
     tab: 1,
     anchor_x: 0,
     agent: true,
-    off: new Set(["rename", "fork", "copy-details", "mark-unread", "review"]),
+    off: new Set(["rename", "fork", "copy-details", "mark-unread", "review", "move"]),
   });
   expect(menu.itemFor(c("r"))).toBeNull();
   expect(menu.itemFor(c("f"))).toBeNull();
@@ -92,13 +140,13 @@ test("crossed-out rows take no key, click or highlight", () => {
   // Close sits apart below a rule; the menu never opens on it.
   menu.highlightFirst();
   expect(menu.highlightedItem()).toBeNull();
-  expect(menu.hit(80, 24, 5, 7)).toBeNull();
-  expect(menu.hit(80, 24, 5, 8)).toBe(5);
+  expect(menu.hit(80, 24, 5, 8)).toBeNull();
+  expect(menu.hit(80, 24, 5, 9)).toBe(6);
   menu.move(true);
   expect(menu.highlightedItem()).toBe("close");
   menu.move(true);
   expect(menu.highlightedItem()).toBe("close");
-  menu.off = new Set(["fork", "copy-details", "mark-unread", "review"]);
+  menu.off = new Set(["fork", "copy-details", "mark-unread", "review", "move"]);
   menu.move(false);
   expect(menu.highlightedItem()).toBe("rename");
   menu.move(false);
@@ -109,11 +157,11 @@ test("crossed-out rows take no key, click or highlight", () => {
   expect(w.s).toContain(struck + "Fork");
   expect(w.s).not.toContain(struck + "Rename");
   expect(w.s).toContain(struck + "Mark as unread");
-  expect(w.s).toContain("│  " + "─".repeat(18) + "  │");
+  expect(w.s).toContain("│  " + "─".repeat(26) + "  │");
   // Rows that run show their key as a cap; crossed-out ones show it flat.
   expect(w.s).toContain(keycap + " r ");
   expect(w.s).toContain(new Style({ fg: "faint", bg: "surface" }).sgr() + " f ");
-  expect(w.s).toContain("╭" + "─".repeat(22) + "╮");
+  expect(w.s).toContain("╭" + "─".repeat(30) + "╮");
 });
 
 test("a row with a detail takes two lines, both of them its own", () => {

@@ -4,7 +4,7 @@ import * as dropdown from "./dropdown";
 import * as palette from "./palette";
 import { Style, keycap } from "./palette";
 import type { Direction } from "./layout";
-import { Writer, displayWidth, sat, shortPath } from "./text";
+import { Writer, displayWidth, sat, shortPath, writeEllipsis } from "./text";
 
 /** A resize menu row: the key it shows and the resize a click performs. */
 export interface Entry {
@@ -25,6 +25,11 @@ export type Hit =
 export type Item =
   | "new"
   | "rename"
+  | "move"
+  | "move-here"
+  | "move-next"
+  | "move-prev"
+  | "move-back"
   | "clear-name"
   | "swap"
   | "split-right"
@@ -45,6 +50,7 @@ export interface Row {
   key: string;
   label: string;
   rule: boolean;
+  workspace?: number;
 }
 const row = (item: Item, key: string, label: string, extra: Partial<Row> = {}): Row => ({
   item,
@@ -53,7 +59,12 @@ const row = (item: Item, key: string, label: string, extra: Partial<Row> = {}): 
   rule: false,
   ...extra,
 });
-const actions = [row("new", "n", "New tab"), row("rename", "r", "Rename"), row("close", "x", "Close")];
+const actions = [
+  row("new", "n", "New tab"),
+  row("rename", "r", "Rename"),
+  row("move", "m", "Move tab to workspace…"),
+  row("close", "x", "Close"),
+];
 const pane_actions = [
   row("swap", "s", "Swap with focused pane"),
   row("rename", "r", "Rename pane"),
@@ -69,6 +80,7 @@ const agent_actions = [
   row("mark-unread", "u", "Mark as unread", { rule: true }),
   row("rename", "r", "Rename"),
   row("fork", "f", "Fork"),
+  row("move", "m", "Move tab to workspace…"),
   row("close", "x", "Close", { rule: true }),
 ];
 let border: string;
@@ -113,6 +125,10 @@ export class TabMenu {
   folded = false;
   source: number | null = null;
   highlighted = 0;
+  /** Other workspaces offered for the tab, in pages that fit small terminals. */
+  destinations: { id: number; name: string }[] | null = null;
+  destination_page = 0;
+  destination_capacity = 9;
   /** Rows shown crossed out, which neither keys nor clicks run. */
   off = new Set<Item>();
   /** A second line under a row, such as what Review changes would show. */
@@ -129,6 +145,17 @@ export class TabMenu {
       this.details.set(item, { runs, since: now, placeholder: old.runs === null });
   }
   entries(): Row[] {
+    if (this.destinations !== null) {
+      const first = this.destination_page * this.destination_capacity;
+      const entries = this.destinations
+        .slice(first, first + this.destination_capacity)
+        .map((ws, index) => row("move-here", String(index + 1), ws.name, { workspace: ws.id }));
+      if (first > 0) entries.push(row("move-prev", "p", "Previous workspaces"));
+      if (first + this.destination_capacity < this.destinations.length)
+        entries.push(row("move-next", "n", "More workspaces"));
+      entries.push(row("move-back", "b", "Back", { rule: true }));
+      return entries;
+    }
     if (this.agent) return agent_actions;
     if (this.worktree !== null)
       return [
@@ -139,12 +166,17 @@ export class TabMenu {
         row("close-all", "x", `Close all agents for ${this.title}`, { rule: true }),
       ];
     if (this.pane) return this.source !== null ? pane_actions : pane_actions.slice(1);
-    return this.workspace ? actions.slice(1) : actions;
+    return this.workspace ? actions.filter(entry => entry.item === "rename" || entry.item === "close") : actions;
   }
   /** The row a key picks. Keys are the menu's own, lowercase, and Shift picks the same row. */
   itemFor(key: number): Item | null {
     const lower = String.fromCharCode(key >= 65 && key <= 90 ? key + 32 : key);
-    for (const entry of this.entries()) if (entry.key === lower) return this.off.has(entry.item) ? null : entry.item;
+    for (const [index, entry] of this.entries().entries())
+      if (entry.key === lower) {
+        if (this.off.has(entry.item)) return null;
+        this.highlighted = index;
+        return entry.item;
+      }
     return null;
   }
   /** The highlighted row's item, unless it is crossed out. */
@@ -172,7 +204,7 @@ export class TabMenu {
   labelWidth(): number {
     let widest = 0;
     for (const entry of this.entries()) {
-      widest = Math.max(widest, Buffer.byteLength(entry.label));
+      widest = Math.max(widest, displayWidth(entry.label));
       const detail = this.details.get(entry.item);
       if (detail) widest = Math.max(widest, detailWidth(detail));
     }
@@ -253,9 +285,8 @@ export class TabMenu {
         w.write(`${off ? dim : keycap} ${entry.key} ${row_style} `);
         used += 4;
       }
-      const len = Math.min(entry.label.length, sat(inner, used));
       if (off) w.write(new Style({ fg: "faint", bg: "surface", strike: true }).sgr());
-      w.write(entry.label.slice(0, len));
+      writeEllipsis(w, entry.label, sat(inner, used));
       const detail = this.details.get(entry.item);
       if (detail) {
         // The second line sits under the label, on the row's own background.
