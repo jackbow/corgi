@@ -1,14 +1,14 @@
 # Several workspaces: create, switch, open the editor and chooser, hover.
 key ctrl+b 'N'
 type alpha
-waittext "hold to create"
-holdclicktext "hold to create" 3200
+waittext "create"
+clicktext "create"
 settle
 snap alpha
 key ctrl+b 'N'
 type beta
-waittext "hold to create"
-holdclicktext "hold to create" 3200
+waittext "create"
+key enter
 settle
 snap beta
 key ctrl+b {

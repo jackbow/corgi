@@ -14,8 +14,8 @@ settle
 snap dragged-tab
 key ctrl+b 'N'
 type beta
-waittext "hold to create"
-holdclicktext "hold to create" 3200
+waittext "create"
+clicktext "create"
 settle
 dragtext beta project
 settle

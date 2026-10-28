@@ -748,6 +748,39 @@ test("a new viewer scrolls the agent list where the last one left the same list"
   }
 });
 
+test.each(["enter", "kitty enter", "click"])("one %s creates a workspace from the dialog", async input => {
+  const cwd = realpathSync(tmpdir()),
+    commands: any[] = [];
+  let snapshot = folders("/a");
+  const s = new Controller({
+    socket: "",
+    request: transport(async (op, fields) => {
+      if (op !== "session.command") return snapshot;
+      commands.push(protocol.decode("session.command", fields).command);
+      snapshot = folders("/a", cwd);
+      return { result: { pane: 2, workspace: 2 } };
+    }).request,
+  });
+  s.receiveSnapshot(snapshot);
+  s.input_state.attached = true;
+  s.width = 100;
+  s.height = 30;
+  const d = new newWorkspace.Dialog(newWorkspace.Browser.init(cwd));
+  s.name_dialog = d;
+  try {
+    if (input === "click") {
+      const v = d.view(s.width, s.height)!,
+        button = v.buttons()[0];
+      await s.input(bytes(`\x1b[<0;${button.x + 2};${v.buttons_y + 1}M`));
+    } else await s.input(bytes(input === "enter" ? "\r" : "\x1b[13u"));
+    expect(commands).toEqual([{ "workspace.create": { name: "", cwd } }]);
+    expect(s.current().id).toBe(2);
+    expect(s.name_dialog).toBeNull();
+  } finally {
+    viewer.close(s);
+  }
+});
+
 test("open adds a workspace for a folder no workspace is on", async () => {
   const commands: any[] = [];
   let snapshot = folders("/a");
