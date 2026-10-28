@@ -34,7 +34,7 @@ Even an isolated Corgi environment imports from real source sessions.
 ## Tabs and panes
 
 **prefix c** opens the [agent and terminal picker](agent-launcher.md).
-**prefix N** creates a workspace; choose its name and folder, then hold Enter
+**prefix N** creates a workspace; choose its name and folder, then press Enter
 to create it. Missing folders can be created from the folder picker.
 
 Click a tab, pane or sidebar agent to focus it. Drag split dividers to resize.
