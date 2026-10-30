@@ -52,6 +52,7 @@ test("the block types the chosen prefix and each preset's keys", () => {
         "cmd+comma=text:\\x1b[44;9u",
         "cmd+shift+enter=text:\\x1b[13;10u",
         "cmd+shift+t=text:\\x1b[116;10u",
+        "cmd+shift+a=text:\\x1b[97;10u",
       ],
       absent: ["\\x01", "\\x02"],
     },

@@ -2030,6 +2030,9 @@ export class Controller {
         this.cancelDividers();
         this.dirty = true;
         break;
+      case "toggle-agent-scope":
+        this.setAgentScope(this.prefs.agents === "workspace" ? "all" : "workspace");
+        break;
       case "review":
         this.toggleReview();
         break;

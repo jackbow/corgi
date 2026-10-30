@@ -817,6 +817,37 @@ test("open shows the workspace already on that folder", async () => {
   }
 });
 
+test("Cmd+Shift+A toggles and saves agent scope without changing the selected pane or scroll positions", async () => {
+  const update = spyOn(preferences, "update").mockImplementation(() => {}),
+    s = controller();
+  s.receiveSnapshot(pair());
+  s.input_state.attached = true;
+  s.prefs.preset = "cmux";
+  s.focusPane(1);
+  s.agentOffset().set(3);
+  s.all_offset = 7;
+  const visible = () => s.agentEntries().flatMap((e: sidebar.Entry) => ("pane" in e.target ? [e.target.pane] : []));
+  try {
+    expect(visible()).toEqual([1, 2]);
+    await s.input(bytes("\x1b[97;10u"));
+    expect(s.prefs.agents).toBe("all");
+    expect(visible()).toEqual([1, 2, 3]);
+    expect(update).toHaveBeenLastCalledWith({ agents: "all" });
+    expect(s.agentOffset().get()).toBe(7);
+    expect([s.current().id, s.focused().id]).toEqual([1, 1]);
+    await s.input(bytes("\x1b[65;10u"));
+    expect(s.prefs.agents).toBe("workspace");
+    expect(visible()).toEqual([1, 2]);
+    expect(update).toHaveBeenLastCalledWith({ agents: "workspace" });
+    expect(s.agentOffset().get()).toBe(3);
+    expect(s.all_offset).toBe(7);
+    expect([s.current().id, s.focused().id]).toEqual([1, 1]);
+  } finally {
+    update.mockRestore();
+    viewer.close(s);
+  }
+});
+
 test("a new viewer scrolls the agent list where the last one left the same list", () => {
   const update = spyOn(preferences, "update").mockImplementation(() => {});
   const s = controller();
