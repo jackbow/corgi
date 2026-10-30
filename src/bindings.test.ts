@@ -29,6 +29,14 @@ test("review and focused zoom have Command shortcuts in every preset", () => {
   }
 });
 
+test("Cmd+Shift+A toggles the agent scope in every preset", () => {
+  for (const preset of ["corgi", "tmux", "herdr", "cmux"] as Preset[])
+    for (const codepoint of [97, 65])
+      expect(chord(preset, false, { codepoint, mods: { super: true, shift: true } })).toEqual({
+        name: "toggle-agent-scope",
+      });
+});
+
 test("each action shows its first binding", () => {
   const cases: [Preset, import("./action").Action, number, import("./keyboard").Mods, boolean][] = [
     ["corgi", { name: "new" }, 99, {}, true],

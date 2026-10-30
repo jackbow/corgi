@@ -3,6 +3,9 @@
 A workspace groups tabs and agents around a folder. Its sidebar shows activity,
 optional resource readings and linked Git worktrees.
 
+**Cmd+Shift+A** toggles the agent list between this workspace and all workspaces.
+The selection is remembered across viewer restarts.
+
 ## Follow activity
 
 | Indicator | Meaning |

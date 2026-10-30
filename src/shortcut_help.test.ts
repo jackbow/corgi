@@ -22,6 +22,7 @@ test("the help screen spells each preset's keys from its bindings", () => {
     ["cmux", act("new"), "Cmd+T · P c"],
     ["cmux", act("close-workspace"), "Cmd+Shift+W"],
     ["cmux", act("new-agent"), "P A"],
+    ["cmux", act("toggle-agent-scope"), "Cmd+Shift+A"],
   ] as [Preset, Action, string | null][])
     expect(spelling(preset, action)).toBe(text);
 });

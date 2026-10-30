@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parse } from "./action";
+import { parse, needsPane, title } from "./action";
 test("wire names used by the CLI and the test suites parse", () => {
   expect(parse("split", "down")).toEqual({ name: "split", value: "down" });
   expect(parse("split")).toEqual({ name: "split", value: "right" });
@@ -25,4 +25,11 @@ test("wire names used by the CLI and the test suites parse", () => {
     ["tab", "two", "BadValue"],
   ])
     expect(() => parse(name, value)).toThrow(error);
+});
+
+test("agent scope can be toggled without a pane", () => {
+  const action = parse("toggle-agent-scope");
+  expect(action).toEqual({ name: "toggle-agent-scope" });
+  expect(needsPane(action)).toBe(false);
+  expect(title(action)).toBe("Toggle workspace / all agents");
 });
