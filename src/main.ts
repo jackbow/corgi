@@ -173,6 +173,11 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
     return;
   }
   const alias = providerAlias(os.processArgs(process.pid)?.argv[0] ?? process.argv[0]);
+  if (!alias && (args[0] === "remote" || (args[0] === "help" && args[1] === "remote"))) {
+    const remote = await import("./remote/command");
+    await remote.command(os.socketPath(), executable, args[0] === "help" ? ["help"] : args.slice(1));
+    return;
+  }
   // Agent mode covers the control CLI and help; a provider alias keeps its own flags.
   const choice = agent_mode.flags(args),
     accountHelp =
@@ -208,6 +213,7 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
             : humanHelp + "\n" + commandHelp,
         );
         if (topic[0] === "action") process.stdout.write("\n" + actionNames + "\n");
+        if (!topic.length) process.stdout.write("\nPhone access through Tailscale: corgi remote help\n");
         break;
     }
     return;

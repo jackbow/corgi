@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>Corgi remote</title>
+    <link rel="stylesheet" href="/app.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <h1>Corgi remote</h1>
+      <p>Connect your phone to Tailscale before opening Corgi.</p>
+      <button id="forget" hidden>Forget this phone</button>
+    </header>
+    <p id="status" role="status" aria-live="polite">Connecting…</p>
+    <section id="pairing" hidden>
+      <h2>Pair this phone</h2>
+      <form id="pair">
+        <label>Phone name <input id="name" maxlength="64" required autocomplete="nickname" value="My phone" /></label
+        ><button>Pair</button>
+      </form>
+      <p id="code"></p>
+    </section>
+    <main id="main" hidden>
+      <label
+        >Workspace
+        <select id="workspace"></select></label
+      ><label
+        >Pane
+        <select id="pane"></select
+      ></label>
+      <p id="activity"></p>
+      <pre id="output" tabindex="0" aria-label="Pane output"></pre>
+      <button id="latest">Latest output</button>
+      <form id="send">
+        <label
+          >Message
+          <textarea id="message" rows="3" maxlength="8192" placeholder="Send input to this pane"></textarea></label
+        ><label class="check"><input id="enter" type="checkbox" checked /> Press Enter after message</label
+        ><button>Send</button>
+      </form>
+      <p id="delivery" role="status" aria-live="polite"></p>
+      <nav aria-label="Terminal keys">
+        <button data-key="enter">Enter</button><button data-key="escape">Esc</button><button data-key="tab">Tab</button
+        ><button data-key="up">↑</button><button data-key="down">↓</button><button data-key="left">←</button
+        ><button data-key="right">→</button><button data-key="ctrl+c">Ctrl+C</button>
+      </nav>
+    </main>
+  </body>
+</html>

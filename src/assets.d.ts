@@ -17,3 +17,11 @@ declare module "*.schema" {
 interface JSON {
   rawJSON(text: string): { readonly rawJSON: string };
 }
+declare module "*.css" {
+  const text: string;
+  export default text;
+}
+declare module "*web/app.js" {
+  const text: string;
+  export default text;
+}
