@@ -29,6 +29,9 @@ import * as updates from "./updates";
 import * as importer from "./import_service";
 import * as worktreeAdd from "./worktree_add";
 import { testBuild } from "./build_assets";
+import { Failure } from "./failure";
+import { getLogger } from "./log";
+const log = getLogger("recovery");
 export class Server {
   summaries: SummaryWorker | null = null;
   usage: UsageWorker | null = null;
@@ -63,6 +66,8 @@ export class Server {
   private savedDurable = 0n;
   private durableAt = 0;
   private lastRecovery = 0;
+  private recoveryPending = false;
+  private recoveryFailure = new Failure();
   private workspaceWrites: Promise<void> = Promise.resolve();
   private collecting = false;
   private collected = -Infinity;
@@ -450,15 +455,27 @@ export class Server {
     launch.sample(this);
     for (const c of this.clients) launch.publish(this, c);
     telemetry.end("daemon.launcher", launcher_started);
-    if (this.savedDurable !== this.runtime.durable) {
+    if (!this.recoveryPending && this.savedDurable !== this.runtime.durable) {
       if (!this.durableAt) this.durableAt = now;
       if (now - this.durableAt >= 2000 || now - this.lastRecovery >= 10000) {
         const recovery_started = telemetry.begin();
-        await recovery.save(this.runtime, this.socket);
-        telemetry.end("daemon.recovery", recovery_started);
-        this.savedDurable = this.runtime.durable;
-        this.lastRecovery = now;
-        this.durableAt = 0;
+        const durable = this.runtime.durable;
+        this.recoveryPending = true;
+        void recovery.save(this.runtime, this.socket).then(
+          () => {
+            this.savedDurable = durable;
+            this.lastRecovery = now;
+            this.durableAt = 0;
+            this.recoveryFailure.clear();
+            this.recoveryPending = false;
+            telemetry.end("daemon.recovery", recovery_started);
+          },
+          error => {
+            this.recoveryPending = false;
+            telemetry.end("daemon.recovery", recovery_started);
+            if (this.recoveryFailure.changed(error)) log.warn("Recovery save failed", { err: error });
+          },
+        );
       }
     }
     this.publish();
@@ -679,9 +696,10 @@ export class Server {
         return;
       }
       case "recovery.save": {
-        const recovery = await import("./persist/recovery");
-        await recovery.save(this.runtime, this.socket);
-        reply.send({ ok: true, path: recovery.path(this.socket) });
+        this.defer(cl, reply, null, async () => {
+          await recovery.save(this.runtime, this.socket);
+          return { path: recovery.path(this.socket) };
+        });
         return;
       }
       case "headless.start":

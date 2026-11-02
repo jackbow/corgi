@@ -8,6 +8,7 @@ import {
   readdirSync,
   symlinkSync,
   statSync,
+  promises as fs,
 } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
@@ -21,6 +22,103 @@ import { failure } from "../state_report";
 import * as json from "../json";
 import * as checkpoint from "./checkpoint";
 import * as recovery from "./recovery";
+
+test("recovery saves yield during disk IO and commit captured snapshots in order", async () => {
+  const root = mkdtempSync(join(tmpdir(), "corgi-recovery-async-")),
+    prior = process.env.XDG_STATE_HOME,
+    socket = join(root, "control.sock"),
+    entered = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>(),
+    rename = fs.rename,
+    open = fs.open;
+  process.env.XDG_STATE_HOME = root;
+  using r = new Runtime();
+  const observed: number[] = [],
+    renamed = spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      observed.push(json.parse(readFileSync(from, "utf8")).revision);
+      return rename(from, to);
+    }),
+    held = spyOn(fs, "open").mockImplementation(async (path, flags, mode) => {
+      const file = await open(path, flags, mode);
+      if (path === dirname(recovery.path(socket))) {
+        const sync = file.sync.bind(file);
+        spyOn(file, "sync").mockImplementation(async () => {
+          entered.resolve();
+          await release.promise;
+          return sync();
+        });
+      }
+      return file;
+    });
+  let first: Promise<void> | undefined, second: Promise<void> | undefined;
+  try {
+    r.revision = 1n;
+    first = recovery.save(r, socket);
+    await entered.promise;
+    r.revision = 2n;
+    let saved = false;
+    second = recovery.save(r, socket).then(() => {
+      saved = true;
+    });
+    r.revision = 3n;
+    // The event loop stays available while the first write is held.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(saved).toBe(false);
+    expect(observed).toEqual([1]);
+    release.resolve();
+    await Promise.all([first, second]);
+    expect(observed).toEqual([1, 2]);
+    expect(json.parse(readFileSync(recovery.path(socket), "utf8")).revision).toBe(2);
+    expect(statSync(recovery.path(socket)).mode & 0o777).toBe(0o600);
+    expect(statSync(dirname(recovery.path(socket))).mode & 0o777).toBe(0o700);
+    expect(readdirSync(dirname(recovery.path(socket)))).toEqual([recovery.path(socket).split("/").at(-1)!]);
+  } finally {
+    release.resolve();
+    await Promise.allSettled([first, second]);
+    held.mockRestore();
+    renamed.mockRestore();
+    if (prior === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = prior;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("a failed recovery save cleans its temp file and does not poison later saves", async () => {
+  const root = mkdtempSync(join(tmpdir(), "corgi-recovery-async-")),
+    prior = process.env.XDG_STATE_HOME,
+    socket = join(root, "control.sock");
+  process.env.XDG_STATE_HOME = root;
+  using r = new Runtime();
+  const rename = spyOn(fs, "rename").mockRejectedValueOnce(Error("DiskFailure"));
+  try {
+    await expect(recovery.save(r, socket)).rejects.toThrow("DiskFailure");
+    expect(readdirSync(dirname(recovery.path(socket)))).toEqual([]);
+    rename.mockRestore();
+    await recovery.save(r, socket);
+    expect(json.parse(readFileSync(recovery.path(socket), "utf8")).version).toBe(checkpoint.version);
+  } finally {
+    rename.mockRestore();
+    if (prior === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = prior;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("recovery saves reject an unsafe parent directory", async () => {
+  const root = mkdtempSync(join(tmpdir(), "corgi-recovery-async-")),
+    prior = process.env.XDG_STATE_HOME,
+    socket = join(root, "control.sock");
+  process.env.XDG_STATE_HOME = root;
+  using r = new Runtime();
+  try {
+    const parent = dirname(recovery.path(socket));
+    mkdirSync(parent, { recursive: true, mode: 0o755 });
+    await expect(recovery.save(r, socket)).rejects.toThrow("UnsafeSocketDirectory");
+    expect(readdirSync(parent)).toEqual([]);
+  } finally {
+    if (prior === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = prior;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("atomic writes avoid stale temp collisions and preserve private permissions", () => {
   const root = mkdtempSync(join(tmpdir(), "corgi-atomic-review-")),

@@ -6,6 +6,7 @@ import { Launch, Pane } from "./runtime";
 import { Terminal } from "./pane/terminal";
 import { Workspace } from "./workspace";
 import * as handoff from "./persist/handoff";
+import * as recovery from "./persist/recovery";
 import * as json from "./json";
 import * as protocol from "./protocol";
 import * as session from "./session";
@@ -22,6 +23,90 @@ function fixture() {
     },
   };
 }
+test("background recovery leaves the command queue free and only marks its captured revision saved", async () => {
+  const { server, dispose } = fixture(),
+    first = Promise.withResolvers<void>(),
+    save = spyOn(recovery, "save").mockReturnValueOnce(first.promise).mockResolvedValue(undefined),
+    collect = () => Reflect.get(server, "collect").call(server);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    let responsive = false;
+    (server as any).enqueue(collect);
+    (server as any).enqueue(async () => {
+      responsive = true;
+    });
+    await Promise.race([
+      (server as any).jobs,
+      new Promise(resolve => {
+        timer = setTimeout(resolve, 1000);
+      }),
+    ]);
+    expect(responsive).toBe(true);
+    expect(save).toHaveBeenCalledTimes(1);
+    const captured = server.runtime.durable;
+    server.runtime.wrote();
+    await collect();
+    expect(save).toHaveBeenCalledTimes(1);
+    first.resolve();
+    await new Promise(resolve => setImmediate(resolve));
+    expect(Reflect.get(server, "savedDurable")).toBe(captured);
+    expect(server.runtime.durable).not.toBe(captured);
+    Reflect.set(server, "lastRecovery", 0);
+    await collect();
+    expect(save).toHaveBeenCalledTimes(2);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(Reflect.get(server, "savedDurable")).toBe(server.runtime.durable);
+  } finally {
+    clearTimeout(timer);
+    first.resolve();
+    await (server as any).jobs;
+    save.mockRestore();
+    dispose();
+  }
+});
+test("explicit recovery replies only after the write finishes without holding other commands", async () => {
+  const { server, dispose } = fixture(),
+    client = server.addClient(-1, false),
+    saved = Promise.withResolvers<void>(),
+    save = spyOn(recovery, "save").mockReturnValue(saved.promise),
+    replies = spyOn(client, "queue").mockImplementation(() => {}),
+    done = spyOn(client, "done").mockImplementation(() => {});
+  try {
+    await server.request(client, { ...protocol.envelope("recovery.save"), request_id: 1 });
+    expect(replies).not.toHaveBeenCalled();
+    await server.request(client, { ...protocol.envelope("ping"), request_id: 2 });
+    expect(replies).toHaveBeenCalledTimes(1);
+    saved.resolve();
+    await new Promise(resolve => setImmediate(resolve));
+    expect(replies.mock.calls.at(-1)).toEqual([{ ok: true, path: recovery.path(server.socket), request_id: 1 }]);
+  } finally {
+    saved.resolve();
+    await new Promise(resolve => setImmediate(resolve));
+    save.mockRestore();
+    replies.mockRestore();
+    done.mockRestore();
+    dispose();
+  }
+});
+test("shutdown waits for the final recovery write before destroying the runtime", async () => {
+  const { server } = fixture(),
+    saved = Promise.withResolvers<void>(),
+    save = spyOn(recovery, "save").mockReturnValue(saved.promise),
+    destroy = spyOn(server.runtime, "destroy");
+  const shutdown = server.shutdown();
+  try {
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(destroy).not.toHaveBeenCalled();
+    saved.resolve();
+    await shutdown;
+    expect(destroy).toHaveBeenCalledTimes(1);
+  } finally {
+    saved.resolve();
+    await shutdown;
+    save.mockRestore();
+    destroy.mockRestore();
+  }
+});
 test("session snapshots are shared by subscribers and skipped without them", () => {
   const { server, dispose } = fixture(),
     snapshot = spyOn(session, "snapshot"),

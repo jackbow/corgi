@@ -1,4 +1,6 @@
-import { readFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { readFileSync, unlinkSync, promises as fs } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { Runtime } from "../runtime";
 import { atomicWrite } from "../os";
@@ -15,10 +17,44 @@ export function path(socket: string): string {
     socket === standard ? "recovery.json" : `runtime-${Bun.hash.wyhash(socket, 0n).toString(16)}.json`,
   );
 }
+const writes = new Map<string, Promise<void>>();
 export async function save(r: Runtime, socket: string): Promise<void> {
-  const dest = path(socket);
-  mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
-  atomicWrite(dest, json.stringify(checkpoint.capture(r, false)));
+  // Capture before yielding: later mutations belong to the next save.
+  const dest = path(socket),
+    bytes = json.stringify(checkpoint.capture(r, false));
+  const pending = (writes.get(dest) ?? Promise.resolve()).catch(() => {}).then(() => write(dest, bytes));
+  writes.set(dest, pending);
+  const release = () => {
+    if (writes.get(dest) === pending) writes.delete(dest);
+  };
+  void pending.then(release, release);
+  return pending;
+}
+async function write(dest: string, bytes: string): Promise<void> {
+  const parent = dirname(dest);
+  await fs.mkdir(parent, { recursive: true, mode: 0o700 });
+  const stat = await fs.lstat(parent);
+  if (stat.uid !== (process.getuid?.() ?? userInfo().uid) || !stat.isDirectory() || (stat.mode & 0o077) !== 0)
+    throw Error("UnsafeSocketDirectory");
+  const temp = `${dest}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    const file = await fs.open(temp, "wx", 0o600);
+    try {
+      await file.writeFile(bytes);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await fs.rename(temp, dest);
+    const directory = await fs.open(parent, "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+  } finally {
+    await fs.unlink(temp).catch(() => {});
+  }
 }
 /** Where the daemon records a load that repaired the saved session, for the next viewer to report. */
 const repairedPath = (socket: string) => `${path(socket)}.repaired.json`;
