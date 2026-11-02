@@ -85,7 +85,7 @@ pub const Terminal = struct {
         vt.sys.decode_png = graphics.decodePng;
         const t = try a.create(Terminal);
         errdefer a.destroy(t);
-        t.* = .{ .vt = try vt.Terminal.init(os.io(), a, .{ .cols = @max(1, cols), .rows = @max(1, rows), .max_scrollback_bytes = 10_000, .kitty_image_loading_limits = .{ .file = true, .temporary_file = .disabled, .shared_memory = false } }), .stream = undefined, .surface_identity = os.random.int(u64) };
+        t.* = .{ .vt = try vt.Terminal.init(os.io(), a, .{ .cols = @max(1, cols), .rows = @max(1, rows), .default_modes = .{ .grapheme_cluster = true }, .max_scrollback_bytes = 10_000, .kitty_image_loading_limits = .{ .file = true, .temporary_file = .disabled, .shared_memory = false } }), .stream = undefined, .surface_identity = os.random.int(u64) };
         t.vt.width_px = @as(u32, t.vt.cols) * 8;
         t.vt.height_px = @as(u32, t.vt.rows) * 16;
         // Answer OSC 10/11 even before a client supplies its host theme. These
