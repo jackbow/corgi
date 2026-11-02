@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import { mkdirSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
+import * as translations from "./scripts/translations";
 const root = import.meta.dir;
 function option(name: string, fallback = ""): string {
   const args = process.argv.slice(2),
@@ -23,7 +24,7 @@ function gitCommit(): string {
 }
 const buildTarget = option("target", `${process.platform}-${process.arch}`),
   [platform, arch] = buildTarget.split("-");
-if (!["linux-x64", "darwin-arm64", "darwin-x64"].includes(buildTarget))
+if (!["linux-x64", "linux-arm64", "darwin-arm64", "darwin-x64"].includes(buildTarget))
   throw Error(`Unsupported target: ${buildTarget}`);
 const nativeRoot = option(
   "native-root",
@@ -46,6 +47,11 @@ if (!existsSync(`${root}/node_modules/@earendil-works/pi-tui`)) {
   });
   process.exit(await again.exited);
 }
+// After the install above, so a fresh checkout reports once, and before the native build, which a
+// failure skips. Locally it may regenerate src/i18n.generated.ts; its report prints on any exit.
+const translated = await translations.verify();
+process.on("exit", () => process.stderr.write(translated.text));
+if (translated.code) process.exit(translated.code);
 const args = [`${root}/scripts/zig`, "build", "--build-file", `${root}/native/build.zig`, "-Doptimize=ReleaseFast"];
 // An explicit --target builds for the oldest systems a release supports, not this machine.
 if (process.argv.slice(2).some(arg => arg === "--target" || arg.startsWith("--target=")))
@@ -54,10 +60,12 @@ if (process.argv.slice(2).some(arg => arg === "--target" || arg.startsWith("--ta
   );
 args.push("--prefix", nativeRoot);
 const sysroot = option("sysroot", process.env.CORGI_PROBE_SYSROOT ?? "");
-if (sysroot) args.push("--sysroot", sysroot);
+if (sysroot) args.push("--sysroot", sysroot, `-Dsysroot=${sysroot}`);
 if (!process.argv.includes("--no-native")) {
   const native = Bun.spawn(args, { stdout: "inherit", stderr: "inherit" });
-  if (await native.exited) throw Error("Native build failed");
+  // Zig has already said why.
+  const status = await native.exited;
+  if (status) process.exit(status);
 }
 if (process.argv.includes("--native-only")) process.exit(0);
 mkdirSync(`${root}/dist`, { recursive: true });

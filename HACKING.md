@@ -2,7 +2,7 @@
 
 ## Get running
 
-Install Bun and use the pinned Zig 0.16.0 wrapper, `./scripts/zig`.
+Install Bun. `./scripts/zig` downloads the pinned Zig 0.17.0 on first use.
 Start in an isolated environment:
 
 ```sh
@@ -22,6 +22,14 @@ Inside a named environment it keeps that environment. Run environment-switching
 commands from an outer terminal; `./go.ts --help` describes the options.
 
 ## Architecture
+
+For user-facing text, see [the translation workflow](locales/README.md).
+`bun run i18n extract` updates the four language catalogs; `bun run i18n
+generate` refreshes the committed runtime and installer output. While you
+hack, builds and typechecks regenerate that output themselves and only warn
+about missing translations, which show in English. Handle them before you
+publish a PR: CI builds and typechecks with `--ci` (implied by `CI=1` or `CI=true`),
+which fails on them.
 
 The daemon owns processes, PTYs, workspaces and conversations. Viewers compose
 the UI from snapshots and terminal surfaces; each keeps its own focus, menus,
@@ -81,12 +89,38 @@ terminal controls with printable placeholders. Tabs measure and clip labels in
 Ghostty display cells, keeping combining marks with their base character.
 This is display-only; saved-name rules and wire formats are unchanged.
 
+Workspace star bindings survive live handoff so a replacement conversation
+cannot inherit the previous one's star during startup. Cold recovery omits
+these process bindings. The optional checkpoint field `star_bindings` defaults
+to an empty list for older state; checkpoint 6 and runtime protocol 3 are
+unchanged, with no migration needed.
+
 The binary bundles two native shared libraries: `corgi_term` owns Ghostty
 terminal emulation, rendering, frame diffs and input encoding; `corgi_system`
 owns POSIX/PTY helpers, process inspection, resource sampling, descriptor
 readiness and crash reporting. Loading the system library does not initialize
 crash reporting; the application enables it explicitly. `pty-exec` and
 `corgi-hook` remain separate helper executables.
+
+The viewer's [composition](src/composition.ts) keeps pane surfaces as native
+terminal references while TypeScript draws the surrounding UI. The native
+differ combines that UI with retained pane cells and emits changed cell spans.
+TypeScript redraws the current UI for each presentation; exact byte comparison
+lets unchanged chrome skip native replay. The differ tracks pane identity,
+geometry and row revisions, compares damaged cells exactly, and owns the previous
+displayed rows, including graphemes and links. Current Ghostty cells are borrowed
+only during the synchronous call; no borrowed pane page pins survive it. Overlaps,
+selections, pane images and unsupported clipping use the complete ANSI frame
+as a fallback.
+
+Surface rows cross the in-process FFI boundary as positioned ANSI bytes and
+scalar input modes, avoiding another JSON encode/decode. The mirror compares
+canonical incoming row strings and installs only changed rows; cursor and input
+modes travel separately. Per-terminal row revisions accumulate across updates,
+and each differ keeps its own receipts. The daemon/viewer wire format and saved
+terminal formats remain unchanged. Screen observers reuse a
+terminal's live text until its native revision changes, while their status
+confirmation and time-based transitions continue on every observation pass.
 
 ## Build, test and format
 
@@ -109,6 +143,30 @@ If a parallel integration suite fails, rerun it with `--jobs 1` first.
 deterministic waiting. [evals/README.md](evals/README.md) covers activity-summary
 evals; live model checks consume provider usage.
 
+The landing page's “Works with” badges live in `site/index.html`, with icons
+in `site/icons/`. Keep them on one row on mobile; `omp` uses the short command
+name. Build with `bun run landingpage:build` and preview with
+`bun run landingpage:start`.
+
+The site serves `/en/`, `/zh/`, `/ja/`, `/ko/` and `/ru/`, with a saved
+language picker and browser-language detection at `/`. Its interactive
+panels use the application's translations; recordings use the same renderer
+in each language. Site translation work is opt-in and never runs in the
+application's normal translation, build or typecheck loop:
+
+```sh
+bun run i18n extract --site
+# Translate new entries in site/locales/{zh,ja,ko,ru}.json.
+bun run i18n generate --site
+bun tools/site_frames.ts --all-languages
+```
+
+`bun run i18n check --site` validates site messages and
+`bun tools/site_frames.ts --all-languages --check` rejects stale recordings.
+A separate CI job runs these, the site tests and the static site build.
+Record just one locale with `--language ja` while iterating. Each built page
+contains only its own recordings; `site/.generated/` remains disposable.
+
 ## Try the UI
 
 ```sh
@@ -125,6 +183,47 @@ and records screens. It uses `dist/corgi`, so rebuild first. Scripts live in
 [tools/ui_scenarios/](tools/ui_scenarios/) and use the `.scenario` extension.
 The command reference is at the top of the driver. Use
 [UI tokens and rules](docs/ui_styleguide.md) for visual work.
+
+For PNG screenshots, use a live Ghostty window on a private Xvfb display:
+
+```sh
+bun tools/ghostty_screenshot.ts --sandbox review -o /tmp/review.png
+bun tools/ghostty_screenshot.ts --do 'corgi action help' -o /tmp/help.png
+```
+
+Install Ghostty, Xvfb, xdotool and ffmpeg first (`sudo apt install xvfb xdotool
+ffmpeg` on Ubuntu, plus Ghostty). `GHOSTTY_BIN` selects another Ghostty build.
+The tool uses software GL and captures the window at native resolution, keeping
+Ghostty's font shaping, box drawing, colors and Kitty images. Use `--size 110x32`
+and `--font-size 16` to control the capture; no image scaling is applied.
+The UI driver's cell dumps are useful for assertions, but repainting them into
+SVG, canvas or another terminal renderer does not produce a faithful screenshot.
+
+Each capture owns a disposable sandbox, Ghostty process and X display, and
+removes them on success or failure. `--do` steps run after the viewer attaches;
+they receive `corgi` on PATH and `DISPLAY` / `GHOSTTY_WINDOW` for xdotool. For
+repeatable screenshot sets, import `capture` with a `prepare` callback to set up
+the sandbox and a `drive` callback to send keys, move the mouse and save images.
+
+To drive a sandbox step by step and take screenshots when you want them, keep
+a session running:
+
+```sh
+bun tools/ghostty_screenshot.ts serve --sandbox review > /tmp/serve.log &
+SESSION=/tmp/corgi-ghostty-…           # the directory on the log's first line, "session DIR"
+$SESSION/bin/corgi action review       # the sandbox's corgi, over its socket
+$SESSION/bin/screenshot -o /tmp/review.png
+bun tools/ghostty_screenshot.ts stop
+```
+
+`. $SESSION/env.sh` puts `corgi` and `screenshot` on PATH and sets
+`CORGI_SOCKET`, `DISPLAY` and `GHOSTTY_WINDOW`, so xdotool can send keys and
+clicks too. `shot` and `stop` find the session from `--session`,
+`$CORGI_CAPTURE_SESSION` or, when only one is running, by themselves. The
+session cleans up when stopped, on SIGINT or SIGTERM, or when Ghostty exits.
+
+Inspect regenerated PNGs before committing them. This runs on Linux directly
+or in a container with the dependencies installed.
 
 ## Reload, restart and recovery
 
@@ -166,6 +265,17 @@ version to change. Defaulted fields can be compatible, but `session.command`
 rejects unknown nested fields: changing its payload also affects old clients.
 Unversioned requests cannot rely on a version handshake for compatibility.
 
+Code kept only for older peers or saved formats until a version changes is
+marked `XXX: Remove for next protocol bump.`, with the reason after it. Before
+bumping any protocol or saved-format version, run
+`git grep -n "XXX: Remove for next"` and remove what the bump makes
+unnecessary.
+
+Adding a provider changes no version. The schemas say `provider` for a
+provider's name and `{provider}` for a record keyed by one, and each peer
+parses names at its boundary: a viewer reads a provider it doesn't know as
+none, and the daemon ignores one in a per-provider record.
+
 `hello` and `server.reload` use management protocol 1, checked independently of
 the runtime version. Keep their request and reply shapes compatible so a new
 client can discover and replace an older daemon. No protocol fallback is needed.
@@ -173,6 +283,54 @@ client can discover and replace an older daemon. No protocol fallback is needed.
 `protocol` advertises the server's runtime version. Only a matching runtime
 version negotiates ordinary requests on that connection. Management requests
 always carry their own version, even on a negotiated connection.
+
+Runtime protocol 4 lets a request carry a positive safe-integer `request_id`,
+which the daemon echoes on its success or error reply. Tagged replies can
+arrive out of order: a branch listing or worktree addition answers after
+requests sent later. `rpc.Connection` tags by default and fails the
+connection on an untagged reply; subscription events remain untagged. With
+`requestIds: false` it sends one untagged request at a time, as `hello`,
+`server.reload` and the CLI do. Unversioned CLI controls such as `focus` and
+`workspace.switch` still accept replies from older daemons.
+
+Each viewer keeps two daemon connections in `viewer_connection.ts`. The control
+connection owns the viewer, commands, pane input, metadata and launcher/history
+subscriptions. The data connection carries surfaces, images, searches and wake
+notifications. Both use `rpc.Connection`, which delivers untagged subscription
+events separately from correlated replies. Changing folders replaces the launcher
+subscription on the control connection and keeps the history subscription.
+
+The control connection sends `viewer.sync` with `surfaces: false`; after it updates
+the viewer's interests, `viewer.surfaces` reads the corresponding frames on the
+data connection. `viewer.watch` associates that connection with the existing viewer,
+so pane sizing, focus and activity still belong to one viewer. If a watch is refused
+or the data connection closes, content reads use the control connection until a
+later sync attaches the data connection again. Interrupted content reads retry on
+control; commands are never replayed. Surface receipts and frame diffs keep their
+existing behavior.
+The new operation and defaulted `surfaces` flag are additive: runtime protocol 4
+and viewer protocol 3 are unchanged, and older callers still receive surfaces from
+`viewer.sync`. Handoff already saves
+both connections and their association; no saved-format change or migration is needed.
+
+The id is optional, so a script can speak plain JSON lines or HTTP `POST`.
+Requests without one are answered in the order they were sent; a slow request
+holds that connection's later ones until it replies. Older runtime protocols
+are rejected, without a serial fallback.
+
+Discovery and replacement use one untagged management request per connection,
+so `hello` and `server.reload` can still upgrade an older daemon. Startup probes
+with `hello` before deciding whether a daemon needs to be started. One-shot
+unversioned requests, including `ping` and `shutdown`, and bug-report queries
+also omit ids so older daemons can answer. Management protocol 1 and viewer
+protocol 3 are unchanged.
+
+Reload returns `ReloadBusy` while a worktree addition is still running, with
+`busy` naming it (`{"op": "worktree.add", "path": …}`). Retry
+after it finishes; worktree mutations are never replayed. A branch listing still
+running is answered with `Reloading` and dropped. Handoff
+retains the reload request id and pending headless-start ids as optional fields
+defaulting to null, so the saved-format versions are unchanged.
 
 For saved data, a defaulted addition needs an updated schema snapshot; a rename,
 removal or change of meaning needs a migration:

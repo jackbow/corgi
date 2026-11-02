@@ -1,9 +1,17 @@
 import { test, expect, spyOn } from "bun:test";
-import { actionNames, failure, providerAlias, paneId, run, say } from "./main";
+import { actionNames, ensureServer, failure, providerAlias, paneId, run, say } from "./main";
 import { specs } from "./action";
 import * as rpc from "./rpc";
-import { readFileSync, realpathSync } from "node:fs";
-import { resolve, dirname, relative } from "node:path";
+import * as crash from "./crash";
+import * as updates from "./updates";
+import * as integration from "./integration";
+import * as accountCommand from "./account_command";
+import * as protocol from "./protocol";
+import * as errors from "./errors";
+import { existsSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join, resolve, dirname, relative } from "node:path";
 test("provider named launchers use their original argv0", () => {
   expect(providerAlias("/tmp/codex")).toBe("codex");
   expect(providerAlias("/tmp/claude")).toBe("claude");
@@ -18,10 +26,35 @@ test("pane environment IDs use the source unsigned integer boundary", () => {
 });
 test("runtime protocol errors are distinct from viewer incompatibility", () => {
   const runtime = failure(["dev"], Error("UnsupportedProtocol"));
-  expect(runtime).toContain("runtime protocol 3");
+  expect(runtime).toContain(`runtime protocol ${protocol.version}`);
   expect(runtime).not.toContain("viewer protocol");
-  expect(failure(["dev"], Error("UnsupportedViewerProtocol"))).toContain("viewer protocol 3");
-  expect(failure(["reload"], Error("UnsupportedManagementProtocol"))).toContain("management protocol 1");
+  expect(failure(["dev"], Error("UnsupportedViewerProtocol"))).toContain(`viewer protocol ${protocol.viewer_version}`);
+  expect(failure(["reload"], Error("UnsupportedManagementProtocol"))).toContain(
+    `management protocol ${protocol.management_version}`,
+  );
+});
+test("a busy reload says what it waits for", () => {
+  const busy = errors.fromReply({ err: "ReloadBusy", busy: { op: "worktree.add", path: "/src/feature" } });
+  expect(failure(["reload"], busy)).toBe(
+    "corgi: the server can't reload while Git adds the worktree /src/feature; try again in a moment.\n",
+  );
+  expect(failure(["reload", "--json"], busy)).toBe(
+    '{"ok":false,"err":"ReloadBusy","busy":{"op":"worktree.add","path":"/src/feature"}}\n',
+  );
+  expect(failure(["reload"], Error("ReloadBusy"))).toBe("corgi: ReloadBusy\n");
+});
+test("a daemon that rejects hello still counts as running", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "corgi-main-")), "s");
+  const server = createServer(socket =>
+    socket.on("data", () => socket.write('{"err":"UnsupportedManagementProtocol"}\n')),
+  );
+  await new Promise<void>(resolve => server.listen(path, resolve));
+  try {
+    await ensureServer(path, "/nonexistent/corgi");
+    expect(existsSync(path)).toBe(true);
+  } finally {
+    server.close();
+  }
 });
 test("help names every action on lines of at most 80 columns", () => {
   for (const line of actionNames.split("\n")) expect(Buffer.byteLength(line)).toBeLessThanOrEqual(80);
@@ -56,16 +89,51 @@ test("open inside a pane quietly sends its viewer the folder's real path", async
 test("--help prints help instead of running the command", async () => {
   const request = spyOn(rpc, "request").mockResolvedValue({ ok: true });
   const output = spyOn(process.stdout, "write").mockReturnValue(true);
+  const init = spyOn(crash, "init").mockImplementation(() => {});
+  const update = spyOn(updates, "internal").mockResolvedValue(false);
+  try {
+    for (const [args, expected] of [
+      [["shutdown", "--help"], "corgi shutdown"],
+      [["reload", "-h"], "corgi reload"],
+      [["--no-agent", "-h"], "corgi shutdown"],
+      [["agent", "--help"], "corgi agent"],
+      [["serve", "--help"], "corgi shutdown"],
+      [["--skill", "--help"], "corgi --skill"],
+      [["pane", "send", "--stdin", "--help"], "corgi pane send"],
+      [["help", "pane", "read"], "corgi pane read"],
+      [["--help", "pane", "read"], "corgi pane read"],
+      [["help", "tab", "new"], "[--command SHELL_COMMAND]"],
+      [["pane", "split", "--help"], "[--command SHELL_COMMAND]"],
+      [["help", "account"], "Usage: corgi account"],
+      [["help", "integration"], "Usage: corgi integration"],
+    ] as const) {
+      output.mockClear();
+      await run([...args]);
+      expect(String(output.mock.calls[0]?.[0])).toContain(expected);
+    }
+    expect(request).not.toHaveBeenCalled();
+    expect(init).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  } finally {
+    request.mockRestore();
+    output.mockRestore();
+    init.mockRestore();
+    update.mockRestore();
+  }
+});
+test("help after an unrelated option never reaches the daemon", async () => {
+  const request = spyOn(rpc, "request").mockRejectedValue(Error("UnexpectedRequest"));
+  const output = spyOn(process.stdout, "write").mockReturnValue(true);
   try {
     for (const args of [
-      ["shutdown", "--help"],
-      ["reload", "-h"],
-      ["--no-agent", "-h"],
-      ["agent", "--help"],
+      ["shutdown", "--name", "--help"],
+      ["shutdown", "--cwd", "-h"],
+      ["action", "rename", "--name", "--help"],
+      ["reload", "--flags", "--help"],
     ]) {
       output.mockClear();
       await run(args);
-      expect(String(output.mock.calls[0]?.[0])).toContain("corgi shutdown");
+      expect(String(output.mock.calls[0]?.[0])).toContain(`corgi ${args[0]}`);
     }
     expect(request).not.toHaveBeenCalled();
   } finally {
@@ -73,16 +141,101 @@ test("--help prints help instead of running the command", async () => {
     output.mockRestore();
   }
 });
-test("agent mode's help lists only the control commands", async () => {
+test("account and integration help routes distinguish human and agent output", async () => {
+  const request = spyOn(rpc, "request").mockRejectedValue(Error("UnexpectedRequest")),
+    output = spyOn(process.stdout, "write").mockReturnValue(true),
+    update = spyOn(updates, "internal").mockResolvedValue(false),
+    accountHelp = spyOn(accountCommand, "localizedHelp").mockReturnValue("account translated\n"),
+    integrationHelp = spyOn(integration, "localizedHelp").mockReturnValue("integration translated\n"),
+    previousExit = process.exitCode;
+  try {
+    for (const [topic, reference] of [
+      ["account", accountCommand.help],
+      ["integration", integration.help],
+    ]) {
+      const forms = [
+        [topic, "--help"],
+        ["help", topic],
+        [topic, "help"],
+      ];
+      if (topic === "integration") forms.push([topic]);
+      for (const args of forms) {
+        output.mockClear();
+        await run(["--no-agent", ...args]);
+        expect(output.mock.calls.map(call => String(call[0])).join("")).toBe(`${topic} translated\n`);
+        output.mockClear();
+        accountHelp.mockClear();
+        integrationHelp.mockClear();
+        await run(["--agent", ...args]);
+        expect(output.mock.calls.map(call => String(call[0])).join("")).toBe(reference);
+        expect(accountHelp).not.toHaveBeenCalled();
+        expect(integrationHelp).not.toHaveBeenCalled();
+      }
+    }
+    expect(request).not.toHaveBeenCalled();
+  } finally {
+    request.mockRestore();
+    output.mockRestore();
+    update.mockRestore();
+    accountHelp.mockRestore();
+    integrationHelp.mockRestore();
+    process.exitCode = previousExit;
+  }
+});
+test("provider help remains the provider's argument", async () => {
+  const launch = spyOn(integration, "launch").mockRejectedValue(Error("ProviderHelp"));
+  try {
+    await expect(run(["agent", "codex", "--help"])).rejects.toThrow("ProviderHelp");
+    expect(launch.mock.calls[0]?.slice(0, 2)).toEqual(["codex", ["--help"]]);
+  } finally {
+    launch.mockRestore();
+  }
+});
+test("action values preserve agent mode flags", async () => {
+  const request = spyOn(rpc, "request").mockResolvedValue({ ok: true, viewer: 3, queued: true });
   const output = spyOn(process.stdout, "write").mockReturnValue(true);
   try {
-    await run(["--agent", "--help"]);
-    const text = String(output.mock.calls[0]?.[0]);
-    expect(text).toContain("corgi pane read");
-    expect(text).not.toContain("corgi shutdown");
-    expect(text).toEndWith(
-      "corgi --skill\n\nAgent mode is on: `corgi --no-agent --help` also lists the viewer's commands.\n",
-    );
+    for (const value of ["--agent", "--no-agent"]) {
+      request.mockClear();
+      await run(["action", "rename", value]);
+      expect(request.mock.calls[0]?.slice(1)).toEqual(["action", { name: "rename", value }]);
+    }
+  } finally {
+    request.mockRestore();
+    output.mockRestore();
+  }
+});
+test("account command values preserve agent mode flags", async () => {
+  const account = spyOn(accountCommand, "command").mockResolvedValue(0),
+    hooks = spyOn(integration, "command").mockResolvedValue(true),
+    update = spyOn(updates, "internal").mockResolvedValue(false),
+    previousExit = process.exitCode;
+  try {
+    for (const value of ["--agent", "--no-agent"]) {
+      account.mockClear();
+      await run(["account", "rename", "work", value]);
+      expect(account.mock.calls[0]?.[0]).toEqual(["rename", "work", value]);
+      hooks.mockClear();
+      await run(["integration", "status", "--account", value]);
+      expect(hooks.mock.calls[0]).toEqual(["status", null, value]);
+    }
+  } finally {
+    account.mockRestore();
+    hooks.mockRestore();
+    update.mockRestore();
+    process.exitCode = previousExit;
+  }
+});
+test("agent mode does not hide commands from root help", async () => {
+  const output = spyOn(process.stdout, "write").mockReturnValue(true);
+  try {
+    for (const args of [["--help"], ["--agent", "--help"], ["--no-agent", "--help"]]) {
+      output.mockClear();
+      await run(args);
+      const text = String(output.mock.calls[0]?.[0]);
+      expect(text).toContain("corgi pane read");
+      expect(text).toContain("corgi shutdown");
+    }
   } finally {
     output.mockRestore();
   }

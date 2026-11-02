@@ -6,7 +6,11 @@ import { Terminal } from "./pane/terminal";
 import { Worker } from "./providers/codex/observer";
 import { Snapshot } from "./providers/snapshot";
 import { Text } from "./providers/common";
+import { Path } from "./bounded_text";
 import * as codex from "./providers/codex";
+import * as checklist from "./activity/checklist";
+import * as omp from "./providers/omp";
+import { Result as UsageResult } from "./usage/worker";
 import {
   snapshotActor,
   missed,
@@ -16,6 +20,8 @@ import {
   detectPane,
   hook,
   stop,
+  start,
+  tick,
 } from "./observer_service";
 
 const id = "11111111-1111-4111-8111-111111111111";
@@ -23,6 +29,11 @@ class ObserverTerminal extends Terminal {
   private observedTitle = id;
   private observedPid = 42;
   private observedRevision = 1n;
+  titleReads = 0;
+  override titleInfo() {
+    this.titleReads++;
+    return { text: this.observedTitle, pid: this.observedPid, revision: this.observedRevision };
+  }
   override get title() {
     return this.observedTitle;
   }
@@ -58,6 +69,34 @@ function fixture() {
   return { server, pane, terminal, registry: server.runtime.conversations };
 }
 
+test("Codex title observation reads current identity once per reconciliation", () => {
+  const { server, pane, terminal } = fixture();
+  pane.attachment.provisional.provider = "codex";
+  const worker = new Worker();
+  worker.reconcile(server.runtime);
+  expect(terminal.titleReads).toBe(1);
+  expect(worker.requests).toMatchObject([{ pane: 1, pid: 42, title_revision: 1n }]);
+  expect(worker.requests[0].prefix.text()).toBe(id);
+  terminal.title_pid = 41;
+  worker.reconcile(server.runtime);
+  expect(worker.requests).toEqual([]);
+  terminal.title_pid = 42;
+  terminal.title_revision = 3n;
+  terminal.title = "22222222-2222-4222-8222-222222222222";
+  worker.reconcile(server.runtime);
+  expect(terminal.titleReads).toBe(3);
+  expect(worker.requests).toMatchObject([{ title_revision: 3n }]);
+  expect(worker.requests[0].prefix.text()).toBe(terminal.title);
+});
+
+test("foreground detection shares its title read with local reattachment", () => {
+  const { server, pane, terminal, registry } = fixture();
+  const actor = registry.get("codex", id);
+  detectPane(server, pane, { provider: "codex", pid: 42 });
+  expect(pane.attachment.actor).toBe(actor);
+  expect(terminal.titleReads).toBe(1);
+});
+
 test("a bridge claim runs the existing screen watcher without a local agent or conversation", () => {
   const { server, pane, terminal, registry } = fixture();
   pane.launch = new Launch({ provider: "codex" });
@@ -91,6 +130,66 @@ test("a bridge claim runs the existing screen watcher without a local agent or c
   expect(pane.detection.claim).toBeNull();
   expect(pane.agent()).toMatchObject({ provider: null, state: "unknown", attention: "none" });
   expect(pane.agent().observation.completed).toBe(0n);
+});
+
+test("child settlement cannot be discarded by newer parent or sibling hooks", () => {
+  const { server, pane, registry } = fixture();
+  pane.detection.pid = 0;
+  pane.dormant = true;
+  const parent = registry.get("omp", "parent");
+  pane.attachment.select(parent);
+  const send = (seq: bigint, event: object) =>
+    hook(server, { pane: 1, provider: "omp", event: { session: "parent", ...event }, seq, pid: 0, background: false });
+  send(1n, { event: "UserPromptSubmit", turn: "parent-turn" });
+  send(2n, { event: "SubagentStart", subagent: "child", subagent_name: "Audit" });
+  send(5n, { event: "SubagentStart", subagent: "sibling" });
+  send(4n, { event: "PreToolUse", turn: "parent-turn", tool: "read" });
+  send(3n, { event: "SubagentStop", subagent: "child", outcome: "completed" });
+  expect(registry.find("omp", "child")!.state.state).toBe("idle");
+  expect(parent.state.last_seq).toBe(4n);
+  expect(parent.state.subagents.running).toBe(1);
+  send(2n, { event: "SubagentStart", subagent: "child" });
+  expect(registry.find("omp", "child")!.state.state).toBe("idle");
+  send(6n, { event: "SubagentStart", subagent: "child" });
+  send(3n, { event: "SubagentStop", subagent: "child", outcome: "completed" });
+  expect(registry.find("omp", "child")!.state.state).toBe("working");
+  send(7n, { event: "SubagentStop", subagent: "child", outcome: "completed" });
+  expect(registry.find("omp", "child")!.state.state).toBe("idle");
+});
+
+test("delayed child hooks cannot override a newer complete sibling list", () => {
+  const { server, pane, registry } = fixture();
+  pane.detection.pid = 0;
+  pane.dormant = true;
+  const parent = registry.get("claude", "parent");
+  pane.attachment.select(parent);
+  for (const id of ["a", "b"]) {
+    const child = registry.get("claude", id);
+    registry.linkChild(parent, child);
+    child.state.state = "working";
+  }
+  const send = (seq: bigint, event: object) =>
+    hook(server, {
+      pane: 1,
+      provider: "claude",
+      seq,
+      pid: 0,
+      background: false,
+      event: { session_id: "parent", ...event },
+    });
+  const stop = (agent_id: string, listed: string[]) => ({
+    hook_event_name: "SubagentStop",
+    agent_id,
+    background_tasks: listed.map(id => ({ id, type: "subagent", status: "running" })),
+  });
+  send(4n, stop("b", ["b"]));
+  send(3n, stop("a", ["a", "b"]));
+  expect(registry.find("claude", "a")!.state.state).toBe("idle");
+  expect(registry.find("claude", "b")!.state.state).toBe("idle");
+  expect(parent.state.subagents.running).toBe(0);
+  send(3n, { hook_event_name: "SubagentStart", agent_id: "a" });
+  expect(registry.find("claude", "a")!.state.state).toBe("idle");
+  expect(parent.state.subagents.running).toBe(0);
 });
 
 test("only a claim's live owner can replace or clear it, and owner loss returns to local detection", () => {
@@ -343,4 +442,78 @@ test("a Codex side conversation in the title leaves the pane on the conversation
   expect(pane.attachment.actor).toBe(main);
   missed(server, "codex", request());
   expect(pane.attachment.actor).toBeNull();
+});
+
+test("transcript checklists cannot replace newer hooks and stay with their own conversation", async () => {
+  const { server, pane, terminal, registry } = fixture();
+  terminal.exited = true;
+  const actor = registry.get("omp", "todo-parent"),
+    child = registry.get("omp", "todo-child");
+  registry.linkChild(actor, child);
+  pane.attachment.select(actor);
+  const workers = start(server);
+  workers.transcripts.stop();
+  workers.usage.stop();
+  workers.summaries.stop();
+  for (const { observer } of workers.observers.values()) observer.stop();
+  workers.observers.clear();
+  workers.settling = 1;
+  const phases = [{ name: "Live", tasks: [{ content: "Current", status: "in_progress" }] }];
+  actor.observeHook(omp.decode({ event: "Todos", session: "todo-parent", todos: { phases } }), 1n, false, 2000);
+  const live = actor.checklist;
+  const apply = async (id: number, at: number, items: checklist.Item[]) => {
+    const result = new UsageResult();
+    result.actor = id;
+    result.checklist = new checklist.List(items, false, at);
+    workers.usage.results.push(result);
+    await tick(server);
+  };
+  await apply(actor.id, 1000, []);
+  expect(actor.checklist).toBe(live);
+  await apply(actor.id, 3000, [...live.items]);
+  expect(actor.checklist.at).toBe(3000);
+  await apply(actor.id, 2500, []);
+  expect(actor.checklist.items).toEqual(live.items);
+  await apply(child.id, 3000, [{ text: "Independent", status: "blocked", group: "Child" }]);
+  expect(child.checklist.items[0].group).toBe("Child");
+  expect(actor.checklist.items).toEqual(live.items);
+  await apply(actor.id, 4000, []);
+  expect(actor.checklist.items).toEqual([]);
+  expect(actor.checklist.at).toBe(4000);
+  await apply(actor.id, 3500, [...live.items]);
+  expect(actor.checklist.items).toEqual([]);
+});
+
+test("local Codex identity attaches without lifecycle authority and admits only matching hooks", () => {
+  const { server, pane, terminal, registry } = fixture();
+  const request = {
+    pane: 1,
+    pid: 42,
+    actor: 0,
+    prefix: new Text(id),
+    generation: pane.attachment.generation,
+    title_revision: terminal.title_revision,
+  };
+  const identity = new Snapshot(request, id, "unknown");
+  identity.lifecycle = false;
+  identity.transcript = new Path("/tmp/rollout.jsonl");
+  const actor = snapshotActor(server, "codex", identity)!;
+  actor.observeSnapshot(identity, false, 100);
+  expect(pane.attachment.actor).toBe(actor);
+  expect(actor.state.last_seq).toBe(0n);
+  expect(actor.authoritative(100)).toBe(false);
+  const event = codex.adapter.hook({ hook_event_name: "UserPromptSubmit", session_id: id, turn_id: "turn" })!;
+  const watcher = codex.adapter.watch("");
+  const route = watcher.route(event as any, 1, session => (session === id ? 1 : null))!;
+  expect(route.binds).toBe(false);
+  expect(registry.routeHook(pane.attachment, "codex", event, route.binds)).toBe(actor);
+  expect(registry.routeHook(pane.attachment, "codex", { ...event, session: "other" }, false)).toBeNull();
+  actor.observeHook(event, 101n, false, 101);
+  expect(actor.state.state).toBe("working");
+  const before = stringify(actor.state);
+  identity.observed_at = 200;
+  actor.observeSnapshot(identity, false, 200);
+  expect(stringify(actor.state)).toBe(before);
+  terminal.title_revision++;
+  expect(snapshotActor(server, "codex", identity)).toBeNull();
 });

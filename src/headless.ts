@@ -13,9 +13,9 @@ import { Tokens } from "./usage/live";
 import * as discovery from "./discovery";
 import * as json from "./json";
 import * as worktrees from "./worktrees";
-import { captureBinding, restoreBinding, hydrate } from "./persist/checkpoint";
+import { Invalid, captureBinding, restoreBinding, hydrate, type Repairs } from "./persist/checkpoint";
 import type { Server } from "./server";
-import type { Client as Peer } from "./peer";
+import { Reply, type Client as Peer } from "./peer";
 import type { DecodedRequest } from "./protocol";
 type Request = Extract<
   DecodedRequest,
@@ -90,7 +90,16 @@ export class Session {
   resume_hint = new ResumeHint();
   workspace_id = 0;
   exited = false;
-  attachment = new Attachment();
+  readonly holder = "session";
+  #attachment = new Attachment();
+  get attachment(): Attachment {
+    this.#attachment.owner ??= this;
+    return this.#attachment;
+  }
+  set attachment(a: Attachment) {
+    a.owner = this;
+    this.#attachment = a;
+  }
   members: Actor[] = [];
   requests_released = false;
   events: Entry[] = [];
@@ -229,13 +238,14 @@ export class Session {
     return !this.exited && (this.active_tools.length > 0 || this.approvals.some(request => request.ask.tool));
   }
   startTool(target: Agent, id: string, thread: string, turn: string) {
-    if (!id || [id, thread, turn].some(value => Buffer.byteLength(value) > 256)) return;
-    if (this.active_tools.some(tool => tool.id === id && tool.thread === thread)) return;
+    if (!id || [id, thread, turn].some(value => Buffer.byteLength(value) > 256)) return false;
+    if (this.active_tools.some(tool => tool.id === id && tool.thread === thread)) return false;
     if (this.active_tools.length >= 128) throw Error("TooManyHeadlessTools");
     this.active_tools.push({ id, thread, turn });
     this.usage_pending.tools = add(this.usage_pending.tools, 1n);
     target.state = "working";
     target.attention = target.observation.unread() ? "finished" : "none";
+    return true;
   }
   finishTool(id: string, thread: string) {
     this.active_tools = this.active_tools.filter(tool => !(tool.id === id && tool.thread === thread));
@@ -334,10 +344,21 @@ export class Session {
     let ding = false;
     const completed = !!reported && target.finishedTurn(reported);
     const stale = completed || (phase !== "working" && !!reported && !!target.turn.len && reported !== target.turnId());
+    if (e.kind === "activity") {
+      if (!stale && reported && reported === target.turnId() && ["working", "blocked"].includes(target.state)) {
+        target.setActivity(e.text);
+        target.activity_inferred = false;
+        target.activity_at = Date.now() * 1000;
+        actor?.checkpointActivity(e.amend, target.activity_at);
+      }
+      this.journal(e);
+      return false;
+    }
     if (!stale || phase === "completed") {
       if (e.kind === "tool") {
         if (e.done) this.finishTool(e.id, thread);
-        else this.startTool(target, e.id, thread, e.turn);
+        else if (this.startTool(target, e.id, thread, e.turn) && actor?.headless_usage)
+          actor.headless_meter.meter.count(1n);
       } else if (e.kind === "usage") {
         const delta = counted(this.usage_tracker, e, this.active_threads.has(e.session));
         delta.tools = 0n;
@@ -431,24 +452,28 @@ export class Session {
       resume_hint: this.resume_hint,
     };
   }
-  static restore(saved: any, registry: Registry, live: boolean) {
+  static restore(saved: any, registry: Registry, live: boolean, how: Repairs = {}) {
     const headless = adapter(saved.provider).headless,
       client: Client =
         live && !saved.exited && headless
           ? headless.restore(saved.client ?? { state: null, handles: [] }, live)
           : new Gone(saved.ready === true);
     const session = new Session(saved.id, saved.provider, saved.cwd, client);
-    session.attachment = restoreBinding(registry, saved.binding, live);
+    session.attachment = restoreBinding(registry, saved.binding, live, { ...how, what: `native session ${saved.id}` });
     session.exited = live ? saved.exited : true;
     session.workspace_id = saved.workspace_id;
     session.resume_hint = hydrate(new ResumeHint(), saved.resume_hint);
     session.session = saved.session ?? session.resume_hint.session.text();
     session.usage_tracker = live ? Tracker.restore(saved.usage_tracker) : new Tracker();
-    if ((saved.members?.length ?? 0) > 256 || (saved.approvals?.length ?? 0) > 64) throw Error("InvalidCheckpoint");
+    if ((saved.members?.length ?? 0) > 256 || (saved.approvals?.length ?? 0) > 64)
+      throw new Invalid(`native session ${saved.id} has too many members or approvals`);
     for (const id of saved.members ?? []) {
       const actor = registry.byId(id);
-      if (!actor || actor.state.provider !== saved.provider || session.members.includes(actor))
-        throw Error("InvalidCheckpoint");
+      if (!actor) throw new Invalid(`native session ${saved.id}'s member, conversation ${id}, isn't saved`);
+      if (actor.state.provider !== saved.provider || session.members.includes(actor))
+        throw new Invalid(
+          `native session ${saved.id}'s member, conversation ${id}, is listed twice or is another provider's`,
+        );
       session.members.push(actor);
     }
     if (!session.members.length && session.attachment.actor) session.members.push(session.attachment.actor);
@@ -459,7 +484,10 @@ export class Session {
     if (live) {
       for (const request of saved.approvals ?? []) {
         const actor = request.actor ? registry.byId(request.actor) : null;
-        if (request.actor && !actor) throw Error("InvalidCheckpoint");
+        if (request.actor && !actor)
+          throw new Invalid(
+            `native session ${saved.id}'s approval is for conversation ${request.actor}, which isn't saved`,
+          );
         session.approvals.push(new PendingRequest(String(request.id), actor ?? null, request.ask));
         if (!session.exited && actor) actor.pending_headless_requests++;
       }
@@ -470,7 +498,7 @@ export class Session {
   }
 }
 
-export async function request(server: Server, client: Peer, request: Request) {
+export async function request(server: Server, client: Peer, request: Request, reply = new Reply(client)) {
   const runtime = server.runtime;
   if (request.op === "headless.start") {
     const query = request.payload;
@@ -493,11 +521,11 @@ export async function request(server: Server, client: Peer, request: Request) {
     runtime.next_session = Session.Id.next(runtime.next_session);
     runtime.changed();
     server.dirty = true;
-    client.headless_start = { id: session.id, deadline: Date.now() + 60_000 };
+    client.headless_start = { id: session.id, deadline: Date.now() + 60_000, request_id: reply.id };
     return;
   }
   if (request.op === "headless.list") {
-    client.queue({
+    reply.send({
       ok: true,
       sessions: runtime.sessions.map((session: Session) => ({
         pid: session.client.processes?.()[0] ?? -1,
@@ -530,7 +558,7 @@ export async function request(server: Server, client: Peer, request: Request) {
     session.destroy();
     runtime.sessions.splice(index, 1);
     runtime.changed();
-    client.queue({ ok: true });
+    reply.send({ ok: true });
   } else if (request.op === "headless.send") {
     const input = validInput(request.payload.input);
     if (input.kind !== "answer") {
@@ -538,9 +566,9 @@ export async function request(server: Server, client: Peer, request: Request) {
       input.session = session.session;
     }
     session.send(input);
-    client.queue({ ok: true });
+    reply.send({ ok: true });
   } else if (request.op === "headless.events") {
-    client.queue({
+    reply.send({
       ok: true,
       events: session.events.filter(entry => entry.seq > BigInt(request.payload.after)),
       pending_requests: session.pendingRequests(),
@@ -566,13 +594,14 @@ export function finishStarts(server: Server, now = Date.now()) {
           : null;
     if (!error && !session!.session) continue;
     client.headless_start = null;
+    const reply = new Reply(client, pending.request_id ?? null);
     if (error) {
       if (session && !session.session) {
         session.destroy();
         server.runtime.sessions.splice(server.runtime.sessions.indexOf(session), 1);
       }
-      client.queue({ err: error });
-    } else client.queue({ ok: true, provider: session!.provider, session: session!.session });
+      reply.send({ err: error });
+    } else reply.send({ ok: true, provider: session!.provider, session: session!.session });
     client.done();
     server.runtime.changed();
     server.dirty = true;

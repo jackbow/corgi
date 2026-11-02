@@ -136,7 +136,7 @@ class SummaryCases extends Summaries {
     await this.until(async () => (await this.state()).activity === "Tracing pane focus");
     await this.attachment.send("screen:compacting");
     await this.until(async () => (await this.state()).compacting);
-    await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
+    await this.rpc({ op: "server.reload", executable: EXE });
     await this.until(
       async () =>
         (await this.state()).compacting && JSON.stringify(await points()) === JSON.stringify(["Compacting context"]),
@@ -241,7 +241,6 @@ class SummaryCases extends Summaries {
     await this.until(async () => (await this.session()).inference.locked);
     let reply = await this.rpc({
       op: "inference.configure",
-      protocol: 3,
       choice: "claude",
     });
     this.assertTrue(reply.saved);
@@ -255,10 +254,10 @@ class SummaryCases extends Summaries {
     // A new harness starts a new conversation, so the agent's history comes along.
     this.assertIn("Tracing pane focus", JSON.parse(this.calls().at(-1)!).history[0]);
     // An older client's "off" turns every use off and keeps the model.
-    const off = (await this.rpc({ op: "inference.configure", protocol: 3, choice: "off" })).inference;
+    const off = (await this.rpc({ op: "inference.configure", choice: "off" })).inference;
     this.assertEqual(off.provider, "claude");
     this.assertTrue(Object.values(off.uses).every(on => on === false));
-    status = (await this.rpc({ op: "inference.configure", protocol: 3, choice: "auto" })).inference;
+    status = (await this.rpc({ op: "inference.configure", choice: "auto" })).inference;
     this.assertEqual([status.choice, status.provider], ["auto", "codex"]);
     this.assertGreaterEqual(status.launches.codex, 1);
     this.assertEqual(status.launches.claude, 0);
@@ -455,11 +454,11 @@ class SummaryCases extends Summaries {
       this.assertEqual(rows.filter(r => r.includes("Tokens") && r.includes("Cached")).length, 1);
       this.assertRegex(
         rows.find(r => r.includes("Total"))!,
-        /Total\s+6\.9k\s+7\.8k/,
+        /Total\s+0\s+6\.9k\s+7\.8k/,
       );
-      this.assertRegex(timelineRow("Reading source"), /Reading source\s+600\s+600/);
-      this.assertRegex(timelineRow("Tracing usage"), /Tracing usage\s+2\.4k\s+3(\.0)?k/);
-      this.assertRegex(timelineRow("Running tests"), /Running tests\s+3\.9k\+\s+4\.2k\+/);
+      this.assertRegex(timelineRow("Reading source"), /Reading source\s+0\s+600\s+600/);
+      this.assertRegex(timelineRow("Tracing usage"), /Tracing usage\s+0\s+2\.4k\s+3(\.0)?k/);
+      this.assertRegex(timelineRow("Running tests"), /Running tests\s+0\+\s+3\.9k\+\s+4\.2k\+/);
       const positions = ["Reading source", "Tracing usage", "Running tests"].map(label =>
         rows.findIndex(r => r.includes(label) && (r.includes("○") || r.includes("●"))),
       );

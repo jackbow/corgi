@@ -18,6 +18,9 @@ import { testBuild } from "./build_assets";
 import * as config from "./build_config";
 import * as crash from "./crash";
 import * as build_id from "./build_id";
+import * as localeHost from "./locale_host";
+import * as i18n from "./i18n";
+import * as preferences from "./preferences";
 import { Provider, adapter } from "./providers";
 export const executable = build_id.executablePath(
   import.meta.filename,
@@ -50,24 +53,28 @@ export function paneId(value: string): number {
   if (!Number.isSafeInteger(pane) || pane > 0xffffffff) throw Error("Overflow");
   return pane;
 }
-async function ping(path: string): Promise<boolean> {
+/** Any reply, even an error, means a daemon owns the socket. */
+async function reachable(path: string): Promise<boolean> {
+  const connection = new rpc.Connection(path, { requestIds: false });
   try {
-    await rpc.request(path, "ping");
+    await connection.request("hello");
     return true;
   } catch {
     return false;
+  } finally {
+    connection.close();
   }
 }
 export async function ensureServer(path: string, exe = executable): Promise<void> {
-  if (await ping(path)) return;
+  if (await reachable(path)) return;
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const guard = openSync(path + ".start.lock", "a", 0o600);
   try {
     while (!flock(guard)) {
-      if (await ping(path)) return;
+      if (await reachable(path)) return;
       await Bun.sleep(20);
     }
-    if (await ping(path)) return;
+    if (await reachable(path)) return;
     try {
       unlinkSync(path);
     } catch {}
@@ -93,7 +100,7 @@ export async function ensureServer(path: string, exe = executable): Promise<void
     });
     const until = Date.now() + 10000;
     while (Date.now() < until && !exited) {
-      if (await ping(path)) return;
+      if (await reachable(path)) return;
       await Bun.sleep(20);
     }
     try {
@@ -160,6 +167,7 @@ function asksJson(args: string[]): boolean {
   return (end === -1 ? args : args.slice(0, end)).includes("--json");
 }
 export async function run(args = process.argv.slice(2)): Promise<void> {
+  localeHost.initialize(preferences.load().language);
   if (args[0] === "__opencode2") {
     await (await import("./providers/opencode2/worker")).run();
     return;
@@ -167,21 +175,57 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
   const alias = providerAlias(os.processArgs(process.pid)?.argv[0] ?? process.argv[0]);
   // Agent mode covers the control CLI and help; a provider alias keeps its own flags.
   const choice = agent_mode.flags(args),
-    controls = !alias && (cli.handles(choice.args) || ["help", "--help", "-h"].includes(choice.args[0]));
+    accountHelp =
+      ["account", "integration"].includes(choice.args[0]) &&
+      (cli.asksHelp(choice.args) ||
+        choice.args[1] === "help" ||
+        (choice.args[0] === "integration" && choice.args.length === 1)),
+    controls = !alias && (cli.handles(choice.args) || ["help", "--help", "-h"].includes(choice.args[0]) || accountHelp);
   if (controls) args = choice.args;
   const agent = controls && agent_mode.enabled(choice.flag, process.env, process.stdout.isTTY === true);
+  const command = args[0] ?? "attach";
+  // A provider owns its flags; help returns before Corgi starts any command.
+  const own = alias || command.startsWith("__") ? [] : command === "agent" ? args.slice(0, 2) : args;
+  if (!alias && (cli.asksHelp(own) || command === "help")) {
+    const humanHelp = agent ? help : i18n.document(helpText).replace("\n\n\n\n", `\n\n${actionNames}\n\n`);
+    const commandHelp = agent ? cli.help : cli.localizedHelp();
+    const topic = (command === "help" ? args.slice(1) : args).filter(arg => arg !== "--help" && arg !== "-h");
+    switch (topic[0]) {
+      case "account": {
+        const account = await import("./account_command");
+        process.stdout.write(agent ? account.help : account.localizedHelp());
+        break;
+      }
+      case "integration": {
+        const integration = await import("./integration");
+        process.stdout.write(agent ? integration.help : integration.localizedHelp());
+        break;
+      }
+      default:
+        process.stdout.write(
+          topic.length
+            ? cli.helpFor(cli.handles(topic) ? commandHelp : humanHelp, topic, agent)
+            : humanHelp + "\n" + commandHelp,
+        );
+        if (topic[0] === "action") process.stdout.write("\n" + actionNames + "\n");
+        break;
+    }
+    return;
+  }
   const asJson = replies.includes(args[0]) && asksJson(args);
   if (asJson) args = args.filter(arg => arg !== "--json");
   const print = async <K extends protocol.Op>(path: string, op: K, ...rest: protocol.Arguments<K>) => {
     const reply = await rpc.request(path, op, ...rest);
     process.stdout.write(asJson ? json.stringify(reply) + "\n" : say(op, reply));
   };
-  const command = args[0] ?? "attach",
-    path = os.socketPath();
+  const path = os.socketPath();
   log.configure(alias ? "agent" : command);
   quietExecveWarning();
-  // Only the daemon logs native messages: its stderr is server.log.
-  if (command === "serve" || command === "__handoff") n.native_log_stderr(true);
+  // Daemon only: native messages go to server.log, and terminals learn the providers' programs.
+  if (command === "serve" || command === "__handoff") {
+    n.native_log_stderr(true);
+    (await import("./detection")).configureNative();
+  }
   if (["serve", "__handoff", "attach", "--no-update", "__viewer-test"].includes(command))
     try {
       crash.init(command === "serve" || command === "__handoff" ? "daemon" : "viewer");
@@ -199,17 +243,6 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
     } catch (error) {
       cli.failure(error instanceof Error ? error.message : String(error), 2, args);
     }
-    return;
-  }
-  // `agent` hands the rest of its line to the agent; `integration` and `account` print their own help.
-  const own =
-    command === "agent"
-      ? args.slice(0, 2)
-      : command === "integration" || command === "account" || command.startsWith("__")
-        ? []
-        : args;
-  if (cli.asksHelp(own) || command === "help") {
-    process.stdout.write(agent ? cli.help.trimEnd() + agent_mode.helpNote : help + cli.help);
     return;
   }
   switch (command) {
@@ -246,6 +279,7 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
       if (args[1] !== "--update-routed") await updates.startup(path, executable, ["attach"], command === "--no-update");
       await ensureServer(path);
       updates.background(path, executable);
+      await (await import("./state_report")).showRepairs(path);
       const client = await import("./client");
       await client.attach(path);
       return;
@@ -263,6 +297,7 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
       if (!routed) await updates.startup(path, executable, ["open", folder]);
       await ensureServer(path);
       updates.background(path, executable);
+      await (await import("./state_report")).showRepairs(path);
       try {
         crash.init("viewer");
       } catch (error) {
@@ -302,7 +337,8 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
     case "shutdown": {
       const reply = await rpc.request(path, "shutdown");
       for (let i = 0; i < 500; i++) {
-        if (!(await ping(path))) return void process.stdout.write(asJson ? json.stringify(reply) + "\n" : "stopped\n");
+        if (!(await reachable(path)))
+          return void process.stdout.write(asJson ? json.stringify(reply) + "\n" : "stopped\n");
         await Bun.sleep(10);
       }
       throw Error("ShutdownTimedOut");
@@ -326,7 +362,8 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
     }
     case "rpc": {
       if (args.length !== 2) throw Error("Usage");
-      const connection = new rpc.Connection(path);
+      // Sent as typed, so it reaches any daemon version.
+      const connection = new rpc.Connection(path, { requestIds: false });
       try {
         process.stdout.write(json.stringify(await connection.rawRequest(json.parse(args[1]))) + "\n");
       } finally {
@@ -360,20 +397,20 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
     }
     case "integration": {
       const integration = await import("./integration"),
+        reference = agent ? integration.help : integration.localizedHelp(),
         words = args.slice(1),
         at = words.indexOf("--account"),
         account = at >= 0 ? (words[at + 1] ?? "") : null;
       if (at >= 0) words.splice(at, 2);
       const [op, name, ...rest] = words;
-      if (op === undefined || ["help", "--help", "-h"].includes(op) || args.includes("--help") || args.includes("-h"))
-        return void process.stdout.write(integration.help);
+      if (op === undefined || op === "help" || cli.asksHelp(args)) return void process.stdout.write(reference);
       if (
         (op !== "status" && op !== "install" && op !== "uninstall") ||
         rest.length ||
         account === "" ||
         (name !== undefined && !Provider.parse(name))
       ) {
-        process.stderr.write(integration.help);
+        process.stderr.write(reference);
         process.exitCode = 2;
         return;
       }
@@ -382,7 +419,7 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
     }
     case "account": {
       const account = await import("./account_command");
-      process.exitCode = await account.command(args.slice(1));
+      process.exitCode = await account.command(args.slice(1), agent);
       return;
     }
     case "hooks": {
@@ -426,7 +463,7 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
     case "dev": {
       await ensureServer(path);
       const hello = await rpc.request(path, "hello");
-      if (hello.build_id !== buildId()) await rpc.request(path, "server.reload", { executable });
+      if (hello.build_id !== buildId()) await rpc.reload(path, executable);
       if (process.env.CORGI_PANE !== undefined)
         await print(path, "action", { name: "relaunch", value: executable, pane: paneId(process.env.CORGI_PANE) });
       else {
@@ -447,7 +484,11 @@ export function failure(args: string[], error: unknown): string {
   const name = errors.name(error) ?? String(error);
   if (replies.includes(args[0]) && asksJson(args)) {
     const lines = name === "Usage" ? cli.usage(help, args).map(line => line.trim()) : [];
-    return json.stringify({ ok: false, err: name, ...(lines.length ? { usage: lines } : {}) }) + "\n";
+    const busy = protocol.busy(errors.reply(error));
+    return (
+      json.stringify({ ok: false, err: name, ...(lines.length ? { usage: lines } : {}), ...(busy ? { busy } : {}) }) +
+      "\n"
+    );
   }
   switch (name) {
     case "Usage": {
@@ -465,8 +506,21 @@ export function failure(args: string[], error: unknown): string {
       return `corgi: this client uses runtime protocol ${protocol.version}, which the server does not support. Reload the server using this Corgi version, or use a matching client.\n`;
     case "UnsupportedManagementProtocol":
       return `corgi: this client uses management protocol ${protocol.management_version}, which the server does not support. Use a matching Corgi version to reload the server.\n`;
+    case "ReloadBusy": {
+      // Only the daemon knows what holds the reload; without its word, say no more than the name.
+      const busy = protocol.busy(errors.reply(error));
+      if (busy) return `corgi: the server can't reload while ${busyDoing(busy)}; try again in a moment.\n`;
+      return `corgi: ${name}\n`;
+    }
     default:
       return `corgi: ${name}\n`;
+  }
+}
+/** What a busy daemon is in the middle of, in words. */
+function busyDoing(busy: protocol.Busy): string {
+  switch (busy.op) {
+    case "worktree.add":
+      return `Git adds the worktree ${busy.path}`;
   }
 }
 if (import.meta.main) {

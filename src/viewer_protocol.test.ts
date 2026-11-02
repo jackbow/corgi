@@ -13,9 +13,12 @@ import {
   viewers,
   open,
   sync,
+  surfaces,
+  image,
 } from "./viewer_protocol";
-import { Pane } from "./runtime";
+import { Pane, Ghost } from "./runtime";
 import { Terminal } from "./pane/terminal";
+import { Snapshot, Work, Process } from "./trackers/resources";
 import { Workspace } from "./workspace";
 import { version, compatible, require as requireVersion } from "./viewer_version";
 const servers: Server[] = [];
@@ -44,7 +47,7 @@ function peer(server: Server, id = 1) {
 test("a viewer reads the view the daemon writes", () => {
   const written: WireView<{ revision: number }> = {
     type: "view",
-    viewer_protocol: 3,
+    viewer_protocol: version,
     session: { revision: 4 },
     session_hash: 7n,
     resources: null,
@@ -69,9 +72,8 @@ test("a viewer reads the view the daemon writes", () => {
   expect(json.parse(json.stringify(written)).session_hash).toBe(0xffffffffffffffffn);
 });
 test("viewer wire version checked on every exchange", () => {
-  expect(version).toBe(3);
-  expect(compatible({ viewer_protocol: 3 })).toBe(true);
-  for (const value of [null, 3, {}, { viewer_protocol: "3" }, { viewer_protocol: 2 }])
+  expect(compatible({ viewer_protocol: version })).toBe(true);
+  for (const value of [null, version, {}, { viewer_protocol: String(version) }, { viewer_protocol: version - 1 }])
     expect(() => requireVersion(value)).toThrow("IncompatibleViewerProtocol");
 });
 test("interest bounds and repeated pane validation match daemon", () => {
@@ -158,6 +160,120 @@ test("an empty workspace does not ask older viewers to detach", async () => {
   await sync(s, client, protocol.decode("viewer.sync", { workspace: 1, interests: [] }));
   expect(sent.mock.calls[0][0]).toMatchObject({ type: "view", detach: false });
 });
+test("resource receipts reuse published samples across viewers and follow detail and replacement", async () => {
+  const s = fixture();
+  s.runtime.workspaces.items.push(new Workspace(1, "/tmp"));
+  const snapshot = new Snapshot(),
+    work = new Work(1);
+  work.processes.push(new Process(7, 9n, "worker"));
+  snapshot.workspaces.push(work);
+  s.runtime.resources.current = snapshot;
+  const project = spyOn(snapshot, "forViewer"),
+    one = peer(s),
+    two = peer(s, 2),
+    sent = spyOn(one, "queue").mockImplementation(() => {}),
+    other = spyOn(two, "queue").mockImplementation(() => {});
+  const request = (client: typeof one, detail: number | null, receipt: bigint | null = null) =>
+    sync(
+      s,
+      client,
+      protocol.decode("viewer.sync", {
+        workspace: 1,
+        interests: [],
+        resource_detail: detail,
+        resources_hash: receipt,
+      }),
+    );
+  await request(one, null);
+  const first = sent.mock.calls.at(-1)![0] as WireView<unknown, Snapshot>;
+  expect(first.resources?.workspaces[0].processes).toEqual([]);
+  await request(two, null);
+  expect((other.mock.calls.at(-1)![0] as WireView).resources_hash).toBe(first.resources_hash);
+  await request(one, null, first.resources_hash);
+  expect((sent.mock.calls.at(-1)![0] as WireView).resources).toBeNull();
+  expect(project).toHaveBeenCalledTimes(1);
+  await request(one, 1, first.resources_hash);
+  expect((sent.mock.calls.at(-1)![0] as WireView<unknown, Snapshot>).resources?.workspaces[0].processes).toEqual(
+    work.processes,
+  );
+  expect(project).toHaveBeenCalledTimes(2);
+  await request(one, null);
+  expect(project).toHaveBeenCalledTimes(2);
+  s.runtime.resources.current = Object.assign(new Snapshot(), { host_memory: 1234n });
+  await request(one, null, first.resources_hash);
+  const next = sent.mock.calls.at(-1)![0] as WireView<unknown, Snapshot>;
+  expect(next.resources?.host_memory).toBe(1234n);
+  expect(next.resources_hash).not.toBe(first.resources_hash);
+});
+test("surface modes follow the live terminal while a restored ghost supplies its screen", async () => {
+  const s = fixture(),
+    ws = new Workspace(1, "/tmp");
+  s.runtime.workspaces.items.push(ws);
+  const id = ws.model.newTab("one"),
+    terminal = new Terminal(80, 24),
+    pane = new Pane(id, terminal, "/tmp"),
+    client = peer(s),
+    sent = spyOn(client, "queue").mockImplementation(() => {});
+  s.runtime.panes.push(pane);
+  terminal.feed("LIVE\x1b[?2004h");
+  const request = () =>
+    sync(
+      s,
+      client,
+      protocol.decode("viewer.sync", {
+        workspace: 1,
+        focus: id,
+        interests: [{ pane: id, cols: 80, rows: 24 }],
+      }),
+    );
+  await request();
+  let view = (sent.mock.calls.at(-1)![0] as WireView).surfaces[0];
+  expect(view.modes.bracketed_paste).toBe(true);
+  expect(view.surface.lines.join("")).toContain("LIVE");
+  const frozen = new Terminal(80, 24);
+  frozen.feed("RESTORED");
+  pane.ghost = new Ghost(frozen, terminal.surface_revision, "");
+  await request();
+  view = (sent.mock.calls.at(-1)![0] as WireView).surfaces[0];
+  expect(view.modes.bracketed_paste).toBe(true);
+  expect(view.surface.lines.join("")).toContain("RESTORED");
+});
+test("the data connection reads its viewer's surfaces and receipts without becoming a viewer", async () => {
+  const s = fixture(),
+    ws = new Workspace(1, "/tmp"),
+    pane = new Pane(1, new Terminal(80, 24), "/tmp");
+  ws.model.newTab("pane");
+  s.runtime.workspaces.items.push(ws);
+  s.runtime.panes.push(pane);
+  pane.terminal.feed("pane output");
+  const control = peer(s),
+    data = s.addClient(-1, false),
+    metadata = spyOn(control, "queue").mockImplementation(() => {}),
+    content = spyOn(data, "queue").mockImplementation(() => {});
+  expect(() => surfaces(s, data)).toThrow("NotAttached");
+  data.watching = true;
+  data.watch_viewer = control.viewer_id;
+  await sync(
+    s,
+    control,
+    protocol.decode("viewer.sync", {
+      interests: [{ pane: 1, cols: 80, rows: 24 }],
+      surfaces: false,
+    }),
+  );
+  expect(metadata.mock.calls[0][0]).toMatchObject({ type: "view", surfaces: [] });
+  surfaces(s, data);
+  const reply = content.mock.calls[0][0] as protocol.ReplyPayloads["viewer.surfaces"];
+  expect(reply.surfaces).toHaveLength(1);
+  expect(reply.surfaces[0].surface.lines.join("")).toContain("pane output");
+  expect(viewers(s)).toHaveLength(1);
+  control.interests[0].known = reply.surfaces[0].stamp;
+  surfaces(s, data);
+  expect(content.mock.calls[1][0]).toEqual({ ok: true, surfaces: [] });
+  expect(() => image(s, data, { pane: 2, image: "1", offset: 0 })).toThrow("NoPane");
+  control.dead = true;
+  expect(() => surfaces(s, data)).toThrow("NoViewer");
+});
 test("a new viewer opens on the pane last used in the preferred workspace", async () => {
   const s = fixture(),
     ws = new Workspace(1, "/tmp");
@@ -182,7 +298,7 @@ test("a new viewer opens on the pane last used in the preferred workspace", asyn
   await use(idle, first);
   expect(ws.focus).toBe(second);
   const next = s.addClient(-1, false),
-    reply = spyOn(next, "reply").mockImplementation(() => {});
+    reply = spyOn(next, "queue").mockImplementation(() => {});
   await open(s, next, protocol.decode("viewer.open", {}));
-  expect(reply.mock.calls[0][1]).toMatchObject({ workspace: 1, focus: second });
+  expect(reply.mock.calls[0][0]).toMatchObject({ workspace: 1, focus: second });
 });

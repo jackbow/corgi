@@ -1,8 +1,43 @@
 import * as json from "./json";
 import { Theme } from "./theme";
 import type { View as SurfaceView } from "./pane/surface";
-import { Provider, byProvider } from "./providers";
+import { Provider, type ByProvider } from "./providers";
 import type { Target } from "./agent_order";
+import * as checklist from "./activity/checklist";
+import * as text from "./text";
+
+/** Decode Corgi's own checklist, as the daemon sends or saves it, without provider cleanup. */
+export function decodeChecklist(value: unknown): checklist.List {
+  if (value === undefined) return new checklist.List();
+  const source: Record<string, unknown> = json.object(value);
+  if (!["items", "partial", "at"].every(key => Object.hasOwn(source, key))) throw Error("MissingField");
+  const { items, partial, at } = source;
+  if (
+    !Array.isArray(items) ||
+    typeof partial !== "boolean" ||
+    typeof at !== "number" ||
+    !Number.isSafeInteger(at) ||
+    at < 0
+  )
+    throw Error("UnexpectedToken");
+  if (items.length > checklist.max_items) throw Error("Overflow");
+  return new checklist.List(
+    items.map((value: unknown): checklist.Item => {
+      const item: Record<string, unknown> = json.object(value);
+      if (!["text", "status", "group"].every(key => Object.hasOwn(item, key))) throw Error("MissingField");
+      if (typeof item.text !== "string" || typeof item.status !== "string" || typeof item.group !== "string")
+        throw Error("UnexpectedToken");
+      if (text.byteLength(item.text) > checklist.text_bytes || text.byteLength(item.group) > checklist.group_bytes)
+        throw Error("Overflow");
+      const status = checklist.statuses.find(status => status === item.status);
+      if (status === undefined) throw Error("InvalidEnumTag");
+      return { text: item.text, status, group: item.group };
+    }),
+    partial,
+    at,
+  );
+}
+
 export interface Control {
   seq: bigint;
   kind: "focus" | "workspace" | "action";
@@ -31,7 +66,7 @@ export interface View<Session = unknown, Resources = unknown> {
   /** Always false; retained for older viewers. Detach uses an action control. */
   detach: boolean;
 }
-export const version = 3;
+export const version = 4;
 export const management_version = 1;
 export const viewer_version = 3;
 export type Op = (typeof operations)[number];
@@ -54,13 +89,17 @@ export const operations = [
   "session.command",
   "session.locate",
   "session.list",
+  "launcher.catalog",
+  "launcher.models",
   "session.snapshot",
   "session.subscribe",
   "viewer.watch",
   "agent.subscribe",
   "viewer.open",
   "viewer.sync",
+  "viewer.surfaces",
   "viewer.search",
+  "viewer.pick",
   "viewer.image",
   "pane.acknowledge",
   "pane.mark_unread",
@@ -127,13 +166,19 @@ export function check(op: string): "none" | "management" | "runtime" | "viewer" 
   return local.has(op) ? "none" : "runtime";
 }
 export const capabilities = operations.filter(op => op !== "hello" && check(op) !== "none");
+/** The protocol versions a request for `op` carries. */
+export function versions(op: string): { protocol?: number; runtime_protocol?: number; viewer_protocol?: number } {
+  return {
+    ...(check(op) !== "none" ? { protocol: check(op) === "management" ? management_version : version } : {}),
+    ...(op === "hello" ? { runtime_protocol: version } : {}),
+    ...(check(op) === "viewer" ? { viewer_protocol: viewer_version } : {}),
+  };
+}
 export function envelope(op: string, payload: Record<string, unknown> = {}): object {
   const fields = op === "viewer.open" ? { cwd: "", onboarding: false, theme: null, ...payload } : payload;
   return {
     op,
-    ...(check(op) !== "none" ? { protocol: check(op) === "management" ? management_version : version } : {}),
-    ...(op === "hello" ? { runtime_protocol: version } : {}),
-    ...(check(op) === "viewer" ? { viewer_protocol: viewer_version } : {}),
+    ...versions(op),
     ...Object.fromEntries(Object.entries(fields).filter(([key, value]) => value !== null || key === "theme")),
   };
 }
@@ -141,6 +186,13 @@ export function parse(value: unknown): Op | null {
   if (value === null || typeof value !== "object") return null;
   const op = (value as Record<string, unknown>).op;
   return typeof op === "string" && (operations as readonly string[]).includes(op) ? (op as Op) : null;
+}
+/** Correlation for RPC; raw requests and subscriptions may omit it. */
+export function requestId(value: unknown): number | null {
+  if (!value || typeof value !== "object" || !Object.hasOwn(value, "request_id")) return null;
+  const id = (value as Record<string, unknown>).request_id;
+  if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) throw Error("InvalidRequestId");
+  return id;
 }
 export function require(value: any, negotiated: number | null, kind: "runtime" | "management" = "runtime"): void {
   if (!Object.hasOwn(value, "protocol") && negotiated === null) throw Error("ProtocolRequired");
@@ -164,6 +216,8 @@ export function exclusion(op: string): "none" | "layout" | "import" | "push" | "
 }
 const commands = {
   "agent.move": { workspace: "u32", target: "target", before: ["?target", null] },
+  "agent.pin": { workspace: "u32", target: "target", before: ["?target", null], pinned: ["bool", true] },
+  "agent.place": { workspace: "u32", target: "target", before: ["?target", null] },
   "agent.command": {
     index: "u64",
     command: "string",
@@ -177,6 +231,26 @@ const commands = {
   "agent.command.create": { workspace: "u32", cwd: ["string", ""], index: "u64" },
   "agent.visibility": { hidden: "visibility", hidden_accounts: ["?[]string", null] },
   "agent.workspace_visibility": { workspace: "u32", row: "string", shown: "bool" },
+  "agent.launcher.move": {
+    workspace: "u32",
+    row: "string",
+    before: ["?string", null],
+    order: "[]string",
+    shown: "bool",
+  },
+  "agent.launcher.copy": { from: "u32", workspace: "u32" },
+  "agent.launcher.configure": {
+    row: "string",
+    clone: ["bool", false],
+    name: ["?string", null],
+    model: ["?string", null],
+    effort: ["?string", null],
+    flags: ["?string", null],
+    env: ["?string", null],
+    yolo: ["?bool", null],
+  },
+  "agent.launcher.remove": { row: "string" },
+  "agent.profile.create": { workspace: "u32", cwd: ["string", ""], id: "string" },
   "agent.yolo": { provider: "provider", enabled: "bool", account: ["string", ""] },
   "agent.create": { workspace: "u32", cwd: ["string", ""], provider: ["?provider", null], account: ["string", ""] },
   "agent.resume": {
@@ -248,7 +322,13 @@ type Member<T extends string> = T extends "provider" ? Provider : T;
 type Alternatives<T extends string> = T extends `${infer Head}|${infer Tail}`
   ? Member<Head> | Alternatives<Tail>
   : Member<T>;
-type TaggedValues = { target: Target; paneDestination: PaneDestination; tabDestination: TabDestination };
+// Types with hand-written validators.
+type CustomValues = {
+  target: Target;
+  paneDestination: PaneDestination;
+  tabDestination: TabDestination;
+  visibility: Partial<ByProvider<boolean>>;
+};
 type Value<T extends string> = T extends `?${infer Inner}`
   ? Value<Inner> | null
   : T extends `[]${infer Inner}`
@@ -265,8 +345,8 @@ type Value<T extends string> = T extends `?${infer Inner}`
               ? unknown
               : T extends "theme"
                 ? Theme | null
-                : T extends keyof TaggedValues
-                  ? TaggedValues[T]
+                : T extends keyof CustomValues
+                  ? CustomValues[T]
                   : T extends keyof typeof structures
                     ? Normalized<(typeof structures)[T]>
                     : Alternatives<T>;
@@ -282,9 +362,11 @@ type InputValue<T extends string> = T extends `?${infer Inner}`
         ? Partial<Pick<Theme, "foreground" | "background" | "palette">> | null
         : T extends "paneDestination"
           ? { new_tab: string } | { beside: Input<typeof structures.beside> }
-          : T extends keyof typeof structures
-            ? Input<(typeof structures)[T]>
-            : Value<T>;
+          : T extends "visibility"
+            ? Partial<ByProvider<boolean>>
+            : T extends keyof typeof structures
+              ? Input<(typeof structures)[T]>
+              : Value<T>;
 type InputField<F extends Field> = InputValue<F extends string ? F : F[0]>;
 type Input<S extends Fields> = {
   -readonly [K in keyof S as S[K] extends string ? K : never]: InputField<S[K]>;
@@ -353,6 +435,13 @@ function validate(value: any, type: string, strict = false): any {
   if (type === "json") return value;
   if (type === "target") return target(value);
   if (type === "paneDestination" || type === "tabDestination") return destination(value, type === "paneDestination");
+  if (type === "visibility") {
+    // Only the providers named: a client may know more or fewer than this daemon.
+    const source = json.object(value),
+      out: Partial<ByProvider<boolean>> = {};
+    for (const p of Provider.all) if (Object.hasOwn(source, p)) out[p] = validate(source[p], "bool");
+    return out;
+  }
   if (type === "theme") {
     try {
       return Object.assign(
@@ -412,7 +501,6 @@ function struct(value: any, fields: Fields, strict: boolean) {
   return out;
 }
 const structures = {
-  visibility: byProvider(() => ["bool", false] as const),
   semantics: {
     provider: ["?provider", null],
     suggested_name: ["string", ""],
@@ -474,6 +562,7 @@ const structures = {
 } as const satisfies Record<string, Fields>;
 const launch = { workspace: "u32", cwd: ["string", ""] } as const satisfies Fields;
 const requests = {
+  "launcher.models": { row: "string" },
   "session.locate": { pane: "u32" },
   "viewer.watch": { viewer: "u32" },
   "agent.subscribe": launch,
@@ -482,6 +571,7 @@ const requests = {
   "viewer.open": { cwd: ["string", ""], onboarding: ["bool", false], theme: ["theme", null] },
   "viewer.sync": {
     interests: "[]interest",
+    surfaces: ["bool", true],
     session_hash: ["?u64", null],
     focus: ["?u32", null],
     watched: ["bool", true],
@@ -493,7 +583,17 @@ const requests = {
     resources: ["bool", true],
     resources_hash: ["?u64", null],
   },
+  "viewer.surfaces": {},
   "viewer.search": { pane: "u32", needle: "string", skip: ["u64", 0] },
+  "viewer.pick": {
+    pane: "u32",
+    offset: "u64",
+    unit: "word|line",
+    x: "u16",
+    y: "u16",
+    to_x: ["?u16", null],
+    to_y: ["?u16", null],
+  },
   "viewer.image": { pane: "u32", image: "string", offset: "u32" },
   "pane.paste": { pane: "u32", text: ["?string", null], image: ["?image", null] },
   "pane.idle": { workspace: ["u32", 0], cwd: ["string", ""], first: ["bool", false] },
@@ -525,7 +625,7 @@ const requests = {
   "shell.configure": { shell: "string" },
   "smart_links.configure": { enabled: "bool" },
   "git.push": { workspace: "u32", ref: "ref" },
-  "worktree.remove": { workspace: "u32", path: "string" },
+  "worktree.remove": { workspace: "u32", path: "string", locked: ["?string", null] },
   "worktree.stop": { workspace: "u32" },
   "process.signal": { workspace: "u32", pid: "u32", start: "u64", signal: "term|kill" },
   "worktree.brief": { workspace: "u32" },
@@ -592,14 +692,23 @@ export interface ReplyPayloads {
   ping: Ok & { pid: number };
   "session.command": Ok & { result: Result };
   "session.locate": Ok & { result: Result };
+  "launcher.catalog": Ok & { agents: import("./launcher_config").Agent[] };
+  "launcher.models": Ok & { models: import("./agent_models").Choice[] };
   "session.list": Ok & { result: SessionSnapshot; viewers: ViewerInfo[] };
   "session.snapshot": SessionSnapshot;
   "session.subscribe": SessionSnapshot;
   "viewer.open": Ok & Opened;
   "viewer.sync": View<ViewerSnapshot, import("./trackers/resources").Snapshot>;
+  "viewer.surfaces": Ok & { surfaces: SurfaceView[] };
   "viewer.search": Ok & {
     offset: bigint | null;
     match?: { x: number; y: number; end_x: number; end_y: number } | null;
+  };
+  "viewer.pick": Ok & {
+    match: { x: number; y: number; end_x: number; end_y: number } | null;
+    /** The range's visible text, newlines removed. */
+    shown: string;
+    copy: string;
   };
   "viewer.list": Ok & { viewers: ViewerInfo[] };
   "viewer.image": Ok & { data: string | null };
@@ -627,7 +736,8 @@ export interface ReplyPayloads {
   "agent.preview": Ok & { preview: import("./launch/preview").Preview };
   "agent.track_usage": Ok & { preview: import("./launch/preview").Preview };
   "agent.subscribe": { type: "agent.preview"; cwd: string; preview: import("./launch/preview").Preview };
-  "agent.history": Ok & { history: import("./launch/history").History };
+  /** Without history when following; updates arrive as `agent.history` events. */
+  "agent.history": Ok & { history?: import("./launch/history").History };
   action: Ok & { viewer: number; queued: true };
   bugreport: Ok & {
     pid: number;
@@ -652,7 +762,37 @@ export interface ReplyPayloads {
 // normalizes its model. WireReply never claims to contain bigint-only fields.
 export type WireReply<K extends Op> = K extends keyof ReplyPayloads ? Wire<ReplyPayloads[K]> : Ok;
 export type Reply<K extends Op> = WireReply<K>;
-export type ErrorReply = { err: string; viewer_protocol?: number };
+export type PickUnit = Request<"viewer.pick">["unit"];
+/** What `viewer.pick` finds at a cell, as the native terminal and the viewer see it. */
+export type PickResult = Omit<Reply<"viewer.pick">, "ok">;
+/** Unsolicited updates share a connection with correlated replies. */
+export type Event =
+  | { type: "viewer.wake" }
+  | Wire<SessionSnapshot>
+  | Reply<"agent.subscribe">
+  | { type: "agent.history"; update: Wire<import("./launch/history").Update> };
+/** What arrives without a request id; anything else untagged fails the connection. */
+export const event_types = ["viewer.wake", "session", "agent.preview", "agent.history"] as const;
+// Fails to compile while an `Event` type is missing from the list.
+true satisfies Exclude<Event["type"], (typeof event_types)[number]> extends never ? true : false;
+export function event(message: { type?: unknown }): Event | null {
+  return (event_types as readonly unknown[]).includes(message.type) ? (message as Event) : null;
+}
+/** What a `ReloadBusy` reload waits out. */
+export type Busy = { op: "worktree.add"; path: string };
+export type ErrorReply = { err: string; viewer_protocol?: number; busy?: Busy };
+/** The `busy` of an error reply, or null when it names nothing this client knows. */
+export function busy(reply: unknown): Busy | null {
+  const value = reply && typeof reply === "object" ? (reply as { busy?: unknown }).busy : null;
+  if (!value || typeof value !== "object") return null;
+  const { op, path } = value as Record<string, unknown>;
+  if (typeof path !== "string") return null;
+  switch (op) {
+    case "worktree.add":
+      return { op, path };
+  }
+  return null;
+}
 export type Response<K extends Op> = Reply<K> | ErrorReply;
 export type Arguments<K extends Op> =
   {} extends RequestInput<K> ? [fields?: RequestInput<K>] : [fields: RequestInput<K>];

@@ -2,6 +2,7 @@
 //! fills the preview; this file only shows it, and the shared runtime
 //! remembers the choice. Its Manage agents is agent_manager.ts, in its card.
 //! Mirrors agent_launcher.zig.
+import * as i18n from "./i18n";
 import * as palette from "./palette";
 import { Style, keycap } from "./palette";
 import { Provider, byProvider, adapter } from "./providers";
@@ -10,6 +11,11 @@ import { Rect } from "./layout";
 import { Dialog, View as DialogView, writeField } from "./name_dialog";
 import { Entry as CommandEntry, Semantics, Resolution, capacity as command_capacity } from "./launch/command";
 import * as accounts from "./accounts";
+import { writeModel } from "./agent_models";
+import * as effort from "./providers/effort";
+import { Model } from "./providers/model";
+import type { Profile } from "./agent_profiles";
+import * as launcherOrder from "./launch/order";
 import * as agentManager from "./agent_manager";
 import { Slide } from "./card_transition";
 import { milliTimestamp } from "./clock";
@@ -22,10 +28,11 @@ import { writeKey } from "./launcher_resume";
 import * as launcherWorktree from "./launcher_worktree";
 import * as worktreeFolder from "./worktree_folder";
 import * as dropdown from "./dropdown";
-import type * as worktrees from "./worktrees";
+import * as worktrees from "./worktrees";
 import type { View as SidebarView, Spotlight } from "./sidebar";
 import { Writer, displayWidth, ellipsis, writeEllipsis, sat } from "./text";
 import { Row, customs, type Launch } from "./launch/row";
+import { writeMark, type Marks } from "./provider_mark";
 export { Row, type Launch };
 
 const providers = Provider.all;
@@ -111,24 +118,46 @@ export function preview(value: any = {}): Preview {
     }),
   };
 }
+// Semantics naming a provider this viewer doesn't know; sending them back would erase it.
+const foreign = new WeakSet<Semantics>();
+/** What a command runs, with a provider this viewer doesn't know read as none. */
+function semantics(value: any): Semantics {
+  const result = Object.assign(new Semantics(), value ?? {});
+  result.provider = Provider.parse(result.provider);
+  if (value?.provider != null && result.provider === null) foreign.add(result);
+  return result;
+}
+/** The semantics to send back with a command, or null to leave them to the daemon. */
+export function returned(s: Semantics): Semantics | null {
+  return foreign.has(s) ? null : s;
+}
 /** A saved launch command from the snapshot, with its methods. */
 export function commandEntry(value: any = {}): CommandEntry {
   const entry = Object.assign(new CommandEntry(), value ?? {});
-  entry.semantics = Object.assign(new Semantics(), value?.semantics ?? {});
+  entry.semantics = semantics(value?.semantics);
   return entry;
 }
 export function resolution(value: any = {}): Resolution {
   const result = Object.assign(new Resolution(), value ?? {});
-  result.semantics = Object.assign(new Semantics(), value?.semantics ?? {});
+  result.semantics = semantics(value?.semantics);
   result.command = commandEntry(value?.command);
   return result;
 }
-const headings = ["Agent", "YOLO", "Model", "Account", "Plan", "Usage (used) · resets in"];
+const headings = () => [
+  i18n.t`Agent`,
+  "YOLO",
+  i18n.t`Model`,
+  i18n.t`Account`,
+  i18n.t`Plan`,
+  i18n.t`Usage (used) · resets in`,
+];
+/** Columns for a row's brand mark. */
+const mark_w = 2;
 // Reserve metadata and two usage windows before their readings arrive.
-const column_widths = [28, 6, 18, 28, 12, 50];
+const column_widths = [26 + mark_w, 6, 24 - mark_w, 28, 12, 50];
 export const preferred_width = 4 + column_widths.reduce((sum, size) => sum + size, 0);
 type Hint = { key: string; label: string };
-const manage_label = " Manage agents ";
+const manageLabel = () => ` ${i18n.t`Manage agents`} `;
 const now = () => Math.floor(Date.now() / 1000);
 
 export class Menu {
@@ -149,6 +178,8 @@ export class Menu {
   account_hidden: string[] = [];
   /** The rows hidden in this workspace only. */
   workspace_hidden: Row[] = [];
+  workspace_order: Row[] = [];
+  profiles: Profile[] = [];
   workspace_name = "";
   /** Manage agents has the card. */
   managing = false;
@@ -168,28 +199,52 @@ export class Menu {
   worktree = new launcherWorktree.Chooser();
   /** Where a new worktree goes, as the viewer's preferences say. */
   worktree_folder = worktreeFolder.default_template;
+  /** Places brand marks where the host shows images; the glyph otherwise. */
+  marks: Marks | null = null;
 
   constructor(fields: Partial<Menu> = {}) {
     Object.assign(this, fields);
   }
   /** The account a row starts in, as the preview lists it; null for a
    * provider's own row and for an account it no longer lists. */
+  profileOf(row: Row): Profile | null {
+    const id = Row.profile(row);
+    return id ? (this.profiles.find(p => p.id === id) ?? null) : null;
+  }
+  launchOf(row: Row): Launch | null {
+    return this.profileOf(row) ?? Row.launch(row);
+  }
+  /** The agent a row starts, for its brand mark; null for a terminal or a
+   * saved command that runs something else. */
+  providerOf(row: Row): Provider | null {
+    const custom = Row.custom(row);
+    return custom !== null ? this.commands[custom].semantics.provider : (this.launchOf(row)?.provider ?? null);
+  }
   accountOf(row: Row): AccountOption | null {
+    const profile = this.profileOf(row);
+    if (profile) row = Row.of(profile.provider, profile.account);
     return this.preview.accounts.find(a => Row.of(a.provider, a.account) === row) ?? null;
   }
   /** What a provider's or an account's row reads; null for any other row. */
   optionOf(row: Row): Option | null {
+    const profile = this.profileOf(row);
+    if (profile) row = Row.of(profile.provider, profile.account);
     const provider = Row.agent(row);
-    return provider !== null ? this.preview.options[provider] : (this.accountOf(row)?.option ?? null);
+    return provider !== null
+      ? this.preview.options[provider]
+      : (this.accountOf(row)?.option ?? (profile ? option() : null));
   }
   /** Whether a provider's or an account's row starts its agent with YOLO. */
   yoloOf(row: Row): boolean {
-    const l = Row.launch(row);
+    const profile = this.profileOf(row);
+    if (profile) return profile.yolo;
+    const l = this.launchOf(row);
     return l === null ? false : l.account ? this.account_yolo.includes(l.account) : this.yolo[l.provider];
   }
   /** Whether Manage agents took a provider's or an account's row out of the picker. */
   hiddenOf(row: Row): boolean {
-    const l = Row.launch(row);
+    if (this.profileOf(row)) return false;
+    const l = this.launchOf(row);
     return l === null ? false : l.account ? this.account_hidden.includes(l.account) : this.hidden[l.provider];
   }
   /** The account a row signs in to instead of starting its agent: one signed out. */
@@ -201,33 +256,66 @@ export class Menu {
    * or for a default account that has no name, its provider's. Short of
    * `room`, it shortens its provider's name first. */
   label(row: Row, room = Infinity): string {
-    const l = Row.launch(row)!,
+    const profile = this.profileOf(row);
+    if (profile) return ellipsis(profile.name, room);
+    const l = this.launchOf(row)!,
       name = l.account ? (this.accountOf(row)?.name ?? "") : this.preview.names[l.provider],
       p = adapter(l.provider);
-    if (!name) return p.label;
+    if (!name) return displayWidth(p.label) <= room ? p.label : p.name;
     const suffix = ` · ${name}`;
     if (displayWidth(p.label + suffix) <= room) return p.label + suffix;
     const short = ellipsis(p.name, sat(room, displayWidth(suffix)));
     return short.length > 0 ? short + suffix : name;
   }
-  /** A provider's or an account's row's text columns; `usageCell` draws the last one. */
-  cells(row: Row): string[] {
+  /** A row's name beside its brand mark, which says whose it is: the name
+   * given to it, such as `work`, or for a default account that has none,
+   * its provider's. */
+  markedLabel(row: Row, room = Infinity): string {
+    const l = this.profileOf(row) ? null : this.launchOf(row),
+      name = !l ? "" : l.account ? (this.accountOf(row)?.name ?? "") : this.preview.names[l.provider];
+    return name ? ellipsis(name, room) : this.label(row, room);
+  }
+  modelCell(row: Row): { name: string; effort?: effort.Effort } {
+    const target = this.launchOf(row),
+      settings =
+        this.profileOf(row)?.options ?? (target ? accounts.launchOptions(target.provider, target.account) : null),
+      o = this.optionOf(row) ?? option();
+    return {
+      name: settings?.model
+        ? Model.resolve(settings.model).label()
+        : o.model.length
+          ? modelLabel(o)
+          : (o.pending ?? this.preview.pending)
+            ? i18n.t`Reading…`
+            : i18n.t`Default`,
+      ...(settings?.effort ? { effort: settings.effort } : {}),
+    };
+  }
+  private accountCell(row: Row): string {
     const o = this.optionOf(row) ?? option();
-    const pending = o.pending ?? this.preview.pending;
-    const out = this.signsIn(row) !== null;
+    if (o.account) return o.account;
+    if (o.pending ?? this.preview.pending) return i18n.t`Reading…`;
+    return this.launchOf(row)?.provider === "pi" ? i18n.t`Pi provider selection` : i18n.t`Unavailable`;
+  }
+  /** A provider's or an account's row's text columns; usageCell draws the last one. */
+  cells(row: Row): string[] {
+    const o = this.optionOf(row) ?? option(),
+      model = this.modelCell(row),
+      pending = o.pending ?? this.preview.pending,
+      out = this.signsIn(row) !== null;
     return [
       this.label(row),
-      adapter(Row.launch(row)!.provider).bypass === false ? "—" : this.yoloOf(row) ? "✓" : "·",
-      o.model.length > 0 ? modelLabel(o) : pending ? "Reading…" : "Default",
-      out ? "—" : o.account.length > 0 ? o.account : pending ? "Reading…" : "Unavailable",
-      out ? "—" : o.plan.length > 0 ? o.plan : pending ? "…" : "Unknown",
+      adapter(this.launchOf(row)!.provider).bypass === false ? "—" : this.yoloOf(row) ? "✓" : "·",
+      model.name + effort.suffix(model.effort),
+      out ? "—" : this.accountCell(row),
+      out ? "—" : o.plan.length > 0 ? o.plan : pending ? "…" : i18n.t`Unknown`,
     ];
   }
   customCells(index: number): string[] {
     const entry = this.commands[index];
     const info = entry.semantics;
     const shared = info.default_account ? info.provider : null;
-    const values = shared ? this.cells(shared) : ["", "", "Default", "", "—"];
+    const values = shared ? this.cells(shared) : ["", "", i18n.t`Default`, "", "—"];
     values[0] = entry.label();
     values[1] = info.yolo ? "✓" : "·";
     if (info.model.length > 0) values[2] = info.modelLabel();
@@ -244,15 +332,16 @@ export class Menu {
           ? this.preview.options[shared.provider]
           : null;
     if (o === null) return Cell.status("—");
-    if (custom === null && this.signsIn(row)) return Cell.status("Sign in");
+    if (custom === null && this.signsIn(row)) return Cell.status(i18n.t`Sign in`);
     // Agent rows offer an actionable "Track usage" link instead; saved
     // commands sharing that provider show unavailable data (no action).
-    if (this.consenting(o)) return custom === null ? Cell.status("Track usage") : Cell.status("—");
+    if (this.consenting(o)) return custom === null ? Cell.status(i18n.t`Track usage`) : Cell.status("—");
     const at = now();
     const limits = o.limits;
-    if (limits === "none") return (o.pending ?? this.preview.pending) ? Cell.status("Reading…") : Cell.status("—");
+    if (limits === "none")
+      return (o.pending ?? this.preview.pending) ? Cell.status(i18n.t`Reading…`) : Cell.status("—");
     if (limits === "metered") {
-      if (o.spend === null) return Cell.status("Metered");
+      if (o.spend === null) return Cell.status(i18n.t`Metered`);
       if (expired(o.usage_fetched_at, at) || !spend.current(o.spend, at)) return Cell.status("—");
       return Cell.monthly(o.spend, at);
     }
@@ -267,7 +356,8 @@ export class Menu {
     const o = this.optionOf(row);
     if (o === null) return false;
     // A signed-out account's row offers to sign in; a signed-out default's is left out.
-    const l = Row.launch(row)!;
+    const l = this.launchOf(row);
+    if (!l || (this.profileOf(row)?.account && !this.accountOf(row))) return false;
     return this.preview.installed[l.provider] && !this.hiddenOf(row) && (l.account.length > 0 || o.signed_in !== false);
   }
   /** Every row, shown or not: each provider's and then its accounts'. */
@@ -276,7 +366,13 @@ export class Menu {
       p,
       ...this.preview.accounts.filter(a => a.provider === p).map(a => Row.of(p, a.account)),
     ]);
-    return [...agents, ...customs, "terminal"];
+    return [
+      ...launcherOrder.arrange(
+        [...agents, ...this.profiles.map(p => Row.ofProfile(p.id)), ...customs],
+        this.workspace_order,
+      ),
+      "terminal",
+    ];
   }
   emptyCommand(): number | null {
     const i = this.commands.findIndex(entry => entry.command.length === 0);
@@ -300,7 +396,7 @@ export class Menu {
    * An account's row that went away leaves its provider's selected. */
   normalize(): void {
     if (this.shown(this.selected)) return;
-    const provider = Row.launch(this.selected)?.provider ?? null;
+    const provider = this.launchOf(this.selected)?.provider ?? null;
     this.selected = provider !== null && this.shown(provider) ? provider : this.rowAt(0)!;
   }
   first(): Row {
@@ -374,7 +470,7 @@ export class Menu {
   columns(width: number): number[] {
     const widths = column_widths.slice();
     const available = sat(width, 4);
-    const minimum = [width >= 100 ? 26 : 17, 6, 9, 18, 6, 36];
+    const minimum = [width >= 100 ? 26 + mark_w : 17, 6, width >= 120 ? 24 - mark_w : 9, 18, 6, 36];
     if (width < 64) {
       widths[1] = 3; // A one-cell Y heading and toggle, plus its gutter.
       minimum[1] = 3;
@@ -416,12 +512,12 @@ export class Menu {
   private agentHit(cols: number, rowsCount: number, side: SidebarView, x: number, y: number): Row | null {
     if (this.managing) return null;
     const row = this.hit(cols, rowsCount, side, x, y);
-    return row !== null && Row.launch(row) !== null ? row : null;
+    return row !== null && this.launchOf(row) !== null ? row : null;
   }
   /** The row whose YOLO toggle is under a pointer. */
   yoloHit(cols: number, rowsCount: number, side: SidebarView, x: number, y: number): Row | null {
     const row = this.agentHit(cols, rowsCount, side, x, y);
-    if (row === null || adapter(Row.launch(row)!.provider).bypass === false) return null;
+    if (row === null || adapter(this.launchOf(row)!.provider).bypass === false) return null;
     const b = this.bounds(cols, rowsCount, side);
     if (b.w < 24 || b.h < this.rowsHeight()) return null;
     const widths = this.columns(b.w);
@@ -429,7 +525,7 @@ export class Menu {
     return x >= start && x < start + sat(widths[1], 2) ? row : null;
   }
   trackable(row: Row): boolean {
-    const o = Row.launch(row) !== null ? this.optionOf(row) : null;
+    const o = this.launchOf(row) !== null ? this.optionOf(row) : null;
     return o !== null && this.consenting(o) && this.signsIn(row) === null;
   }
   /** Usage waits on the user's consent to read it. */
@@ -438,7 +534,7 @@ export class Menu {
   }
   usageHit(cols: number, rowsCount: number, side: SidebarView, x: number, y: number): Row | null {
     const row = this.agentHit(cols, rowsCount, side, x, y);
-    if (row === null || adapter(Row.launch(row)!.provider).bypass === false) return null;
+    if (row === null || adapter(this.launchOf(row)!.provider).bypass === false) return null;
     const b = this.bounds(cols, rowsCount, side);
     if (b.w < 24 || b.h < this.rowsHeight()) return null;
     const widths = this.columns(b.w);
@@ -454,6 +550,13 @@ export class Menu {
       now(),
       this.accounts,
       this.preview.names,
+      cwd => {
+        const at = launcherWorktree.containing(this.worktrees, cwd);
+        return {
+          label: launcherWorktree.place(this.worktrees, cwd, null).label,
+          branch: at?.branch != null ? worktrees.label(at) : null,
+        };
+      },
     );
   }
   /** Where agents start: the new worktree named for them, else `cwd`. */
@@ -549,7 +652,7 @@ export class Menu {
   /** The title's Manage button, ` m  Manage agents `, in 0-based cells;
    * null when the menu is too narrow for it. */
   static manageSpan(b: Rect): { x: number; w: number } | null {
-    const width = 1 + 3 + manage_label.length;
+    const width = 1 + 3 + displayWidth(manageLabel());
     if (b.w < width + 18) return null;
     return { x: b.x + b.w - 2 - width, w: width };
   }
@@ -572,12 +675,17 @@ export class Menu {
     if (!span) return;
     // Like a footer hint: a keycap, then a faint label.
     w.write(`\x1b[${b.y + 1};${span.x + 1}H${panel} `);
-    writeKey(w, "m", panel);
-    w.write(manage_label);
+    writeKey(w, "→", panel);
+    w.write(manageLabel());
   }
   private static drawFooter(w: Writer, b: Rect, panel: string, what: string, hints: Hint[]): void {
     let hint_width = 0;
-    hints.forEach((hint, i) => (hint_width += displayWidth(hint.key) + 2 + 1 + hint.label.length + (i > 0 ? 2 : 0)));
+    hints = hints.filter(hint => {
+      const width = displayWidth(hint.key) + 3 + displayWidth(hint.label) + (hint_width > 0 ? 2 : 0);
+      if (hint_width + width > b.w - 6) return false;
+      hint_width += width;
+      return true;
+    });
     const footer_row = b.y + b.h - 1;
     w.write(`\x1b[${footer_row};${b.x + 3}H${panel}`);
     writeEllipsis(w, what, sat(b.w, hint_width + 6));
@@ -611,24 +719,27 @@ export class Menu {
   manageModel(): agentManager.Model {
     const agents: agentManager.Agent[] = [];
     for (const row of this.rows()) {
-      const l = Row.launch(row),
+      const l = this.launchOf(row),
         o = this.optionOf(row);
       if (!l || !o) continue;
       const a = this.accountOf(row),
         installed = this.preview.installed[l.provider],
-        out = installed && o.signed_in === false;
+        out = installed && o.signed_in === false,
+        version = this.preview.outdated[l.provider],
+        requires = adapter(l.provider).requires ?? i18n.t`an update`;
       agents.push({
+        ...(this.profileOf(row) ? { profile: this.profileOf(row)!.id } : {}),
         provider: l.provider,
         account: l.account,
-        name: l.account ? (a?.name ?? "") : this.preview.names[l.provider],
+        name: this.profileOf(row)?.name ?? (l.account ? (a?.name ?? "") : this.preview.names[l.provider]),
         label: this.label(row),
         who: !installed
           ? this.preview.outdated[l.provider]
-            ? `${this.preview.outdated[l.provider]} · needs ${adapter(l.provider).requires ?? "an update"}`
-            : "Not installed"
+            ? i18n.t`${version} · needs ${requires}`
+            : i18n.t`Not installed`
           : out
-            ? "Not signed in"
-            : o.account || ((o.pending ?? this.preview.pending) ? "Reading…" : "Unavailable"),
+            ? i18n.t`Not signed in`
+            : this.accountCell(row),
         signed_out: out,
         shown: !this.hiddenOf(row),
         here: !this.workspace_hidden.includes(row),
@@ -641,10 +752,19 @@ export class Menu {
       commands: this.commands,
       workspace: this.workspace_name,
       here: index => !this.workspace_hidden.includes(Row.ofCommand(index)),
-      add: providers.filter(p => this.preview.installed[p] && adapter(p).accounts.signin !== null),
+      offers: providers.map(p => ({
+        provider: p,
+        installed: this.preview.installed[p],
+        signin: adapter(p).accounts.signin !== null,
+      })),
+      removed: accounts.removed().map(a => ({ provider: a.provider, account: a.dir, name: a.name })),
+      folder: accounts.folder,
       account: info => this.account(info),
       suggest: a => accounts.suggest(a.provider, accounts.identity(a.provider, a.account), a.account),
-      options: a => accounts.launchOptions(a.provider, a.account),
+      options: a =>
+        (a.profile ? this.profiles.find(p => p.id === a.profile)?.options : null) ??
+        accounts.launchOptions(a.provider, a.account),
+      order: this.rows(),
     };
   }
   account(info: Semantics): string {
@@ -654,10 +774,12 @@ export class Menu {
       return o.account.length > 0
         ? o.account
         : (o.pending ?? this.preview.pending)
-          ? "Reading default account…"
-          : "Default account · unavailable";
+          ? i18n.t`Reading default account…`
+          : info.provider === "pi"
+            ? i18n.t`Pi provider selection`
+            : i18n.t`Default account · unavailable`;
     }
-    return "Account unknown";
+    return i18n.t`Account unknown`;
   }
   /** A field on `selected`: its text in `fg`, its selection while focused, or the placeholder. */
   private static drawInput(
@@ -687,6 +809,7 @@ export class Menu {
     const m = this;
     const b = m.bounds(cols, rowsCount, side);
     if (m.managing) {
+      m.manager.marks = m.transition.active ? null : m.marks;
       if (b.w >= 40 && b.h >= m.manager.minimumHeight()) m.manager.draw(w, b, m.manageModel());
       return;
     }
@@ -701,20 +824,22 @@ export class Menu {
       w.write(row === 0 ? "╮" : row === b.h - 1 ? "╯" : "│");
     }
     m.drawTitle(w, b, panel);
+    // Images can't follow the card as it slides; its glyphs can.
+    const marks = m.transition.active ? null : m.marks;
     const widths = m.columns(b.w);
     let heading_x = b.x + 4;
-    headings.forEach((heading, column) => {
+    headings().forEach((heading, column) => {
       const width = widths[column];
       if (width === 0) return;
-      w.write(`\x1b[${b.y + 2};${heading_x + (column === 0 ? 4 : 0)}H${panel}`);
-      const room = sat(width, column === 0 ? 6 : column === 5 ? 1 : 2);
+      w.write(`\x1b[${b.y + 2};${heading_x + (column === 0 ? 4 + mark_w : 0)}H${panel}`);
+      const room = sat(width, column === 0 ? 6 + mark_w : column === 5 ? 1 : 2);
       const label =
         column === 1 && room < 4
           ? "Y"
           : column === 5 && room < displayWidth(heading)
             ? room >= 14
-              ? "Usage · resets"
-              : "Usage"
+              ? i18n.t`Usage · resets`
+              : i18n.t`Usage`
             : heading;
       writeEllipsis(w, label, room);
       heading_x += width;
@@ -738,22 +863,32 @@ export class Menu {
         w.write(`\x1b[${row};${b.x + 4}H`);
         writeKey(w, "t", style);
         w.write(" ");
-        writeEllipsis(w, "New terminal", sat(b.w, 10));
+        writeEllipsis(w, i18n.t`New terminal`, sat(b.w, 10));
         continue;
       }
       let x = b.x + 4;
       const custom = Row.custom(current);
       const values = custom !== null ? m.customCells(custom) : m.cells(current);
-      if (custom === null) values[0] = m.label(current, sat(widths[0], 6));
       const yolo = custom !== null ? m.commands[custom].semantics.yolo : m.yoloOf(current);
+      // The agent's brand mark leads its name.
+      const provider = m.providerOf(current);
+      if (provider && widths[0] > 0) {
+        // This card writes 1-based positions; marks take 0-based cells.
+        writeMark(w, provider, x + 3, row - 1, marks);
+        w.write(style);
+      }
+      if (custom === null) values[0] = m.markedLabel(current, sat(widths[0], 6 + mark_w));
       widths.forEach((width, column) => {
         if (width === 0) return;
-        w.write(`\x1b[${row};${x + (column === 0 ? 4 : 0)}H`);
+        w.write(`\x1b[${row};${x + (column === 0 ? 4 + mark_w : 0)}H`);
         if (column === 5 && m.trackable(current)) w.write("\x1b[4m");
         if (column === 1 && yolo) w.write("\x1b[1m" + palette.fg("strong"));
-        const room = sat(width, column === 0 ? 6 : column === 5 ? 1 : 2);
+        const room = sat(width, column === 0 ? 6 + mark_w : column === 5 ? 1 : 2);
         if (column === 5) m.usageCell(current).write(w, grid, room, style, selected);
-        else writeEllipsis(w, values[column], room);
+        else if (column === 2 && custom === null) {
+          const model = m.modelCell(current);
+          writeModel(w, model.name, model.effort, room, style);
+        } else writeEllipsis(w, values[column], room);
         w.write("\x1b[24m");
         if (column === 1 && yolo) w.write(style);
         x += width;
@@ -763,8 +898,8 @@ export class Menu {
       // A rule across the gap between the agents and the conversations.
       w.write(`\x1b[${m.resumeTop(b) - 1};${b.x + 4}H${rule}`);
       w.write("─".repeat(b.w - 6));
-      if (m.resume_view.expanded) m.resume_view.draw(w, m.resumeContext(), m.resumeArea(cols, rowsCount, side));
-      else m.resume_view.drawCollapsed(w, m.resumeContext(), b.x + 1, m.resumeTop(b), b.w);
+      if (m.resume_view.expanded) m.resume_view.draw(w, m.resumeContext(), m.resumeArea(cols, rowsCount, side), marks);
+      else m.resume_view.drawCollapsed(w, m.resumeContext(), b.x + 1, m.resumeTop(b), b.w, marks);
     }
     const view = m.resume_view;
     const c = m.resumeContext();
@@ -772,66 +907,70 @@ export class Menu {
     let hints: Hint[];
     if (m.worktree.mode === "open" && m.worktree.focus === "from")
       hints = [
-        { key: "↑↓", label: "pick" },
-        { key: "↵", label: "use" },
-        { key: "esc", label: "back" },
+        { key: "↑↓", label: i18n.t`pick` },
+        { key: "↵", label: i18n.t`use` },
+        { key: "esc", label: i18n.t`back` },
       ];
     else if (m.worktree.mode === "open")
       hints = [
-        { key: "↑↓", label: "choose" },
-        ...(m.worktree.creating(m.worktrees) ? [{ key: "tab", label: "from" }] : []),
-        { key: "esc", label: "close" },
+        { key: "↑↓", label: i18n.t`choose` },
+        ...(m.worktree.creating(m.worktrees) ? [{ key: "tab", label: i18n.t`from` }] : []),
+        { key: "esc", label: i18n.t`close` },
       ];
     else if (view.searching && view.query.len > 0)
       hints = [
-        { key: "↵", label: "resume" },
-        { key: "tab", label: "scope" },
-        { key: "esc", label: "clear" },
+        { key: "↵", label: i18n.t`resume` },
+        { key: "tab", label: i18n.t`scope` },
+        { key: "esc", label: i18n.t`clear` },
       ];
     else if (view.searching)
       hints = [
-        { key: "↵", label: "resume" },
-        { key: "tab", label: "scope" },
-        { key: "esc", label: "close" },
+        { key: "↵", label: i18n.t`resume` },
+        { key: "tab", label: i18n.t`scope` },
+        { key: "esc", label: i18n.t`close` },
       ];
     else if (view.focused && view.expanded)
       hints = [
-        { key: "↵", label: "resume" },
-        { key: "/", label: "search" },
-        { key: "tab", label: "scope" },
-        { key: "esc", label: "less" },
+        { key: "↵", label: i18n.t`resume` },
+        { key: "/", label: i18n.t`search` },
+        { key: "tab", label: i18n.t`scope` },
+        { key: "esc", label: i18n.t`less` },
       ];
     else if (on_more)
       hints = [
-        { key: "↵", label: "show all" },
-        { key: "/", label: "search" },
+        { key: "↵", label: i18n.t`show all` },
+        { key: "/", label: i18n.t`search` },
       ];
     else if (view.focused)
       hints = [
-        { key: "↵", label: "resume" },
-        { key: "/", label: "search" },
+        { key: "↵", label: i18n.t`resume` },
+        { key: "/", label: i18n.t`search` },
       ];
-    else if (Row.custom(m.selected) !== null) hints = [{ key: "a", label: "launch" }];
-    else if (m.selected === "terminal") hints = [{ key: "a", label: "open" }];
+    else if (Row.custom(m.selected) !== null) hints = [{ key: "a", label: i18n.t`launch` }];
+    else if (m.selected === "terminal") hints = [{ key: "a", label: i18n.t`open` }];
     else if (m.trackable(m.selected))
       hints = [
-        { key: "u", label: "Track usage" },
-        { key: "a", label: "launch" },
+        { key: "u", label: i18n.t`Track usage` },
+        { key: "a", label: i18n.t`launch` },
         { key: "y", label: "YOLO" },
       ];
     else
       hints = [
-        { key: "a", label: m.signsIn(m.selected) ? "sign in" : "launch" },
+        { key: "a", label: m.signsIn(m.selected) ? i18n.t`sign in` : i18n.t`launch` },
         { key: "y", label: "YOLO" },
       ];
-    const launch = Row.launch(m.selected);
+    const launch = m.launchOf(m.selected);
     if (launch && adapter(launch.provider).bypass === false) hints = hints.filter(h => h.key !== "y");
     const planned = m.worktree.planned;
+    const folder = planned
+      ? launcherWorktree.folderLabel(planned.path, launcherWorktree.projectRoot(m.worktrees, m.cwd))
+      : "";
+    const branch = planned?.base_name ?? "";
     const what = !planned
-      ? "new tab"
+      ? i18n.t`new tab`
       : m.worktree.adding
-        ? `adding ${launcherWorktree.folderLabel(planned.path, launcherWorktree.projectRoot(m.worktrees, m.cwd))}…`
-        : `new worktree from ${planned.base_name} · new tab`;
+        ? i18n.t`adding ${folder}…`
+        : i18n.t`new worktree from ${branch} · new tab`;
     Menu.drawFooter(w, b, panel, what, hints);
     w.write("\x1b[0m\x1b[?25l");
     const bx = m.worktreeBox(cols, rowsCount, side);
@@ -852,24 +991,27 @@ export class Menu {
       panel = new Style({ fg: "faint", bg: "surface" }).sgr(),
       rule = new Style({ fg: "line", bg: "surface" }).sgr();
     dropdown.draw(w, r, []);
-    w.write(at(r.x + 2, r.y) + text + " Worktree " + rule);
+    w.write(at(r.x + 2, r.y) + text + i18n.t` Worktree ` + rule);
     launcherWorktree
       .visible(c, this.worktreeChoices(), bx.shown)
       .forEach((choice, i) => dropdown.row(w, r, bx.list - r.y + i, choice));
-    const label = (y: number, name: string) => w.write(at(bx.label_x, y) + panel + name);
+    const label = (y: number, name: string) => {
+      w.write(at(bx.label_x, y) + panel);
+      writeEllipsis(w, name, sat(bx.field_x, bx.label_x + 2));
+    };
     // The text is strong, a placeholder faint.
     const input = (d: Dialog, placeholder: string, y: number, focused: boolean) =>
       Menu.drawInput(w, d, placeholder, bx.field_x + 1, y + 1, bx.field_w, focused, d.len === 0 ? "faint" : "strong");
-    label(bx.branch, "Branch");
-    input(c.field, "search or create", bx.branch, c.focus === "branch");
+    label(bx.branch, i18n.t`Branch`);
+    input(c.field, i18n.t`search or create`, bx.branch, c.focus === "branch");
     const selected = c.selected(this.worktrees),
       creating = c.creating(this.worktrees);
     if (creating) {
-      label(bx.from, "From");
+      label(bx.from, i18n.t`From`);
       const from = c.focus === "from" ? c.from : Dialog.init({ rename: 0 }, c.base?.name ?? "");
       input(from, "", bx.from, c.focus === "from");
     }
-    label(bx.folder, "Folder");
+    label(bx.folder, i18n.t`Folder`);
     w.write(at(bx.field_x, bx.folder) + text);
     const root = launcherWorktree.projectRoot(this.worktrees, this.cwd),
       path =
@@ -878,10 +1020,20 @@ export class Menu {
           ? launcherWorktree.plannedPath(this.worktrees, this.cwd, c.field.name(), this.worktree_folder)
           : this.cwd);
     writeEllipsis(w, launcherWorktree.folderLabel(path, root), bx.field_w);
-    label(bx.footer, "↑↓ choose");
-    const action =
-      c.focus === "from" ? "↵ use branch" : creating ? "hold ↵ to create" : selected ? "↵ switch" : "type to search";
-    w.write(at(r.x + r.w - displayWidth(action) - 3, bx.footer) + text + action);
+    const action = ellipsis(
+      c.focus === "from"
+        ? i18n.t`↵ use branch`
+        : creating
+          ? i18n.t`hold ↵ to create`
+          : selected
+            ? i18n.t`↵ switch`
+            : i18n.t`type to search`,
+      sat(r.x + r.w - 3, bx.label_x),
+    );
+    const action_x = r.x + r.w - displayWidth(action) - 3,
+      hint = i18n.t`↑↓ choose`;
+    if (displayWidth(hint) + 2 <= action_x - bx.label_x) w.write(at(bx.label_x, bx.footer) + panel + hint);
+    w.write(at(action_x, bx.footer) + text + action);
     if (c.create.progress > 0)
       w.write(
         at(r.x + 1, r.y + r.h - 1) + palette.fg("accent") + "━".repeat(Math.floor((r.w - 2) * c.create.progress)),

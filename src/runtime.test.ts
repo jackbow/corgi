@@ -23,6 +23,146 @@ function setup() {
   r.workspaces.items = [w];
   return { r, w };
 }
+test("agent targets follow tab order and keep creation order within split tabs", () => {
+  const { r, w } = setup(),
+    other = new Workspace(2, "/other");
+  r.workspaces.items.push(other);
+  try {
+    const first = add(r, w),
+      second = add(r, w),
+      split = add(r, w, first.id);
+    add(r, other);
+    w.model.swap(first.id, split.id);
+    w.model.moveTab(w.model.tabs[1].id, 0);
+    const targets = [{ pane: 999 }];
+    expect(r.agentTargets(w, targets)).toBe(targets);
+    expect(targets).toEqual([{ pane: second.id }, { pane: first.id }, { pane: split.id }]);
+    r.close(second.id);
+    expect(r.agentTargets(w, targets)).toEqual([{ pane: first.id }, { pane: split.id }]);
+  } finally {
+    r.destroy();
+  }
+});
+test("stars follow conversations after closing and reopening, until explicitly removed", () => {
+  const { r, w } = setup();
+  try {
+    const actor = r.conversations.get("claude", "starred-session"),
+      first = add(r, w);
+    first.attachment.select(actor);
+    r.starAgent(w, { pane: first.id }, true);
+    r.raiseEntered();
+    actor.state.state = "done";
+    r.raiseEntered();
+    expect(w.pinned_agents.has({ pane: first.id })).toBe(true);
+    r.close(first.id);
+    // Another star change can discard the old pane's saved order.
+    const other = add(r, w);
+    other.attachment.select(r.conversations.get("claude", "other"));
+    r.starAgent(w, { pane: other.id }, true);
+    expect(w.pinned_agents.has({ pane: first.id })).toBe(false);
+    expect(w.starred_sessions.has("claude", "starred-session")).toBe(true);
+    const reopened = add(r, w);
+    reopened.attachment.select(r.conversations.get("claude", "starred-session"));
+    r.raiseEntered();
+    expect(w.pinned_agents.has({ pane: reopened.id })).toBe(true);
+    r.starAgent(w, { pane: reopened.id }, false);
+    r.raiseEntered();
+    expect(w.pinned_agents.has({ pane: reopened.id })).toBe(false);
+    expect(w.starred_sessions.has("claude", "starred-session")).toBe(false);
+    // A different conversation in a starred pane does not inherit its star.
+    other.attachment.select(r.conversations.get("claude", "replacement"));
+    r.raiseEntered();
+    expect(w.pinned_agents.has({ pane: other.id })).toBe(false);
+    expect(w.starred_sessions.has("claude", "other")).toBe(true);
+  } finally {
+    r.destroy();
+  }
+});
+test("an explicit star during replacement startup follows the new conversation", () => {
+  const { r, w } = setup();
+  try {
+    const p = add(r, w),
+      target = { pane: p.id };
+    p.attachment.select(r.conversations.get("claude", "previous"));
+    r.raiseEntered();
+    p.attachment.deselect();
+    p.agent().provider = "claude";
+    r.raiseEntered();
+    r.starAgent(w, target, true);
+    r.raiseEntered();
+    expect(w.pinned_agents.has(target)).toBe(true);
+    expect(w.starred_sessions.slice()).toEqual([]);
+    p.attachment.select(r.conversations.get("claude", "replacement"));
+    r.raiseEntered();
+    expect(w.pinned_agents.has(target)).toBe(true);
+    expect(w.starred_sessions.slice()).toEqual([{ provider: "claude", session: "replacement" }]);
+    r.starAgent(w, target, false);
+    r.raiseEntered();
+    expect(w.pinned_agents.has(target)).toBe(false);
+    expect(w.starred_sessions.slice()).toEqual([]);
+  } finally {
+    r.destroy();
+  }
+});
+test("a star does not pass to a replacement through an unidentified startup", () => {
+  const { r, w } = setup();
+  try {
+    const p = add(r, w),
+      target = { pane: p.id };
+    p.attachment.select(r.conversations.get("claude", "previous"));
+    r.starAgent(w, target, true);
+    r.raiseEntered();
+    p.attachment.deselect();
+    p.agent().provider = "claude";
+    r.raiseEntered();
+    p.attachment.select(r.conversations.get("claude", "replacement"));
+    r.raiseEntered();
+    expect(w.pinned_agents.has(target)).toBe(false);
+    expect(w.starred_sessions.slice()).toEqual([{ provider: "claude", session: "previous" }]);
+  } finally {
+    r.destroy();
+  }
+});
+test("unstarring during an unidentified startup forgets the last conversation's star", () => {
+  const { r, w } = setup();
+  try {
+    const p = add(r, w),
+      target = { pane: p.id };
+    p.attachment.select(r.conversations.get("claude", "previous"));
+    r.starAgent(w, target, true);
+    r.raiseEntered();
+    p.attachment.deselect();
+    p.agent().provider = "claude";
+    r.raiseEntered();
+    r.starAgent(w, target, false);
+    r.raiseEntered();
+    expect(w.starred_sessions.slice()).toEqual([]);
+    p.attachment.select(r.conversations.get("claude", "previous"));
+    r.raiseEntered();
+    expect(w.pinned_agents.has(target)).toBe(false);
+  } finally {
+    r.destroy();
+  }
+});
+test("a star dropped just after the conversation changes stays where it was dropped", () => {
+  const { r, w } = setup();
+  try {
+    const first = add(r, w),
+      p = add(r, w),
+      target = { pane: p.id };
+    first.attachment.select(r.conversations.get("claude", "first"));
+    p.attachment.select(r.conversations.get("claude", "previous"));
+    r.starAgent(w, { pane: first.id }, true);
+    r.raiseEntered();
+    p.attachment.select(r.conversations.get("claude", "replacement"));
+    r.starAgent(w, target, true, { pane: first.id });
+    expect(r.raiseEntered()).toBe(false);
+    expect(w.pinned_agents.slice()).toEqual([target, { pane: first.id }]);
+    expect(w.starred_sessions.has("claude", "replacement")).toBe(true);
+  } finally {
+    r.destroy();
+  }
+});
 test("stopping a Bun-owned shell leaves child collection to Bun", async () => {
   const r = new Runtime(),
     terminal = Terminal.create(20, 4);
@@ -45,16 +185,16 @@ test("only attached conversations and their subagents are followed", () => {
   const { r, w } = setup();
   try {
     const parent = r.conversations.get("claude", "parent"),
-      child = r.conversations.get("claude", "child"),
-      other = r.conversations.get("claude", "other");
+      child = r.conversations.get("claude", "child");
+    r.conversations.get("claude", "other");
     child.parent = parent.id;
     const p = add(r, w);
     p.attachment.select(parent);
-    expect(r.followed(parent)).toBe(true);
-    expect(r.followed(child)).toBe(true);
-    expect(r.followed(other)).toBe(false);
+    expect(r.followed()).toEqual(new Set([parent, child]));
+    parent.parent = child.id;
+    expect(r.followed()).toEqual(new Set([parent, child]));
     p.terminal.exited = true;
-    expect(r.followed(child)).toBe(false);
+    expect(r.followed().size).toBe(0);
   } finally {
     r.destroy();
   }
@@ -518,6 +658,51 @@ test("idle shells come by workspace then tab, narrowed to a workspace or folder"
     expect([...r.idleShells({ workspace: 1, cwd: "/elsewhere" })]).toEqual([]);
     // A shell that never started never waits.
     expect(c.idleShell()).toBe(false);
+  } finally {
+    r.destroy();
+  }
+});
+
+test("resume without a reported model leaves the conversation's saved model alone", () => {
+  const launch = Launch.in("claude", "", false, { flags: "--verbose", env: [], model: "sonnet" }),
+    hint = new ResumeHint();
+  expect(launch.typed()).toBe("claude --model sonnet --verbose");
+  expect(launch.typed(["--resume", "s1"], hint)).toBe("claude --verbose --resume s1");
+  const agent = new Agent({ provider: "claude", session: new Text("s1") });
+  agent.model = new Text("opus");
+  hint.observe(agent);
+  expect(launch.typed(["--resume", "s1"], hint)).toBe("claude --model opus --verbose --resume s1");
+});
+test("a new agent goes on top though another changes section as it appears", () => {
+  const { r, w } = setup();
+  try {
+    const old = [add(r, w), add(r, w)];
+    old.forEach((p, i) => p.attachment.select(r.conversations.get("claude", `old-${i}`)));
+    r.raiseEntered();
+    const created = add(r, w);
+    created.attachment.select(r.conversations.get("claude", "new"));
+    // Raising the earlier tab fills the order with every live agent, the new one too.
+    old[0].agent().state = "done";
+    r.raiseEntered();
+    expect(w.activity_order.slice()).toEqual([{ pane: created.id }, { pane: old[0].id }, { pane: old[1].id }]);
+    expect(w.starting.has(`pane:${created.id}`)).toBe(true);
+  } finally {
+    r.destroy();
+  }
+});
+test("a new agent goes on top though another was dragged before it was seen", () => {
+  const { r, w } = setup();
+  try {
+    const old = [add(r, w), add(r, w)];
+    old.forEach((p, i) => p.attachment.select(r.conversations.get("claude", `old-${i}`)));
+    r.raiseEntered();
+    const created = add(r, w);
+    created.attachment.select(r.conversations.get("claude", "new"));
+    // As agent.place does; the move fills the order with the new agent too.
+    w.activity_order.move(r.agentTargets(w), { pane: old[0].id }, null);
+    r.raiseEntered();
+    expect(w.activity_order.slice()[0]).toEqual({ pane: created.id });
+    expect(w.starting.has(`pane:${created.id}`)).toBe(true);
   } finally {
     r.destroy();
   }

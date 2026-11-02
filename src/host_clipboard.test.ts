@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { mkdtempSync, readFileSync, statSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { State, choose, relayTypes, saveImage, enable, type Result } from "./host_clipboard";
+import { State, Notice, choose, relayTypes, saveImage, enable, type Result } from "./host_clipboard";
 const b64 = (value: string | Buffer) => Buffer.from(value).toString("base64");
 function event(s: State, types: string, pw = "cHc=") {
   s.packet(`type=read:status=OK:pw=${pw}`, 0);
@@ -18,6 +18,19 @@ const fix = (n: ReturnType<State["notice"]>) =>
     ?.fix()
     .map(p => p.text.text())
     .join("");
+test("translated paste instructions can move styled keys and links", () => {
+  const n = new Notice();
+  n.instruction("\ue000 で貼り付けるには \ue001 を使ってください。", "Ctrl+Shift+V");
+  expect(n.fix().map(p => [p.kind, p.text.text()])).toEqual([
+    ["key", "Ctrl+Shift+V"],
+    ["text", " で貼り付けるには "],
+    ["link", "Ghostty 1.4"],
+    ["text", " を使ってください。"],
+  ]);
+  const prose = "画像".repeat(80);
+  n.add("text", prose);
+  expect(n.fix().at(-1)!.text.text()).toBe(prose);
+});
 test("text wins, and an image goes only into a pane", () => {
   expect(choose("image/png text/plain\n", true)).toEqual({ read: "text/plain" });
   expect(choose("image/tiff image/png\n", true)).toEqual({ read: "image/png" });
@@ -116,16 +129,16 @@ test("an attempted image paste says why it can't work and what fixes it", () => 
   s.terminalName("ghostty 1.3.1");
   let n = s.notice("cmd", "Codex", "nocap")!;
   expect(n.body.text()).toBe("Ghostty 1.3.1 can't send images over SSH.");
-  expect(fix(n)).toBe("Use Ghostty Nightly to enable paste with ⌘+V.");
+  expect(fix(n)).toBe("Use Ghostty 1.4 to enable paste with ⌘+V.");
   expect(n.parts[1].kind).toBe("link");
   expect(n.parts[3].kind).toBe("key");
   n = s.notice("ctrl_shift", "Codex", "nocap")!;
-  expect(n.body.text()).toBe("Ghostty on Linux can't send images over SSH yet.");
-  expect(fix(n)).toBe("Only Ghostty Nightly on macOS can, for now.");
+  expect(n.body.text()).toBe("Ghostty 1.3.1 can't send images over SSH.");
+  expect(fix(n)).toBe("Use Ghostty 1.4 to enable paste with Ctrl+Shift+V.");
   const nightly = new State();
   nightly.support = "unsupported";
   nightly.terminalName("ghostty 1.3.2-main+5dc28bb8e");
-  expect(nightly.notice("ctrl", "Codex", "nocap")!.body.text()).toContain("on Linux");
+  expect(fix(nightly.notice("ctrl", "Codex", "nocap")!)).toContain("Ctrl+Shift+V");
   const tmux = new State();
   tmux.support = "unsupported";
   tmux.terminalName("tmux 3.4");

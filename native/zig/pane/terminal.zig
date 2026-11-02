@@ -5,6 +5,7 @@ const c = os.c;
 const a = os.allocator;
 const hyperlink = @import("hyperlinks.zig");
 const graphics = @import("graphics.zig");
+const surface_rows = @import("surface_rows.zig");
 const detection = @import("../detection.zig");
 const BoundedText = @import("../bounded_text.zig").BoundedText;
 
@@ -13,7 +14,7 @@ const BoundedText = @import("../bounded_text.zig").BoundedText;
 const Theme = struct {
     foreground: ?vt.color.RGB = null,
     background: ?vt.color.RGB = null,
-    palette: [16]?vt.color.RGB = .{null} ** 16,
+    palette: [16]?vt.color.RGB = @splat(null),
 };
 
 pub const Terminal = struct {
@@ -24,7 +25,13 @@ pub const Terminal = struct {
     // New terminal instances (including handoff imports) invalidate viewer receipts.
     surface_identity: u64,
     surface_revision: u64 = 0,
+    viewer_rows: std.ArrayList(u64) = .empty,
+    viewer_epoch: u64 = 0,
+    viewer_installed_revision: ?u64 = null,
     links: hyperlink.Snapshot = .{},
+    surface_rows: surface_rows.Cache = .init(a),
+    /// The screen row at the top of the last completed render.
+    render_top: usize = 0,
     fd: c_int = -1,
     pid: c_int = -1,
     /// A handoff candidate holds duplicates of fds and pids the source daemon
@@ -165,7 +172,7 @@ pub const Terminal = struct {
             t.title_prefix = prefix;
         }
         if (!t.restoring and t.fd >= 0) {
-            t.title_pid = if (detection.foreground(t.fd)) |job| job.pid else 0;
+            t.title_pid = detection.foreground(t.fd) orelse 0;
         }
     }
     fn reply(handler: *vt.TerminalStream.Handler, bytes: []const u8) void {
@@ -222,6 +229,178 @@ pub const Terminal = struct {
         }
         return .{};
     }
+    pub const PickUnit = enum { word, line };
+    /// A cell in a viewer's view.
+    pub const Cell = struct { x: u16, y: u16 };
+    pub const Pick = struct {
+        match: ?struct { x: u16, y: u16, end_x: u16, end_y: u16 } = null,
+        /// The visible part of the match as the viewer reads it back: row
+        /// joins and the whitespace beside them dropped.
+        shown: []const u8 = "",
+        copy: []const u8 = "",
+    };
+    /// The word, line or link at a viewer's cell, extended by words or lines
+    /// to `to` for a drag. `offset` is the screen row at the top of the
+    /// viewer's view. Like `search`, the viewport and selection are kept.
+    pub fn pick(t: *Terminal, alloc: std.mem.Allocator, unit: PickUnit, x: u16, y: u16, to: ?Cell, offset: usize) !Pick {
+        const screen = t.vt.screens.active;
+        const top = @min(offset, screen.pages.total_rows -| t.vt.rows);
+        const cell = t.clampCell(.{ .x = x, .y = y });
+        const anchor = t.screenPin(top, cell) orelse return .{};
+        const drag: ?vt.Pin = if (to) |end| drag: {
+            const clamped = t.clampCell(end);
+            if (std.meta.eql(clamped, cell)) break :drag null;
+            break :drag t.screenPin(top, clamped);
+        } else null;
+        var line_breaks = false;
+        const found = switch (unit) {
+            .line => pickLine(screen, anchor, drag),
+            .word => word: {
+                const link = try t.linkAt(top, cell) orelse break :word pickWord(screen, anchor, drag);
+                const start = t.screenPin(top, link.start) orelse return .{};
+                const end = t.screenPin(top, link.end) orelse return .{};
+                const span: vt.Selection = .init(start, end, false);
+                const reach = drag orelse start;
+                if (!reach.before(start) and !end.before(reach)) {
+                    line_breaks = link.line_breaks;
+                    break :word span;
+                }
+                // Dragging away from a link extends it by words.
+                if (reach.before(start)) {
+                    const near = screen.selectWordBetween(reach, start, &word_boundaries) orelse break :word span;
+                    break :word trimWord(.init(near.start(), end, false));
+                }
+                const near = screen.selectWordBetween(reach, end, &word_boundaries) orelse break :word span;
+                break :word trimWord(.init(start, near.end(), false));
+            },
+        } orelse return .{};
+        // Copied as highlighted: a wrapped line or word stops at the view's
+        // edges, and a link copies the text the pane shows, never an OSC 8
+        // target the pane's program may have hidden behind it.
+        const sel = t.inView(top, found);
+        const clip = try screen.selectionString(alloc, .{ .sel = sel, .trim = true });
+        if (std.mem.trim(u8, clip, " \t\r\n").len == 0) return .{};
+        const start = t.viewCell(top, sel.topLeft(screen));
+        const end = t.viewCell(top, sel.bottomRight(screen));
+        const shown = try t.shownText(alloc, top, start, end);
+        return .{
+            .match = .{ .x = start.x, .y = start.y, .end_x = end.x, .end_y = end.y },
+            .shown = shown,
+            // A URL its program broke over indented lines copies without them.
+            .copy = if (line_breaks) shown else clip,
+        };
+    }
+    /// `sel` cut to the view at `top`.
+    fn inView(t: *Terminal, top: usize, sel: vt.Selection) vt.Selection {
+        const screen = t.vt.screens.active;
+        var start = sel.topLeft(screen);
+        var end = sel.bottomRight(screen);
+        if (t.screenPin(top, .{ .x = 0, .y = 0 })) |first| {
+            if (start.before(first)) start = first;
+        }
+        if (t.screenPin(top, .{ .x = t.vt.cols - 1, .y = t.vt.rows - 1 })) |last| {
+            if (last.before(end)) end = last;
+        }
+        return .init(start, end, false);
+    }
+    fn clampCell(t: *const Terminal, cell: Cell) Cell {
+        return .{ .x = @min(cell.x, t.vt.cols - 1), .y = @min(cell.y, t.vt.rows - 1) };
+    }
+    fn screenPin(t: *Terminal, top: usize, cell: Cell) ?vt.Pin {
+        return t.vt.screens.active.pages.pin(.{ .screen = .{ .x = cell.x, .y = @intCast(top + cell.y) } });
+    }
+    /// A pin's cell in the view at `top`, clamped to the view's corners.
+    fn viewCell(t: *Terminal, top: usize, p: vt.Pin) Cell {
+        const point = t.vt.screens.active.pages.pointFromPin(.screen, p) orelse return .{ .x = 0, .y = 0 };
+        const row: usize = point.screen.y;
+        if (row < top) return .{ .x = 0, .y = 0 };
+        if (row - top >= t.vt.rows) return .{ .x = t.vt.cols - 1, .y = t.vt.rows - 1 };
+        return .{ .x = point.screen.x, .y = @intCast(row - top) };
+    }
+    /// The viewer's rows from `start` to `end`, each trimmed like the viewer
+    /// trims its own, joined without the whitespace at each join.
+    fn shownText(t: *Terminal, alloc: std.mem.Allocator, top: usize, start: Cell, end: Cell) ![]const u8 {
+        const screen = t.vt.screens.active;
+        var out: std.ArrayList(u8) = .empty;
+        var y = start.y;
+        while (y <= end.y) : (y += 1) {
+            const from = t.screenPin(top, .{ .x = if (y == start.y) start.x else 0, .y = y }) orelse break;
+            const to = t.screenPin(top, .{ .x = if (y == end.y) end.x else t.vt.cols - 1, .y = y }) orelse break;
+            var row: []const u8 = try screen.selectionString(alloc, .{ .sel = .init(from, to, false), .trim = true });
+            if (y > start.y) row = std.mem.trimStart(u8, row, " \t");
+            if (y < end.y) row = std.mem.trimEnd(u8, row, " \t");
+            for (row) |byte| if (byte != '\n') try out.append(alloc, byte);
+        }
+        return out.toOwnedSlice(alloc);
+    }
+    /// `line_breaks` when the link continues past a line break its program
+    /// wrote, not only soft wraps.
+    const Link = struct { start: Cell, end: Cell, line_breaks: bool };
+    /// The link at a viewer's cell, found over the borrowed viewport as
+    /// `surface.captureView` does: its segment and the segments the snapshot
+    /// joined to it.
+    fn linkAt(t: *Terminal, top: usize, cell: Cell) !?Link {
+        // A pending synchronized redraw keeps its completed frame, whose links
+        // are the viewer's only when it shows the same rows; else plain words.
+        if (t.vt.modes.get(.synchronized_output)) {
+            if (t.render_top != top) return null;
+            return linkIn(t.links.links, t.render.row_data.items(.raw), cell);
+        }
+        const borrowed = t.borrowViewport();
+        defer borrowed.restore();
+        t.vt.scrollViewport(.{ .row = top });
+        t.vt.flags.dirty.clear = true;
+        try t.updateRender();
+        return linkIn(t.links.links, t.render.row_data.items(.raw), cell);
+    }
+    /// The viewport and selection before a viewer borrowed the viewport to
+    /// read its own rows; `restore` puts them back and renders them again.
+    pub const BorrowedViewport = struct {
+        t: *Terminal,
+        viewport: @FieldType(vt.PageList, "viewport"),
+        pin: vt.Pin,
+        row_offset: @FieldType(vt.PageList, "viewport_pin_row_offset"),
+        selection: @FieldType(vt.Screen, "selection"),
+        pub fn restore(b: BorrowedViewport) void {
+            const screen = b.t.vt.screens.active;
+            const pages = &screen.pages;
+            pages.viewport = b.viewport;
+            pages.viewport_pin.* = b.pin;
+            pages.viewport_pin_row_offset = b.row_offset;
+            screen.selection = b.selection;
+            b.t.vt.flags.dirty.clear = true;
+            b.t.updateRender() catch {};
+        }
+    };
+    pub fn borrowViewport(t: *Terminal) BorrowedViewport {
+        const screen = t.vt.screens.active;
+        const pages = &screen.pages;
+        return .{ .t = t, .viewport = pages.viewport, .pin = pages.viewport_pin.*, .row_offset = pages.viewport_pin_row_offset, .selection = screen.selection };
+    }
+    fn linkIn(links: []const hyperlink.Link, wraps: anytype, cell: Cell) ?Link {
+        const at = for (links, 0..) |link, i| {
+            if (link.row == cell.y and link.start <= cell.x and cell.x < link.end) break i;
+        } else return null;
+        // Only links a click would open, as `openableLink` in
+        // src/controller.ts decides; a file:// name picks as a word.
+        const uri = links[at].uri;
+        const web = std.mem.startsWith(u8, uri, "http://") or std.mem.startsWith(u8, uri, "https://");
+        if (!web or uri.len > 4096) return null;
+        var first = at;
+        while (first > 0 and continues(links, first)) first -= 1;
+        var last = at;
+        while (last + 1 < links.len and continues(links, last + 1)) last += 1;
+        var line_breaks = false;
+        for (links[first + 1 .. last + 1]) |link| line_breaks = line_breaks or !wraps[link.row - 1].wrap;
+        return .{
+            .start = .{ .x = @intCast(links[first].start), .y = @intCast(links[first].row) },
+            .end = .{ .x = @intCast(links[last].end - 1), .y = @intCast(links[last].row) },
+            .line_breaks = line_breaks,
+        };
+    }
+    fn continues(links: []const hyperlink.Link, i: usize) bool {
+        return links[i].joined and links[i - 1].id == links[i].id;
+    }
     // Release the process/PTY while retaining the Ghostty screen and scrollback.
     pub fn stop(t: *Terminal) void {
         t.endSynchronizedOutput();
@@ -238,6 +417,8 @@ pub const Terminal = struct {
         t.initial_input = null;
     }
     pub fn destroy(t: *Terminal) void {
+        t.surface_rows.deinit();
+        t.viewer_rows.deinit(a);
         t.graphics.deinit();
         t.stop();
         t.pending.deinit(a);
@@ -391,6 +572,25 @@ pub const Terminal = struct {
             t.synchronized_since = null;
         }
     }
+    /// Derived presentation receipts, independent of other render consumers.
+    pub fn installedRows(t: *Terminal, dirty: ?[]const u16) !void {
+        const resized = t.viewer_rows.items.len != t.vt.rows;
+        try t.viewer_rows.resize(a, t.vt.rows);
+        t.viewer_epoch +%= 1;
+        if (dirty == null or resized) {
+            @memset(t.viewer_rows.items, t.viewer_epoch);
+        } else {
+            for (dirty.?) |row| {
+                if (row < t.viewer_rows.items.len) t.viewer_rows.items[row] = t.viewer_epoch;
+            }
+        }
+        t.viewer_installed_revision = t.surface_revision;
+    }
+    pub fn presentationRows(t: *Terminal) ![]const u64 {
+        if (t.viewer_installed_revision == null or t.viewer_installed_revision.? != t.surface_revision or t.viewer_rows.items.len != t.vt.rows)
+            try t.installedRows(null);
+        return t.viewer_rows.items;
+    }
     fn endSynchronizedOutput(t: *Terminal) void {
         t.vt.modes.set(.synchronized_output, false);
         t.surface_revision +%= 1;
@@ -406,9 +606,26 @@ pub const Terminal = struct {
     // another pane, UI event, or text capture requests a refresh mid-redraw.
     pub fn updateRender(t: *Terminal) !void {
         if (t.vt.modes.get(.synchronized_output)) return;
+        errdefer {
+            t.surface_rows.invalidate();
+            t.vt.flags.dirty.clear = true;
+        }
+        const foreground = t.render.colors.foreground;
+        const background = t.render.colors.background;
         try t.render.update(a, &t.vt);
-        try t.links.capture(&t.render);
+        const pages = &t.vt.screens.active.pages;
+        if (pages.pointFromPin(.screen, pages.getTopLeft(.viewport))) |point| t.render_top = point.screen.y;
+        // Reverse-video mode updates these defaults without marking rows dirty.
+        if (!std.meta.eql(foreground, t.render.colors.foreground) or !std.meta.eql(background, t.render.colors.background))
+            t.surface_rows.invalidate();
+        if (t.render.dirty != .false) {
+            const had_links = t.links.links.len != 0;
+            try t.links.capture(&t.render);
+            // Plain link identities depend on the flattened screen's byte offsets.
+            t.surface_rows.damage(t.render.row_data.items(.dirty), t.render.dirty == .full or had_links or t.links.links.len != 0);
+        }
         try t.graphics.capture(&t.vt, t.surface_identity);
+        t.render.clean();
     }
     // Wait until the interactive shell has installed its line editor. No newline
     // is sent: this is editable input, and only the user can execute it.
@@ -439,10 +656,14 @@ pub const Terminal = struct {
             t.pending.items.len -= used;
         }
     }
-    /// Work `read` does without new output: a launch command waiting for
+    /// Work pending without new output: a launch command waiting for
     /// the shell's line editor, or synchronized output that may time out.
     pub fn expecting(t: *const Terminal) bool {
         return t.initial_input != null or t.synchronized_since != null;
+    }
+    pub fn maintain(t: *Terminal) bool {
+        if (!t.exited) t.fillInput();
+        return t.expireSynchronizedOutput(os.milliTimestamp());
     }
     pub fn read(t: *Terminal) bool {
         var bytes: [16384]u8 = undefined;
@@ -457,9 +678,7 @@ pub const Terminal = struct {
             t.feed(bytes[0..@intCast(n)]);
             dirty = true;
         }
-        if (!t.exited) t.fillInput();
-        if (t.expireSynchronizedOutput(os.milliTimestamp())) dirty = true;
-        return dirty;
+        return t.maintain() or dirty;
     }
     /// True once, when the shell exits. Only this reaps our own shell; an
     /// imported shell belongs to another parent and is probed instead.
@@ -503,6 +722,55 @@ pub const Terminal = struct {
         return out.toOwnedSlice(a);
     }
 };
+/// Ghostty's default word boundaries without `:`, so `path:line` and
+/// `host:port` stay whole.
+const word_boundaries = [_]u21{ 0, ' ', '\t', '\'', '"', '│', '`', '|', ';', ',', '(', ')', '[', ']', '{', '}', '<', '>', '$' };
+const whitespace = [_]u21{ 0, ' ', '\t' };
+/// Trimmed from a word's end, so a sentence's `foo.` gives `foo`.
+const word_end = whitespace ++ [_]u21{ '.', ':', '!', '?' };
+
+fn pickWord(screen: *vt.Screen, anchor: vt.Pin, drag: ?vt.Pin) ?vt.Selection {
+    // A space between words picks nothing, not the punctuation beside it.
+    if (std.mem.indexOfScalar(u21, &whitespace, codepoint(anchor)) != null) return null;
+    const to = drag orelse return trimWord(screen.selectWord(anchor, &word_boundaries) orelse return null);
+    // As Ghostty's SelectionGesture extends a double-click.
+    const first = screen.selectWordBetween(anchor, to, &word_boundaries) orelse return null;
+    const last = screen.selectWordBetween(to, anchor, &word_boundaries) orelse return null;
+    if (to.before(anchor)) return trimWord(.init(last.start(), first.end(), false));
+    return trimWord(.init(first.start(), last.end(), false));
+}
+/// Drops whitespace from both ends and trailing punctuation; null when
+/// nothing else remains.
+fn trimWord(sel: vt.Selection) ?vt.Selection {
+    var start = sel.start();
+    var end = sel.end();
+    while (std.mem.indexOfScalar(u21, &whitespace, codepoint(start)) != null) {
+        if (start.eql(end)) return null;
+        start = start.rightWrap(1) orelse return null;
+    }
+    while (std.mem.indexOfScalar(u21, &word_end, codepoint(end)) != null) {
+        if (end.eql(start)) return null;
+        end = end.leftWrap(1) orelse return null;
+    }
+    return .init(start, end, false);
+}
+/// A cell's codepoint, a wide character's for its spacer tail.
+fn codepoint(p: vt.Pin) u21 {
+    const cell = p.rowAndCell().cell;
+    if (cell.wide == .spacer_tail and p.x > 0) return p.left(1).rowAndCell().cell.codepoint();
+    return cell.codepoint();
+}
+fn pickLine(screen: *vt.Screen, anchor: vt.Pin, drag: ?vt.Pin) ?vt.Selection {
+    const to = drag orelse return screen.selectLine(.{ .pin = anchor });
+    // As Ghostty extends a triple-click, taking a blank line whole.
+    var sel = lineOrBlank(screen, anchor) orelse return null;
+    const line = lineOrBlank(screen, to) orelse return sel;
+    if (to.before(anchor)) sel.startPtr().* = line.start() else sel.endPtr().* = line.end();
+    return sel;
+}
+fn lineOrBlank(screen: *vt.Screen, p: vt.Pin) ?vt.Selection {
+    return screen.selectLine(.{ .pin = p }) orelse screen.selectLine(.{ .pin = p, .whitespace = null });
+}
 /// A Codex session id, or its truncated start, in a terminal title.
 const SessionPrefix = BoundedText(36);
 /// The one session id a Codex title names, or null for none or several.
@@ -625,6 +893,47 @@ test "unfinished synchronized output expires or releases on process exit" {
     t.feed("\x1b[?2026hEXIT");
     t.exited = true;
     try std.testing.expect(t.expireSynchronizedOutput(t.synchronized_since.?));
+    try std.testing.expect(!t.vt.modes.get(.synchronized_output));
+}
+
+test "maintenance leaves PTY output unread while advancing prefill and sync deadlines" {
+    const t = try Terminal.create(20, 4);
+    defer t.destroy();
+    var master: c_int = -1;
+    var slave: c_int = -1;
+    try std.testing.expectEqual(@as(c_int, 0), c.openpty(&master, &slave, null, null, null));
+    t.fd = master;
+    defer _ = c.close(slave);
+    _ = c.fcntl(master, c.F_SETFL, @as(c_int, c.O_NONBLOCK));
+    _ = c.fcntl(slave, c.F_SETFL, @as(c_int, c.O_NONBLOCK));
+    var attrs: c.struct_termios = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), c.tcgetattr(slave, &attrs));
+    attrs.c_lflag |= c.ICANON;
+    try std.testing.expectEqual(@as(c_int, 0), c.tcsetattr(slave, c.TCSANOW, &attrs));
+    try t.prefill("make");
+    try std.testing.expect(c.write(slave, "OUTPUT", 6) == 6);
+    var ready: c.struct_pollfd = .{ .fd = master, .events = c.POLLIN, .revents = 0 };
+    try std.testing.expect(c.poll(&ready, 1, 2000) > 0);
+    try std.testing.expect(!t.maintain());
+    try std.testing.expect(t.expecting());
+    var bytes: [32]u8 = undefined;
+    try std.testing.expect(c.read(master, &bytes, bytes.len) == 6);
+    try std.testing.expectEqualStrings("OUTPUT", bytes[0..6]);
+    c.cfmakeraw(&attrs);
+    try std.testing.expectEqual(@as(c_int, 0), c.tcsetattr(slave, c.TCSANOW, &attrs));
+    try std.testing.expect(!t.maintain());
+    try std.testing.expect(!t.expecting());
+    ready = .{ .fd = slave, .events = c.POLLIN, .revents = 0 };
+    try std.testing.expect(c.poll(&ready, 1, 2000) > 0);
+    try std.testing.expect(c.read(slave, &bytes, bytes.len) == 4);
+    try std.testing.expectEqualStrings("make", bytes[0..4]);
+    t.feed("\x1b[?2026hTIMEOUT");
+    t.synchronized_since = os.milliTimestamp() - Terminal.synchronized_timeout_ms;
+    try std.testing.expect(t.maintain());
+    try std.testing.expect(!t.expecting());
+    t.feed("\x1b[?2026hEXIT");
+    t.exited = true;
+    try std.testing.expect(t.maintain());
     try std.testing.expect(!t.vt.modes.get(.synchronized_output));
 }
 

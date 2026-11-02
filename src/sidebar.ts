@@ -1,4 +1,5 @@
 //! The sidebar: workspaces above, agents below. Mirrors sidebar.zig.
+import * as i18n from "./i18n";
 import * as palette from "./palette";
 import { Provider, adapter } from "./providers";
 import { Style, colors, fg, bg, fgRgb, bgRgb, mix, underline } from "./palette";
@@ -14,12 +15,14 @@ import { url as portUrl } from "./trackers/ports";
 import { cpuText, memoryText } from "./trackers/resources";
 import { View as ContextView } from "./usage/context_window";
 import { rank, type Target as OrderTarget } from "./agent_order";
+import type { Section as SectionKind } from "./agent_order";
 import { Rect } from "./layout";
 import {
   Writer,
   displayWidth,
   writeClipped,
   writeEllipsis,
+  ellipsis,
   directoryLabel,
   compactCount,
   codepointWidth,
@@ -51,18 +54,18 @@ export function unlit(entries: Entry[], spot: Spotlight | null): boolean[] {
 }
 /** The lists draw one column in: column 0 stays free for the focused list's box. */
 export const lists_x = 1;
-/** `bytes` drawn `dx` columns further right: every cursor position moves. */
-function shiftColumns(bytes: string, dx: number): string {
-  return bytes.replace(/\x1b\[(\d+);(\d+)H/g, (_, row, col) => `\x1b[${row};${Number(col) + dx}H`);
-}
-/** Drops what `bytes` writes from row `end` (0-based) down, keeping its
- * colors so the writes after it start in the same style. */
-function clipRows(bytes: string, end: number): string {
+/** The drag grip in the middle of the rule between the lists. */
+const split_grip = " ⠶⠶⠶ ";
+/** Drops what `bytes` writes from row `end` (0-based) down and above row
+ * `start`, keeping its colors so the writes after it start in the same style. */
+function clipRows(bytes: string, end: number, start = 0): string {
   return bytes
     .split(/(?=\x1b\[\d+;\d+H)/)
     .map(part => {
       const row = /^\x1b\[(\d+);\d+H/.exec(part);
-      return row && Number(row[1]) > end ? (part.match(/\x1b\[[\d;:]*m/g) ?? []).join("") : part;
+      return row && (Number(row[1]) > end || Number(row[1]) <= start)
+        ? (part.match(/\x1b\[[\d;:]*m/g) ?? []).join("")
+        : part;
     })
     .join("");
 }
@@ -115,9 +118,22 @@ export type Target =
   | { worktree: string; workspace: number }
   /** A conversation a browsed worktree's ghost shows, which entering it
    * brings back as a hibernated agent. */
-  | { asleep: string; provider: Provider };
+  | { asleep: string; provider: Provider }
+  /** An activity section's header in the agent list. */
+  | { section: SectionKind }
+  /** Neighbouring rows in one checkout: a linked worktree's, or in "all", a
+   * workspace's own; in a section, or a hand-sorted list's null. `run` tells
+   * apart two runs of one checkout. */
+  | { section: SectionKind | null; workspace: number; checkout: string | null; run: number };
 export const isAgent = (t: Target): t is OrderTarget => "pane" in t || "headless" in t;
-export const isHeading = (t: Target): boolean => "group" in t || "worktree" in t;
+export const isHeading = (t: Target): boolean => "group" in t || "worktree" in t || "section" in t;
+export const isSection = (t: Target): t is { section: SectionKind } => "section" in t && !("workspace" in t);
+export const isSubhead = (
+  t: Target,
+): t is { section: SectionKind | null; workspace: number; checkout: string | null; run: number } =>
+  "section" in t && "workspace" in t;
+/** A header that starts a run of rows: a workspace's in "all", or a section's. */
+const isOuter = (t: Target): boolean => isGroup(t) || isSection(t);
 export function sameTarget(a: Target | null | undefined, b: Target | null | undefined): boolean {
   if (!a || !b) return !a && !b;
   if ("pane" in a) return "pane" in b && a.pane === b.pane;
@@ -133,7 +149,8 @@ export const isGroup = (t: Target): t is { group: number } => "group" in t;
 export function groupEnd(entries: Entry[], index: number): number {
   const header = entries[index]?.target;
   let end = index + 1;
-  if (header && isGroup(header)) while (end < entries.length && !isGroup(entries[end].target)) end += 1;
+  if (header && isOuter(header)) while (end < entries.length && !isOuter(entries[end].target)) end += 1;
+  else if (header && isSubhead(header)) while (end < entries.length && !isHeading(entries[end].target)) end += 1;
   else if (header && "worktree" in header)
     while (
       end < entries.length &&
@@ -153,6 +170,8 @@ export interface Search {
 }
 /** Viewer-local agent list filter. `workspace` follows the selected workspace. */
 export type Scope = "workspace" | "all";
+/** How the agent list orders agents: in activity sections, or as dragged. */
+export type Sort = "activity" | "manual";
 /** One of the sidebar's two lists. */
 export type Section = "workspaces" | "agents";
 /** Header totals for a group entry; `current` marks the selected workspace. */
@@ -162,6 +181,10 @@ export interface Group {
   attention: number;
   folded: boolean;
   current: boolean;
+  /** An activity section's header has a blank row above it. */
+  gap?: boolean;
+  /** A subhead names a branch, under ⌥, rather than a workspace. */
+  branch?: boolean;
 }
 export interface Subagents {
   running: number;
@@ -181,6 +204,9 @@ export interface Entry {
   /** A row that just moved to another group: the rows above it in the list
    * it left, and how long ago it moved. */
   moved: { from: number; ms: number } | null;
+  /** Rows below where it lands (above, when negative) a row pushed aside
+   * shows while it steps there. */
+  slide: number;
   name: string;
   target: Target;
   /** Null for workspace group headers. */
@@ -202,6 +228,11 @@ export interface Entry {
   context: ContextView;
   /** Review notes written on its pane and not sent yet. */
   notes: number;
+  /** The activity section listing it, or null in a list without them. */
+  section: SectionKind | null;
+  /** A new agent waiting for its first prompt, held in working. */
+  starting: boolean;
+  starred: boolean;
 }
 export function entry(fields: Partial<Entry> & { target: Target }): Entry {
   return {
@@ -212,6 +243,7 @@ export function entry(fields: Partial<Entry> & { target: Target }): Entry {
     reopened: false,
     enter: null,
     moved: null,
+    slide: 0,
     name: "",
     provider: null,
     state: "idle",
@@ -228,6 +260,9 @@ export function entry(fields: Partial<Entry> & { target: Target }): Entry {
     subagents: { running: 0, blocked: 0, waiting: false },
     context: new ContextView(),
     notes: 0,
+    section: null,
+    starting: false,
+    starred: false,
     ...fields,
   };
 }
@@ -257,6 +292,44 @@ export function indicator(e: Entry, selected: boolean): { icon: string; color: s
   if (e.state === "idle") return { icon: "○", color: fg("muted"), unread: false };
   return { icon: "·", color: quiet, unread: false };
 }
+/** Each activity section's header: the glyph its rows would show, and its name. */
+export const sections: Record<SectionKind, { glyph: string; token: palette.Token; label: string }> = {
+  starred: {
+    glyph: "★",
+    token: "strong",
+    get label() {
+      return i18n.t`starred`;
+    },
+  },
+  ready: {
+    glyph: "●",
+    token: "accent",
+    get label() {
+      return i18n.t`ready`;
+    },
+  },
+  working: {
+    glyph: "▶",
+    token: "accent",
+    get label() {
+      return i18n.t`working`;
+    },
+  },
+  idle: {
+    glyph: "○",
+    token: "muted",
+    get label() {
+      return i18n.t`idle`;
+    },
+  },
+  done: {
+    glyph: "○",
+    token: "faint",
+    get label() {
+      return i18n.t`done`;
+    },
+  },
+};
 /** A group's agents: how many work, how many need input; the rest idle. */
 export type Tally = Pick<Group, "agents" | "working" | "attention">;
 /** Counts an agent under the glyph its row shows. */
@@ -446,8 +519,6 @@ export class Preview {
   }
 }
 
-/** UTF-8 byte offset into `text` as a JS string index. */
-
 export class View {
   search: Search | null = null;
   /** Header scope: "all" or the workspace whose agents are listed. */
@@ -567,8 +638,15 @@ export class View {
     result.workspace_offset = Math.min(offset, sat(count, this.workspaceCapacity()));
     return result;
   }
-  static widthFor(cols: number, open: boolean): number {
-    return open && cols >= 64 ? 28 : 0;
+  static widthFor(cols: number, open: boolean, rows = 13, searching = false): number {
+    return rows >= 13 && ((open && cols >= 64) || (searching && cols >= 40)) ? Math.min(28, cols - 20) : 0;
+  }
+  static fitWidth(cols: number, width: number, preferred: number): number {
+    return width > 0 ? clamp(preferred, 20, cols - 20) : width;
+  }
+  static paneArea(cols: number, rows: number, width: number, panel: number, drawer: Section | null): Rect {
+    const x = drawer !== null ? 0 : width;
+    return new Rect(x, 1, sat(cols - x, panel), sat(rows, 1));
   }
   static init(
     cols: number,
@@ -582,7 +660,7 @@ export class View {
     v.cols = cols;
     v.rows = rows;
     v.split = split;
-    v.width = rows >= 13 ? View.widthFor(cols, open) : 0;
+    v.width = View.widthFor(cols, open, rows);
     v.count = count;
     v.capacity = 1;
     v.offset = 0;
@@ -622,15 +700,19 @@ export class View {
     if (this.width === 0 || this.entries.length === 0 || this.search !== null || this.drawer === "workspaces")
       return null;
     const { counts, prev, next } = this.index;
+    // Rows end above a bottom badge.
+    const y = sat(this.rows, 1);
     let found: BadgeCounts;
     let offset: number;
     if (side === "above") {
-      if (prev[this.offset] < 0) return null;
+      const nearest = prev[this.offset];
+      if (nearest < 0) return null;
       found = counts[this.offset];
-      offset = prev[this.offset];
+      // Scrolls to the farthest that keeps the nearest in view, so the rest come into view with it.
+      offset = next[0];
+      while (offset < nearest && this.entryEnd(offset, nearest) > y) offset = next[offset + 1];
     } else {
       // It shows for an agent past the list's end, then also counts one it covers.
-      const y = sat(this.rows, 1);
       if (next[Math.min(this.offset + this.capacity, this.count)] < 0) return null;
       let covered = this.offset;
       while (covered < this.count && this.entryEnd(this.offset, covered) <= y) covered += 1;
@@ -640,9 +722,21 @@ export class View {
         attention: total.attention - counts[covered].attention,
         unread: total.unread - counts[covered].unread,
       };
-      offset = this.offset;
-      while (offset < next[covered] && this.entryEnd(offset, next[covered]) > y) offset += 1;
-      offset = Math.min(offset, this.maxOffset());
+      // Scrolls the farthest that keeps the nearest in view to the bottom, so
+      // the rest come into view with it.
+      const nearest = next[covered],
+        bottom = (last: number) => {
+          let at = this.offset;
+          while (at < last && this.entryEnd(at, last) > y) at += 1;
+          return at;
+        };
+      // The farthest row that fits from any scroll still showing the nearest agent.
+      const end = this.rowsBefore(nearest + 1);
+      let reach = -Infinity;
+      for (let at = this.offset; at <= nearest; at++) reach = Math.max(reach, end + y - this.entryEnd(at, nearest));
+      let last = prev[this.count];
+      while (last > nearest && this.rowsBefore(last + 1) > reach) last = prev[last];
+      offset = Math.min(bottom(last), this.maxOffset());
     }
     const badge: Badge = {
       x: 0,
@@ -669,11 +763,11 @@ export class View {
       const b = this.badge(side);
       if (b === null) continue;
       const text = View.badgeText(b, (n, glyph, warm) => `${n} ${warm ? button_warm : button_glyph}${glyph}${button}`);
-      w.write(`\x1b[${b.y + 1};${b.x + 1}H${button}${text}\x1b[0m`);
+      w.write(`${w.cup(b.y + 1, b.x + 1)}${button}${text}\x1b[0m`);
     }
   }
   static height(e: Entry): number {
-    const content = isHeading(e.target) ? 1 : 2;
+    const content = isHeading(e.target) ? 1 + Number(e.group.gap === true) : 2;
     return content + (e.worktree?.ghost ? Number("worktree" in e.target) + Number(e.worktree.end === true) : 0);
   }
   /** The headers of the groups the entry at `from` belongs to, which stay
@@ -682,12 +776,18 @@ export class View {
    * give up rows, outermost first, so the last entries fill it. */
   pinned(from: number): number[] {
     const first = this.entries[from];
-    if (!first || isGroup(first.target)) return [];
+    if (!first || isOuter(first.target)) return [];
     const index = this.index;
     const out: number[] = [];
     if (index.group[from] >= 0) out.push(index.group[from]);
     const checkout = first.worktree;
-    if (checkout && !checkout.ghost && !("worktree" in first.target) && index.worktree[from] >= 0)
+    if (
+      checkout &&
+      !checkout.ghost &&
+      !("worktree" in first.target) &&
+      !isSubhead(first.target) &&
+      index.worktree[from] >= 0
+    )
       out.push(index.worktree[from]);
     const room = this.listRows() - (this.rowsBefore(this.entries.length) - this.rowsBefore(from));
     return room >= 0 && room < out.length ? out.slice(out.length - room) : out;
@@ -739,10 +839,11 @@ export class View {
         while (next.length <= i) next.push(i);
         last = i;
       }
-      if (isGroup(e.target)) {
+      if (isOuter(e.target)) {
         header = i;
         checkouts = new Map();
       } else if ("worktree" in e.target) checkouts.set(e.target.worktree, i);
+      else if (isSubhead(e.target) && e.target.checkout !== null) checkouts.set(e.target.checkout, i);
     });
     prev.push(last);
     while (next.length <= entries.length) next.push(-1);
@@ -773,6 +874,15 @@ export class View {
   revealGroup(index: number): number {
     return Math.min(this.reveal(Math.max(index, groupEnd(this.entries, index) - 1)), index);
   }
+  /** The scroll that shows a section as it opens: all of it when it fits;
+   * otherwise as little as shows its first agent, its header above it. */
+  revealSection(index: number): number {
+    const end = groupEnd(this.entries, index);
+    if (this.rowsBefore(end) - this.rowsBefore(index) <= this.listRows()) return this.revealGroup(index);
+    let first = index + 1;
+    while (first < end && !isAgent(this.entries[first].target)) first += 1;
+    return Math.min(this.reveal(Math.min(first, end - 1)), index);
+  }
   /** The smallest scroll change that shows entry `index`. */
   reveal(index: number): number {
     if (index < this.offset) return index;
@@ -783,7 +893,7 @@ export class View {
   }
   withWidth(preferred: number): View {
     const result = this.clone();
-    if (result.width > 0) result.width = clamp(preferred, 20, this.cols - 20);
+    result.width = View.fitWidth(this.cols, result.width, preferred);
     return result;
   }
   withSearch(search: Search | null): View {
@@ -791,7 +901,8 @@ export class View {
     result.search = search;
     // Search opens the same sidebar on compact terminals too, while
     // preserving at least twenty columns for the terminal pane.
-    if (search !== null && this.cols >= 40 && this.rows >= 13) result.width = Math.min(28, this.cols - 20);
+    const width = View.widthFor(this.cols, false, this.rows, search !== null);
+    if (width > 0) result.width = width;
     return result;
   }
   searchOffset(): number {
@@ -804,7 +915,7 @@ export class View {
     if (!search) return;
     if (this.width === 0) return;
     const x = lists_x + 4 + search.cursor - this.lists().searchOffset();
-    w.write(`\x1b[0m\x1b[${this.middle() + 2};${x}H\x1b[?25h`);
+    w.write(`\x1b[0m${w.cup(this.middle() + 2, x)}\x1b[?25h`);
   }
   withPanel(width: number): View {
     const result = this.clone();
@@ -812,8 +923,7 @@ export class View {
     return result;
   }
   area(): Rect {
-    const x = this.drawer !== null ? 0 : this.width;
-    return new Rect(x, 1, sat(this.cols - x, this.panel), sat(this.rows, 1));
+    return View.paneArea(this.cols, this.rows, this.width, this.panel, this.drawer);
   }
   tabX(): number {
     return this.width > 0 && this.drawer === null ? this.width : this.cols >= 64 ? 3 : 0;
@@ -827,7 +937,12 @@ export class View {
       if (x >= v.width - 5) return hit("toggle");
       if (x >= v.width - 11 && x < v.width - 6) return hit("workspace_new");
     }
-    if (y === v.middle() && v.drawer === null && x >= v.width - 10 && x < v.width - 2)
+    if (
+      y === v.middle() &&
+      v.drawer === null &&
+      x >= v.width - displayWidth(newAgentLabel(v.width)) - 2 &&
+      x < v.width - 2
+    )
       return x >= v.width - 4 ? hit("agent_options") : hit("agent_new");
     if (y === v.middle() && x >= v.scopeStart()) {
       const qualifier = v.scopeQualifier();
@@ -853,12 +968,36 @@ export class View {
       top += 1;
       if (y < top) return { tag: "entry", entry: index };
     }
+    // Where rows are drawn, the one on top: a row stepping aside isn't where it lands yet.
     const shown = Math.min(v.count, v.offset + v.shown(end));
+    let found: number | null = null,
+      layer = -1;
     for (let index = v.offset; index < shown; index++) {
-      top += v.entries.length > 0 ? View.height(v.entries[index]) : 2;
-      if (y < top) return { tag: "entry", entry: index };
+      const e = v.entries.length > 0 ? v.entries[index] : null,
+        h = e ? View.height(e) : 2,
+        at = top + (e?.slide ?? 0);
+      if (y >= at && y < at + h && (e ? v.layer(e) : 2) >= layer) {
+        found = index;
+        layer = e ? v.layer(e) : 2;
+      }
+      top += h;
     }
-    return hit("none");
+    return found === null ? hit("none") : { tag: "entry", entry: found };
+  }
+  /** Which rows draw over which: a moved row still hidden while its tint
+   * glides in goes under rows stepping aside, and those under rows in place. */
+  layer(e: Entry): number {
+    const hidden =
+      e.moved !== null && this.supports_kitty_graphics && this.cell !== null && (rowGlide.fade(e.moved.ms) ?? 0) > 0.5;
+    return hidden ? 0 : e.slide !== 0 ? 1 : 2;
+  }
+  /** The header and spacer above the rows, and the terminal's last row.
+   * Never scroll over workspaces or beside the list. */
+  agentDragEdge(x: number, y: number): -1 | 0 | 1 {
+    if (this.framed()) return this.lists().agentDragEdge(x - lists_x, y);
+    if (this.width === 0 || x < 0 || x >= this.width - 1 || this.listRows() === 0 || this.count === 0) return 0;
+    if (y >= this.middle() && y < this.middle() + 2) return -1;
+    return y === this.rows - 1 ? 1 : 0;
   }
   /** Use the same row heights and viewport as hit testing. The marker sits
    * just above the destination row, including the gap after the last row. */
@@ -871,7 +1010,8 @@ export class View {
     const end = Math.min(v.count, v.offset + v.capacity);
     for (let i = v.offset; i < end; i++) {
       const h = View.height(v.entries[i]);
-      if (y < top + Math.floor(h / 2)) return { index: i, y: top - 1 };
+      // A one-row header takes drops above it.
+      if (y < top + Math.ceil(h / 2)) return { index: i, y: top - 1 };
       top += h;
     }
     return { index: end, y: top - 1 };
@@ -907,7 +1047,8 @@ export class View {
   /** The label is blank at zero, but its slot keeps the width of "1 unread →"
    * so the status row does not shift when the first unread arrives. */
   static unreadWidth(ws: WorkspaceEntry): number {
-    return Math.max(10, displayWidth(compactCount(ws.unread)) + 9);
+    const count = compactCount(Math.max(1, ws.unread));
+    return displayWidth(i18n.t`${count} unread →`);
   }
   unreadHit(ws: WorkspaceEntry, x: number, y: number): boolean {
     if (this.framed()) return this.lists().unreadHit(ws, x - lists_x, y);
@@ -929,22 +1070,18 @@ export class View {
   private drawFrame(w: Writer, entries: Entry[], workspaces: WorkspaceEntry[], now_ms: number): void {
     const v = this;
     if (v.width === 0) {
-      if (v.cols >= 64) w.write("\x1b[1;1H\x1b[1m" + fg("strong") + " > \x1b[0m");
+      if (v.cols >= 64) w.write(`${w.cup(1, 1)}\x1b[1m` + fg("strong") + " > \x1b[0m");
       return;
     }
     if (v.framed()) {
-      for (let row = 0; row < v.rows; row++) w.write(`\x1b[${row + 1};1H${panel}` + " ".repeat(lists_x));
-      const lists = new Writer();
-      v.lists().drawFrame(lists, entries, workspaces, now_ms);
-      w.write(shiftColumns(lists.buffered(), lists_x));
+      for (let row = 0; row < v.rows; row++) w.write(`${w.cup(row + 1, 1)}${panel}` + " ".repeat(lists_x));
+      w.withColumns(lists_x, () => v.lists().drawFrame(w, entries, workspaces, now_ms));
       v.drawBox(w);
-      const badges = new Writer();
-      v.lists().drawBadges(badges);
-      w.write(shiftColumns(badges.buffered(), lists_x));
+      w.withColumns(lists_x, () => v.lists().drawBadges(w));
       return;
     }
     for (let row = 0; row < v.rows; row++) {
-      w.write(`\x1b[${row + 1};1H${panel}`);
+      w.write(`${w.cup(row + 1, 1)}${panel}`);
       w.splat(" ", v.width - 1);
       w.write((v.outlines(row) ? outline : fg("line")) + "│");
     }
@@ -953,8 +1090,8 @@ export class View {
       const search = v.search;
       v.line(w, v.middle() + 1, "/ ", new Style({ fg: "strong", bg: "surface" }).sgr());
       w.splat(" ", v.width - 5);
-      w.write(`\x1b[${v.middle() + 2};4H` + fg("text"));
-      if (search.text.length === 0) writeClipped(w, "type to search", v.width - 5);
+      w.write(w.cup(v.middle() + 2, 4) + fg("text"));
+      if (search.text.length === 0) writeClipped(w, i18n.t`type to search`, v.width - 5);
       else {
         // The selection as every text box shows it.
         const from = v.searchOffset(),
@@ -964,11 +1101,12 @@ export class View {
         w.write(shown.slice(0, a) + palette.selection + shown.slice(a, b) + plain + shown.slice(b));
       }
     } else if (v.drawer === null) {
-      w.write(`\x1b[${v.middle() + 1};${v.width - 9}H` + button + ` New  ▾ ${panel}`);
+      const label = newAgentLabel(v.width);
+      w.write(w.cup(v.middle() + 1, v.width - displayWidth(label) - 1) + button + label + panel);
       // The focused agent list shows where `/` opens its search.
       if (v.focus === "agents") {
         v.line(w, v.middle() + 1, "/", new Style({ fg: "strong", bg: "bg", bold: true }).sgr());
-        w.write(new Style({ fg: "faint", bg: "bg" }).sgr() + " search");
+        w.write(new Style({ fg: "faint", bg: "bg" }).sgr() + " " + i18n.t`search`);
       }
     }
     if (v.drawer !== "agents") v.drawWorkspaces(w, workspaces);
@@ -977,9 +1115,16 @@ export class View {
       return;
     }
     if (v.drawer === null) {
-      // The rule meets the border, so an outline turns the corner.
-      w.write(`\x1b[${v.middle()};2H` + (v.focus !== null ? outline : panel + fg("line")));
-      w.write("─".repeat(Math.max(0, v.width - 2)) + "┤");
+      // The rule meets the border, so an outline turns the corner. Its grip
+      // sets it apart from the section rules and the scrollbar thumb.
+      const boxed = v.focus !== null,
+        stroke = boxed ? "─" : "━",
+        run = Math.max(0, v.width - 2),
+        grip = run >= split_grip.length + 4 ? split_grip : "",
+        left = Math.floor((run - grip.length) / 2);
+      w.write(w.cup(v.middle(), 2) + (boxed ? outline : panel + fg("line")) + stroke.repeat(left));
+      if (grip) w.write(boxed ? grip : fg("faint") + grip + fg("line"));
+      w.write(stroke.repeat(run - left - grip.length) + (boxed ? "┤" : "┥"));
     }
     v.drawAgents(w, entries, now_ms);
   }
@@ -992,11 +1137,11 @@ export class View {
       rule = v.drawer === null ? v.middle() - 1 : -1;
     w.write(outline);
     for (let y = box.top; y <= box.bottom; y++)
-      w.write(`\x1b[${y + 1};1H` + (y === box.top ? "┌" : y === box.bottom ? "└" : "│"));
+      w.write(w.cup(y + 1, 1) + (y === box.top ? "┌" : y === box.bottom ? "└" : "│"));
     for (const y of [box.top, box.bottom]) {
       // The rule already runs to the border from the lists' first column.
       const end = y === rule ? 1 + lists_x : v.width - 1;
-      w.write(`\x1b[${y + 1};2H` + "─".repeat(sat(end, 1)));
+      w.write(w.cup(y + 1, 2) + "─".repeat(sat(end, 1)));
       if (y !== rule) w.write(y === v.rows - 1 ? "┘" : y > 0 ? "┤" : "┐");
     }
     w.write("\x1b[0m");
@@ -1009,13 +1154,13 @@ export class View {
   /** The title row and the workspace list above the agents. */
   private drawWorkspaces(w: Writer, workspaces: WorkspaceEntry[]): void {
     const v = this;
-    w.write(`\x1b[1;${v.width - 4}H${panel} < `);
+    w.write(`${w.cup(1, v.width - 4)}${panel} < `);
     if (v.corgi_badge !== "none") {
-      w.write(`\x1b[1;3H${panel}\x1b[1m${fg("muted")}${corgiBadge.mark}`);
-      w.write("\x1b[1;6H\x1b[1m" + fg("strong"));
-      writeEllipsis(w, "workspaces", sat(v.width, 17));
-    } else v.line(w, 0, "workspaces", "\x1b[1m" + fg("strong"));
-    w.write(`\x1b[1;${v.width - 10}H` + button + `[ + ]${panel}`);
+      w.write(`${w.cup(1, 3)}${panel}\x1b[1m${fg("muted")}${corgiBadge.mark}`);
+      w.write(`${w.cup(1, 6)}\x1b[1m` + fg("strong"));
+      writeEllipsis(w, i18n.t`workspaces`, sat(v.width, 17));
+    } else v.line(w, 0, i18n.t`workspaces`, "\x1b[1m" + fg("strong"));
+    w.write(w.cup(1, v.width - 10) + button + `[ + ]${panel}`);
     const shown = workspaces.slice(
       v.workspace_offset,
       Math.min(workspaces.length, v.workspace_offset + v.workspaceCapacity()),
@@ -1028,33 +1173,34 @@ export class View {
       const meta = tinted ? active_meta : panel;
       // The dragged workspace takes the selected tint and a strong bar, like a dragged agent row.
       const bar = ghost ? ghost_bar : active_bar;
-      w.write(`\x1b[${y + 1};1H${style}`);
+      w.write(`${w.cup(y + 1, 1)}${style}`);
       w.splat(" ", v.width - 1);
       const badge = gitLabel(ws, false);
       const badge_width = displayWidth(badge);
-      w.write(`\x1b[${y + 1};2H${style}`);
+      w.write(`${w.cup(y + 1, 2)}${style}`);
       const link = linkRange(v, ws, workspaces);
       writeClipped(w, directoryLabel(ws.name, null, 4097), sat(link.start, 2));
       if (link.end > link.start) {
-        w.write(`\x1b[${y + 1};${link.start + 1}H`);
+        w.write(w.cup(y + 1, link.start + 1));
         drawPorts(w, ws, link.end - link.start, false);
       }
-      if (badge_width > 0) w.write(`\x1b[${y + 1};${v.width - 1 - badge_width}H${gitColor(ws.git_push.phase)}${badge}`);
+      if (badge_width > 0) w.write(`${w.cup(y + 1, v.width - 1 - badge_width)}${gitColor(ws.git_push.phase)}${badge}`);
       if (tinted) {
-        w.write(`\x1b[${y + 2};1H${meta}`);
+        w.write(`${w.cup(y + 2, 1)}${meta}`);
         w.splat(" ", v.width - 1);
       }
       const divider = index + 1 < Math.min(workspaces.length - v.workspace_offset, v.workspaceCapacity());
       // Without a resource row, the separator underlines the status row,
       // text included, as between agents.
       const rule = divider && v.workspaceRows() === 2 ? rule_underline : "";
-      w.write(`\x1b[${y + 2};2H${meta}${rule}`);
+      w.write(`${w.cup(y + 2, 2)}${meta}${rule}`);
       if (rule.length > 0) {
         w.splat(" ", v.width - 3);
-        w.write(`\x1b[${y + 2};2H`);
+        w.write(w.cup(y + 2, 2));
       }
       const tools = compactCount(ws.stats.tools);
-      const unread = ws.unread > 0 ? `${compactCount(ws.unread)} unread →` : "";
+      const count = compactCount(ws.unread);
+      const unread = ws.unread > 0 ? i18n.t`${count} unread →` : "";
       const attention = ws.attention > 0 ? ` ●${compactCount(ws.attention)}` : "";
       const unread_width = View.unreadWidth(ws);
       const attention_width = displayWidth(attention);
@@ -1076,41 +1222,41 @@ export class View {
       }
       if (ws.unread > 0) {
         if (has_status) w.write(tinted ? "\x1b[22m" + fg("muted") + " · " : "\x1b[22m" + fg("faint") + " · ");
-        w.write(`\x1b[${y + 2};${v.unreadRange(ws).start + 1}H`);
+        w.write(w.cup(y + 2, v.unreadRange(ws).start + 1));
         const unread_room = { value: unread_width };
         statusPart(w, unread, "\x1b[1m" + fg("accent"), unread_room);
       }
       const worktree_label = worktreeLabel(ws);
       if (worktree_label)
-        w.write(`\x1b[${y + 2};${v.width - 1 - displayWidth(worktree_label)}H${meta}${rule}${worktree_label}`);
-      else if (ws.stats.tools > 0) w.write(`\x1b[${y + 2};${v.width - 1 - metadata_width}H${meta}${rule}${metadata}`);
-      if (tinted) for (const row of [y + 1, y + 2]) w.write(`\x1b[${row};1H${bar}`);
+        w.write(`${w.cup(y + 2, v.width - 1 - displayWidth(worktree_label))}${meta}${rule}${worktree_label}`);
+      else if (ws.stats.tools > 0) w.write(`${w.cup(y + 2, v.width - 1 - metadata_width)}${meta}${rule}${metadata}`);
+      if (tinted) for (const row of [y + 1, y + 2]) w.write(`${w.cup(row, 1)}${bar}`);
       w.write(panel);
       if (v.workspaceRows() === 3 && y + 2 < v.workspaceEnd()) {
         if (tinted) {
-          w.write(`\x1b[${y + 3};1H${meta}`);
+          w.write(`${w.cup(y + 3, 1)}${meta}`);
           w.splat(" ", v.width - 1);
         }
-        w.write(`\x1b[${y + 3};2H${meta}`);
+        w.write(`${w.cup(y + 3, 2)}${meta}`);
         if (divider) w.write(rule_underline);
         drawResources(w, ws.resources, v, v.resource_hover === ws.id, tinted);
         w.write("\x1b[24;59m");
         w.write(panel);
-        if (tinted) w.write(`\x1b[${y + 3};1H${bar}${panel}`);
+        if (tinted) w.write(`${w.cup(y + 3, 1)}${bar}${panel}`);
       }
     });
     const ws_thumb = v.workspaceThumb();
     if (ws_thumb)
       for (let row = ws_thumb.start; row < ws_thumb.start + ws_thumb.len; row++)
-        w.write(`\x1b[${3 + row};${v.width}H` + v.thumbStyle("workspaces") + "┃");
+        w.write(w.cup(3 + row, v.width) + v.thumbStyle("workspaces") + "┃");
   }
   /** The agent list below its header. */
   private drawAgents(w: Writer, entries: Entry[], now_ms: number): void {
     const v = this;
     if (entries.length === 0) {
-      v.line(w, v.middle() + 2, v.search !== null ? "No matching agents" : "No agents yet", panel);
+      v.line(w, v.middle() + 2, v.search !== null ? i18n.t`No matching agents` : i18n.t`No agents yet`, panel);
       if (v.search === null) {
-        v.line(w, v.middle() + 4, "Launch inside a pane:", panel);
+        v.line(w, v.middle() + 4, i18n.t`Launch inside a pane:`, panel);
         commands(v.width - 3).forEach((text, i) => v.line(w, v.middle() + 5 + i, text, panel));
       }
     }
@@ -1127,6 +1273,8 @@ export class View {
     };
     const heading = (out: Writer, i: number, y: number, stuck: boolean) => {
       const e = entries[i];
+      if (isSection(e.target)) return v.drawSection(out, e, e.target.section, y, stuck);
+      if (isSubhead(e.target)) return v.drawSubhead(out, e, y, stuck);
       const lead = isGroup(e.target) ? "" : e.worktree?.ghost ? " " : !nested(i) ? "" : lastInGroup(i) ? "╰" : "├";
       v.drawHeader(out, e, y, lead, stuck);
     };
@@ -1135,7 +1283,7 @@ export class View {
     const dimmed = unlit(entries, v.spotlight);
     const pinned = v.pinned(v.offset);
     pinned.forEach((i, n) => {
-      const out = dimmed[i] ? new Writer() : w;
+      const out = dimmed[i] ? new Writer(w.column) : w;
       heading(out, i, next_y, n === pinned.length - 1);
       if (out !== w) writeExit(w, out.buffered(), spotlight_dim);
       next_y += 1;
@@ -1150,9 +1298,16 @@ export class View {
       sleepers.push(animationKey(e));
     }
     const dream = v.corgi_intensity > 0 ? corgiAnimation.dreamer(sleepers, now_ms) : null;
-    visible.forEach((e, index) => {
+    const lands: number[] = [];
+    for (const e of visible) {
+      lands.push(next_y);
+      next_y += View.height(e);
+    }
+    const order = visible.map((_, i) => i).sort((a, b) => v.layer(visible[a]) - v.layer(visible[b]));
+    order.forEach(index => {
+      const e = visible[index];
       const absolute = v.offset + index;
-      const exit_writer = new Writer();
+      const exit_writer = new Writer(w.column);
       // A row that moved to another group rides a tint from where it was
       // and shows as the tint lands. Without Kitty graphics, the tint stays
       // where it lands.
@@ -1165,25 +1320,27 @@ export class View {
           : gliding
             ? rowGlide.fade(moved.ms)
             : null;
-      const fade = dimmed[absolute] ? Math.max(fading ?? 0, spotlight_dim) : fading;
+      // Startup and its first idle prompt share one ghost in working.
+      const starting = e.section === "working" && e.starting;
+      const fade =
+        dimmed[absolute] || starting ? Math.max(fading ?? 0, dimmed[absolute] ? spotlight_dim : 0.5) : fading;
       const tint = moved !== null && !gliding && fade === null ? rowGlide.tint(moved.ms) : 0;
-      // A row cut off at the end draws whole, then loses its lower rows.
-      const cut = next_y + View.height(e) > end;
+      // A row cut off at either end draws whole, then loses the rows outside.
+      const top = lands[index] + e.slide;
+      const cut = top + View.height(e) > end || top < list_top;
       const row_writer = fade !== null || tint > 0 || cut ? exit_writer : w;
       const finish = () => {
-        const bytes = cut ? clipRows(exit_writer.buffered(), end) : exit_writer.buffered();
+        const bytes = cut ? clipRows(exit_writer.buffered(), end, list_top) : exit_writer.buffered();
         if (fade !== null) writeExit(w, bytes, fade);
         else if (tint > 0) writeTint(w, bytes, tint);
         else if (cut) w.write(bytes);
       };
       const frame_ms = e.exit ? e.exit.frame_ms : now_ms;
-      const top = next_y;
-      const y = top + Number(e.worktree?.ghost === true && "worktree" in e.target);
-      next_y += View.height(e);
+      const y = top + Number(e.worktree?.ghost === true && "worktree" in e.target) + Number(e.group.gap === true);
       if (gliding) {
         const from = list_top + moved.from - v.rowsBefore(v.offset);
         glide = rowGlide.place(
-          0,
+          w.column,
           rowGlide.position(from, top, moved.ms),
           v.width - 1,
           View.height(e),
@@ -1198,9 +1355,12 @@ export class View {
         finish();
         return;
       }
-      const in_group = grouped || e.worktree !== null;
+      // Rails run down a workspace in "all" and a browsed worktree's ghost;
+      // worktree labels elsewhere need none, and a rule parts two agents in a row.
+      const in_group = e.section === null && (grouped || e.worktree?.ghost === true);
       const last_in_group = in_group && lastInGroup(absolute);
-      const divider = !in_group && index + 1 < visible.length;
+      const divider =
+        !in_group && index + 1 < visible.length && (e.section === null || isAgent(visible[index + 1].target));
       v.drawAgent(
         row_writer,
         // Emoji keep their colors, so a mostly faded row shows the spinner.
@@ -1219,11 +1379,11 @@ export class View {
       finish();
     });
     if (glide.length > 0) w.write(glide);
-    if (v.search !== null) v.line(w, v.rows - 1, "↑↓  ↵ jump  Esc back", panel);
+    if (v.search !== null) v.line(w, v.rows - 1, i18n.t`↑↓  ↵ jump  Esc back`, panel);
     const t = v.thumb();
     if (t)
       for (let row = t.start; row < t.start + t.len; row++)
-        w.write(`\x1b[${v.middle() + 3 + row};${v.width}H` + v.thumbStyle("agents") + "┃");
+        w.write(w.cup(v.middle() + 3 + row, v.width) + v.thumbStyle("agents") + "┃");
     w.write("\x1b[0m");
   }
   /** The small glyph beside an agent's detail line: a wait clock, an active
@@ -1256,7 +1416,7 @@ export class View {
     const row_bg = selected ? selected_bg : hovered ? hover_bg : bg("bg");
     for (let row = 0; row < 2; row++) {
       if (y + row >= v.listEnd()) break;
-      w.write(`\x1b[${y + row + 1};${x + 1}H\x1b[0m${row_bg}`);
+      w.write(`${w.cup(y + row + 1, x + 1)}\x1b[0m${row_bg}`);
       w.splat(" ", v.width - 1);
     }
     if (grouped) {
@@ -1266,12 +1426,14 @@ export class View {
       const rail = e.focused ? new Style({ fg: "accent" }).sgr() : new Style({ fg: "line" }).sgr();
       const branch = e.focused ? "┣" : last_in_group ? "╰" : "├";
       const through = e.focused || !last_in_group;
-      w.write(`\x1b[${y + 1};${x + 1}H${rail}${row_bg}${branch}`);
-      if (through && y + 1 < v.listEnd()) w.write(`\x1b[${y + 2};${x + 1}H${e.focused ? "┃" : "│"}`);
+      w.write(`${w.cup(y + 1, x + 1)}${rail}${row_bg}${branch}`);
+      if (through && y + 1 < v.listEnd()) w.write(`${w.cup(y + 2, x + 1)}${e.focused ? "┃" : "│"}`);
       w.write(`\x1b[0m${row_bg}`);
     }
     const dot = indicator(e, selected);
-    w.write(`\x1b[${y + 1};${x + 2}H\x1b[22m${dot.color}${dot.icon}`);
+    // At work but waiting on the user: its name takes the needs-input color.
+    const waits = e.section !== null && (e.state === "blocked" || e.attention === "needs_input");
+    w.write(`${w.cup(y + 1, x + 2)}\x1b[22m${dot.color}${dot.icon}`);
     const room = v.width - 6;
     // Within a group, a dotted line under the text separates agents. Only
     // Kitty-graphics hosts get it; elsewhere the style could degrade to a
@@ -1285,7 +1447,6 @@ export class View {
     // Without sleeping corgis, a dim Z marks an idle agent; unseen ones are
     // brighter. Selected rows take muted, as faint is too dim on them.
     const napping = e.state === "idle" && v.corgi_intensity === 0;
-    const activity = View.activityGlyph(e, waiting, napping, corgiAnimation.spinner(compacting, now_ms));
     const activity_color = selected
       ? "\x1b[22m" + fg("muted")
       : napping && e.attention !== "finished"
@@ -1294,41 +1455,40 @@ export class View {
     const name = e.name.length > 0 ? directoryLabel(e.name, null, 160) : e.provider ? adapter(e.provider).name : "";
     const figure = contextFigure(e, compacting, background);
     const figure_width = figure ? displayWidth(figure.text) : 0;
-    const notes = e.notes > 0 ? `${e.notes} note${e.notes === 1 ? "" : "s"}` : "";
-    const right = figure_width + (figure_width > 0 ? 1 : 0) + (notes.length > 0 ? notes.length + 1 : 0);
+    const count = e.notes;
+    const notes = count > 0 ? (count === 1 ? i18n.t`${count} note` : i18n.t`${count} notes`) : "";
+    const right = figure_width + (figure_width > 0 ? 1 : 0) + (notes.length > 0 ? displayWidth(notes) + 1 : 0);
     w.write(
-      `\x1b[${y + 1};${x + 5}H${dot.unread || (grouped && e.focused) ? "\x1b[1m" + fg("strong") : "\x1b[22m" + fg("text")}`,
+      `${w.cup(y + 1, x + 5)}${
+        waits
+          ? "\x1b[1m" + fg("warm")
+          : dot.unread || (grouped && e.focused)
+            ? "\x1b[1m" + fg("strong")
+            : "\x1b[22m" + fg("text")
+      }`,
     );
-    writeEllipsis(w, name, sat(room, right));
+    writeEllipsis(w, (e.starred && e.section !== "starred" ? "★ " : "") + name, sat(room, right));
     w.write("\x1b[22m");
     // Unsent review notes wait for the user, so they take warm.
     if (notes.length > 0 && room > right + 4)
-      w.write(`\x1b[${y + 1};${x + v.width - right}H\x1b[1m${fg("warm")}${notes}\x1b[22m`);
+      w.write(`${w.cup(y + 1, x + v.width - right)}\x1b[1m${fg("warm")}${notes}\x1b[22m`);
     if (figure) {
-      w.write(`\x1b[${y + 1};${x + v.width - 1 - figure_width}H`);
+      w.write(w.cup(y + 1, x + v.width - 1 - figure_width));
       w.write(fgRgb(figure.color));
       w.write(figure.text);
     }
-    // Underline the existing second row, including its padding, without
-    // consuming another terminal row or changing the entry hit area.
-    w.write(`\x1b[${y + 2};${x + underline_x}H${line}`);
-    w.splat(" ", v.width - 1 - underline_x);
-    w.write(
-      `\x1b[${y + 2};${x + 2}H${dotted ? "\x1b[24m" : ""}${activity_color}${activity}\x1b[${y + 2};${x + 5}H${dotted ? line : ""}` +
-        fg("text"),
-    );
     const detail = compacting
-      ? "Compacting…"
+      ? i18n.t`Compacting…`
       : waiting
-        ? "Waiting on agents"
+        ? i18n.t`Waiting on agents`
         : e.state === "working"
           ? e.activity
           : e.state === "blocked"
-            ? "Needs input"
+            ? i18n.t`Needs input`
             : e.state === "initializing"
-              ? "Starting session"
+              ? i18n.t`Starting session`
               : e.state === "done"
-                ? "Session ended"
+                ? i18n.t`Session ended`
                 : "";
     const badge = subagentBadge(e.subagents, e.children);
     const badge_width = displayWidth(badge);
@@ -1336,7 +1496,7 @@ export class View {
     const animation_key = animationKey(e);
     const fallback = e.state === "working" && !compacting && !waiting && e.activity.length === 0;
     // Narrow rows keep the text; the pile beside it still moves.
-    const herding = compacting && detail_room >= corgiAnimation.herd_width;
+    const herding = compacting && detail_room >= corgiAnimation.herdWidth();
     const mode: corgiAnimation.Mode = herding
       ? "herding"
       : fallback && v.corgi_intensity > 0
@@ -1344,6 +1504,16 @@ export class View {
         : e.state === "idle" && v.corgi_intensity > 0
           ? "asleep"
           : "content";
+    const detail_text = detail.length === 0 ? "" : directoryLabel(detail, null, 512);
+    const activity = View.activityGlyph(e, waiting, napping, corgiAnimation.spinner(compacting, now_ms));
+    // Underline the existing second row, including its padding, without
+    // consuming another terminal row or changing the entry hit area.
+    w.write(`${w.cup(y + 2, x + underline_x)}${line}`);
+    w.splat(" ", v.width - 1 - underline_x);
+    w.write(
+      `${w.cup(y + 2, x + 2)}${dotted ? "\x1b[24m" : ""}${activity_color}${activity}${w.cup(y + 2, x + 5)}${dotted ? line : ""}` +
+        fg("text"),
+    );
     const presentation = corgiAnimation.observe(
       animation_key,
       mode,
@@ -1368,18 +1538,17 @@ export class View {
       // Interrupts already switch straight to the sleeping mode.
       if (e.state !== "working" && presentation) presentation.skipReveal();
       // No detail stays blank; directoryLabel would print "?" for it.
-      const text = detail.length === 0 ? "" : directoryLabel(detail, null, 512);
       if (presentation !== null && presentation.reveal_started_ms !== null) {
         w.write(presentation.writeCorgi(detail_room, now_ms, e.state === "working", sleep));
-        w.write(`\x1b[${y + 2};${x + 5}H` + fg("text"));
+        w.write(w.cup(y + 2, x + 5) + fg("text"));
         writeRevealedDetail(
           w,
-          text,
+          detail_text,
           detail_room,
           presentation.revealedColumns(detail_room, now_ms),
           presentation.revealPosition(detail_room, now_ms),
         );
-      } else writeEllipsis(w, text, detail_room);
+      } else writeEllipsis(w, detail_text, detail_room);
     }
     // Once the corgi has curled up, the compaction's time so far sits at the right.
     const took = herding && e.compacting_since > 0 ? elapsed(now_ms - e.compacting_since / 1000) : "";
@@ -1389,15 +1558,15 @@ export class View {
       displayWidth(detail) + 1 + took_width <= detail_room &&
       presentation!.herded(detail_room, now_ms)
     )
-      w.write(`\x1b[${y + 2};${x + 5 + detail_room - took_width}H${selected ? fg("muted") : fg("faint")}${took}`);
+      w.write(`${w.cup(y + 2, x + 5 + detail_room - took_width)}${selected ? fg("muted") : fg("faint")}${took}`);
     if (badge_width > 0) {
       const color = e.subagents.blocked > 0 ? fg("warm") : fg("accent");
-      w.write(`\x1b[${y + 2};${x + v.width - 1 - badge_width}H${color}${badge}`);
+      w.write(`${w.cup(y + 2, x + v.width - 1 - badge_width)}${color}${badge}`);
     }
     w.write("\x1b[24;59m");
     // Without the group rail, the focused agent takes the active workspace's bar.
     const bar = ghost ? ghost_bar : e.focused && !grouped ? active_bar : "";
-    if (bar.length > 0) for (let row = 0; row < 2; row++) w.write(`\x1b[${y + row + 1};${x + 1}H${bar}\x1b[0m`);
+    if (bar.length > 0) for (let row = 0; row < 2; row++) w.write(`${w.cup(y + row + 1, x + 1)}${bar}\x1b[0m`);
   }
   /** A workspace or worktree group's header. A worktree's under a workspace
    * branches off the workspace's rail with `lead`; a ghost's leaves that
@@ -1407,37 +1576,76 @@ export class View {
     const g = e.group;
     const row_bg = e.focused ? selected_bg : bg("bg");
     // Pinned, it underlines its row where the list scrolls beneath.
-    w.write(`\x1b[${y + 1};1H\x1b[0m${row_bg}${stuck ? rule_underline : ""}`);
+    w.write(`${w.cup(y + 1, 1)}\x1b[0m${row_bg}${stuck ? rule_underline : ""}`);
     w.splat(" ", v.width - 1);
-    if (lead.length > 0) w.write(`\x1b[${y + 1};1H` + fg("line") + lead);
+    if (lead.length > 0) w.write(w.cup(y + 1, 1) + fg("line") + lead);
     const arrow_x = lead.length;
-    w.write(`\x1b[${y + 1};${arrow_x + 1}H` + fg("muted") + (g.folded ? "▸" : "▾"));
+    w.write(w.cup(y + 1, arrow_x + 1) + fg("muted") + (g.folded ? "▸" : "▾"));
     // Its agents by state, as the worktree overview counts them.
     const bars = histogram(g);
     const status_width = bars.reduce((n, [text]) => n + displayWidth(text), 0);
     const status_x = sat(v.width, status_width > 0 ? status_width + 2 : 1);
     if (status_width > 0) {
-      w.write(`\x1b[${y + 1};${status_x + 1}H`);
+      w.write(w.cup(y + 1, status_x + 1));
       for (const [text, token, bold] of bars) w.write((bold ? "\x1b[1m" : "\x1b[22m") + fg(token) + text);
       w.write("\x1b[22m");
     }
     let name_x = arrow_x + 2;
     if ("worktree" in e.target) {
-      w.write(`\x1b[${y + 1};${name_x + 1}H` + fg("faint") + "⌥");
+      w.write(w.cup(y + 1, name_x + 1) + fg("faint") + "⌥");
       name_x += 2;
     }
     // Name, then a rule that leaves one space on each side.
     const text = directoryLabel(e.name, null, 160);
     const name_room = sat(status_x, name_x + 3);
-    w.write(`\x1b[${y + 1};${name_x + 1}H${g.current ? "\x1b[1m" + fg("strong") : "\x1b[1m" + fg("text")}`);
+    w.write(`${w.cup(y + 1, name_x + 1)}${g.current ? "\x1b[1m" + fg("strong") : "\x1b[1m" + fg("text")}`);
     writeEllipsis(w, text, name_room);
     const name_end = name_x + Math.min(displayWidth(text), name_room);
     if (status_x > name_end + 2) {
       // A heavy, bright rule so each header stands out from its agents; a
       // worktree inside a workspace takes a thin one.
-      w.write(`\x1b[${y + 1};${name_end + 2}H\x1b[22m` + (lead.length > 0 ? fg("line") : fg("muted")));
+      w.write(`${w.cup(y + 1, name_end + 2)}\x1b[22m` + (lead.length > 0 ? fg("line") : fg("muted")));
       w.write((lead.length > 0 ? "─" : "━").repeat(Math.max(0, status_x - 1 - (name_end + 1))));
     }
+    w.write("\x1b[22;24;59m");
+  }
+  /** An activity section's header, its glyph, name and count centered
+   * between two rules: " ━━━━━ ▶ working 3 ━━━━━ ▾". */
+  drawSection(w: Writer, e: Entry, kind: SectionKind, y: number, stuck: boolean): void {
+    const v = this;
+    const look = sections[kind];
+    const row_bg = e.focused ? selected_bg : bg("bg");
+    w.write(`${w.cup(y + 1, 1)}\x1b[0m${row_bg}${stuck ? rule_underline : ""}`);
+    w.splat(" ", v.width - 1);
+    // The rules run from column 1 to just before the caret, a space apart from the middle.
+    const caret_x = sat(v.width, 2),
+      room = sat(caret_x, 2),
+      count = compactCount(e.group.agents),
+      label_room = sat(room, displayWidth(count) + 8),
+      label = Math.min(displayWidth(look.label), label_room),
+      middle = 2 + label + 1 + displayWidth(count),
+      left = Math.floor(sat(room, middle + 2) / 2),
+      right = sat(room, middle + 2) - left;
+    w.write(`${w.cup(y + 1, 2)}\x1b[22m${fg("line")}${"━".repeat(left)} `);
+    w.write(`\x1b[1m${fg(look.token)}${look.glyph} ${e.focused ? fg("strong") : fg("text")}`);
+    writeEllipsis(w, look.label, label_room);
+    w.write(`\x1b[22m ${fg("muted")}${count} ${fg("line")}${"━".repeat(right)}`);
+    w.write(`${w.cup(y + 1, caret_x + 1)}${fg("faint")}${e.group.folded ? "▸" : "▾"}`);
+    w.write("\x1b[22;24;59m");
+  }
+  /** A worktree's rows in a section, or a workspace's in "all": " ⌥  release ┄┄┄┄". */
+  drawSubhead(w: Writer, e: Entry, y: number, stuck: boolean): void {
+    const v = this;
+    const row_bg = e.focused ? selected_bg : bg("bg");
+    w.write(`${w.cup(y + 1, 1)}\x1b[0m${row_bg}${stuck ? rule_underline : ""}`);
+    w.splat(" ", v.width - 1);
+    if (e.group.branch) w.write(`${w.cup(y + 1, 2)}${fg("faint")}⌥`);
+    w.write(`${w.cup(y + 1, 5)}${e.focused ? fg("muted") : fg("faint")}`);
+    const room = sat(v.width, 8);
+    const text = directoryLabel(e.name, null, 160);
+    writeEllipsis(w, text, room);
+    const end = 4 + Math.min(displayWidth(text), room);
+    if (v.width - 2 > end + 1) w.write(`${w.cup(y + 1, end + 2)}${fg("line")}${"┄".repeat(v.width - 2 - end - 1)}`);
     w.write("\x1b[22;24;59m");
   }
   drawGhost(w: Writer, e: Entry, y: number): void {
@@ -1446,16 +1654,22 @@ export class View {
       height = View.height(e),
       right = this.width - 2;
     for (let row = y; row < Math.min(y + height, this.listEnd()); row++) {
-      w.write(`\x1b[${row + 1};1H${style}┊\x1b[${row + 1};${right + 1}H┊`);
+      w.write(`${w.cup(row + 1, 1)}${style}┊${w.cup(row + 1, right + 1)}┊`);
     }
-    if ("worktree" in e.target) w.write(`\x1b[${y + 1};1H${style}╭${"┄".repeat(right - 1)}╮`);
+    if ("worktree" in e.target) w.write(`${w.cup(y + 1, 1)}${style}╭${"┄".repeat(right - 1)}╮`);
     if (e.worktree.end && y + height <= this.listEnd())
-      w.write(`\x1b[${y + height};1H${style}╰${"┄".repeat(right - 1)}╯`);
+      w.write(`${w.cup(y + height, 1)}${style}╰${"┄".repeat(right - 1)}╯`);
   }
   scopeStart(): number {
     if (this.framed()) return this.lists().scopeStart() + lists_x;
     // Compact headers keep one cell for the name and one for the arrow.
-    return this.width >= 22 ? 9 : 8;
+    return displayWidth(this.scopeHeading()) + (this.width >= 22 ? 3 : 2);
+  }
+  private scopeHeading(): string {
+    return ellipsis(
+      i18n.t`agents`,
+      sat(this.width, displayWidth(newAgentLabel(this.width)) + (this.width >= 22 ? 7 : 5)),
+    );
   }
   scopeArrow(): string {
     if (this.framed()) return this.lists().scopeArrow();
@@ -1463,7 +1677,10 @@ export class View {
   }
   scopeQualifier(): string {
     if (this.framed()) return this.lists().scopeQualifier();
-    const room = sat(sat(this.width, 11), this.scopeStart() - 1 + displayWidth(this.scopeArrow()));
+    const room = sat(
+      sat(this.width, displayWidth(newAgentLabel(this.width)) + 3),
+      this.scopeStart() - 1 + displayWidth(this.scopeArrow()),
+    );
     const out = new Writer();
     writeEllipsis(out, directoryLabel(this.scope_label, null, 160), room);
     // The qualifier is written into a 163-byte buffer.
@@ -1472,20 +1689,18 @@ export class View {
   drawScope(w: Writer): void {
     const v = this;
     if (v.middle() >= v.rows - 1) return;
-    w.write(`\x1b[${v.middle() + 1};2H\x1b[1m` + fg("strong"));
+    w.write(`${w.cup(v.middle() + 1, 2)}\x1b[1m` + fg("strong"));
     // Stop before the New button's leading space.
-    const room = sat(v.width, 11);
-    writeClipped(w, "agents", room);
+    w.write(v.scopeHeading());
     const qualifier = v.scopeQualifier();
     if (qualifier.length > 0) {
-      w.write("\x1b[22m" + fg("faint") + (v.scopeStart() === 9 ? ": " : " ") + "\x1b[1m" + fg("muted"));
-      w.write(qualifier);
+      w.write("\x1b[22m" + fg("faint") + (v.width >= 22 ? ": " : " ") + "\x1b[1m" + fg("muted"));
     }
-    w.write("\x1b[22m" + fg("faint") + v.scopeArrow());
+    w.write(w.cup(v.middle() + 1, v.scopeStart() + 1) + qualifier + "\x1b[22m" + fg("faint") + v.scopeArrow());
   }
   line(w: Writer, y: number, text: string, style: string): void {
     if (y >= this.rows) return;
-    w.write(`\x1b[${y + 1};2H${style}`);
+    w.write(`${w.cup(y + 1, 2)}${style}`);
     writeClipped(w, text, this.width - 3);
   }
 }
@@ -1496,8 +1711,9 @@ function commands(width: number): string[] {
   for (const p of Provider.all) {
     const name = adapter(p).command,
       last = lines.length - 1;
-    if (last >= 0 && displayWidth(`${lines[last]}  or  ${name}`) <= width) lines[last] += `  or  ${name}`;
-    else lines.push(last >= 0 ? `or  ${name}` : name);
+    const conjunction = i18n.t`or  ${name}`;
+    if (last >= 0 && displayWidth(`${lines[last]}  ${conjunction}`) <= width) lines[last] += `  ${conjunction}`;
+    else lines.push(last >= 0 ? conjunction : name);
   }
   return lines;
 }
@@ -1588,7 +1804,7 @@ export function drawResources(w: Writer, work: Work, v: View, hovered: boolean, 
   const values = [cpuText(work.cpu), memoryText(work.memory)];
   const names = [
     ["CPU", "C"],
-    ["Memory", "Mem", "M"],
+    [i18n.t`Memory`, i18n.t`Mem`, "M"],
     ["GPU", "G"],
   ];
   if (v.gpus) values.push(cpuText(work.gpu));
@@ -1600,7 +1816,7 @@ export function drawResources(w: Writer, work: Work, v: View, hovered: boolean, 
   const labels = values.map((_, i) => {
     const choices = names[i];
     return (
-      choices.find(name => rooms[i] >= name.length + 1 + 5 + (i === values.length - 1 ? 0 : 1)) ??
+      choices.find(name => rooms[i] >= displayWidth(name) + 1 + 5 + (i === values.length - 1 ? 0 : 1)) ??
       choices[choices.length - 1]
     );
   });
@@ -1619,7 +1835,7 @@ export function drawResources(w: Writer, work: Work, v: View, hovered: boolean, 
     w.write(i === 0 && work.cpu_pressure ? "\x1b[22m" + fg("warm") : normal);
     w.write(label);
     if (room >= 7) w.write(" ");
-    const used = label.length + (room >= 7 ? 1 : 0);
+    const used = displayWidth(label) + (room >= 7 ? 1 : 0);
     writeClipped(w, value, sat(room, used) - (last ? 0 : 1));
     const printed = used + Math.min(displayWidth(value), sat(room, used) - (last ? 0 : 1));
     w.splat(" ", sat(room, printed));
@@ -1645,10 +1861,12 @@ export function agentIndexAt(v: View, entries: Entry[], x: number, y: number): n
 
 // Fade both the card background and its foreground/underline colors into the
 // sidebar panel. All cursor positions and glyphs stay fixed until removal.
-export function writeExit(w: Writer, frame: string, progress: number): void {
+export function writeExit(w: Writer, frame: string, progress: number, background: palette.Token = "bg"): void {
   const t = clamp(progress, 0, 1);
   const opacity = 1 - t * t * (3 - 2 * t);
-  w.write(recolor(frame, (_, value, n) => Math.round(colors.bg[n] + (value - colors.bg[n]) * opacity)));
+  w.write(
+    recolor(frame, (_, value, n) => Math.round(colors[background][n] + (value - colors[background][n]) * opacity)),
+  );
 }
 /** Tints the backgrounds in `frame` toward accent, as far as `amount`. */
 export function writeTint(w: Writer, frame: string, amount: number): void {
@@ -1817,8 +2035,8 @@ export function portName(ws: WorkspaceEntry): string | null {
 export function portLabel(ws: WorkspaceEntry): string {
   const count = urlCount(ws);
   // A name stands alone; without one the button says what it does.
-  const name = portName(ws) ?? "Open ...";
-  const text = name.length > 0 ? name : "Open Link";
+  const name = portName(ws) ?? `${i18n.t`Open `}...`;
+  const text = name.length > 0 ? name : i18n.t`Open Link`;
   return count === 1 ? `${text} ↗` : `${text} ↗ ${count}`;
 }
 /** The color of the `i`th of three dots that say work is under way: they
@@ -1832,20 +2050,23 @@ export function pulse(i: number, now_ms: number): palette.Rgb {
 /** A label still `naming` its link starts "Open ...", its dots pulsing. */
 export function writePortLabel(w: Writer, label: string, width: number, naming: boolean, now_ms: number): void {
   if (!naming) return writeClipped(w, label, width);
-  writeClipped(w, "Open ", width);
-  for (let i = 0; i < Math.min(3, sat(width, 5)); i++) {
+  const prefix = i18n.t`Open `,
+    prefixWidth = displayWidth(prefix);
+  writeClipped(w, prefix, width);
+  for (let i = 0; i < Math.min(3, sat(width, prefixWidth)); i++) {
     w.write(fgRgb(pulse(i, now_ms)));
     w.write(".");
   }
   w.write(fg("text"));
-  if (width > 8) writeClipped(w, Buffer.from(label).subarray(8).toString(), width - 8);
+  const start = prefixWidth + 3;
+  if (width > start) writeClipped(w, label.slice(prefix.length + 3), width - start);
 }
 function statusMetadataWidth(ws: WorkspaceEntry): number {
   return displayWidth(worktreeLabel(ws)) || displayWidth(compactCount(ws.stats.tools)) + 1;
 }
 export function worktreeLabel(ws: WorkspaceEntry): string {
   const count = worktrees.linked(ws.worktrees).length;
-  return count ? `${count} worktree${count === 1 ? "" : "s"}` : "";
+  return count ? (count === 1 ? i18n.t`${count} worktree` : i18n.t`${count} worktrees`) : "";
 }
 export function worktreeBadge(v: View, workspaces: WorkspaceEntry[], id: number): Rect | null {
   const index = workspaces.findIndex(ws => ws.id === id),
@@ -1930,28 +2151,43 @@ function portLine(
   return null;
 }
 
-/** Hover popover under the agents header for choosing which agents are listed. */
+/** A row of the agent list's menu: which agents it lists, or how it orders them. */
+export type ScopeChoice = Scope | Sort;
+/** The menu's rows, top to bottom: the choices, a blank row and the sort heading. */
+const scope_rows: (ScopeChoice | "gap" | "sort")[] = ["workspace", "all", "gap", "sort", "activity", "manual"];
+/** Hover popover under the agents header for choosing which agents are
+ * listed and how they're ordered. */
 export class ScopeMenu {
   pinned = false;
-  hovered: Scope | null = null;
+  hovered: ScopeChoice | null = null;
   constructor(fields: Partial<ScopeMenu> = {}) {
     Object.assign(this, fields);
   }
+  /** Under the agents header, or moved up as far as it must to fit. */
   static bounds(side: View, cols: number, rows: number): Rect {
-    const y = side.middle() + 1;
     const width = Math.min(sat(cols, 1 + lists_x), Math.max(sat(side.width, 2 + lists_x), 26));
-    const height = Math.min(4, sat(sat(rows, 1), y));
+    const height = Math.min(scope_rows.length + 2, sat(rows, 1));
+    const y = Math.min(side.middle() + 1, sat(sat(rows, 1), height));
     return new Rect(1 + lists_x, y, width, height);
   }
-  static hit(side: View, cols: number, rows: number, x: number, y: number): Scope | null {
+  static hit(side: View, cols: number, rows: number, x: number, y: number): ScopeChoice | null {
     const b = ScopeMenu.bounds(side, cols, rows);
-    if (b.h < 4) return null;
-    const index = dropdown.hit(b, scopes.length, x, y);
-    return index === null ? null : scopes[index];
+    if (b.h < scope_rows.length + 2) return null;
+    const index = dropdown.hit(b, scope_rows.length, x, y),
+      row = index === null ? null : scope_rows[index];
+    return row === null || row === "gap" || row === "sort" ? null : row;
   }
-  draw(w: Writer, side: View, cols: number, rows: number, workspaces: WorkspaceEntry[], scope: Scope): void {
+  draw(
+    w: Writer,
+    side: View,
+    cols: number,
+    rows: number,
+    workspaces: WorkspaceEntry[],
+    scope: Scope,
+    sort: Sort,
+  ): void {
     const b = ScopeMenu.bounds(side, cols, rows);
-    if (b.h < 4 || b.w < 16) return;
+    if (b.h < scope_rows.length + 2 || b.w < 16) return;
     let total = 0;
     let current = 0;
     for (const ws of workspaces) {
@@ -1961,17 +2197,57 @@ export class ScopeMenu {
     dropdown.draw(
       w,
       b,
-      scopes.map(option => ({
-        text: option === "workspace" ? "This workspace" : "All",
-        note: compactCount(option === "workspace" ? current : total),
-        current: option === scope,
-        hovered: this.hovered === option,
-      })),
+      scope_rows.map(option =>
+        option === "gap" || option === "sort"
+          ? { text: option === "sort" ? i18n.t`Sort` : "", note: "", heading: true, current: false, hovered: false }
+          : {
+              text: scope_labels[option],
+              note: option === "workspace" ? compactCount(current) : option === "all" ? compactCount(total) : "",
+              ...scope_notes[option],
+              current: option === scope || option === sort,
+              hovered: this.hovered === option,
+            },
+      ),
     );
   }
 }
-/** The scope menu's rows, top to bottom. */
-const scopes: Scope[] = ["workspace", "all"];
+/** What each sort does, at a glance: activity's sections by their glyphs. */
+const scope_notes: Partial<Record<ScopeChoice, { note: string; runs?: dropdown.Run[] }>> = {
+  activity: {
+    note: "▶ ● ○",
+    runs: [
+      [sections.working.glyph, sections.working.token],
+      [" ", "faint"],
+      [sections.ready.glyph, sections.ready.token],
+      [" ", "faint"],
+      [sections.idle.glyph, sections.idle.token],
+    ],
+  },
+  manual: {
+    get note() {
+      return i18n.t`as dragged`;
+    },
+  },
+};
+const scope_labels: Record<ScopeChoice, string> = {
+  get workspace() {
+    return i18n.t`This workspace`;
+  },
+  get all() {
+    return i18n.t`All`;
+  },
+  get activity() {
+    return i18n.t`By activity`;
+  },
+  get manual() {
+    return i18n.t`Manual`;
+  },
+};
+
+function newAgentLabel(width: number): string {
+  const label = ` ${i18n.t`New`}  ▾ `;
+  return displayWidth(i18n.t`agents`) + displayWidth(label) + (width >= 22 ? 7 : 5) <= width ? label : " +  ▾ ";
+}
 
 export class PortMenu {
   selected = 0;
@@ -2000,11 +2276,11 @@ export class PortMenu {
     const rect = PortMenu.bounds(cols, rows);
     if (rect.w < 8 || rect.h < 4) return;
     for (let row = 0; row < rect.h; row++) {
-      w.write(`\x1b[${rect.y + row + 1};${rect.x + 1}H` + new Style({ fg: "muted", bg: "surface" }).sgr());
+      w.write(w.cup(rect.y + row + 1, rect.x + 1) + new Style({ fg: "muted", bg: "surface" }).sgr());
       w.splat(" ", rect.w);
     }
-    w.write(`\x1b[${rect.y + 1};${rect.x + 2}H`);
-    writeClipped(w, "Links · Esc to close", rect.w - 2);
+    w.write(w.cup(rect.y + 1, rect.x + 2));
+    writeClipped(w, i18n.t`Links · Esc to close`, rect.w - 2);
     const count = urlCount(ws);
     const selected = Math.min(this.selected, sat(count, 1));
     const offset = Math.floor(selected / PortMenu.capacity(rows)) * PortMenu.capacity(rows);
@@ -2012,11 +2288,11 @@ export class PortMenu {
       const url = workspaceUrl(ws, index);
       if (url === null) continue;
       w.write(
-        `\x1b[${rect.y + 3 + index - offset};${rect.x + 1}H${index === selected ? fg("text") + selected_bg : fg("text") + bg("surface")} ${index === selected ? "›" : " "} \x1b]8;id=corgi-popup-${ws.id}-${index};${url}\x1b\\`,
+        `${w.cup(rect.y + 3 + index - offset, rect.x + 1)}${index === selected ? fg("text") + selected_bg : fg("text") + bg("surface")} ${index === selected ? "›" : " "} \x1b]8;id=corgi-popup-${ws.id}-${index};${url}\x1b\\`,
       );
       const name = workspaceUrlName(ws, index);
       const naming = name.length === 0 && workspaceUrlPending(ws, index);
-      const label = name.length > 0 ? `${name} · ${url}` : naming ? `Open ... · ${url}` : url;
+      const label = name.length > 0 ? `${name} · ${url}` : naming ? `${i18n.t`Open `}... · ${url}` : url;
       writePortLabel(w, label, rect.w - 4, naming, Date.now());
       w.write("\x1b]8;;\x1b\\");
     }
@@ -2039,17 +2315,18 @@ function gitColor(phase: GitPush["phase"]): string {
 export function gitLabel(ws: WorkspaceEntry, expanded: boolean): string {
   switch (ws.git_push.phase) {
     case "pushing":
-      return ` Pushing ${corgiAnimation.spinner(false, Date.now())}`;
+      const spinner = corgiAnimation.spinner(false, Date.now());
+      return i18n.t` Pushing ${spinner}`;
     case "succeeded":
-      return " Pushed ✓";
+      return i18n.t` Pushed ✓`;
     case "failed":
-      return " Retry !";
+      return i18n.t` Retry !`;
     case "idle":
       break;
   }
   const count = ws.git_ahead;
   if (count === null || count === undefined || count === 0) return "";
-  return `${expanded ? " Push " : ""}↑${compactCount(count)}`;
+  return `${expanded ? i18n.t` Push ` : ""}↑${compactCount(count)}`;
 }
 export function gitWorkspace(v: View, workspaces: WorkspaceEntry[], x: number, y: number): WorkspaceEntry | null {
   return gitActionWorkspace(v, workspaces, null, x, y);
@@ -2088,7 +2365,7 @@ export function drawGitAction(w: Writer, v: View, workspaces: WorkspaceEntry[], 
           ? new Style({ fg: "hot", bg: "selected", bold: true }).sgr()
           : new Style({ fg: "accent", bg: "selected", bold: true }).sgr();
     w.write(
-      `\x1b]8;;\x1b\\\x1b[${3 + i * v.workspaceRows()};${v.width - 1 - displayWidth(label)}H${style}${label}\x1b[0m`,
+      `\x1b]8;;\x1b\\${w.cup(3 + i * v.workspaceRows(), v.width - 1 - displayWidth(label))}${style}${label}\x1b[0m`,
     );
     return;
   }
@@ -2101,15 +2378,19 @@ class DiffColumns {
   constructor(diffs: GitDiff[]) {
     for (const diff of diffs) {
       if (diff.files === 0) continue;
-      this.files = Math.max(this.files, displayWidth(compactCount(diff.files)));
+      this.files = Math.max(this.files, displayWidth(this.fileLabel(diff)));
       this.added = Math.max(this.added, 1 + displayWidth(compactCount(diff.insertions)));
       this.removed = Math.max(this.removed, 1 + displayWidth(compactCount(diff.deletions)));
     }
   }
+  private fileLabel(diff: GitDiff): string {
+    const count = diff.files;
+    return count === 1 ? i18n.t`${count} file` : i18n.t`${count} files`;
+  }
   /** The table's width, or 0 when nothing changed or it needs more than `room`. */
   width(room: number): number {
     if (this.files === 0) return 0;
-    const size = this.files + " files  ".length + this.added + 1 + this.removed;
+    const size = this.files + 2 + this.added + 1 + this.removed;
     return size <= room ? size : 0;
   }
   /** Writes a row ending at the box's content edge: column `x` (0-based) of row `y` (1-based). */
@@ -2117,10 +2398,10 @@ class DiffColumns {
     if (diff.files === 0) return;
     const pad = (text: string, size: number) => " ".repeat(Math.max(0, size - displayWidth(text))) + text;
     w.write(
-      `\x1b[22m\x1b[${y};${x}H` +
+      `\x1b[22m${w.cup(y, x)}` +
         fg("muted") +
-        pad(compactCount(diff.files), this.files) +
-        (diff.files === 1 ? " file   " : " files  ") +
+        this.fileLabel(diff) +
+        " ".repeat(Math.max(0, this.files - displayWidth(this.fileLabel(diff))) + 2) +
         fg("accent") +
         pad(`+${compactCount(diff.insertions)}`, this.added) +
         " " +
@@ -2158,13 +2439,13 @@ function drawGitError(w: Writer, message: string, cols: number, rows: number, px
   const y = Math.min(py + 1, rows - 1 - height);
   w.write("\x1b7\x1b]8;;\x1b\\");
   for (let row = 0; row < height; row++) {
-    w.write(`\x1b[${y + row + 1};${x + 1}H` + new Style({ fg: "hot", bg: "bg" }).sgr());
+    w.write(w.cup(y + row + 1, x + 1) + new Style({ fg: "hot", bg: "bg" }).sgr());
     w.write(row === 0 ? "╭" : row === height - 1 ? "╰" : "│");
     w.write((row === 0 || row === height - 1 ? "─" : " ").repeat(width - 2));
     w.write(row === 0 ? "╮" : row === height - 1 ? "╯" : "│");
   }
-  w.write(`\x1b[${y + 2};${x + 3}H\x1b[1mPush failed\x1b[22m`);
-  lines.forEach((line, i) => w.write(`\x1b[${y + 3 + i};${x + 3}H${line}`));
+  w.write(`${w.cup(y + 2, x + 3)}\x1b[1m${i18n.t`Push failed`}\x1b[22m`);
+  lines.forEach((line, i) => w.write(`${w.cup(y + 3 + i, x + 3)}${line}`));
   w.write("\x1b[0m\x1b8");
   return new Rect(x, y, width, height);
 }
@@ -2188,7 +2469,7 @@ export function drawGitTooltip(
   const lit = (row: number) => bg(row === selected ? "selected" : "bg");
   w.write("\x1b7\x1b]8;;\x1b\\");
   for (let row = 0; row < height; row++) {
-    w.write(`\x1b[${y + row + 1};${x + 1}H` + new Style({ fg: "line", bg: "bg" }).sgr());
+    w.write(w.cup(y + row + 1, x + 1) + new Style({ fg: "line", bg: "bg" }).sgr());
     w.write(row === 0 ? "╭" : row === height - 1 ? "╰" : "│");
     const item = row === 1 ? 0 : row >= 2 && row < 2 + count * 2 ? Math.floor((row - 2) / 2) + 1 : null;
     if (item !== null) w.write(lit(item));
@@ -2198,22 +2479,23 @@ export function drawGitTooltip(
   }
   const columns = new DiffColumns([ws.git_diff, ...ws.git_commits.slice(0, count).map(item => item.diff)]);
   const header = columns.width(width - 16);
-  w.write(`\x1b[${y + 2};${x + 3}H\x1b[1m` + fg("strong") + lit(0));
+  const commits = ws.git_ahead ?? 0;
+  w.write(`${w.cup(y + 2, x + 3)}\x1b[1m` + fg("strong") + lit(0));
   writeEllipsis(
     w,
-    `↑ ${ws.git_ahead ?? 0} unpushed commit${ws.git_ahead === 1 ? "" : "s"}`,
+    commits === 1 ? i18n.t`↑ ${commits} unpushed commit` : i18n.t`↑ ${commits} unpushed commits`,
     width - 4 - (header > 0 ? header + 2 : 0),
   );
   if (header > 0) columns.write(w, ws.git_diff, x + width - 1 - header, y + 2);
   ws.git_commits.slice(0, count).forEach((item, i) => {
     const base = new Style({ fg: "text", bg: "bg" }).sgr() + lit(i + 1);
-    w.write(`\x1b[${y + 3 + i * 2};${x + 3}H${base}` + fg("muted") + `${item.hash}  ` + fg("text"));
+    w.write(`${w.cup(y + 3 + i * 2, x + 3)}${base}` + fg("muted") + `${item.hash}  ` + fg("text"));
     writeEllipsis(w, item.subject, sat(width - 6, byteLength(item.hash)));
     const age = relativeTime(item.timestamp, Math.floor(Date.now() / 1000));
     const timing = `${item.date} · ${age}`;
     const stat = item.diff.files > 0 ? columns.width(sat(width - 8, displayWidth(timing) + 2)) : 0;
     if (stat > 0) columns.write(w, item.diff, x + width - 1 - stat, y + 4 + i * 2);
-    w.write(`\x1b[${y + 4 + i * 2};${x + 5}H` + fg("faint"));
+    w.write(w.cup(y + 4 + i * 2, x + 5) + fg("faint"));
     const author_room = Math.min(24, sat(width - 9 - (stat > 0 ? stat + 2 : 0), displayWidth(timing)));
     if (author_room > 0) {
       writeEllipsis(w, item.author, author_room);
@@ -2226,8 +2508,9 @@ export function drawGitTooltip(
     );
   });
   if (has_footer) {
-    w.write(`\x1b[${y + height - 1};${x + 3}H` + new Style({ fg: "faint", bg: "bg" }).sgr());
-    const footer = ws.git_commits.length === 0 ? "Commit details unavailable" : `+${remaining} more`;
+    w.write(w.cup(y + height - 1, x + 3) + new Style({ fg: "faint", bg: "bg" }).sgr());
+    const count = remaining;
+    const footer = ws.git_commits.length === 0 ? i18n.t`Commit details unavailable` : i18n.t`+${count} more`;
     writeEllipsis(w, footer, width - 4);
   }
   w.write("\x1b[0m\x1b8");
@@ -2243,7 +2526,24 @@ export function elapsed(ms: number): string {
 export function relativeTime(timestamp: number, now: number): string {
   if (timestamp === 0) return "";
   const seconds = Math.abs(now - timestamp);
-  if (seconds < 60) return "just now";
+  if (i18n.language() !== "en") {
+    const [scale, unit] =
+      seconds < 3600
+        ? ([60, "minute"] as const)
+        : seconds < 86400
+          ? ([3600, "hour"] as const)
+          : seconds < 30 * 86400
+            ? ([86400, "day"] as const)
+            : seconds < 365 * 86400
+              ? ([30 * 86400, "month"] as const)
+              : ([365 * 86400, "year"] as const);
+    if (seconds < 60) return i18n.t`just now`;
+    return new Intl.RelativeTimeFormat(i18n.language(), { numeric: "auto" }).format(
+      Math.floor(seconds / scale) * (timestamp > now ? 1 : -1),
+      unit,
+    );
+  }
+  if (seconds < 60) return i18n.t`just now`;
   const unit =
     seconds < 3600
       ? { seconds: 60, name: "minute" }

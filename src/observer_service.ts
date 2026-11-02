@@ -1,3 +1,4 @@
+import * as telemetry from "./telemetry";
 import { Worker as TranscriptWorker } from "./transcript";
 import { Worker as UsageWorker } from "./usage/worker";
 import { Worker as SummaryWorker } from "./activity/worker";
@@ -18,6 +19,7 @@ import type { Request } from "./protocol";
 import { Model } from "./providers/model";
 import * as accounts from "./accounts";
 import * as integration from "./integration";
+import type { Title } from "./pane/terminal";
 
 type Workers = {
   transcripts: TranscriptWorker;
@@ -130,16 +132,20 @@ function attention(server: Server, ding: boolean, state: string) {
 /** The pane, when it still shows the title session `request` asked about. */
 function titled(runtime: Runtime, provider: Provider, request: ObserverRequest) {
   const pane = runtime.pane(request.pane);
-  const prefix = pane ? (adapter(provider).titleSession?.(pane.terminal.title) ?? null) : null;
   if (
     !pane ||
-    !prefix ||
     pane.terminal.exited ||
     pane.detection.missing ||
     pane.detection.pid !== request.pid ||
-    pane.terminal.title_pid !== request.pid ||
-    pane.terminal.title_revision !== request.title_revision ||
-    pane.attachment.generation !== request.generation ||
+    pane.attachment.generation !== request.generation
+  )
+    return null;
+  const title = pane.terminal.titleInfo(),
+    prefix = adapter(provider).titleSession?.(title.text);
+  if (
+    !prefix ||
+    title.pid !== request.pid ||
+    title.revision !== request.title_revision ||
     prefix.text() !== request.prefix.text()
   )
     return null;
@@ -195,16 +201,11 @@ export function retitled(runtime: Runtime, pane: Pane, provider: Provider, prefi
   binding.generation++;
   binding.selection_hash = hash;
 }
-export function reattachFromTitle(server: Server, pane: Pane, provider: Provider, pid: number) {
-  if (
-    pane.detection.claim ||
-    pane.attachment.actor ||
-    pane.terminal.exited ||
-    pid <= 0 ||
-    pane.terminal.title_pid !== pid
-  )
-    return;
-  const prefix = adapter(provider).titleSession?.(pane.terminal.title);
+export function reattachFromTitle(server: Server, pane: Pane, provider: Provider, pid: number, observed?: Title) {
+  if (pane.detection.claim || pane.attachment.actor || pane.terminal.exited || pid <= 0) return;
+  const title = observed ?? pane.terminal.titleInfo();
+  if (title.pid !== pid) return;
+  const prefix = adapter(provider).titleSession?.(title.text);
   const actor = prefix && titleActor(server.runtime, provider, prefix);
   if (!actor) return;
   pane.attachment.select(actor);
@@ -230,10 +231,18 @@ export function claimPane(server: Server, query: Request<"pane.agent">) {
   changed(server);
 }
 export function detectPane(server: Server, pane: Pane, observedJob?: detection.Job | null) {
+  const telemetry_started = telemetry.begin();
+  try {
+    detect(server, pane, observedJob);
+  } finally {
+    telemetry.end("agent.detect", telemetry_started);
+  }
+}
+function detect(server: Server, pane: Pane, observedJob?: detection.Job | null) {
   const runtime = server.runtime,
     workers = start(server),
     worker = workers.summaries;
-  const before = stringify(pane.agent());
+  const before = pane.agent().comparison();
   const generation = pane.attachment.generation;
   if (pane.detection.claim && (pane.terminal.exited || !detection.claimAlive(pane.detection.claim))) {
     pane.releaseDetection();
@@ -242,9 +251,12 @@ export function detectPane(server: Server, pane: Pane, observedJob?: detection.J
   const job = claim
     ? null
     : observedJob === undefined
-      ? (detection.foreground(pane.terminal.fd)?.job ?? null)
+      ? (detection
+          .foregrounds([{ fd: pane.terminal.fd, pid: pane.terminal.pid, agent: pane.detection.pid }])
+          .get(pane.terminal.fd)?.job ?? null)
       : observedJob;
-  const previous = pane.detection.pid;
+  const previous = pane.detection.pid,
+    title = claim || job ? pane.terminal.titleInfo() : null;
   if (!claim) pane.resume_hint.observe(pane.agent());
   if (job) {
     if ((previous && previous !== job.pid) || (pane.attachment.actor && pane.agent().provider !== job.provider))
@@ -263,8 +275,8 @@ export function detectPane(server: Server, pane: Pane, observedJob?: detection.J
     }
     const shown = adapter(job.provider);
     if (shown.titleSession) {
-      retitled(runtime, pane, job.provider, shown.titleSession(pane.terminal.title));
-      reattachFromTitle(server, pane, job.provider, job.pid);
+      retitled(runtime, pane, job.provider, shown.titleSession(title!.text));
+      reattachFromTitle(server, pane, job.provider, job.pid, title!);
     }
   }
   const now = clock.microTimestamp(),
@@ -292,7 +304,7 @@ export function detectPane(server: Server, pane: Pane, observedJob?: detection.J
     let text: string | null = null;
     const view = {
         id: pane.id,
-        title: claim || job ? pane.terminal.title : "",
+        title: title?.text ?? "",
         text: () => (text ??= claim || job ? pane.terminal.liveText() : ""),
       },
       known: Known | null = actor && {
@@ -315,7 +327,7 @@ export function detectPane(server: Server, pane: Pane, observedJob?: detection.J
     }
   }
   if (!claim) pane.resume_hint.observe(pane.agent());
-  if (generation !== pane.attachment.generation || before !== stringify(pane.agent())) changed(server);
+  if (generation !== pane.attachment.generation || !Bun.deepEquals(before, pane.agent().comparison())) changed(server);
   attention(server, ding, pane.agent().state);
 }
 /** The live pane that shows `provider`'s `session`, if one does. */
@@ -330,6 +342,7 @@ export function hook(server: Server, query: Request<"hook">) {
   if (!event) return;
   const now = clock.microTimestamp(),
     seq = query.seq ?? BigInt(now);
+  const child = event.independent_child;
   const known = runtime.conversations.find(query.provider, event.session),
     presence: Presence =
       known && runtime.attachments(known) > 0 ? "attached" : query.background ? "detached" : "attaching";
@@ -345,10 +358,10 @@ export function hook(server: Server, query: Request<"hook">) {
     if (!pane) throw Error("NoPane");
     if (pane.detection.claim) return;
     detectPane(server, pane);
-    if (seq <= pane.attachment.hook_seq) return;
+    if (!child && seq <= pane.attachment.hook_seq) return;
     actor = runtime.conversations.routeHook(pane.attachment, query.provider, event, route.binds);
     if (!actor) return;
-    pane.attachment.hook_seq = seq;
+    if (!child) pane.attachment.hook_seq = seq;
     if (event.kind === "session_start") runtime.rememberAgent(pane.id, query.provider);
     if (!actor.workspace || !runtime.workspaces.get(actor.workspace))
       actor.workspace = runtime.workspaces.owner(pane.id)?.id ?? 0;
@@ -371,9 +384,13 @@ export async function tick(server: Server) {
   if (workers.settling || now - workers.detected >= 250) {
     workers.detected = now;
     const panes = runtime.panes.filter(pane => !pane.terminal.exited && (workers.settling || pane.detectionDue(now)));
+    const foregrounds_started = telemetry.begin();
     const fronts = detection.foregrounds(
-      panes.filter(pane => !pane.detection.claim).map(pane => ({ fd: pane.terminal.fd, pid: pane.terminal.pid })),
+      panes
+        .filter(pane => !pane.detection.claim)
+        .map(pane => ({ fd: pane.terminal.fd, pid: pane.terminal.pid, agent: pane.detection.pid })),
     );
+    telemetry.end("agent.foregrounds", foregrounds_started);
     for (const pane of panes) {
       const front = fronts.get(pane.terminal.fd);
       detectPane(server, pane, front && front.job);
@@ -389,6 +406,7 @@ export async function tick(server: Server) {
       observer.reconcile(runtime);
       for (const request of observer.takeMissed()) missed(server, provider, request);
       for (const snapshot of observer.take()) {
+        telemetry.count("agent.provider.results");
         const actor = snapshotActor(server, provider, snapshot);
         if (!actor) continue;
         attention(
@@ -396,8 +414,10 @@ export async function tick(server: Server) {
           actor.observeSnapshot(snapshot, actorWatched(server, actor.id), clock.microTimestamp()),
           actor.state.state,
         );
-        runtime.conversations.observeChildren(actor, snapshot, clock.microTimestamp());
-        workers.summaries.submit(actor, snapshot.evidence, null, runtime.panes);
+        if (snapshot.lifecycle) {
+          runtime.conversations.observeChildren(actor, snapshot, clock.microTimestamp());
+          workers.summaries.submit(actor, snapshot.evidence, null, runtime.panes);
+        }
         changed(server);
       }
     }
@@ -450,8 +470,10 @@ export async function tick(server: Server) {
       if (result && runtime.link_labels.apply(result, now)) changed(server);
     workers.usage.reconcile(runtime);
     for (const result of workers.usage.take()) {
+      telemetry.count("agent.usage.results");
       const actor = runtime.conversations.byId(result.actor);
       if (!actor) continue;
+      if (result.checklist) actor.observeChecklist(result.checklist);
       if (!actor.model_from_hook && result.model.id.len) actor.model = result.model;
       if (!actor.headless_usage) actor.live_usage = result.live;
       actor.context = result.context;
@@ -482,9 +504,11 @@ export async function tick(server: Server) {
       actor.observeTranscriptTurn(result.spoke_at);
       actor.observeTaskEnds(result.ended);
       if (result.progress) actor.observeTools(result.progress);
-      if (result.fallback(actor.state, clock.microTimestamp()))
-        workers.summaries.submit(actor, result.progress!.commentary, result.progress, runtime.panes);
-      else if (result.progress) workers.summaries.tools(actor.id, actor.state, result.progress);
+      const now = clock.microTimestamp();
+      if (result.fallback(actor.state, now)) {
+        if (adapter(actor.provider()).caps.native_activity) actor.checkpointActivity(false, now);
+        else workers.summaries.submit(actor, result.progress!.commentary, result.progress, runtime.panes);
+      } else if (result.progress) workers.summaries.tools(actor.id, actor.state, result.progress);
       if (!actor.headless_usage && !workspaceWatched(server, result.workspace))
         runtime.workspaces.get(result.workspace)?.away.record(result.since, result.delta);
       changed(server);

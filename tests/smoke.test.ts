@@ -1,8 +1,9 @@
 /** Real PTY/socket regressions. Provider doubles never make inference requests. */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Runtime, EXE, PALETTE, screen_text, scrollbar, layout_tree, tab_row } from "./runtime";
-import { registerCase, run, sleep, quote, shellJoin, writeExecutable, JsonSocket } from "./support";
+import { registerCase, run, sleep, quote, shellJoin, writeExecutable, JsonSocket, versioned } from "./support";
+import * as protocol from "../src/protocol";
 
 class Smoke extends Runtime {
   async focused() {
@@ -29,32 +30,46 @@ class Smoke extends Runtime {
     await this.input("t");
   }
   async test_runtime_protocol_negotiates_and_rejects_before_mutating() {
-    const hello = await this.raw_rpc({ op: "hello", protocol: 1 });
+    const hello = await this.raw_rpc({ op: "hello" });
     this.assertEqual(hello.type, "hello");
+    this.assertEqual(hello.protocol, protocol.version);
     this.assertIn("pane.surface", hello.capabilities);
     this.assertNotIn("handoff", hello.capabilities);
     const ws = (await this.workspaces())[0].id;
-    for (const protocol of [0, 1, 2, 999, -1, "3"])
+    for (const version of [0, 1, protocol.version - 1, 999, -1, String(protocol.version)])
       this.assertEqual(
         (
           await this.raw_rpc({
             op: "session.command",
             command: { "pane.create": { workspace: ws } },
-            protocol,
+            protocol: version,
           })
         ).err,
         "UnsupportedProtocol",
       );
-    this.assertEqual((await this.raw_rpc({ op: "session.snapshot" })).err, "ProtocolRequired");
+    this.assertEqual((await this.raw_rpc({ op: "session.snapshot", protocol: undefined })).err, "ProtocolRequired");
     this.assertEqual((await this.session()).panes, []);
     const socket = await JsonSocket.connect(this.path);
     try {
-      this.assertEqual((await socket.request({ op: "hello", protocol: 1, runtime_protocol: 3 })).protocol, 3);
+      this.assertEqual((await socket.request(versioned({ op: "hello" }))).protocol, protocol.version);
       this.assertEqual((await socket.request({ op: "session.snapshot" })).type, "session");
       for (const runtime_protocol of [1, 999, undefined]) {
-        this.assertEqual((await socket.request({ op: "hello", protocol: 1, runtime_protocol })).protocol, 3);
+        this.assertEqual(
+          (await socket.request(versioned({ op: "hello", runtime_protocol }))).protocol,
+          protocol.version,
+        );
         this.assertEqual((await socket.request({ op: "session.snapshot" })).err, "ProtocolRequired");
+        this.assertEqual(
+          (
+            await socket.request({
+              op: "session.command",
+              command: { "pane.create": { workspace: ws } },
+            })
+          ).err,
+          "ProtocolRequired",
+        );
       }
+      this.assertEqual((await this.session()).panes, []);
     } finally {
       socket.close();
     }
@@ -128,7 +143,7 @@ class Smoke extends Runtime {
       { "pane.input": { data: 42, target: pane } },
       { "tab.rename": { name: "missing target" } },
     ])
-      this.assertIn("err", await this.raw_rpc({ op: "session.command", protocol: 3, command }));
+      this.assertIn("err", await this.raw_rpc({ op: "session.command", command }));
     const after = await this.session();
     this.assertEqual(after.workspaces, before.workspaces);
     this.assertEqual(
@@ -156,7 +171,6 @@ class Smoke extends Runtime {
     );
     const response = await this.rpc({
         op: "pane.surface",
-        protocol: 3,
         pane: first,
       }),
       surface = response.surface;
@@ -172,10 +186,7 @@ class Smoke extends Runtime {
     await this.open_pane({ command: "sleep 30" });
     const socket = await JsonSocket.connect(this.path);
     try {
-      const initial = await socket.request({
-        op: "session.subscribe",
-        protocol: 3,
-      });
+      const initial = await socket.request(versioned({ op: "session.subscribe" }));
       this.assertEqual(initial.type, "session");
       await sleep(5.2);
       const pane = (await this.open_pane({ command: "sleep 30" })).pane;
@@ -247,43 +258,49 @@ class Smoke extends Runtime {
     const explicit = (await this.split_pane("right", { cwd: two })).pane;
     this.assertEqual((await this.pane(explicit)).cwd, realpathSync(two));
   }
-  async test_workspace_name_follows_first_tab_and_custom_name_can_be_cleared() {
-    const one = this.folder("one"),
-      two = this.folder("two"),
-      three = this.folder("three");
-    const first = (await this.open_pane({ cwd: one, command: "exec /bin/sh" })).pane;
-    await this.until(async () => (await this.workspaces())[0].name === "one");
-    const second = (await this.open_pane({ cwd: two, command: "exec /bin/sh" })).pane;
-    this.assertEqual((await this.workspaces())[0].name, "one");
-    await this.command("pane.input", {
-      target: first,
-      data: `cd ${quote(three)}\r`,
-    });
-    await this.until(async () => (await this.workspaces())[0].name === "three");
-    this.assertEqual((await this.workspaces())[0].cwd, realpathSync(three));
-    await this.rpc({ op: "action", name: "move-tab", value: "left" });
-    await this.until(async () => (await this.workspaces())[0].name === "two");
-    const ws = (await this.workspaces())[0].id;
-    await this.command("workspace.edit", { name: "Custom", target: ws });
-    await this.command("pane.input", {
-      target: second,
-      data: `cd ${quote(one)}\r`,
-    });
-    await this.until(async () => (await this.workspaces())[0].cwd === realpathSync(one));
-    this.assertEqual((await this.workspaces())[0].name, "Custom");
+  async test_workspace_keeps_chosen_folder_when_tabs_change_or_disappear() {
+    const root = this.folder("project"),
+      one = this.folder("one"),
+      two = this.folder("two");
     await this.attach();
-    this.assertNotIn("📌", (await this.frame_with("Custom")).join("\n"));
-    await this.input("\x02Wr");
-    await this.frame_with("Rename workspace");
-    await this.input("\x03\r");
-    await this.frame_with("one");
-    await this.until(async () => (await this.workspaces())[0].name === "one");
+    const ws = (await this.new_workspace({ name: "", cwd: root })).workspace;
+    const first = (await this.focused()).id;
+    await this.command("pane.input", { target: first, data: `cd ${quote(one)}\r` });
+    await this.until(async () => (await this.pane(first)).cwd === realpathSync(one));
+    this.assertEqual((await this.workspaces()).find((w: any) => w.id === ws).cwd, realpathSync(root));
+    const second = (await this.open_pane({ cwd: two, command: "exec /bin/sh" })).pane;
+    await this.rpc({ op: "action", name: "move-tab", value: "left" });
+    this.assertEqual((await this.workspaces()).find((w: any) => w.id === ws).name, "project");
+    rmSync(two, { recursive: true });
+    // A rename keeps a root whose folder is gone, saved as it was.
+    const chosen = realpathSync(root);
+    rmSync(root, { recursive: true });
+    await this.command("workspace.edit", { name: "Custom", target: ws });
+    const renamed = (await this.workspaces()).find((w: any) => w.id === ws);
+    this.assertEqual([renamed.cwd, renamed.name], [chosen, "Custom"]);
+    this.assertEqual(
+      JSON.parse(readFileSync(this.path + ".workspaces.json", "utf8")).workspaces.find((w: any) => w.id === ws).cwd,
+      chosen,
+    );
+    await this.command("workspace.edit", { target: ws, cwd: one });
+    const empty = await this.raw_rpc({
+      op: "session.command",
+      command: { "workspace.edit": { name: "", target: ws } },
+    });
+    this.assertEqual(empty.err, "InvalidName");
+    this.assertEqual((await this.workspaces()).find((w: any) => w.id === ws).cwd, realpathSync(one));
+    this.assertEqual((await this.workspaces()).find((w: any) => w.id === ws).name, "Custom");
+    const created = await this.command("pane.create", { workspace: ws });
+    this.assertEqual((await this.pane(created.pane)).cwd, realpathSync(one));
     await this.command("pane.close", { target: second });
-    await this.until(async () => (await this.workspaces())[0].name === "three");
     await this.restart_runtime();
-    this.assertEqual((await this.workspaces())[0].name, "three");
-    this.assertNotIn("pinned", (await this.workspaces())[0]);
-    this.assertEqual(JSON.parse(readFileSync(this.path + ".workspaces.json", "utf8")).workspaces[0].name, "");
+    const restored = (await this.workspaces()).find((w: any) => w.id === ws);
+    this.assertEqual(restored.cwd, realpathSync(one));
+    this.assertEqual(restored.name, "Custom");
+    this.assertEqual(
+      JSON.parse(readFileSync(this.path + ".workspaces.json", "utf8")).workspaces.find((w: any) => w.id === ws).cwd,
+      realpathSync(one),
+    );
   }
   async test_workspace_metadata_survives_restart() {
     const folder = this.folder("项目 café"),
@@ -346,13 +363,7 @@ class Smoke extends Runtime {
     await this.click(21, 1);
     await this.frame_with("New workspace");
     await this.input("Project\r");
-    this.assertEqual((await this.workspaces()).length, 1);
-    // Repeat on the viewer's clock without a wait that would release the key.
-    for (let repeat = 0; repeat < 80 && (await this.workspaces()).length === 1; repeat++) {
-      await this.client!.advance(0.05);
-      await this.input("\r");
-    }
-    this.assertEqual((await this.workspaces()).length, 2);
+    await this.until(async () => (await this.workspaces()).length === 2);
     await this.frame_with("No agents yet");
     const ws = (await this.workspaces()).find((w: any) => w.active);
     this.assertEqual([ws.name, ws.cwd], ["Project", realpathSync(this.temp.name)]);
@@ -421,7 +432,6 @@ class Smoke extends Runtime {
     const original = (await this.workspaces())[0].id;
     await this.rpc({
       op: "headless.start",
-      protocol: 3,
       prompt: "test/init",
       provider: "codex",
       cwd: this.temp.name,
@@ -780,7 +790,7 @@ process.stdin.on('data',data=>appendFileSync(log,data));process.stdin.resume();`
     await this.choose_terminal();
     await this.until(async () => (await this.tab_count()) === 3);
     this.assertEqual(await this.tab_count(), 3);
-    this.assertEqual(realpathSync((await this.focused()).cwd), realpathSync(one));
+    this.assertEqual(realpathSync((await this.focused()).cwd), realpathSync((await this.workspaces())[0].cwd));
     this.assertFalse(existsSync(join(one, "CONTEXT_LEAK")));
     this.assertFalse(existsSync(join(two, "CONTEXT_LEAK")));
   }
@@ -941,10 +951,10 @@ process.stdin.on('data',data=>appendFileSync('scroll-input',data));process.stdin
     await this.input("\x02");
     const pending = await this.client!.poll();
     this.assertTrue(pending.prefix);
-    this.assertNotIn("Keyboard shortcuts", pending.data);
+    this.assertNotIn("Main Controls", pending.data);
     await this.frame_with(" PREFIX  Esc cancel  Ctrl+B send prefix  ? shortcuts", 100, 40, 39);
     await this.input("?");
-    let menu = await this.frame_with("Keyboard shortcuts", 100, 40);
+    let menu = await this.frame_with("Main Controls", 100, 40);
     this.assertTrue(menu.some(row => row.includes("New tab → agent picker")));
     this.assertTrue(menu.some(row => row.includes("Resize")));
     await this.input("\x1b[200~touch MENU_LEAK\r\x1b[201~");
@@ -953,11 +963,11 @@ process.stdin.on('data',data=>appendFileSync('scroll-input',data));process.stdin
     await this.until(async () => (await this.tab_count()) === 2);
     this.assertFalse(existsSync(join(this.temp.name, "MENU_LEAK")));
     await this.input("\x02?");
-    menu = await this.frame_with("Keyboard shortcuts", 100, 40);
+    menu = await this.frame_with("Main Controls", 100, 40);
     await this.click_text(menu, "Right");
     await this.until(async () => (await this.panes()).length === 3);
     await this.input("\x02?");
-    menu = await this.frame_with("Keyboard shortcuts", 100, 40);
+    menu = await this.frame_with("Main Controls", 100, 40);
     await this.click_text(menu, "Resize");
     menu = await this.frame_with("Resize panes", 100, 40);
     await this.click_text(menu, "Resize left");
@@ -965,12 +975,12 @@ process.stdin.on('data',data=>appendFileSync('scroll-input',data));process.stdin
     await this.input("\x1b");
     this.assertFalse((await this.client!.poll()).prefix);
     await this.input("\x02?");
-    menu = await this.frame_with("Keyboard shortcuts", 100, 40);
-    const closeRow = menu.findIndex(row => row.includes("Close / reopen"));
-    await this.click(menu[closeRow].indexOf("x / u") + 1, closeRow + 1);
+    menu = await this.frame_with("Main Controls", 100, 40);
+    await this.click_text(menu, "◇ x");
     await this.until(async () => (await this.panes()).length === 2);
     await this.input("\x02?");
-    await this.frame_with("Keyboard shortcuts", 100, 40);
+    await this.write({ op: "size", cols: 120, rows: 40 });
+    await this.frame_with("Main Controls", 120, 40);
     await this.click(1, 1);
     this.assertFalse((await this.client!.poll()).prefix);
     await this.input("printf '%s%s\\n' MENU_ CLOSED\r");
@@ -1098,7 +1108,7 @@ process.stdin.on('data',data=>appendFileSync('scroll-input',data));process.stdin
     await this.input("\x1b");
     await this.write({ op: "size", cols: 30, rows: 8 });
     await this.input("\x02?");
-    await this.frame_with("Help needs 32 × 12", 30, 8);
+    await this.frame_with("Shortcuts need 42 × 18", 30, 8);
     await this.input("\x1b");
     // The agent chooser needs room for its rows; retain the narrow tab strip.
     await this.write({ op: "size", cols: 30, rows: 14 });

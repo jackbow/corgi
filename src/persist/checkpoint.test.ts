@@ -10,7 +10,7 @@ import { Terminal } from "../pane/terminal";
 import { claim } from "../detection";
 import { adapter } from "../providers";
 import { n, ptr, symbols, waitpid } from "../native_bridge";
-import { Order } from "../agent_order";
+import { Order, Pins } from "../agent_order";
 import { Workspace } from "../workspace";
 import { Text } from "../agents";
 import { Attachment, type Actor } from "../conversations";
@@ -20,6 +20,7 @@ import * as worktrees from "../worktrees";
 import { parseInventory } from "../trackers/worktrees";
 import { snapshot } from "../session";
 import { Tokens } from "../usage/live";
+import * as checklist from "../activity/checklist";
 const fixtures = resolve(import.meta.dir, "../fixtures");
 const fresh = () => {
   const r = new Runtime(),
@@ -258,7 +259,7 @@ for (const version of [2, 3, 4, 5, 6])
           expect(decoded.value.panes[0].resume_hint.provider).toBeNull();
           await restore(r, decoded.value, true);
           expect(r.panes[0].terminal.text()).toContain("other");
-          expect(r.workspaces.items[0].customName()).toBe("other");
+          expect(r.workspaces.items[0].name()).toBe("other");
           expect(migrations.decode("checkpoint", json.stringify(decoded.value)).migrated).toBe(false);
         } else {
           await restore(r, decoded.value, false);
@@ -282,6 +283,12 @@ test("saved checkpoint format matches its version", () => {
   const value = roundtrip(cp.capture(r, false));
   expect(value.version).toBe(migrations.checkpoint_version);
   validateCheckpoint(value);
+  // The schema's `provider` marker is not a provider.
+  for (const last_agent of ["provider", "future"])
+    expect(() => validateCheckpoint({ ...value, last_agent })).toThrow("InvalidEnumTag");
+  // A per-provider record skips a provider this build doesn't know, but checks the ones it does.
+  validateCheckpoint({ ...value, agent_yolo: { ...value.agent_yolo, future: true } });
+  expect(() => validateCheckpoint({ ...value, agent_hidden: { ...value.agent_hidden, codex: "yes" } })).toThrow();
 });
 test("an account's YOLO and Show survive checkpoints and default for old ones", async () => {
   for (const live of [true, false]) {
@@ -329,18 +336,22 @@ test("a workspace's hidden launcher rows survive checkpoints and default for old
   for (const live of [true, false]) {
     using original = fresh();
     original.workspaces.items[0].launcher_hidden = ["claude:/accounts/side", "custom2"];
+    original.workspaces.items[0].launcher_order = ["custom2", "profile:copy", "claude:/accounts/side"];
     const state = roundtrip(cp.capture(original, live));
     validateCheckpoint(state);
     using restored = new Runtime();
     await restore(restored, state, live);
     expect(restored.workspaces.items[0].launcher_hidden).toEqual(["claude:/accounts/side", "custom2"]);
+    expect(restored.workspaces.items[0].launcher_order).toEqual(["custom2", "profile:copy", "claude:/accounts/side"]);
     expect(() =>
       validateCheckpoint({ ...state, workspaces: [{ ...state.workspaces[0], launcher_hidden: [3] }] }),
     ).toThrow();
     delete state.workspaces[0].launcher_hidden;
+    delete state.workspaces[0].launcher_order;
     using old = new Runtime();
     await restore(old, state, live);
     expect(old.workspaces.items[0].launcher_hidden).toEqual([]);
+    expect(old.workspaces.items[0].launcher_order).toEqual([]);
   }
 });
 test("sidebar order survives live and recovery checkpoints and defaults for old state", async () => {
@@ -348,20 +359,89 @@ test("sidebar order survives live and recovery checkpoints and defaults for old 
     id = r.workspaces.items[0].id,
     order = [{ headless: 1 }, { pane: 2 }, { pane: 1 }];
   r.workspaces.items[0].agent_order = Order.restore(order);
+  r.workspaces.items[0].pinned_agents = Pins.restore([{ pane: 2 }]);
+  r.workspaces.items[0].starred_sessions.set("claude", "saved-star", true);
+  r.workspaces.items[0].activity_order = Order.restore([...order].reverse());
   try {
     for (const live of [true, false]) {
       using next = new Runtime();
       await restore(next, cp.capture(r, live), live);
-      expect(next.workspaces.get(id)!.agent_order.slice()).toEqual(order);
+      const ws = next.workspaces.get(id)!;
+      expect(ws.agent_order.slice()).toEqual(order);
+      expect(ws.pinned_agents.slice()).toEqual([{ pane: 2 }]);
+      expect(ws.starred_sessions.slice()).toEqual([{ provider: "claude", session: "saved-star" }]);
+      expect(ws.activity_order.slice()).toEqual([...order].reverse());
     }
     const state = cp.capture(r, true);
-    Reflect.deleteProperty(state.workspaces[0], "agent_order");
+    for (const key of ["agent_order", "pinned_agents", "starred_sessions", "activity_order"])
+      Reflect.deleteProperty(state.workspaces[0], key);
     using next = new Runtime();
     await restore(next, state, true);
-    expect(next.workspaces.get(id)!.agent_order.len).toBe(0);
+    const ws = next.workspaces.get(id)!;
+    expect(ws.agent_order.len).toBe(0);
+    expect(ws.pinned_agents.slice()).toEqual([]);
+    expect(ws.starred_sessions.slice()).toEqual([]);
+    expect(ws.activity_order.len).toBe(0);
+    // State from before the sections starts them in the dragged order.
+    const sorted = cp.capture(r, true);
+    Reflect.deleteProperty(sorted.workspaces[0], "activity_order");
+    using seeded = new Runtime();
+    await restore(seeded, sorted, true);
+    expect(seeded.workspaces.get(id)!.activity_order.slice()).toEqual(order);
   } finally {
     r.destroy();
   }
+});
+test.each(["replacement", "unstar", "explicit"])(
+  "live reload retains a star's conversation through %s startup",
+  async action => {
+    using original = fresh();
+    const ws = original.workspaces.items[0];
+    show(original, original.conversations.get("claude", "previous"));
+    const pane = original.panes[0],
+      target = { pane: pane.id };
+    original.starAgent(ws, target, true);
+    original.raiseEntered();
+    pane.attachment.deselect();
+    pane.agent().provider = "claude";
+    pane.agent().state = "initializing";
+    original.raiseEntered();
+    if (action === "explicit") original.starAgent(ws, target, true);
+    using next = new Runtime();
+    await restore(next, cp.capture(original, true), true);
+    const restored = next.workspaces.items[0];
+    if (action === "unstar") next.starAgent(restored, target, false);
+    const session = action === "unstar" ? "previous" : "replacement";
+    next.panes[0].attachment.select(next.conversations.get("claude", session));
+    next.raiseEntered();
+    expect(restored.pinned_agents.has(target)).toBe(action === "explicit");
+    expect(restored.starred_sessions.has("claude", "previous")).toBe(action !== "unstar");
+    expect(restored.starred_sessions.has("claude", "replacement")).toBe(action === "explicit");
+  },
+);
+test("star bindings default for old checkpoints and stay out of cold recovery", async () => {
+  using original = fresh();
+  const ws = original.workspaces.items[0];
+  show(original, original.conversations.get("claude", "previous"));
+  original.starAgent(ws, { pane: original.panes[0].id }, true);
+  const saved = roundtrip(cp.capture(original, true));
+  expect(saved.workspaces[0].star_bindings).toEqual([
+    { target: { pane: original.panes[0].id }, provider: "claude", session: "previous" },
+  ]);
+  for (const target of [{ pane: -1 }, { pane: 1, headless: 1 }, { other: 1 }]) {
+    const malformed = roundtrip(saved);
+    malformed.workspaces[0].star_bindings[0].target = target;
+    expect(() => validateCheckpoint(malformed)).toThrow();
+  }
+  delete saved.workspaces[0].star_bindings;
+  using old = new Runtime();
+  await restore(old, saved, true);
+  expect(old.workspaces.items[0].star_bindings.size).toBe(0);
+  const cold = cp.capture(original, false);
+  expect(cold.workspaces[0].star_bindings).toEqual([]);
+  using recovered = new Runtime();
+  await restore(recovered, cold, false);
+  expect(recovered.workspaces.items[0].star_bindings.size).toBe(0);
 });
 test("each workspace keeps its last agent, and one that has none follows the latest", async () => {
   const r = fresh(),
@@ -472,6 +552,25 @@ test("cold recovery keeps a pane's unselected completion until it forgets that c
   recovered.detach();
   expect(restored.pruneConversations()).toBe(true);
   expect(restored.conversations.byId(earlier.id)).toBeNull();
+});
+test("a pane bound to a conversation missing from the checkpoint loads unbound", async () => {
+  using original = fresh();
+  const gone = original.conversations.get("codex", "gone"),
+    kept = original.conversations.get("codex", "kept");
+  show(original, gone);
+  original.panes[0].attachment.select(kept);
+  for (const live of [true, false]) {
+    using next = new Runtime();
+    const saved = roundtrip(cp.capture(original, live));
+    saved.conversations = saved.conversations.filter((c: any) => c.id !== gone.id);
+    saved.panes[0].binding.actor = gone.id;
+    expect(await restore(next, saved, live)).toEqual([
+      `pane ${original.panes[0].id} pointed at conversation ${gone.id}, which isn't saved; dropped`,
+    ]);
+    const binding = next.panes[0].attachment;
+    expect(binding.actor).toBeNull();
+    expect(binding.known).toEqual([kept.id]);
+  }
 });
 test("a restore forgets the conversations nothing refers to, even a full registry's", async () => {
   const r = fresh(),
@@ -746,3 +845,57 @@ test("a restored candidate terminal does not signal its process until adopted", 
     n.probe_wait_child(pid);
   }
 });
+
+test.each([false, true])("checklists survive persistence and default when absent, live=%s", async live => {
+  using original = fresh();
+  const actor = original.conversations.get("omp", "todo-session");
+  show(original, actor);
+  actor.checklist = new checklist.List(
+    [
+      { text: "Implement", status: "done", group: "Delivery" },
+      { text: "Review", status: "blocked", group: "Delivery" },
+    ],
+    false,
+    120000,
+  );
+  const saved = cp.capture(original, live);
+  using next = new Runtime();
+  await restore(next, saved, live);
+  const restored = next.conversations.find("omp", "todo-session")!;
+  expect(restored.checklist).toBeInstanceOf(checklist.List);
+  expect(restored.checklist).toEqual(actor.checklist);
+  expect(snapshot(next).conversations[0].checklist).toEqual(restored.checklist);
+  const older = roundtrip(saved);
+  delete older.conversations[0].checklist;
+  using compatible = new Runtime();
+  await restore(compatible, older, live);
+  expect(compatible.conversations.find("omp", "todo-session")!.checklist).toEqual(new checklist.List());
+  const invalid = roundtrip(saved);
+  invalid.conversations[0].checklist.items[0].status = "unknown";
+  using rejected = new Runtime();
+  await expect(restore(rejected, invalid, live)).rejects.toThrow("InvalidEnumTag");
+  const malformed = roundtrip(saved);
+  malformed.conversations[0].checklist.items = {};
+  using malformedRuntime = new Runtime();
+  await expect(restore(malformedRuntime, malformed, live)).rejects.toThrow("UnexpectedToken");
+});
+
+test.each([false, true])(
+  "any provider's checklist restores, and the earlier todos fields are ignored, live=%s",
+  async live => {
+    using original = fresh();
+    const actor = original.conversations.get("codex", "plan");
+    show(original, actor);
+    actor.checklist = new checklist.List([{ text: "Plan", status: "active", group: "" }], false, 100);
+    const saved = roundtrip(cp.capture(original, live));
+    saved.conversations[0].todos = {
+      phases: [{ name: "Earlier shape", tasks: [{ content: "Ignored", status: "in_progress" }] }],
+      truncated: false,
+    };
+    saved.conversations[0].todos_at = 123;
+    saved.conversations[0].todos_changed_at = 100;
+    using restored = new Runtime();
+    await restore(restored, saved, live);
+    expect(restored.conversations.find("codex", "plan")!.checklist).toEqual(actor.checklist);
+  },
+);

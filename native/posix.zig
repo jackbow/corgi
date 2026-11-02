@@ -1,33 +1,7 @@
 //! Fixed-size FFI over platform socket, terminal and process APIs.
 const std = @import("std");
 const builtin = @import("builtin");
-const c = @cImport({
-    @cUndef("_FORTIFY_SOURCE");
-    if (builtin.os.tag == .macos) {
-        // The macOS 26.5 and 27.0 SDKs assert Mach message struct sizes,
-        // but translate-c can't size their bitfields. Use the SDK's non-arm64 no-op.
-        @cInclude("mach/port.h");
-        @cUndef("xnu_static_assert_struct_size");
-        @cDefine("xnu_static_assert_struct_size(name, size)", "_Static_assert(1, \"\")");
-    }
-    @cInclude("sys/socket.h");
-    @cInclude("sys/ioctl.h");
-    @cInclude("sys/un.h");
-    @cInclude("unistd.h");
-    @cInclude("fcntl.h");
-    @cInclude("errno.h");
-    @cInclude("signal.h");
-    @cInclude("sys/wait.h");
-    @cInclude("stdlib.h");
-    @cInclude("dirent.h");
-    @cInclude("poll.h");
-    @cInclude("pwd.h");
-    if (builtin.os.tag == .macos) {
-        @cInclude("util.h");
-        @cInclude("libproc.h");
-        @cInclude("sys/sysctl.h");
-    } else @cInclude("pty.h");
-});
+const c = @import("c");
 
 fn errno() c_int {
     return @intFromEnum(std.posix.errno(-1));
@@ -136,6 +110,10 @@ pub export fn probe_foreground(fd: c_int) c_int {
 
 pub export fn probe_getpgrp() c_int {
     return c.getpgrp();
+}
+
+pub export fn probe_getpgid(pid: c_int) c_int {
+    return c.getpgid(pid);
 }
 
 pub export fn probe_dup_above(fd: c_int, minimum: c_int) c_int {

@@ -12,6 +12,17 @@ export type Attention = "none" | "finished" | "needs_input";
  * pane or session already did, the hook's pane is about to, or nothing does,
  * as with a session in Claude's background daemon. */
 export type Presence = "attached" | "attaching" | "detached";
+type ObjectKeys<T> = {
+  [K in keyof T]-?: NonNullable<T[K]> extends (...args: never[]) => unknown
+    ? never
+    : NonNullable<T[K]> extends object
+      ? K
+      : never;
+}[keyof T];
+type DataKeys<T> = {
+  [K in keyof T]-?: T[K] extends (...args: never[]) => unknown ? never : K;
+}[keyof T];
+type Scalar = string | number | bigint | boolean | null | undefined;
 export class Agent {
   subagents = { running: 0, blocked: 0, waiting: false };
   name = new Text();
@@ -51,6 +62,24 @@ export class Agent {
   updated_at = 0;
   constructor(fields: Partial<Agent> = {}) {
     Object.assign(this, fields);
+  }
+  /** Owned values for comparing observations without serializing them. */
+  comparison(): object {
+    const owned = {
+      subagents: { ...(this.subagents satisfies Record<DataKeys<typeof this.subagents>, Scalar>) },
+      observation: { ...(this.observation satisfies Record<DataKeys<typeof this.observation>, Scalar>) },
+      name: this.name.toJSON(),
+      transcript: this.transcript.toJSON(),
+      turn: this.turn.toJSON(),
+      last_finished_turn: this.last_finished_turn.toJSON(),
+      recent: this.recent.toJSON(),
+      session: this.session.toJSON(),
+      activity: this.activity.toJSON(),
+      tool: this.tool.toJSON(),
+      model: this.model.toJSON(),
+      cwd: this.cwd.toJSON(),
+    } satisfies Record<ObjectKeys<Agent>, unknown>;
+    return { ...this, ...owned };
   }
   snapshot() {
     const out = new Agent({ ...this });
@@ -220,6 +249,24 @@ export class Agent {
       binds_completion = screen_completed && (event === "stop" || event === "interrupt");
     if ((this.session.len && session && session !== this.sessionId()) || (this.provider && this.provider !== provider))
       return null;
+    if (event === "checklist") {
+      this.last_seq = seq;
+      return false;
+    }
+    if (event === "activity") {
+      if (
+        !reported ||
+        reported !== this.turnId() ||
+        this.finishedTurn(reported) ||
+        !["working", "blocked"].includes(this.state)
+      )
+        return null;
+      this.setActivity(hook.description);
+      this.activity_inferred = false;
+      this.activity_at = now;
+      this.last_seq = seq;
+      return false;
+    }
     if (
       ["stop", "interrupt"].includes(event) &&
       ((!binds_completion &&
@@ -271,7 +318,12 @@ export class Agent {
       this.cwd = new Path();
       worktrees.clearWrites(this);
     }
-    if (path.isAbsolute(hook.cwd)) this.cwd = new Path(hook.cwd);
+    if (path.isAbsolute(hook.cwd)) {
+      // A `cd` is newer than the edits and moves recorded before it.
+      const cd = this.cwd.len > 0 && hook.cwd !== this.directory() && hook.cwd !== worktrees.observedDirectory(this);
+      if (cd && adapter(provider).caps.follows_cd) worktrees.clearWrites(this);
+      this.cwd = new Path(hook.cwd);
+    }
     if (hook.location)
       worktrees.recordLocation(this, { cwd: hook.location, writes: [], ran: [hook.location], basis: "moved" });
     if (event === "tool_finish" && hook.writes) worktrees.recordWrites(this, hook.writes);
@@ -297,9 +349,17 @@ export class Agent {
         this.activity_inferred = false;
       }
       if (start || event === "prompt") this.activity_inferred = false;
-      this.activity_at = now;
-      if (event === "tool_start" && !hook.asking && !this.activity_inferred)
-        this.setActivity(toolActivity(hook.tool, hook.description, hook.target));
+      const native = adapter(provider).caps.native_activity;
+      if (!native || start || event === "prompt") this.activity_at = now;
+      if (event === "tool_start" && !hook.asking) {
+        if (native) {
+          if (hook.description) {
+            this.setActivity(hook.description);
+            this.activity_inferred = false;
+            this.activity_at = now;
+          }
+        } else if (!this.activity_inferred) this.setActivity(toolActivity(hook.tool, hook.description, hook.target));
+      }
     }
     if (start || next === "working") this.attention = this.observation.unread() ? "finished" : "none";
     if (this.observation.pending_stop && hook.outcome) return this.endTurn(this.turnId(), hook.outcome, "hook", now);

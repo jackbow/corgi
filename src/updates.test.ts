@@ -3,7 +3,8 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { version, parse, managed, release, abi, type Release } from "./updates";
+import { createServer } from "node:net";
+import { version, parse, managed, release, abi, platform, check, save, type Release } from "./updates";
 import { releaseVersion } from "./build_config";
 const keys = () => generateKeyPairSync("ed25519");
 const key = (k: ReturnType<typeof keys>) =>
@@ -24,7 +25,7 @@ function signedManifest(signer: ReturnType<typeof keys>, schema: number, url: st
       version: "1.2.4",
       commit: "abc",
       update_abi: abi,
-      targets: { "macos-aarch64": target, "linux-x86_64": target },
+      targets: { "macos-aarch64": target, "linux-x86_64": target, "linux-aarch64": target },
     });
   return JSON.stringify({ payload, signature: sign(null, Buffer.from(payload), signer.privateKey).toString("hex") });
 }
@@ -48,7 +49,7 @@ test("manifests verify against the release's key", () => {
   expect(() => parse(rel(""), bytes)).toThrow("BadUpdateSignature");
   expect(() => parse(r, signedManifest(signer, 2, "https://example.invalid/corgi"))).toThrow("UnknownUpdateSchema");
 });
-test("signed manifests still require every typed field on both platforms", () => {
+test("signed manifests require every typed field, and this platform's target", () => {
   const signer = keys(),
     r = rel(key(signer));
   const original = JSON.parse(JSON.parse(signedManifest(signer, 1, "https://example.invalid/corgi")).payload);
@@ -66,13 +67,17 @@ test("signed manifests still require every typed field on both platforms", () =>
     value[field] = 3;
     expect(() => parse(r, encode(value))).toThrow("UnexpectedToken");
   }
-  for (const platform of ["macos-aarch64", "linux-x86_64"]) {
+  for (const name of ["macos-aarch64", "linux-x86_64", "linux-aarch64"]) {
     const value = structuredClone(original);
-    value.targets[platform].url = null;
+    value.targets[name].url = null;
     expect(() => parse(r, encode(value))).toThrow("UnexpectedToken");
-    delete value.targets[platform];
-    expect(() => parse(r, encode(value))).toThrow("MissingField");
+    delete value.targets[name];
+    if (name === platform) expect(() => parse(r, encode(value))).toThrow("MissingField");
+    else expect(parse(r, encode(value)).version).toBe("1.2.4");
   }
+  expect(() => parse(r, encode({ ...original, targets: { ...original.targets, "plan9-mips": {} } }))).toThrow(
+    "UnknownField",
+  );
   expect(() => parse(r, encode({ ...original, extra: true }))).toThrow("UnknownField");
 });
 test("local http targets need test mode", () => {
@@ -109,5 +114,54 @@ test("only test builds take their release from the path and environment", () => 
   } finally {
     if (original === undefined) delete process.env.CORGI_TEST_UPDATE_KEY;
     else process.env.CORGI_TEST_UPDATE_KEY = original;
+  }
+});
+test("a release only passes the pre-update check with a result, or without the check at all", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-check-")),
+    script = (name: string, body: string) => {
+      const path = join(dir, name);
+      writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o700 });
+      return path;
+    },
+    run = (target: string, limit_ms?: number) => check(join(dir, "none.sock"), target, null, limit_ms);
+  try {
+    expect(await run(script("passes", `echo '{"ok":true}'`))).toBeNull();
+    expect(await run(script("legacy-error", "echo 'corgi: UnknownCommand' >&2; exit 1"))).toBeNull();
+    expect(
+      await run(script("older", "echo 'corgi: unknown command __update-check; see corgi --help' >&2; exit 2")),
+    ).toBeNull();
+    expect(
+      await run(script("other-command", "echo 'corgi: unknown command other; see corgi --help' >&2; exit 2")),
+    ).not.toBeNull();
+    const failed = await run(
+      script("fails", `echo '{"ok":false,"error":"InvalidCheckpoint","why":"pane 9 pointed at conversation 3"}'`),
+    );
+    expect(failed?.why).toBe("pane 9 pointed at conversation 3");
+    expect((await run(script("crashes", "exit 3")))?.why).toBe("the check exited with status 3, without a result");
+    expect((await run(script("babbles", "echo hello")))?.why).toBe("the check answered something other than a result");
+    expect((await run(script("hangs", "exec sleep 5"), 200))?.why).toBe("the check didn't finish in 0.2s");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an older runtime saves its session for the update check", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-save-")),
+    socket = join(dir, "corgi.sock"),
+    asked: any[] = [];
+  // A runtime before protocol 4 ignores request ids and answers untagged.
+  const server = createServer(peer =>
+    peer.on("data", chunk => {
+      asked.push(JSON.parse(chunk.toString()));
+      peer.write(JSON.stringify({ ok: true, path: join(dir, "recovery") }) + "\n");
+    }),
+  );
+  await new Promise<void>(resolve => server.listen(socket, resolve));
+  try {
+    await save(socket, { protocol: 3 });
+    expect(asked).toEqual([{ op: "recovery.save", protocol: 3 }]);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
   }
 });

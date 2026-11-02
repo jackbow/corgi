@@ -9,12 +9,14 @@
     "test": "bun test src",
     "typecheck": "bun typecheck.ts",
     "integration": "bun integration.ts",
+    "i18n": "bun scripts/translations.ts",
     "landingpage:dev": "bun site/serve.ts --dev",
     "landingpage:build": "bun site/build.ts",
     "landingpage:start": "bun site/serve.ts",
     "landingpage:publish": "bun site/publish.ts"
   },
   "browser": {
+    "./src/telemetry.ts": "./site/browser/telemetry.ts",
     "./src/review/git.ts": "./site/browser/git.ts",
     "./src/launch/command.ts": "./site/browser/command.ts",
     "./src/providers.ts": "./site/browser/providers.ts",
@@ -25,5 +27,12 @@
     "fs/promises": "./site/browser/fs.ts",
     "zlib": "./site/browser/zlib.ts"
   },
-  "dependencies": { "@earendil-works/pi-tui": "1.0.4" }
+  "dependencies": {
+    "@earendil-works/pi-tui": "1.0.4"
+  },
+  "devDependencies": {
+    "happy-dom": "21.0.4",
+    "prettier": "3.9.9",
+    "wrangler": "^4.156.0"
+  }
 }

@@ -1,8 +1,8 @@
 //! Each invocation owns its UI, local selections, and input parser. The daemon
 //! sends shared session organization and terminal surfaces, never Corgi frames.
 //! Mirrors viewer.zig.
+import * as telemetry from "./telemetry";
 import { dirname, join } from "node:path";
-import { createConnection, type Socket } from "node:net";
 import { Controller } from "./controller";
 import { call, unread, acknowledge, type Transport } from "./mirror";
 import { parse as parseAction } from "./action";
@@ -11,6 +11,7 @@ import * as terminal_info from "./terminal_info";
 import * as linkThumbnail from "./link_thumbnail";
 import * as rowGlide from "./row_glide";
 import { Differ } from "./frame_diff";
+import * as composition from "./composition";
 import * as framePacing from "./frame_pacing";
 import { Openers } from "./url_opener";
 import * as sound from "./sound";
@@ -18,10 +19,8 @@ import { sshViewer } from "./trackers/ports";
 import * as palette from "./palette";
 import * as hostBackground from "./host_background";
 import type { Reply, RequestInput } from "./protocol";
-import * as protocol from "./protocol";
 import type { State as ClipboardState } from "./host_clipboard";
 import { n, ptr } from "./native_ffi";
-import { stringify } from "./json";
 export { Controller as View };
 
 /** How often a viewer syncs while the daemon reports nothing new. Under a
@@ -43,15 +42,13 @@ export async function open(
   view: Controller,
   cwd: string,
   theme: RequestInput<"viewer.open">["theme"],
-  socket: string,
 ): Promise<bigint> {
-  return openMode(view, cwd, theme, socket, false);
+  return openMode(view, cwd, theme, false);
 }
 export async function openMode(
   view: Controller,
   cwd: string,
   theme: RequestInput<"viewer.open">["theme"],
-  socket: string,
   start_onboarding: boolean,
 ): Promise<bigint> {
   view.remote_links = sshViewer();
@@ -70,9 +67,13 @@ export async function openMode(
   view.navigation.workspace_id = opened.workspace;
   view.input_state.attached = true;
   await view.refresh();
-  if (opened.focus && view.runtime.workspaces.owner(opened.focus)) view.focusPane(opened.focus);
+  if (opened.focus && view.runtime.workspaces.owner(opened.focus)) view.focusPane(opened.focus, false);
   view.restoreAgentScroll();
-  view.launch_previews.socket = socket;
+  view.launch_previews.connect(view.connection);
+  view.launch_previews.changedEvent = () => {
+    view.dirty = true;
+    view.wake();
+  };
   view.updateLaunchPreview();
   return BigInt(opened.bell_seq ?? 0n);
 }
@@ -83,6 +84,9 @@ function incompatible(error: Error): Error {
     : error;
 }
 export function close(view: Controller): void {
+  view.closePreferences?.();
+  view.closePreferences = null;
+  view.model_cache.close();
   view.closeMoonlander();
   view.launch_previews.disconnect();
   if (view.onboarding) view.onboarding.close();
@@ -90,127 +94,159 @@ export function close(view: Controller): void {
   view.clearEffects();
   view.runtime.destroy();
 }
+/** Workspace previews use cached screens without subscribing to them. */
+export function releaseUninterested(view: Controller, interests: readonly { pane: number }[]): void {
+  const preview = view.sidebarWorkspaceGhost()?.view.placements(view.area());
+  for (const pane of view.runtime.panes)
+    if (!interests.some(interest => interest.pane === pane.id) && !preview?.some(place => place.id === pane.id))
+      pane.terminal.release();
+}
+
 export async function sync(view: Controller, bell: { seq: bigint }, play_sound: boolean): Promise<boolean> {
-  for (const p of view.runtime.panes) {
-    if (p.terminal.holding_selection && (view.selection === null || view.selection.pane !== p.id))
-      p.terminal.clearSelection();
-    await p.terminal.flush();
-  }
-  const interests: RequestInput<"viewer.sync">["interests"] = [];
-  for (const place of view.layoutView().placements(view.area())) {
-    const p = view.runtime.pane(place.id);
-    if (!p) continue;
-    interests.push({
-      pane: place.id,
-      cols: Math.max(1, place.rect.w),
-      rows: Math.max(1, place.rect.h),
-      offset: p.terminal.offset,
-      known: p.terminal.known,
-      cell: view.cell_pixels,
-    });
-  }
-  // The sidebar's ghost needs its agent's screen, sized as entering will size it.
-  const ghost = view.sidebarGhost();
-  if (ghost)
-    interests.push({
-      pane: ghost.pane.id,
-      cols: Math.max(1, ghost.rect.w),
-      rows: Math.max(1, ghost.rect.h),
-      offset: ghost.pane.terminal.offset,
-      known: ghost.pane.terminal.known,
-      cell: view.cell_pixels,
-    });
-  let reply: Reply<"viewer.sync">;
+  const telemetry_started = telemetry.begin();
+  view.sweepPickState();
   try {
-    reply = await call(view.connection, "viewer.sync", {
-      interests,
-      session_hash: view.runtime.snapshot_hash,
-      focus: view.focused()?.id ?? null,
-      watched: view.input_state.watched,
-      workspace: view.current().id,
-      ack: view.input_state.last_control,
-      active: view.input_state.active,
-      resource_detail: view.resourceDetail(),
-      worktree_detail: view.worktreeDetailWanted(),
-      resources: view.prefs.resources.enabled,
-      resources_hash: view.runtime.resources_hash,
-    });
-  } catch (error) {
-    throw incompatible(error as Error);
-  }
-  view.input_state.active = false;
-  if (reply.session) view.receiveSnapshot(reply.session);
-  view.runtime.snapshot_hash = reply.session_hash == null ? null : BigInt(reply.session_hash);
-  if (reply.resources) view.runtime.receiveResources(reply.resources);
-  view.runtime.resources_hash = reply.resources_hash == null ? null : BigInt(reply.resources_hash);
-  view.input_state.viewer_id = reply.viewer ?? 0;
-  for (const control of reply.controls ?? []) {
-    const seq = BigInt(control.seq);
-    if (seq <= view.input_state.last_control) continue;
+    for (const p of view.runtime.panes) {
+      const held = view.selection?.pane === p.id || view.gesture?.pane === p.id;
+      if (p.terminal.holding_selection && !held) p.terminal.clearSelection();
+      if (p.terminal.pending.length > 0) await p.terminal.flush();
+    }
+    const interests: RequestInput<"viewer.sync">["interests"] = [];
+    for (const place of view.layoutView().placements(view.area())) {
+      const p = view.runtime.pane(place.id);
+      if (!p) continue;
+      interests.push({
+        pane: place.id,
+        cols: Math.max(1, place.rect.w),
+        rows: Math.max(1, place.rect.h),
+        offset: p.terminal.offset,
+        known: p.terminal.known,
+        cell: view.cell_pixels,
+      });
+    }
+    // The sidebar's ghost needs its agent's screen, sized as entering will size it.
+    const ghost = view.sidebarGhost();
+    if (ghost)
+      interests.push({
+        pane: ghost.pane.id,
+        cols: Math.max(1, ghost.rect.w),
+        rows: Math.max(1, ghost.rect.h),
+        offset: ghost.pane.terminal.offset,
+        known: ghost.pane.terminal.known,
+        cell: view.cell_pixels,
+      });
+    releaseUninterested(view, interests);
+    let reply: Reply<"viewer.sync">;
     try {
-      if (control.kind === "focus") view.focusPane(control.id!);
-      else if (control.kind === "workspace") view.switchWorkspace(control.id!);
-      else {
-        const act = parseAction(control.name!, control.value ?? "");
-        if (act.name === "relaunch") {
-          view.executable = String(act.value);
-          return false;
-        }
-        await view.perform(act);
-      }
+      reply = await call(view.connection, "viewer.sync", {
+        interests,
+        session_hash: view.runtime.snapshot_hash,
+        focus: view.focused()?.id ?? null,
+        watched: view.input_state.watched,
+        workspace: view.current().id,
+        ack: view.input_state.last_control,
+        active: view.input_state.active,
+        resource_detail: view.resourceDetail(),
+        worktree_detail: view.worktreeDetailWanted(),
+        resources: view.prefs.resources.enabled,
+        resources_hash: view.runtime.resources_hash,
+      });
     } catch (error) {
-      view.notice((error as Error).message);
+      throw incompatible(error as Error);
     }
-    view.input_state.last_control = seq;
-  }
-  for (const frame of reply.surfaces ?? []) {
-    const p = view.runtime.pane(frame.surface.pane);
-    if (p) p.terminal.receive(frame);
-  }
-  if (reply.bell_seq !== undefined) {
-    const seq = BigInt(reply.bell_seq);
-    if (seq !== bell.seq) {
-      bell.seq = seq;
-      view.last_bell_kind = reply.bell_kind ?? "none";
-      if (play_sound && !view.muted) sound.play(view.last_bell_kind);
+    view.input_state.active = false;
+    if (reply.session) {
+      const session_started = telemetry.begin();
+      view.receiveSnapshot(reply.session);
+      telemetry.end("viewer.session", session_started);
     }
+    view.runtime.snapshot_hash = reply.session_hash == null ? null : BigInt(reply.session_hash);
+    if (reply.resources) {
+      const resources_started = telemetry.begin();
+      view.runtime.receiveResources(reply.resources);
+      view.dirty = true;
+      telemetry.end("viewer.resources", resources_started);
+    }
+    view.runtime.resources_hash = reply.resources_hash == null ? null : BigInt(reply.resources_hash);
+    view.input_state.viewer_id = reply.viewer ?? 0;
+    for (const control of reply.controls ?? []) {
+      const seq = BigInt(control.seq);
+      if (seq <= view.input_state.last_control) continue;
+      try {
+        if (control.kind === "focus") view.focusPane(control.id!);
+        else if (control.kind === "workspace") view.switchWorkspace(control.id!);
+        else {
+          const act = parseAction(control.name!, control.value ?? "");
+          if (act.name === "relaunch") {
+            view.executable = String(act.value);
+            return false;
+          }
+          await view.perform(act);
+        }
+      } catch (error) {
+        view.notice((error as Error).message);
+      }
+      view.input_state.last_control = seq;
+    }
+    for (const frame of reply.surfaces ?? []) {
+      const p = view.runtime.pane(frame.surface.pane);
+      const surface_started = telemetry.begin();
+      if (p) p.terminal.receive(frame);
+      telemetry.end("viewer.surface", surface_started);
+    }
+    if (reply.bell_seq !== undefined) {
+      const seq = BigInt(reply.bell_seq);
+      if (seq !== bell.seq) {
+        bell.seq = seq;
+        view.last_bell_kind = reply.bell_kind ?? "none";
+        if (play_sound && !view.muted) sound.play(view.last_bell_kind);
+      }
+    }
+    return view.input_state.attached;
+  } finally {
+    telemetry.end("viewer.sync", telemetry_started);
   }
-  return view.input_state.attached;
 }
 // Called only after the frame has been written. Receipts refer to the
 // snapshot displayed, never whatever completion happens to be latest remotely.
 export async function presented(view: Controller): Promise<void> {
-  if (!view.input_state.watched || view.coversPanes()) return;
-  const shown = new Set<number>();
-  for (const place of view.layoutView().placements(view.area())) {
-    const p = view.runtime.pane(place.id);
-    if (!p) continue;
-    shown.add(p.id);
-    const focused = view.focused()?.id === p.id;
-    const had_focus = view.marked_unread.get(p.id);
-    if (had_focus !== undefined) {
-      if (had_focus || !focused) {
-        view.marked_unread.set(p.id, focused);
-        continue;
+  const started = telemetry.begin();
+  try {
+    if (!view.input_state.watched || view.coversPanes()) return;
+    const shown = new Set<number>();
+    for (const place of view.layoutView().placements(view.area())) {
+      const p = view.runtime.pane(place.id);
+      if (!p) continue;
+      shown.add(p.id);
+      const focused = view.focused()?.id === p.id;
+      const had_focus = view.marked_unread.get(p.id);
+      if (had_focus !== undefined) {
+        if (had_focus || !focused) {
+          view.marked_unread.set(p.id, focused);
+          continue;
+        }
+        view.marked_unread.delete(p.id);
       }
-      view.marked_unread.delete(p.id);
+      if (!unread(p.agent.observation) && (p.agent.attention === "none" || !focused)) continue;
+      await call(view.connection, "pane.acknowledge", {
+        pane: p.id,
+        binding: p.binding,
+        conversation: p.agent.conversation,
+        session: p.agent.session,
+        through: p.agent.observation.completed,
+        attention_at: focused ? p.agent.changed_at : -1,
+      });
+      acknowledge(p.agent.observation, p.agent.observation.completed);
+      if (focused || p.agent.attention !== "needs_input") p.agent.attention = "none";
+      view.dirty = true;
     }
-    if (!unread(p.agent.observation) && (p.agent.attention === "none" || !focused)) continue;
-    await call(view.connection, "pane.acknowledge", {
-      pane: p.id,
-      binding: p.binding,
-      conversation: p.agent.conversation,
-      session: p.agent.session,
-      through: p.agent.observation.completed,
-      attention_at: focused ? p.agent.changed_at : -1,
-    });
-    acknowledge(p.agent.observation, p.agent.observation.completed);
-    if (focused || p.agent.attention !== "needs_input") p.agent.attention = "none";
+    for (const id of view.marked_unread.keys()) if (!shown.has(id)) view.marked_unread.delete(id);
+  } finally {
+    telemetry.end("viewer.acknowledge", started);
   }
-  for (const id of view.marked_unread.keys()) if (!shown.has(id)) view.marked_unread.delete(id);
 }
 
-/** Waits for the first of stdin, the daemon's wake connection, the host
+/** Waits for the first of stdin, the daemon's data connection, the host
  * taking output or answering a frame, or a timeout, as viewer.zig polls them. */
 class Poll {
   private wake: (() => void) | null = null;
@@ -237,6 +273,12 @@ class Poll {
   }
 }
 
+export function waitTime(view: Controller, active: boolean, nextFrame: number, paneDue: number): number {
+  const now = Date.now(),
+    due = Math.min(Math.max(1, nextFrame - now), Math.max(1, paneDue - now));
+  return active ? Math.min(16, view.frameDelay(), due) : due;
+}
+
 export async function run(
   connection: Transport,
   socket: string,
@@ -248,7 +290,7 @@ export async function run(
 ): Promise<string | null> {
   const view = new Controller(connection);
   try {
-    const bell = { seq: await openMode(view, folder ?? process.cwd(), probe.theme, socket, start_onboarding) };
+    const bell = { seq: await openMode(view, folder ?? process.cwd(), probe.theme, start_onboarding) };
     if (folder !== null)
       try {
         await view.perform({ name: "open", value: folder });
@@ -262,11 +304,12 @@ export async function run(
     view.terminal_colors = probe.colors();
     probe.clipboard.start(Date.now());
     const openers = new Openers();
-    let previous = "";
+    let previous: composition.Output = "";
     let host: Differ | null = null;
     // The host has not taken the last output yet (a slow SSH link): later
     // frames wait, and the next one written carries all their changes.
     let held = false;
+    let settling = false;
     probe.badge = new corgiBadge.State();
     probe.size = new terminal_info.Size();
     writeAll(corgiBadge.query);
@@ -275,9 +318,6 @@ export async function run(
       initial_size = dimensions();
     writeAll(probe.size.update(initial_size.pty) + probe.measure(initial_size.rows, probed_at));
     let terminal_sent = false;
-    // Opened once the first sync names this viewer.
-    let waker: Socket | null = null;
-    let watch_opened = false;
     // What the daemon said changed since the last sync: when it first and
     // last said so, and whether to draw it at once.
     let woken: { first: number; last: number; prompt: boolean } | null = null;
@@ -294,7 +334,18 @@ export async function run(
       return Math.max(Math.min(woken.last + settle_ms, woken.first + flood_frame_ms), synced + pane_frame_ms);
     };
     const poll = new Poll();
+    const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
     view.wake = () => poll.notify("host");
+    const unwatch = connection.onEvent?.(event => {
+      if (event.type !== "viewer.wake") return;
+      const at = Date.now(),
+        due = wakeDue();
+      // Typing's echo, or a change on an idle screen, is drawn now.
+      const prompt = typed || at - active_at >= idle_after_ms || woken?.prompt === true;
+      woken = { first: woken?.first ?? at, last: at, prompt };
+      typed = false;
+      if (wakeDue() < due) poll.notify("waker");
+    });
     let resized = false;
     const onResize = () => {
       resized = true;
@@ -302,15 +353,22 @@ export async function run(
     };
     process.on("SIGWINCH", onResize);
     stdin.listen(bytes => {
-      for (const byte of probe.feed(bytes, Date.now())) input.push(byte);
-      poll.notify(framePacing.onlyAnswers(bytes) ? "host" : "stdin");
+      const parsed = probe.feed(bytes, Date.now());
+      for (const byte of parsed) input.push(byte);
+      if (parsed.length === 0 && framePacing.onlyAnswers(bytes)) {
+        // The answer already updated the pacer. Only a held frame or exit waits for it.
+        if (held || settling) poll.notify("host");
+        else telemetry.count("viewer.pacer.quiet_answer");
+      } else poll.notify("stdin");
     });
     try {
       while (view.input_state.attached) {
+        const prepare_started = telemetry.begin();
         for (const reply of probe.graphics.splice(0)) view.graphicsReply(reply);
         openers.reap();
         for (const byte of probe.expire(Date.now())) input.push(byte);
-        await answerClipboard(view, probe.clipboard);
+        const clipboard = answerClipboard(view, probe.clipboard);
+        if (clipboard) await clipboard;
         const size = dimensions();
         const query = probe.size.update(size.pty, resized);
         resized = false;
@@ -356,18 +414,15 @@ export async function run(
           view.input_state.active = true;
           view.dirty = true;
         }
-        let input_end = input.length;
-        while (input_end > 0 && !validUtf8(input.slice(0, input_end))) input_end -= 1;
-        if (input_end > 0) {
-          const chunk = input.splice(0, input_end);
-          try {
-            await view.input(Uint8Array.from(chunk));
-          } catch (error) {
-            view.notice((error as Error).message);
-          }
+        try {
+          await takeInput(input, decoder, chunk => view.input(chunk));
+        } catch (error) {
+          view.notice((error as Error).message);
         }
-        if (input.length > 4) input.length = 0;
+        telemetry.end("viewer.prepare", prepare_started);
+        const maintenance_started = telemetry.begin();
         await view.expireInput();
+        telemetry.end("viewer.maintenance", maintenance_started);
         const now = Date.now();
         if (now - scroll_saved >= scroll_save_ms) {
           view.saveAgentScroll();
@@ -376,45 +431,28 @@ export async function run(
         // Frames keep their clock for animations, and a change waits for
         // its due time; the daemon is asked only when it said something
         // changed, or often enough that it still counts this viewer as watching.
-        if (view.dirty || now >= (woken === null ? next_sync : wakeDue()) || (held && ready(probe))) {
-          if (waker === null || view.dirty || woken !== null || now - synced >= quiet_sync_ms) {
+        const pane_due = woken !== null && now >= wakeDue();
+        if (view.dirty || now >= next_sync || pane_due || (held && ready(probe))) {
+          if (!connection.watches?.() || view.dirty || pane_due || now - synced >= quiet_sync_ms) {
             // A wake during the sync may be past what it brings: keep it.
             woken = null;
             synced = now;
             if (!(await sync(view, bell, true))) return view.executable.length > 0 ? view.executable : null;
-            if (!watch_opened) {
-              waker = watch(
-                socket,
-                view.input_state.viewer_id,
-                () => {
-                  const at = Date.now(),
-                    due = wakeDue();
-                  // Typing's echo, or a change on an idle screen, is drawn now.
-                  const prompt = typed || at - active_at >= idle_after_ms || woken?.prompt === true;
-                  woken = { first: woken?.first ?? at, last: at, prompt };
-                  typed = false;
-                  // The daemon wakes per read of a pane's output; the loop
-                  // already waits for the change's due time unless this brings it nearer.
-                  if (wakeDue() < due) poll.notify("waker");
-                },
-                () => {
-                  // A daemon gone or replaced by a reload stops waking; sync on
-                  // every frame again until this viewer reconnects.
-                  waker = null;
-                },
-              );
-              watch_opened = true;
-            }
           }
-          const frame = view.frame();
-          if (view.dirty || previous !== frame || view.overlayOpen()) active_at = now;
+          const compose_started = telemetry.begin();
+          const frame = view.compose();
+          telemetry.end("viewer.compose", compose_started);
+          const compare_started = telemetry.begin();
+          const changed = !composition.same(previous, frame);
+          telemetry.end("viewer.compare", compare_started);
+          if (changed || view.overlayOpen()) active_at = now;
           next_sync = Date.now() + (now - active_at < idle_after_ms ? view.frameDelay() : quiet_sync_ms);
           view.dirty = false;
-          held = previous !== frame && !ready(probe);
+          held = changed && !ready(probe);
           if (!held) {
             const backdrop = hostBackground.follow(palette.painted());
             if (backdrop) writeAll(backdrop);
-            if (previous !== frame) host = present(host, frame, view.width, view.height, probe.pacer);
+            if (changed) host = present(host, frame, view.width, view.height, probe.pacer);
             previous = frame;
             await presented(view);
           }
@@ -438,11 +476,10 @@ export async function run(
         }
         view.clearEffects();
         // The host's answer wakes a viewer waiting on it; only a full terminal is polled.
-        const clock =
-          Date.now() - active_at < idle_after_ms
-            ? Math.min(16, view.frameDelay())
-            : Math.max(1, next_sync - Date.now());
-        await poll.wait(Math.min(clock, Math.max(1, wakeDue() - Date.now())), held && !probe.pacer.waiting(Date.now()));
+        const clock = waitTime(view, Date.now() - active_at < idle_after_ms, next_sync, wakeDue());
+        const wait_started = telemetry.begin();
+        await poll.wait(clock, held && !probe.pacer.waiting(Date.now()));
+        telemetry.end("viewer.wait", wait_started);
         // Input reaches the daemon with a frame's sync, so send it now, and
         // show the first change after it (its echo) without waiting a frame.
         if (poll.stdin) {
@@ -456,6 +493,7 @@ export async function run(
       }
       return null;
     } finally {
+      settling = true;
       process.off("SIGWINCH", onResize);
       view.saveAgentScroll();
       // The last frame's answer would otherwise reach the shell as typing.
@@ -465,7 +503,7 @@ export async function run(
         await poll.wait(until - Date.now(), false);
       }
       stdin.close();
-      waker?.destroy();
+      unwatch?.();
       host?.destroy();
       if (view.thumbnails.sent !== null) writeAll(linkThumbnail.remove);
       writeAll(view.images.clear());
@@ -481,15 +519,26 @@ export async function run(
 }
 /** Writes what the host needs to show `frame`, diffed against what it shows,
  * and asks the host to answer once it has drawn it. */
-function present(host: Differ | null, frame: string, cols: number, rows: number, pacer: framePacing.Pacer): Differ {
-  if (host && (host.cols !== cols || host.rows !== rows)) {
-    host.destroy();
-    host = null;
+function present(
+  host: Differ | null,
+  frame: composition.Output,
+  cols: number,
+  rows: number,
+  pacer: framePacing.Pacer,
+): Differ {
+  const telemetry_started = telemetry.begin();
+  try {
+    if (host && (host.cols !== cols || host.rows !== rows)) {
+      host.destroy();
+      host = null;
+    }
+    const differ = host ?? Differ.create(cols, rows);
+    const out = differ.diff(frame);
+    if (out.length > 0) writeAll(Buffer.concat([out, Buffer.from(pacer.stamp(Date.now()))]));
+    return differ;
+  } finally {
+    telemetry.end("viewer.present", telemetry_started);
   }
-  const differ = host ?? Differ.create(cols, rows);
-  const out = differ.diff(frame);
-  if (out.length > 0) writeAll(Buffer.concat([out, Buffer.from(pacer.stamp(Date.now()))]));
-  return differ;
 }
 /** Whether the host takes a frame now: its terminal has room, and over a
  * slow link it has drawn the frames before. */
@@ -515,9 +564,14 @@ export function writeAll(data: string | Uint8Array): void {
 }
 /** Hands the host clipboard's paste and what a read brought to the view,
  * and writes the requests both make. */
-async function answerClipboard(view: Controller, clipboard: ClipboardState): Promise<void> {
+export function answerClipboard(view: ClipboardView, clipboard: ClipboardState): Promise<void> | void {
   clipboard.tick(Date.now());
   const listing = clipboard.takeEvent();
+  if (listing !== null || clipboard.result !== null) return deliverClipboard(view, clipboard, listing);
+  flushClipboard(clipboard);
+}
+type ClipboardView = Pick<Controller, "pasteEvent" | "pasteResult" | "notice">;
+async function deliverClipboard(view: ClipboardView, clipboard: ClipboardState, listing: string | null): Promise<void> {
   if (listing !== null)
     try {
       await view.pasteEvent(listing);
@@ -531,22 +585,11 @@ async function answerClipboard(view: Controller, clipboard: ClipboardState): Pro
     } catch (error) {
       view.notice((error as Error).message);
     }
+  flushClipboard(clipboard);
+}
+function flushClipboard(clipboard: ClipboardState): void {
   const out = clipboard.takeOutput();
   if (out.length > 0) writeAll(out);
-}
-/** The daemon's wake connection, or null when it cannot watch (an older
- * daemon), in which case the viewer syncs on every frame. */
-function watch(socket: string, viewer: number, woken: () => void, closed: () => void): Socket | null {
-  try {
-    const conn = createConnection(socket);
-    conn.on("data", woken);
-    conn.on("error", () => {});
-    conn.on("close", closed);
-    conn.write(stringify(protocol.envelope("viewer.watch", { viewer })) + "\n");
-    return conn;
-  } catch {
-    return null;
-  }
 }
 /** Publish terminal measurements for the UI and other clients to read. */
 async function publishTerminal(view: Controller, connection: Transport, probe: terminal_info.Probe): Promise<void> {
@@ -575,13 +618,16 @@ function branchGlyphs(name: string): boolean {
   const lower = name.toLowerCase();
   return lower.includes("ghostty") || lower.includes("kitty");
 }
-function validUtf8(bytes: number[]): boolean {
-  try {
-    new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes));
-    return true;
-  } catch {
-    return false;
-  }
+/** Hands `input` to `handle` as whole characters. `decoder` keeps a
+ * character split across reads until the rest arrives and turns an invalid
+ * byte into U+FFFD; keys that arrive while `handle` runs wait for the next call. */
+export async function takeInput(
+  input: number[],
+  decoder: TextDecoder,
+  handle: (chunk: Uint8Array) => Promise<void>,
+): Promise<void> {
+  const text = decoder.decode(Uint8Array.from(input.splice(0)), { stream: true });
+  if (text) await handle(new TextEncoder().encode(text));
 }
 
 /** The viewer's terminal input, as raw bytes. */

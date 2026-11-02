@@ -2,6 +2,7 @@
 import { expect, test } from "bun:test";
 import {
   Context,
+  Area,
   View,
   merge,
   startsRun,
@@ -10,10 +11,12 @@ import {
   ageLabel,
   collapsed_rows,
   type Account,
+  type Location,
   type Entry,
 } from "./launcher_resume";
 import * as sim from "./providers/sim";
 import * as palette from "./palette";
+import * as i18n from "./i18n";
 import { Terminal } from "./pane/terminal";
 import { Writer } from "./text";
 
@@ -28,6 +31,56 @@ const testEntry = (session: string, cwd: string, title: string, updated_at: numb
   branch: "",
   updated_at,
   interrupted: false,
+  starred: false,
+});
+
+test("translated history headings, empty states and search hints stay inside the list", () => {
+  const previous = i18n.language();
+  try {
+    for (const language of ["en", "zh", "ja", "ko", "ru"] as const) {
+      i18n.setLanguage(language);
+      for (const width of [32, 44, 80]) {
+        const now = 1_700_000_000;
+        const entries = Array.from({ length: 9 }, (_, i) => testEntry(String(i), "/w/corgi", "Work", now - 86400 * i));
+        for (const mode of ["empty", "collapsed", "search", "days"] as const) {
+          const c = new Context(
+            { pending: false, entries: mode === "empty" ? [] : entries },
+            "/w/corgi",
+            "/w",
+            [{ provider: "claude", session: "0", pane: 1, folder: "/w/corgi" }],
+            now,
+          );
+          const view = new View(),
+            w = new Writer(),
+            terminal = new Terminal(100, 18);
+          const left = "####",
+            right = "#".repeat(100 - (4 + width - 1));
+          try {
+            for (let row = 1; row <= 18; row++) terminal.feed(`\x1b[${row};1H${left}${" ".repeat(width - 1)}${right}`);
+            if (mode === "collapsed") view.drawCollapsed(w, c, 4, 1, width);
+            else {
+              view.expand();
+              if (mode === "search") {
+                view.startSearch();
+                for (const ch of "work") view.query.key(ch.charCodeAt(0));
+              }
+              view.draw(w, c, new Area(4, 1, width, 16));
+            }
+            terminal.feed(w.buffered());
+            for (const row of terminal.text().split("\n").slice(0, 18)) {
+              expect(row.startsWith(left)).toBe(true);
+              expect(row.endsWith(right)).toBe(true);
+            }
+            expect(terminal.text()).toContain(i18n.t`Last active`);
+          } finally {
+            terminal.destroy();
+          }
+        }
+      }
+    }
+  } finally {
+    i18n.setLanguage(previous);
+  }
 });
 
 test("collapsed shows this folder's newest closed conversations, then more", () => {
@@ -37,7 +90,7 @@ test("collapsed shows this folder's newest closed conversations, then more", () 
     { pending: false, entries },
     "/w/corgi",
     "/w",
-    [{ provider: "claude", session: "d", pane: 4 }],
+    [{ provider: "claude", session: "d", pane: 4, folder: "/w/corgi" }],
     1000,
   );
   const v = new View();
@@ -72,7 +125,7 @@ test("expanded groups by day and widens; search finds open conversations and cou
     { pending: false, entries },
     "/w/corgi",
     "/w/corgi",
-    [{ provider: "claude", session: "c", pane: 4 }],
+    [{ provider: "claude", session: "c", pane: 4, folder: "/w/corgi" }],
     1000,
   );
   const v = new View();
@@ -100,6 +153,22 @@ test("expanded groups by day and widens; search finds open conversations and cou
   rows = v.lines(c);
   expect(rows.length).toBe(2);
   expect(v.entry(c, rows)!.title).toBe("Sidebar flicker fix");
+  entries[0].branch = "fix/rendering";
+  entries[1].branch = "feature/rendering";
+  entries[2].branch = "fix/rendering";
+  v.query.clear();
+  for (const ch of "RENDER") v.query.key(ch.charCodeAt(0));
+  expect(v.lines(c)).toEqual([
+    { heading: "open" },
+    { open: 2 },
+    { heading: "results" },
+    { entry: 0 },
+    { elsewhere: 1 },
+  ]);
+  for (const ch of " flicker") v.query.key(ch.charCodeAt(0));
+  expect(v.lines(c)).toEqual([{ heading: "results" }, { entry: 0 }]);
+  for (const ch of " missing") v.query.key(ch.charCodeAt(0));
+  expect(v.lines(c)).toEqual([{ heading: "results" }]);
   v.collapse();
   expect(!v.expanded && !v.searching).toBe(true);
   expect(v.scope).toBe("workspace");
@@ -116,7 +185,8 @@ test("a run of one agent names it once", () => {
   entries[2].provider = "codex";
   entries[3].provider = "codex";
   const c = new Context({ pending: false, entries }, "/w/corgi", "/w/corgi", [], 1000);
-  const rows = new View().lines(c);
+  const view = new View(),
+    rows = view.lines(c);
   expect(Array.from({ length: collapsed_rows }, (_, i) => startsRun(c, rows, i, 0))).toEqual([
     true,
     false,
@@ -128,21 +198,91 @@ test("a run of one agent names it once", () => {
   expect(startsRun(c, rows, 1, 1)).toBe(true);
   // Show more.
   expect(startsRun(c, rows, rows.length - 1, 0)).toBe(false);
+  // Day headings do not repeat a provider's name.
+  entries.forEach((e, i) => (e.updated_at = 900 - i * 86400));
+  view.expand();
+  const expanded = view.lines(c),
+    conversations = expanded.flatMap((line, i) => ("entry" in line ? [i] : []));
+  expect(expanded.filter(line => "day" in line)).toHaveLength(5);
+  expect(conversations.map(i => startsRun(c, expanded, i, 0))).toEqual([true, false, true, false, true]);
+  // The first visible conversation carries the label, whether a day heading
+  // is at the top or the original label has scrolled away.
+  for (const i of conversations) {
+    expect(startsRun(c, expanded, i, i)).toBe(true);
+    expect(startsRun(c, expanded, i, i - 1)).toBe(true);
+  }
+  // Open and closed search results still have separate provider runs.
+  expect(startsRun(c, [{ open: 0 }, { heading: "results" }, { entry: 1 }], 2, 0)).toBe(true);
 });
 
 test("a run is named after its provider", () => {
   const remove = sim.register();
   try {
-    const entries = [testEntry("a", "/w/corgi", "Sticky agent", 900), testEntry("b", "/w/corgi", "Review", 800)];
+    const entries = [
+      testEntry("a", "/w/corgi", "Sticky agent", 900),
+      testEntry("b", "/w/corgi", "Review", 800),
+      testEntry("c", "/w/corgi", "OpenCode title", 700),
+    ];
     entries[1].provider = sim.sim;
+    entries[2].provider = "opencode2";
     const c = new Context({ pending: false, entries }, "/w/corgi", "/w/corgi", [], 1000);
     const w = new Writer();
     new View().drawCollapsed(w, c, 0, 1, 100);
-    expect(w.buffered()).toContain("HClaude");
-    expect(w.buffered()).toContain("HSim");
+    // Each run starts with its brand mark (here its glyph), then its name.
+    expect(w.buffered()).toMatch(/\x1b\[2;3H[^*]*\* \x1b\[2;5H\x1b\[[\d;]*mClaude/);
+    expect(w.buffered()).toMatch(/\x1b\[3;3H[^§]*§ \x1b\[3;5H\x1b\[[\d;]*mSim/);
     expect(w.buffered()).not.toContain("Codex");
+    for (const width of [44, 100]) {
+      const writer = new Writer(),
+        terminal = new Terminal(width, 10);
+      try {
+        new View().drawCollapsed(writer, c, 0, 1, width);
+        terminal.feed(writer.s);
+        const row = terminal.text().split("\n")[3];
+        expect(row).toContain("o OpenCode OpenCode title");
+        expect(row).not.toContain("OpenC…");
+      } finally {
+        terminal.destroy();
+      }
+    }
   } finally {
     remove();
+  }
+});
+
+test("the pinned provider and date follow the first visible conversation without stealing its hit target", () => {
+  const entries = Array.from({ length: 10 }, (_, i) =>
+    testEntry(String(i), "/w/corgi", `Conversation ${i}`, 900 - Math.floor(i / 2) * 86400),
+  );
+  entries[6].provider = "codex";
+  const c = new Context({ pending: false, entries }, "/w/corgi", "/w/corgi", [], 1000),
+    view = new View({ expanded: true, focused: true }),
+    area = new Area(0, 1, 100, 6),
+    rows = view.lines(c);
+  for (const entry of [0, 4, 5, 6]) {
+    const at = rows.findIndex(line => "entry" in line && line.entry === entry);
+    view.select(c, at);
+    view.scroll = at;
+    view.reveal(c, area);
+    const writer = new Writer(),
+      terminal = new Terminal(100, 10);
+    try {
+      view.draw(writer, c, area);
+      terminal.feed(writer.s);
+      const lines = terminal.text().split("\n"),
+        provider = entry === 6 ? "Codex" : "Claude",
+        heading = lines[area.listTop() - 1],
+        date = dayLabel(entries[entry].updated_at, c.now);
+      expect(heading).toContain(provider);
+      expect(heading).not.toContain("·");
+      expect(heading.indexOf(provider)).toBe(4);
+      expect(heading.indexOf(date)).toBe(lines[area.listTop()].indexOf(`Conversation ${entry}`));
+      expect(lines[area.listTop()]).toContain(`│          Conversation ${entry}`);
+      expect(view.hit(c, area, 20, area.listTop())).toBeNull();
+      expect(view.hit(c, area, 20, area.listTop() + 1)).toEqual({ row: at });
+    } finally {
+      terminal.destroy();
+    }
   }
 });
 
@@ -171,6 +311,122 @@ test("a conversation closed here comes first, under the name the sidebar showed"
   expect(v.entry(c, rows)!.updated_at).toBe(1000);
 });
 
+test('stars sit inside history titles without moving columns or changing order; search finds them by "star"', () => {
+  const entries = [testEntry("a", "/w/corgi", "Fix login", 900), testEntry("b", "/w/corgi", "Review", 800)];
+  entries[1].starred = true;
+  const context = new Context({ pending: false, entries }, "/w/corgi", "/w", [], 1000);
+  for (const width of [44, 100]) {
+    const view = new View(),
+      writer = new Writer(),
+      terminal = new Terminal(width, 10);
+    try {
+      view.drawCollapsed(writer, context, 0, 1, width);
+      terminal.feed(writer.s);
+      const rows = terminal.text().split("\n");
+      expect(rows[1]).toContain("Fix login");
+      expect(rows[2]).toContain("★ Review");
+      expect(rows[2].indexOf("★")).toBe(rows[1].indexOf("Fix login"));
+      expect(rows[2].indexOf("3m")).toBe(rows[1].indexOf("1m"));
+      view.startSearch();
+      for (const ch of "review") view.query.key(ch.charCodeAt(0));
+      expect(view.entry(context, view.lines(context))?.session).toBe("b");
+      for (const query of ["Star", "starred", "star review"]) {
+        view.query.clear();
+        for (const ch of query) view.query.key(ch.charCodeAt(0));
+        expect(view.lines(context).filter(line => "entry" in line)).toEqual([{ entry: 1 }]);
+      }
+    } finally {
+      terminal.destroy();
+    }
+  }
+});
+
+test("Where marks branches, and a title still names the branch a conversation ran on", () => {
+  const entries = [
+    testEntry("a", "/w/corgi", "On main", 900),
+    testEntry("b", "/w/corgi", "On feature", 800),
+    testEntry("c", "/w/corgi-wt", "In the worktree", 700),
+    testEntry("e", "/w/corgi-wt", "Before the worktree", 650),
+    testEntry("d", "/x/plain", "Outside git", 600),
+  ];
+  entries[0].branch = "main";
+  entries[1].branch = "feature";
+  // Where drops the worktree- prefix the branch keeps.
+  entries[2].branch = "main";
+  entries[3].branch = "worktree-wt";
+  const places: Record<string, Location> = {
+    "/w/corgi": { label: "main", branch: "main" },
+    "/w/corgi-wt": { label: "wt", branch: "worktree-wt" },
+  };
+  const c = new Context(
+      { pending: false, entries },
+      "/w/corgi",
+      "/w",
+      [],
+      1000,
+      [],
+      {},
+      cwd => places[cwd] ?? { label: "plain", branch: null },
+    ),
+    view = new View({ expanded: true, focused: true }),
+    area = new Area(0, 1, 140, 10);
+  view.scope = "everywhere";
+  const w = new Writer(),
+    host = new Terminal(140, 12);
+  view.draw(w, c, area);
+  host.feed(w.s);
+  const lines = host.text().split("\n");
+  host.destroy();
+  const line = (title: string) => lines.find(l => l.includes(title))!;
+  expect(line("On main")).toContain("⌥ main");
+  expect(line("On main")).not.toContain("feature");
+  expect(line("On feature")).toMatch(/On feature +feature +⌥ main/);
+  expect(line("In the worktree")).toMatch(/In the worktree +⌥ wt/);
+  expect(line("Before the worktree")).toMatch(/Before the worktree +⌥ wt/);
+  expect(line("Before the worktree")).not.toContain("worktree-wt");
+  expect(line("Outside git")).toContain(" plain");
+  expect(line("Outside git")).not.toContain("⌥");
+});
+
+test("an open conversation's Where and search follow the worktree its agent moved to", () => {
+  // Started on main in /w/corgi; its pane's agent now works in /w/corgi-wt.
+  const entries = [testEntry("a", "/w/corgi", "Translate the site", 900)];
+  entries[0].branch = "main";
+  const places: Record<string, Location> = {
+    "/w/corgi": { label: "main", branch: "main" },
+    "/w/corgi-wt": { label: "wt", branch: "site/wt" },
+  };
+  const c = new Context(
+      { pending: false, entries },
+      "/w/corgi",
+      "/w",
+      [{ provider: "claude", session: "a", pane: 4, folder: "/w/corgi-wt" }],
+      1000,
+      [],
+      {},
+      cwd => places[cwd] ?? { label: "plain", branch: null },
+    ),
+    view = new View({ expanded: true, focused: true }),
+    area = new Area(0, 1, 140, 10);
+  view.startSearch();
+  for (const ch of "site/wt") view.query.key(ch.charCodeAt(0));
+  expect(view.lines(c)).toEqual([{ heading: "open" }, { open: 0 }, { heading: "results" }]);
+  const w = new Writer(),
+    host = new Terminal(140, 12);
+  view.draw(w, c, area);
+  host.feed(w.s);
+  const row = host
+    .text()
+    .split("\n")
+    .find(l => l.includes("Translate the site"))!;
+  host.destroy();
+  expect(row).toMatch(/Translate the site +⌥ wt/);
+  // The branch it started on still finds it.
+  view.query.clear();
+  for (const ch of "main") view.query.key(ch.charCodeAt(0));
+  expect(view.lines(c)).toContainEqual({ open: 0 });
+});
+
 test("a conversation from another account ends its title with the account's name, dimmed", () => {
   const entries = [testEntry("a", "/w/corgi", "Fix login", 900), testEntry("b", "/w/corgi", "Review", 800)];
   entries[0].account = "/accounts/claude-work";
@@ -193,6 +449,6 @@ test("a conversation from another account ends its title with the account's name
   host.destroy();
   // At the end of the title's column, where a branch goes.
   expect(lines[1]).toContain("Fix login");
-  expect(lines[1].indexOf("work") + 4).toBe(11 + v.columns(96).title);
+  expect(lines[1].indexOf("work") + 4).toBe(13 + v.columns(96).title);
   expect(lines[2]).not.toContain("work");
 });

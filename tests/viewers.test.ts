@@ -11,7 +11,7 @@ import {
 import { join } from "node:path";
 import { Viewers } from "./viewers";
 import { PALETTE, screen_text, layout_tree } from "./runtime";
-import { EXE, JsonSocket, quote, registerCase, shellJoin, sleep, writeExecutable } from "./support";
+import { EXE, JsonSocket, quote, registerCase, shellJoin, sleep, versioned, writeExecutable } from "./support";
 
 import { CodexObserver, write_codex_terminal } from "./provider_sim";
 
@@ -43,7 +43,7 @@ class ViewerScenarios extends Viewers {
       return { y, row: screen[y] };
     };
     await viewer.input("\x02i");
-    const off = ghosttyRow((await viewer.input("jjjjj")).data).row;
+    const off = ghosttyRow((await viewer.input("jjjjjj")).data).row;
     this.assertTrue(/Command keys\s+○ Off/.test(off), off);
     // Enter opens Keymap on the preset in use; up wraps to Command keys.
     await viewer.input("\rk");
@@ -60,7 +60,7 @@ class ViewerScenarios extends Viewers {
     this.assertEqual((await viewer.input("\x02n")).pane, panes[0]);
     this.assertEqual((await viewer.input("\x02p")).pane, panes.at(-1));
     await viewer.input("\x02i");
-    const { y, row } = ghosttyRow((await viewer.input("jjjjj")).data);
+    const { y, row } = ghosttyRow((await viewer.input("jjjjjj")).data);
     this.assertTrue(/Command keys\s+● On/.test(row), row);
     // A click on the option turns it off.
     const x = row.indexOf("Command keys") + 1;
@@ -104,22 +104,23 @@ class ViewerScenarios extends Viewers {
       b = await this.newViewer();
     await a.focus(shell);
     await b.focus(outsider);
-    for (const pane of agents) {
+    const ordered = agents.toReversed();
+    for (const pane of ordered) {
       this.assertEqual((await a.input("\x02]")).pane, pane);
       this.assertEqual(a.state.workspace, home);
     }
     const screen = screen_text(a.state.data, 100, 16);
     this.assertTrue(
-      screen.some(row => row.slice(0, 27).includes("Agent-5")),
+      screen.some(row => row.slice(0, 27).includes("Agent-0")),
       screen,
     );
-    this.assertEqual((await a.input("\x02]")).pane, agents[0]);
-    this.assertEqual((await a.input("\x02[")).pane, agents.at(-1));
+    this.assertEqual((await a.input("\x02]")).pane, ordered[0]);
+    this.assertEqual((await a.input("\x02[")).pane, ordered.at(-1));
     this.assertEqual((await b.poll()).pane, outsider);
     await a.input("\x02b");
-    this.assertEqual((await a.input("\x02]")).pane, agents[0]);
+    this.assertEqual((await a.input("\x02]")).pane, ordered[0]);
     await a.focus(shell);
-    this.assertEqual((await a.input("\x02\t")).pane, agents[0]);
+    this.assertEqual((await a.input("\x02\t")).pane, ordered[0]);
   }
 
   async test_agent_scope_menu_only_offers_all_and_current_workspace() {
@@ -158,7 +159,12 @@ class ViewerScenarios extends Viewers {
     this.assertIn("✓", rows[16]);
     this.assertIn("All", rows[17]);
     this.assertIn("2", rows[17]);
-    this.assertTrue(rows[18].trim().startsWith("╰"));
+    // A row below them, how the list is sorted.
+    this.assertIn("Sort", rows[19]);
+    this.assertIn("By activity", rows[20]);
+    this.assertIn("▶ ● ○", rows[20]);
+    this.assertIn("✓ Manual", rows[21]);
+    this.assertTrue(rows[22].trim().startsWith("╰"));
     this.assertFalse(rows.slice(15).some(row => row.includes("Other")));
     await a.input("\x1b[<35;60;5M");
     await this.until(async () => !(await a.poll()).data.includes("This workspace"));
@@ -265,7 +271,7 @@ class ViewerScenarios extends Viewers {
     // A resource sample between the two screens would change the sidebar.
     writeFileSync(
       join(this.env.XDG_STATE_HOME!, "corgi/viewer.json"),
-      JSON.stringify({ onboarding_complete: true, resources: { enabled: false } }),
+      JSON.stringify({ onboarding_complete: true, agent_sort: "manual", resources: { enabled: false } }),
     );
     const a = await this.newViewer(100, 24);
     await a.focus(first);
@@ -292,11 +298,12 @@ class ViewerScenarios extends Viewers {
     await sleep(0.06);
     await a.poll();
     const restored = screen_text(a.state.data, 100, 24);
-    this.assertIn("Alpha", restored[13].slice(0, 27));
+    this.assertIn("Agent-4", restored[13].slice(0, 27));
+    this.assertIn("Agent-3", restored[15].slice(0, 27));
     this.assertNotIn("/ Agent-4", restored.join("\n"));
     this.assertEqual(a.state.pane, first);
     await a.input("\x02b\x02g");
-    for (const _ of rest) await a.input("\x1b[B");
+    for (const _ of rest) await a.input("\x1b[A");
     this.assertEqual(a.state.pane, first);
     let screen = screen_text(a.state.data, 100, 24);
     this.assertTrue(screen.slice(13, -1).some(row => row.slice(0, 27).includes("Agent-4")));
@@ -358,7 +365,6 @@ class ViewerScenarios extends Viewers {
     const headless = (
       await this.rpc({
         op: "headless.start",
-        protocol: 3,
         prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
@@ -652,7 +658,6 @@ class ViewerScenarios extends Viewers {
     const ident = (
       await this.rpc({
         op: "headless.start",
-        protocol: 3,
         prompt: "test/init",
         provider: "codex",
         cwd: this.temp.name,
@@ -677,7 +682,7 @@ class ViewerScenarios extends Viewers {
     });
     await this.until(async () => (await counts()).input === 100);
     this.assertEqual((await counts()).tools, 1);
-    await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
+    await this.rpc({ op: "server.reload", executable: EXE });
     this.assertEqual([(await counts()).tools, (await counts()).input, (await counts()).output], [1, 100, 10]);
     await send("thread/tokenUsage/updated", {
       threadId: "t",
@@ -706,7 +711,7 @@ class ViewerScenarios extends Viewers {
     this.assertIn("Rename", a.state.data);
     await a.input("\r");
     await a.input("Renamed\r");
-    this.assertEqual((await this.session()).workspaces.find((w: any) => w.id === ws).custom_name, "Renamed");
+    this.assertEqual((await this.session()).workspaces.find((w: any) => w.id === ws).name, "Renamed");
     await a.input("\x1b[<2;5;6M\x1b[<2;5;6m");
     await a.input("\x1b[B\r");
     this.assertEqual((await this.session()).workspaces.length, 1);
@@ -714,11 +719,12 @@ class ViewerScenarios extends Viewers {
     this.assertEqual((await b.poll()).pane, first);
   }
 
-  async test_workspace_name_uses_first_tab_in_both_viewers() {
+  async test_workspace_name_keeps_chosen_folder_in_both_viewers() {
     const one = join(this.temp.name, "one"),
       two = join(this.temp.name, "two");
     mkdirSync(one);
     mkdirSync(two);
+    await this.command("workspace.edit", { target: (await this.session()).workspaces[0].id, name: "one", cwd: one });
     const first = (await this.open_pane({ cwd: one, command: "exec /bin/sh" })).pane;
     const second = (await this.open_pane({ cwd: two, command: "exec /bin/sh" })).pane;
     const a = await this.newViewer(),
@@ -743,13 +749,13 @@ class ViewerScenarios extends Viewers {
       screen_text((await a.poll()).data, 100, 30)[2]
         .slice(2, 27)
         .trim(),
-      "two",
+      "one",
     );
     this.assertEqual(
       screen_text((await b.poll()).data, 100, 30)[2]
         .slice(2, 27)
         .trim(),
-      "two",
+      "one",
     );
     await b.input("\x02Wr");
     await b.input("Custom\r");
@@ -757,12 +763,14 @@ class ViewerScenarios extends Viewers {
     this.assertIn("Custom", (await b.poll()).data);
     await b.input("\x02Wr");
     await b.input("\x03\r");
-    this.assertEqual((await this.session()).workspaces[0].custom_name, "");
+    this.assertIn("Enter a workspace name.", (await b.poll()).data);
+    await b.input("\x1b");
+    this.assertEqual((await this.session()).workspaces[0].name, "Custom");
     this.assertEqual(
       screen_text((await a.poll()).data, 100, 30)[2]
         .slice(2, 27)
         .trim(),
-      "two",
+      "Custom",
     );
     await a.action("new");
     this.assertEqual((await this.session()).panes.find((p: any) => p.id === a.state.pane).cwd, realpathSync(one));
@@ -962,7 +970,7 @@ class ViewerScenarios extends Viewers {
       ],
     ];
     for (const [command, error] of invalid) {
-      this.assertEqual((await this.raw_rpc({ op: "session.command", protocol: 3, command })).err, error);
+      this.assertEqual((await this.raw_rpc({ op: "session.command", command })).err, error);
       this.assertEqual((await this.session()).workspaces, before);
     }
   }
@@ -1182,7 +1190,7 @@ process.stdin.resume();
       second = await this.new();
     const client = await JsonSocket.connect(this.path);
     try {
-      const call = (request: any) => client.request({ protocol: 3, viewer_protocol: 3, ...request });
+      const call = (request: { op: string; [field: string]: unknown }) => client.request(versioned(request));
       await call({ op: "viewer.open", cwd: this.temp.name });
       await call({
         op: "viewer.sync",
@@ -1214,8 +1222,8 @@ process.stdin.resume();
     await this.new();
     const first = await this.new(),
       second = await this.new();
-    await this.mark_agent(first, "Departing-agent");
     await this.mark_agent(second, "Surviving-agent");
+    await this.mark_agent(first, "Departing-agent");
     await this.rpc({
       op: "hook",
       pane: first,
@@ -1248,9 +1256,14 @@ process.stdin.resume();
     const closing = screen_text((await viewer.poll()).data, 100, 30);
     this.assertIn("Departing-agent", closing[16].slice(0, 27));
     this.assertEqual((await viewer.input("\x1b[<0;6;17M\x1b[<0;6;17m")).pane, second);
+    // It fades, then the row below steps up into its place.
     await sleep(0.3);
+    await this.until(async () =>
+      screen_text((await viewer.poll()).data, 100, 30)[16]
+        .slice(0, 27)
+        .includes("Surviving-agent"),
+    );
     const closed = screen_text((await viewer.poll()).data, 100, 30);
-    this.assertIn("Surviving-agent", closed[16].slice(0, 27));
     this.assertNotIn(
       "Departing-agent",
       closed

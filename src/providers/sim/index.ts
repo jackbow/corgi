@@ -19,14 +19,14 @@ export const adapter: Adapter = {
   glyph: "§",
   launcher_key: "z",
   command: "sim",
+  programs: { names: ["sim"] },
   caps: {
     prompt_turns: true,
-    children_at_stop: false,
+    children_from_hooks: false,
     follows_cd: true,
     titles_once_loaded: false,
     transcript_tools: false,
   },
-  owns: p => p.split("/").at(-1) === "sim",
   inspect: c =>
     commandLine.inspect(c, {
       config_env: "SIM_HOME",
@@ -63,6 +63,7 @@ export const adapter: Adapter = {
   watch: () => new ScreenWatcher((_title, text) => sharedPrompt(text)),
   hook: v => hooks.decode(v),
   launch: {
+    options: args => args,
     start: s => [
       ...(s.permissions === "bypass" ? ["--unattended"] : []),
       ...(s.model ? ["--model", s.model] : []),

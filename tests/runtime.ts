@@ -3,7 +3,7 @@ import { colors } from "../src/palette";
 import { adapter, type Provider } from "../src/providers";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { EXE, ROOT, TestCase, JsonSocket, run, sleep, tempDir, quote, writeExecutable } from "./support";
+import { EXE, ROOT, TestCase, JsonSocket, run, sleep, tempDir, quote, versioned, writeExecutable } from "./support";
 import { Viewer, pump } from "./viewer_client";
 import { NATIVE_PROVIDER, write_ordinary_agent } from "./provider_sim";
 import { Scope } from "../scripts/process_scope";
@@ -157,6 +157,7 @@ export class Runtime extends TestCase {
       CORGI_CLAUDE_BIN: fake,
       CORGI_PI_BIN: join(this.temp.name, "pi-not-installed"),
       CORGI_OPENCODE2_BIN: join(this.temp.name, "opencode-not-installed"),
+      CORGI_OMP_BIN: join(this.temp.name, "omp-not-installed"),
       // Test builds look for system installs here instead of /usr, /opt and /Applications.
       CORGI_TEST_SYSTEM_ROOT: join(this.temp.name, "system"),
       SHELL: "/bin/sh",
@@ -169,7 +170,9 @@ export class Runtime extends TestCase {
     Object.assign(this.env, this.extraEnv);
     const preferences = join(this.env.XDG_STATE_HOME!, "corgi/viewer.json");
     mkdirSync(join(preferences, ".."), { recursive: true });
-    writeFileSync(preferences, JSON.stringify({ onboarding_complete: true }));
+    // Suites read the agent list by its rows; most expect it as sorted by hand.
+    // Those about activity sections ask for them.
+    writeFileSync(preferences, JSON.stringify({ onboarding_complete: true, agent_sort: "manual" }));
     this.client = null;
     this.viewers = [];
     this.proc = null;
@@ -199,7 +202,7 @@ export class Runtime extends TestCase {
       if (this.started || existsSync(this.path)) {
         // server.log is complete once the daemon has exited, which is after
         // shutdown returns. It may already be gone.
-        const pid = await this.rpc({ op: "hello", protocol: 1 }).then(
+        const pid = await this.rpc({ op: "hello" }).then(
           hello => hello.server_pid as number,
           () => 0,
         );
@@ -255,7 +258,7 @@ export class Runtime extends TestCase {
         // Another wait may have subscribed meanwhile.
         if (this.#changes && !this.#changes.closed) socket.close();
         else {
-          socket.send({ op: "session.subscribe", protocol: 3 });
+          socket.send(versioned({ op: "session.subscribe" }));
           this.#changes = socket;
         }
       }
@@ -278,7 +281,7 @@ export class Runtime extends TestCase {
     this.#callsSent = performance.now();
     return this.#calls;
   }
-  /** Like `corgi rpc`: a reply with `err` throws. Calls share one kept connection, in order. */
+  /** Like `corgi rpc`, with the versions its op carries: a reply with `err` throws. Calls share one kept connection, in order. */
   #call(value: any): Promise<any> {
     const result = this.#callQueue.then(async () => {
       // The replacement daemon answers a reload, so it gets a connection of its own.
@@ -286,7 +289,7 @@ export class Runtime extends TestCase {
       const socket = kept ? await this.#connection() : await JsonSocket.connect(this.path);
       let reply: any;
       try {
-        socket.send(value);
+        socket.send(versioned(value));
         reply = await socket.read(8000);
       } finally {
         // A late reply must not answer the next request.
@@ -322,18 +325,17 @@ export class Runtime extends TestCase {
   /** Has the fake provider behind headless session `session` run a test
    * command, sent as a prompt to its thread `t`. */
   headless_command(session: string, text: string, provider = "codex") {
-    return this.rpc({ op: "headless.send", protocol: 3, provider, session, input: { kind: "prompt", text } });
+    return this.rpc({ op: "headless.send", provider, session, input: { kind: "prompt", text } });
   }
   /** Answers the approval the fake provider asks for. */
   headless_answer(session: string, provider: string, allow = true) {
     const request = provider === "codex" ? "900" : "permission-1";
-    return this.rpc({ op: "headless.send", protocol: 3, provider, session, input: { kind: "answer", request, allow } });
+    return this.rpc({ op: "headless.send", provider, session, input: { kind: "answer", request, allow } });
   }
   async command(operation: string, payload: any = {}) {
     return (
       await this.rpc({
         op: "session.command",
-        protocol: 3,
         command: { [operation]: payload },
       })
     ).result;
@@ -341,13 +343,13 @@ export class Runtime extends TestCase {
   async raw_rpc(value: any) {
     const socket = await JsonSocket.connect(this.path);
     try {
-      return await socket.request(value);
+      return await socket.request(versioned(value));
     } finally {
       socket.close();
     }
   }
   session() {
-    return this.rpc({ op: "session.snapshot", protocol: 3 });
+    return this.rpc({ op: "session.snapshot" });
   }
   async open_pane(options: any = {}) {
     options = { ...options };

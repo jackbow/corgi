@@ -1,8 +1,8 @@
-import { afterAll, beforeAll, test, expect } from "bun:test";
+import { afterAll, beforeAll, test, expect, spyOn } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { service, publish, request, sample, stop } from "./launch_service";
+import { service, publish, request, sample, stop, due } from "./launch_service";
 import { Preview, Worker as PreviewWorker, active_every, idle_every } from "./launch/preview";
 import { Text } from "./providers";
 import * as protocol from "./protocol";
@@ -22,7 +22,7 @@ afterAll(() => {
   accounts.reset();
   rmSync(home, { recursive: true, force: true });
 });
-test("new preview subscribers refresh cached sign-in asynchronously and share pending work", async () => {
+test("new preview subscribers refresh sign-in after a pending pass", async () => {
   const server: any = { runtime: { getWorkspace: () => ({ cwd: "/tmp" }) } },
     messages: any[] = [],
     client = (): any => ({
@@ -76,11 +76,11 @@ test("new preview subscribers refresh cached sign-in asynchronously and share pe
     expect(messages[0].preview.pending).toBe(true);
     expect(messages[0].preview.options.codex.signed_in).toBe(false);
     await request(server, second, subscribe);
-    expect(s.launch_previews.jobs[0].queued).toBe(false);
+    expect(s.launch_previews.jobs[0].queued).toBe(true);
     const pending = s.launch_previews.pump();
     finish();
     await pending;
-    expect(reads).toBe(1);
+    expect(reads).toBe(2);
     messages.length = 0;
     for (const cl of [first, second]) {
       cl.launch_preview!.checked = 0;
@@ -91,7 +91,7 @@ test("new preview subscribers refresh cached sign-in asynchronously and share pe
       expect(message.preview.pending).toBe(false);
       expect(message.preview.options.codex.signed_in).toBe(true);
     }
-    expect(reads).toBe(1);
+    expect(reads).toBe(2);
   } finally {
     finish();
     await stop(server);
@@ -209,5 +209,119 @@ test("accounts are read often while someone uses a viewer and rarely otherwise",
     expect(asked).toEqual([idle_every, idle_every, active_every]);
   } finally {
     stop(server);
+  }
+});
+
+test("unchanged preview identities skip serialization and equal replacements become the new baseline", async () => {
+  const server: any = {},
+    messages: any[] = [],
+    s = service(server);
+  let preview = new Preview().with({ pending: false });
+  const client: any = {
+    dead: false,
+    output: Buffer.alloc(0),
+    queue: (value: any) => messages.push(value),
+    launch_preview: { cwd: "/tmp", preview, checked: 0, history_asked: false, history_epoch: 0n, history_sent: 0n },
+  };
+  s.launch_previews.preview = () => preview;
+  const serialize = spyOn(preview.options.codex, "toJSON"),
+    check = () => {
+      client.launch_preview.checked = 0;
+      publish(server, client);
+    };
+  try {
+    check();
+    expect(serialize).not.toHaveBeenCalled();
+    preview = preview.with({});
+    check();
+    expect(serialize).toHaveBeenCalled();
+    expect(messages).toHaveLength(0);
+    expect(client.launch_preview.preview).toBe(preview);
+    const calls = serialize.mock.calls.length;
+    check();
+    expect(serialize.mock.calls).toHaveLength(calls);
+    const previous = preview;
+    preview = preview.with({ names: { ...preview.names, codex: "work" } });
+    check();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].preview.names.codex).toBe("work");
+    expect(previous.names.codex).toBe("");
+  } finally {
+    serialize.mockRestore();
+    await stop(server);
+  }
+});
+
+test("a pending preview the worker hasn't replaced skips serialization", async () => {
+  const server: any = {},
+    messages: any[] = [],
+    s = service(server);
+  const sent = new Preview().with({ pending: false }),
+    pending = new Preview().with({ pending: true });
+  const client: any = {
+    dead: false,
+    output: Buffer.alloc(0),
+    queue: (value: any) => messages.push(value),
+    launch_preview: {
+      cwd: "/tmp",
+      preview: sent,
+      checked: 0,
+      history_asked: false,
+      history_epoch: 0n,
+      history_sent: 0n,
+    },
+  };
+  s.launch_previews.preview = () => pending;
+  const check = () => {
+    client.launch_preview.checked = 0;
+    publish(server, client);
+  };
+  try {
+    check();
+    expect(client.launch_preview.preview).not.toBe(pending);
+    const serialize = spyOn(client.launch_preview.preview.options.codex, "toJSON");
+    try {
+      check();
+      expect(serialize).not.toHaveBeenCalled();
+    } finally {
+      serialize.mockRestore();
+    }
+  } finally {
+    await stop(server);
+  }
+});
+
+test("a subscription is due only while the worker holds a preview it wasn't sent", async () => {
+  const server: any = {},
+    messages: any[] = [],
+    s = service(server);
+  s.launch_previews.pump = async () => {};
+  const sent = new Preview().with({ pending: false }),
+    client: any = {
+      dead: false,
+      output: Buffer.alloc(0),
+      queue: (value: any) => messages.push(value),
+      launch_preview: {
+        cwd: "/tmp",
+        preview: sent,
+        checked: 0,
+        history_asked: false,
+        history_epoch: 0n,
+        history_sent: 0n,
+      },
+    },
+    job = { cwd: "/tmp", preview: sent, updated: 0, used: 0, queued: false, accessing: false, request_access: false };
+  s.launch_previews.jobs = [job];
+  s.launch_previews.preview = () => job.preview;
+  try {
+    expect(due(server, client)).toBe(false);
+    job.preview = sent.with({ names: { ...sent.names, codex: "work" } });
+    expect(due(server, client)).toBe(true);
+    publish(server, client);
+    expect(messages).toHaveLength(1);
+    expect(due(server, client)).toBe(false);
+    expect(due(server, { launch_preview: null } as any)).toBe(false);
+  } finally {
+    await stop(server);
   }
 });

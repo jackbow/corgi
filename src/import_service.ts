@@ -6,22 +6,18 @@ import type { Node } from "./import/layout";
 import type { DecodedRequest } from "./protocol";
 import { exclusion } from "./protocol";
 import type { Server } from "./server";
-import type { Client } from "./peer";
+import { Reply, type Client } from "./peer";
+import type { Workspace } from "./workspace";
 type Request = Extract<DecodedRequest, { op: "onboarding.status" | "onboarding.handoff" | "onboarding.copy" }>;
 export { importBridge };
 class Service {
   herdr_import = new Manager();
   onboarding_copy = new Job();
   handoff_operation = 0n;
-  starter: { id: number; revision: bigint } | null = null;
+  /** The workspace the daemon made for an onboarding viewer, while it
+   * still holds what it had then; an import replaces it. */
+  starter: { id: number; revision: bigint; name: string } | null = null;
   copying = false;
-  remember(server: Server) {
-    this.starter = null;
-    const r = server.runtime;
-    if (r.workspaces.items.length !== 1 || r.sessions.length) return;
-    const ws = r.workspaces.items[0];
-    if (!ws.model.count && !ws.name_len) this.starter = { id: ws.id, revision: ws.model.revision };
-  }
   async finish(server: Server, destination: number | null) {
     const starter = this.starter;
     this.starter = null;
@@ -33,7 +29,7 @@ class Service {
     )
       return;
     const ws = server.runtime.workspaces.get(starter.id);
-    if (!ws || ws.model.count || ws.name_len || ws.model.revision !== starter.revision) return;
+    if (!ws || ws.model.count || ws.model.revision !== starter.revision || ws.name() !== starter.name) return;
     try {
       await server.runtime.closeWorkspace(starter.id, false);
     } catch {
@@ -65,21 +61,29 @@ export function admit(server: Server, op: string): void {
   }
   if (kind === "shutdown" && importing) throw Error("ImportInProgress");
 }
-export async function request(server: Server, client: Client, request: Request): Promise<void> {
+/** An onboarding viewer opened on the starter the daemon made for it. */
+export function onboardingStarter(server: Server, ws: Workspace): void {
+  service(server).starter = { id: ws.id, revision: ws.model.revision, name: ws.name() };
+}
+export async function request(
+  server: Server,
+  client: Client,
+  request: Request,
+  reply = new Reply(client),
+): Promise<void> {
   const s = service(server),
     operation = request.payload.operation;
   if (request.op === "onboarding.status") {
-    if (operation !== 0n && operation === s.handoff_operation)
-      client.reply(request.op, { progress: s.herdr_import.status() });
+    if (operation !== 0n && operation === s.handoff_operation) reply.ok({ progress: s.herdr_import.status() });
     else if (operation !== 0n && operation === s.onboarding_copy.operation)
-      client.reply(request.op, { progress: s.onboarding_copy.progress });
+      reply.ok({ progress: s.onboarding_copy.progress });
     else throw Error("NoImport");
     return;
   }
   if (operation === 0n) throw Error("InvalidImport");
   const current = request.op === "onboarding.handoff" ? s.handoff_operation : s.onboarding_copy.operation;
   if (operation === current) {
-    client.queue({ ok: true });
+    reply.send({ ok: true });
     return;
   }
   admit(server, request.op);
@@ -101,8 +105,7 @@ export async function request(server: Server, client: Client, request: Request):
       herdr_session: request.payload.herdr_session as SourceSession | null,
     });
   else throw Error("UnknownOp");
-  s.remember(server);
-  client.queue({ ok: true });
+  reply.send({ ok: true });
 }
 export async function tick(server: Server): Promise<void> {
   const s = services.get(server);

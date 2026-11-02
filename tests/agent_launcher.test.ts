@@ -1,9 +1,10 @@
 /** Real viewer launch controls and read-only agent previews. */
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { registerCase, writeExecutable, shellJoin, quote, sleep, EXE, ROOT, JsonSocket } from "./support";
+import { registerCase, writeExecutable, shellJoin, quote, sleep, EXE, ROOT, JsonSocket, versioned } from "./support";
 import { Runtime, screen_text } from "./runtime";
 import { Viewer } from "./viewer_client";
+import { byProvider } from "../src/providers";
 
 function json(path: string): any {
   return JSON.parse(readFileSync(path, "utf8"));
@@ -36,6 +37,7 @@ class Launcher extends Runtime {
     this.env.CORGI_CLAUDE_BIN = join(root, "claude-metadata");
     this.env.CORGI_CLAUDE_TEST_LAUNCHES = join(root, "launches.jsonl");
     this.env.CORGI_INFERENCE_TEST_CONTROL = join(root, "inference-control.json");
+    this.env.CORGI_TEST_MODEL_LOG = join(root, "model-reads.log");
     writeFileSync(this.env.CORGI_INFERENCE_TEST_CONTROL, "{}");
     mkdirSync(join(this.env.CLAUDE_CONFIG_DIR!, "projects"), { recursive: true });
     writeFileSync(join(this.env.CLAUDE_CONFIG_DIR!, "metadata.json"), "{}");
@@ -93,22 +95,29 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
   async assertSelected(view: Viewer, label: string, cols = 120) {
     const rows = screen_text((await view.poll()).data, cols, 30);
     this.assertTrue(
-      rows.some(row => new RegExp("› +([0-9t→] +)?" + label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).test(row)),
+      rows.some(row =>
+        new RegExp("› +(?:≡ +)?([0-9t→] +)?(?:[†*§] +)?" + label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).test(row),
+      ),
       rows.join("\n"),
     );
   }
-  /** The last account or command named `name`, excluding new-account actions. */
+  /** The last account or command named `name`, excluding new-account actions:
+   * a row that starts at the card's left border with its handle or a +. */
   async managerLine(view: Viewer, name: string) {
     const rows = screen_text((await view.poll()).data, 120, 30),
-      y = rows.findLastIndex(row => row.includes(name) && /│[› ] [ +] /.test(row) && !row.includes("New "));
+      y = rows.findLastIndex(
+        row => row.includes(name) && /^│[› ] [≡+] /.test(row.slice(row.indexOf("│"))) && !row.includes("New "),
+      );
     this.assertGreaterEqual(y, 0, `missing ${name}`);
     return { rows, y };
   }
-  /** Deletes a row (defaults stay available), or restores an available row. */
+  /** Deletes a row, or adds back one Add agent offers under the agent on
+   * its strip that's open. */
   async managerRemoveOrRestore(view: Viewer, name: string) {
     const { rows, y } = await this.managerLine(view, name);
     await this.managerSelect(view, name);
-    if (/│[› ] \+ /.test(rows[y])) return view.input("\r");
+    if (rows.slice(0, y).some(row => row.includes("Add agent"))) return view.input("\r");
+    if (rows.slice(0, y).some(row => row.includes("Hidden ·"))) return view.input(" ");
     await view.input("\x7f");
     await view.advance(0.4);
     for (let i = 0; i < 30; i++) {
@@ -117,6 +126,14 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     }
     await view.advance(2);
   }
+  /** Opens `agent`'s accounts on Add agent's strip. */
+  async managerStrip(view: Viewer, agent: string) {
+    const rows = screen_text((await view.poll()).data, 120, 30),
+      y = rows.findIndex(row => row.includes("Custom command"));
+    this.assertGreaterEqual(y, 0, rows.join("\n"));
+    await this.clickViewer(view, rows[y].indexOf(agent) + 1, y + 1);
+    await view.advance(0.2);
+  }
   /** Selects `name`'s row: a click on the row that has it already opens it. */
   async managerSelect(view: Viewer, name: string) {
     const { rows, y } = await this.managerLine(view, name);
@@ -124,13 +141,12 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
   }
   /** Opens `name`'s row: a saved command's form. */
   async managerOpen(view: Viewer, name: string) {
-    const { rows, y } = await this.managerLine(view, name);
-    if (/│[› ] \+ /.test(rows[y])) await this.managerRemoveOrRestore(view, name);
     await this.managerSelect(view, name);
     await view.input("\r");
     await this.until(async () => !(await view.poll()).data.includes("Manage agents"));
   }
-  /** Opens the form for a new saved command, from Available to add's last row. */
+  /** Opens the form for a new saved command: Custom command on Add agent's
+   * strip, then again. */
   async newCommand(view: Viewer) {
     await this.clickText(view, "Custom command");
     await this.clickText(view, "Custom command");
@@ -150,12 +166,15 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     await this.managerOpen(view, "Codex");
     await view.advance(0.3);
     this.assertIn("Extra flags", (await view.poll()).data);
-    await view.input('local\r--model custom --label "two words"\r\rLAUNCH_TEST_VALUE\rtwo words = $literal\r');
+    await view.input(
+      'Codex / Astra 🤖 (work)\r\t--model custom --label "two words"\r\rLAUNCH_TEST_VALUE\rtwo words = $literal\r',
+    );
     this.assertIn("Edit agent", (await view.poll()).data);
     this.assertFalse(existsSync(this.launches), "editing must not start an agent");
     await view.input("\x1b[B\r");
     const file = join(this.env.XDG_STATE_HOME!, "corgi", "accounts.json");
     await this.until(() => existsSync(file) && json(file).launch?.some((a: any) => a.provider === "codex"));
+    this.assertEqual(json(file).defaults.codex, "Codex / Astra 🤖 (work)");
     this.assertEqual(json(file).launch, [
       {
         provider: "codex",
@@ -191,15 +210,74 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     const before = await box();
     await this.clickText(view, "Manage agents");
     this.assertEqual(await box(), before);
-    this.assertIn("Usage", (await view.poll()).data);
+    this.assertIn("Model", (await view.poll()).data);
     await this.clickText(view, "← New tab");
     this.assertEqual(await box(), before);
     this.assertIn("New terminal", (await view.poll()).data);
-    await view.input("m");
+    await view.input("\x1b[C");
     await view.advance(0.3);
     await view.input("\x1b[D");
     await view.advance(0.3);
     this.assertIn("New terminal", (await view.poll()).data);
+  }
+
+  async test_manager_prefetches_models_and_clones_reorder_hide_and_launch_with_their_model() {
+    const view = await Viewer.create(this, 120, 30);
+    await view.input("\x02A");
+    await this.clickText(view, "Manage agents");
+    const log = this.env.CORGI_TEST_MODEL_LOG!,
+      file = join(this.env.XDG_STATE_HOME!, "corgi", "agents.json");
+    // Merely entering the manager starts the catalog read.
+    await this.until(() => existsSync(log) && lines(log).length === 1);
+    await this.managerSelect(view, "Codex");
+    await view.input("m");
+    await this.until(async () => (await view.poll()).data.includes("Fixture Fast"));
+    await view.input("\x1b");
+    await view.input("m");
+    this.assertIn("Fixture Fast", (await view.poll()).data);
+    this.assertEqual(lines(log).length, 1);
+    await view.input("\x1b");
+    await view.input("c");
+    await view.advance(0.3);
+    this.assertIn("Clone agent", (await view.poll()).data);
+    this.assertFalse(existsSync(file));
+    await view.input("Reviewer\t\r");
+    await this.until(async () => (await view.poll()).data.includes("Fixture Fast"));
+    await view.input("\x1b[B\x1b[C\x1b[A\r\x13");
+    await this.until(() => existsSync(file) && json(file).length === 1);
+    const profile = json(file)[0],
+      row = "profile:" + profile.id;
+    this.assertEqual(profile.options.model, "fixture-fast");
+    this.assertEqual(profile.options.effort, "high");
+    this.assertFalse(existsSync(this.launches));
+    await view.advance(0.3);
+    await view.input("\x1b[1;2A");
+    await this.until(async () => (await this.session()).workspaces[0].launcher_order[0] === row);
+    const drag = async (destination: string) => {
+      const { rows, y } = await this.managerLine(view, "Reviewer"),
+        target = rows.findIndex(line => line.includes(destination)),
+        x = rows[y].indexOf("│") + 4;
+      this.assertGreaterEqual(target, 0);
+      await view.input(`\x1b[<0;${x};${y + 1}M\x1b[<32;${x};${target + 1}M\x1b[<0;${x};${target + 1}m`);
+    };
+    await drag("Hidden ·");
+    await this.until(async () => (await this.session()).workspaces[0].launcher_hidden.includes(row));
+    await drag("Active ·");
+    await this.until(async () => !(await this.session()).workspaces[0].launcher_hidden.includes(row));
+    await this.managerSelect(view, "Reviewer");
+    await view.input(" ");
+    await this.until(async () => (await this.session()).workspaces[0].launcher_hidden.includes(row));
+    const text = screen_text((await view.poll()).data, 120, 30);
+    this.assertTrue(
+      text.some(line => /│› ≡ † Codex/.test(line)),
+      text.join("\n"),
+    );
+    await this.rpc({ op: "server.reload", executable: EXE });
+    this.assertIn(row, (await this.session()).workspaces[0].launcher_hidden);
+    this.assertEqual((await this.session()).workspaces[0].launcher_order[0], row);
+    await this.command("agent.profile.create", { workspace: this.ws, id: profile.id, cwd: this.launchDir });
+    await this.until(() => existsSync(this.launches));
+    this.assertEqual(json(this.launches).args, ["--model", "fixture-fast", "-c", 'model_reasoning_effort="high"']);
   }
 
   async test_manage_remove_restore_edit_and_reload() {
@@ -207,12 +285,10 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     await view.input("\x02A");
     await this.clickText(view, "Manage agents");
     await this.managerRemoveOrRestore(view, "Codex");
-    this.assertEqual((await this.session()).agent_hidden, {
-      codex: true,
-      claude: false,
-      pi: false,
-      opencode2: false,
-    });
+    this.assertEqual(
+      (await this.session()).agent_hidden,
+      byProvider(p => p === "codex"),
+    );
     await this.newCommand(view);
     const source = "FOO=123 claude code --whatever 'two words' --prompt '" + "x".repeat(100) + "'\n";
     await view.input("\x1b[200~" + source + "\x1b[201~");
@@ -236,16 +312,16 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     await view.input("\x1b[200~" + changed + "\x1b[201~");
     await view.input("\r");
     await this.waitSaved(0, changed);
-    await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
-    this.assertEqual((await this.session()).agent_hidden, {
-      codex: true,
-      claude: false,
-      pi: false,
-      opencode2: false,
-    });
+    await this.rpc({ op: "server.reload", executable: EXE });
+    this.assertEqual(
+      (await this.session()).agent_hidden,
+      byProvider(p => p === "codex"),
+    );
     const entry = (await this.session()).agent_commands[0];
     this.assertEqual(entry.command, changed);
     this.assertFalse(entry.hidden);
+    // A removed default waits under its agent in Add agent.
+    await this.managerStrip(view, "Codex");
     await this.managerRemoveOrRestore(view, "Codex");
     this.assertFalse((await this.session()).agent_hidden.codex);
     await this.managerOpen(view, "Claude Code");
@@ -290,12 +366,12 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     const view = await Viewer.create(this, 120, 30);
     await view.input("\x02A");
     await this.clickText(view, "Manage agents");
-    await view.input("hold-test");
+    await view.input("/hold-test");
     await view.input("\x7f".repeat(20));
     this.assertEqual((await this.session()).agent_commands[0].command, "codex");
     this.assertNotIn("Hold ⌫ to remove", (await view.poll()).data);
     await view.input("hold-test\x1b[B");
-    this.assertTrue(screen_text((await view.poll()).data, 120, 30).some(row => /│› +hold-test/.test(row)));
+    this.assertTrue(screen_text((await view.poll()).data, 120, 30).some(row => /│› ≡ (?:\S )?hold-test/.test(row)));
     await view.input("\x7f");
     await view.advance(0.4);
     await view.input("\x7f");
@@ -312,12 +388,12 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     await this.until(async () => (await this.session()).agent_commands[0].command === "");
     await view.advance(2);
     const rows = screen_text((await view.poll()).data, 120, 30);
-    this.assertFalse(rows.some(row => /│[› ] [ +] hold-test/.test(row)));
+    this.assertFalse(rows.some(row => /│[› ] [≡+] (?:\S )?hold-test/.test(row)));
     const removed = (await this.session()).agent_commands[0];
     this.assertEqual(removed.name, "");
     this.assertEqual(removed.original, "");
     this.assertFalse(removed.hidden);
-    await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
+    await this.rpc({ op: "server.reload", executable: EXE });
     this.assertEqual((await this.session()).agent_commands[0].command, "");
   }
 
@@ -343,7 +419,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       await view.poll();
       return (await this.session()).agent_commands[0].name.startsWith("Renamed assistant");
     });
-    await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
+    await this.rpc({ op: "server.reload", executable: EXE });
     this.assertTrue((await this.session()).agent_commands[0].name.startsWith("Renamed assistant"));
   }
   async test_custom_agent_account_in_picker() {
@@ -378,7 +454,6 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       (
         await this.rpc({
           op: "agent.preview",
-          protocol: 3,
           workspace: ws,
           cwd: this.launchDir,
         })
@@ -401,7 +476,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     writeFileSync(auth, "{}");
     writeFileSync(control, JSON.stringify({ account: null }));
     const preview = async () =>
-      (await this.rpc({ op: "agent.preview", protocol: 3, workspace: this.ws, cwd: this.launchDir })).preview;
+      (await this.rpc({ op: "agent.preview", workspace: this.ws, cwd: this.launchDir })).preview;
     const first = await Viewer.create(this, 160, 30);
     await this.until(async () => !(await preview()).pending, 12);
     this.assertFalse((await preview()).options.codex.signed_in);
@@ -505,7 +580,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     });
     await this.until(async () => {
       const { rows, y } = await this.managerLine(view, "Claude Code");
-      return /│[› ] \+ /.test(rows[y]);
+      return rows.slice(0, y).some(row => row.includes("Hidden ·"));
     });
     await this.managerRemoveOrRestore(view, "Claude Code");
     this.assertEqual((await this.session()).agent_commands[0].command, entry.command);
@@ -615,7 +690,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     await this.clickViewer(other, 20, 15);
     await this.until(() => lines(this.launches).length === 2);
     this.assertEqual((await this.session()).last_agent, "claude");
-    await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
+    await this.rpc({ op: "server.reload", executable: EXE });
     this.assertEqual((await this.session()).last_agent, "claude");
     await this.clickViewer(other, 26, 15);
     await other.input("k\r");
@@ -628,40 +703,32 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     const rows = screen_text((await view.poll()).data, 120, 30);
     const y = rows.findIndex(row => row.includes("Codex"));
     await this.clickViewer(view, rows[y].indexOf("·") + 1, y + 1);
-    this.assertEqual((await this.session()).agent_yolo, {
-      codex: true,
-      claude: false,
-      pi: false,
-      opencode2: false,
-    });
+    this.assertEqual(
+      (await this.session()).agent_yolo,
+      byProvider(p => p === "codex"),
+    );
     this.assertEqual((await this.session()).panes.length, 1);
     this.assertIn("New agent", (await view.poll()).data);
     await view.input("j");
     await view.input("y");
-    this.assertEqual((await this.session()).agent_yolo, {
-      codex: true,
-      claude: true,
-      pi: false,
-      opencode2: false,
-    });
+    this.assertEqual(
+      (await this.session()).agent_yolo,
+      byProvider(p => p === "codex" || p === "claude"),
+    );
     await view.input("y");
-    this.assertEqual((await this.session()).agent_yolo, {
-      codex: true,
-      claude: false,
-      pi: false,
-      opencode2: false,
-    });
+    this.assertEqual(
+      (await this.session()).agent_yolo,
+      byProvider(p => p === "codex"),
+    );
     await view.input("k");
     await view.input("a");
     await this.until(() => existsSync(this.launches));
     this.assertIn("--dangerously-bypass-approvals-and-sandbox", JSON.parse(lines(this.launches)[0]).args);
-    await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
-    this.assertEqual((await this.session()).agent_yolo, {
-      codex: true,
-      claude: false,
-      pi: false,
-      opencode2: false,
-    });
+    await this.rpc({ op: "server.reload", executable: EXE });
+    this.assertEqual(
+      (await this.session()).agent_yolo,
+      byProvider(p => p === "codex"),
+    );
     await this.command("agent.yolo", { provider: "claude", enabled: true });
     await this.command("agent.create", {
       workspace: this.ws,
@@ -693,12 +760,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
   async test_subscription_pushes_updates_and_survives_idle_reload() {
     const client = await JsonSocket.connect(this.path);
     try {
-      client.send({
-        op: "agent.subscribe",
-        protocol: 3,
-        workspace: this.ws,
-        cwd: this.launchDir,
-      });
+      client.send(versioned({ op: "agent.subscribe", workspace: this.ws, cwd: this.launchDir }));
       let initial = await client.read(12000);
       this.assertEqual(initial.type, "agent.preview");
       while (initial.preview.pending) initial = await client.read(12000);
@@ -708,7 +770,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       const settings = join(this.launchDir, ".claude/settings.json");
       mkdirSync(join(this.launchDir, ".claude"));
       writeFileSync(settings, JSON.stringify({ model: "sonnet" }));
-      await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
+      await this.rpc({ op: "server.reload", executable: EXE });
       let update = await client.read(12000);
       while (update.preview.pending) {
         this.assertEqual(
@@ -720,12 +782,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       this.assertEqual(update.preview.options.claude.model, "sonnet");
       const other = join(this.temp.name, "other");
       mkdirSync(other);
-      client.send({
-        op: "agent.subscribe",
-        protocol: 3,
-        workspace: this.ws,
-        cwd: other,
-      });
+      client.send(versioned({ op: "agent.subscribe", workspace: this.ws, cwd: other }));
       update = await client.read(12000);
       while (update.preview.pending) update = await client.read(12000);
       this.assertEqual(update.cwd, other);
@@ -751,7 +808,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     writeFileSync(join(this.env.XDG_STATE_HOME!, "corgi", "accounts.json"), JSON.stringify({ accounts: saved }));
     const client = await JsonSocket.connect(this.path);
     try {
-      client.send({ op: "agent.subscribe", protocol: 3, workspace: this.ws, cwd: this.launchDir });
+      client.send(versioned({ op: "agent.subscribe", workspace: this.ws, cwd: this.launchDir }));
       let message = await client.read(12000);
       this.assertEqual(
         message.preview.accounts.map((a: any) => a.name),
@@ -774,17 +831,18 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
         return [rows[y].indexOf("╭"), y, rows[y].indexOf("╮"), bottom];
       };
       const pickerBounds = frame(shown);
-      this.assertIn("Claude Code · slow", shown);
-      this.assertIn("Claude Code · fast", shown);
+      // Each account reads by its name beside Claude's mark.
+      this.assertIn("* slow ", shown);
+      this.assertIn("* fast ", shown);
       await this.clickText(view, "Manage agents", 160);
       const managed = screen_text((await view.poll()).data, 160, 30).join("\n");
-      this.assertIn("Claude Code · slow", managed);
-      this.assertIn("Claude Code · fast", managed);
+      this.assertIn("* slow ", managed);
+      this.assertIn("* fast ", managed);
       this.assertIn("fast@example.com", managed);
       const managerBounds = frame(managed);
       await this.until(async () => {
         const lines = screen_text((await view.poll()).data, 160, 30);
-        return lines.some(line => line.includes("Claude Code · slow") && !line.includes("Reading"));
+        return lines.some(line => line.includes("* slow ") && !line.includes("Reading"));
       }, 12);
       this.assertEqual(frame(screen_text((await view.poll()).data, 160, 30).join("\n")), managerBounds);
       await this.clickText(view, "← New tab", 160);
@@ -909,8 +967,8 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     const view = await Viewer.create(this, 120, 30);
     await view.input("\x02A");
     let rows = screen_text((await view.poll()).data, 120, 30);
-    this.assertTrue(rows.some(row => /0 +Codex/.test(row)));
-    this.assertTrue(rows.some(row => /1 +Claude Code/.test(row)));
+    this.assertTrue(rows.some(row => /0 +† +Codex/.test(row)));
+    this.assertTrue(rows.some(row => /1 +\* +Claude Code/.test(row)));
     this.assertTrue(rows.some(row => /t +New terminal/.test(row)));
     let before = (await this.session()).panes.length;
     await view.input("1");
@@ -927,7 +985,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     });
     await view.input("\x02A");
     rows = screen_text((await view.poll()).data, 120, 30);
-    this.assertTrue(rows.some(row => /0 +Claude Code/.test(row)));
+    this.assertTrue(rows.some(row => /0 +\* +Claude Code/.test(row)));
     this.assertTrue(rows.some(row => /1 +Custom sleeper/.test(row)));
     before = (await this.session()).panes.length;
     await view.input("9");
@@ -1071,8 +1129,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
   async directoryPreview(name: string, provider: "codex" | "claude" = "claude") {
     const directory = join(this.temp.name, name);
     mkdirSync(directory, { recursive: true });
-    const preview = async () =>
-      (await this.rpc({ op: "agent.preview", protocol: 3, workspace: this.ws, cwd: directory })).preview;
+    const preview = async () => (await this.rpc({ op: "agent.preview", workspace: this.ws, cwd: directory })).preview;
     await this.until(async () => !(await preview()).pending, 12);
     return (await preview()).options[provider];
   }
@@ -1084,7 +1141,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
   async askUsage() {
     const directory = join(this.temp.name, "asked");
     mkdirSync(directory, { recursive: true });
-    await this.rpc({ op: "agent.track_usage", protocol: 3, workspace: this.ws, cwd: directory });
+    await this.rpc({ op: "agent.track_usage", workspace: this.ws, cwd: directory });
   }
   async test_claude_control_usage_reuses_process_and_cache_without_credentials() {
     // A stale credential file must not override Claude's own auth status.
@@ -1105,7 +1162,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     const requests = this.metadataRequests().filter(r => r.kind === "get_usage");
     this.assertEqual(requests.length, 2);
     this.assertEqual(requests[0].pid, requests[1].pid);
-    await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
+    await this.rpc({ op: "server.reload", executable: EXE });
     await this.directoryPreview("after-reload");
     this.assertEqual(this.metadataRequests().filter(r => r.kind === "get_usage").length, 2);
     this.assertFalse(existsSync(this.launches));
@@ -1156,7 +1213,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     this.assertEqual(first.spend.limit_minor, 1000000);
     const reset = new Date(first.spend.reset_at * 1000);
     this.assertEqual([reset.getUTCDate(), reset.getUTCHours(), reset.getUTCMinutes()], [1, 0, 0]);
-    await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
+    await this.rpc({ op: "server.reload", executable: EXE });
     const restored = await this.directoryPreview("enterprise-reloaded");
     this.assertEqual(restored.spend, first.spend);
     this.assertEqual(this.metadataRequests().filter(r => r.kind === "get_usage").length, 1);
@@ -1201,7 +1258,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
       join(this.env.CLAUDE_CONFIG_DIR!, "metadata.json"),
       JSON.stringify({ email: "other@example.com", mode: "malformed" }),
     );
-    await this.rpc({ op: "server.reload", protocol: 1, executable: EXE });
+    await this.rpc({ op: "server.reload", executable: EXE });
     const other = await this.directoryPreview("other");
     this.assertTrue(other.signed_in);
     this.assertEqual(other.account, "other@example.com");
@@ -1364,7 +1421,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     this.assertEqual((await this.session()).inference.choice, "claude");
     this.assertFalse((await this.session()).inference.uses.activity);
   }
-  async test_launcher_resumes_a_closed_conversation_in_its_folder() {
+  async test_launcher_marks_a_starred_history_entry_and_keeps_its_star_when_resumed() {
     const view = await Viewer.create(this, 120, 30);
     // Written while Corgi runs: the daemon notices it without being asked.
     const session = "4f1c2b9e-0a6d-4c1e-9b7f-2d3e4f5a6b7c";
@@ -1385,10 +1442,26 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
         prompt("does it work on linux?"),
       ].join("\n") + "\n",
     );
+    const source = (await this.session()).panes.at(-1).id;
+    await this.rpc({
+      op: "hook",
+      pane: source,
+      provider: "claude",
+      seq: 1,
+      event: {
+        hook_event_name: "SessionStart",
+        session_id: session,
+        transcript_path: join(project, session + ".jsonl"),
+      },
+    });
+    await this.command("agent.pin", { workspace: this.ws, target: { pane: source }, pinned: true });
+    await this.command("pane.close", { target: source });
     // The newest closed conversations sit under the agents.
     await this.until(async () => {
       const rows = screen_text((await view.input("\x02A")).data, 120, 30);
-      const shown = rows.some(row => row.includes("Sidebar flicker fixture") && row.includes("does it work on linux?"));
+      const shown = rows.some(
+        row => row.includes("★ Sidebar flicker fixture") && row.includes("does it work on linux?"),
+      );
       if (!shown) await view.input("\x1b");
       return shown;
     }, 20);
@@ -1400,6 +1473,14 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     this.assertEqual(launch.args, ["--resume", session]);
     this.assertEqual(realpathSync(launch.cwd), this.launchDir);
     this.assertNotIn("New agent", (await view.poll()).data);
+    const snapshot = await this.session(),
+      resumed = snapshot.panes.find((pane: any) => pane.agent.session === session);
+    this.assertTrue(!!resumed);
+    this.assertTrue(
+      snapshot.workspaces
+        .find((workspace: any) => workspace.id === this.ws)
+        .pinned_agents.some((target: any) => target.pane === resumed.id),
+    );
   }
   resume(session: string) {
     return this.command("agent.resume", {
@@ -1457,7 +1538,6 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
       (
         await this.rpc({
           op: "agent.preview",
-          protocol: 3,
           workspace: this.ws,
           cwd: project,
         })

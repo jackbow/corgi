@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import * as i18n from "./i18n";
+import { Terminal } from "./pane/terminal";
 import { Menu, items, status, type Hit } from "./corgi_setup";
 import { Menu as LauncherMenu, preferred_width, preview } from "./agent_launcher";
 import { Rect } from "./layout";
@@ -147,9 +149,9 @@ test("setup keeps its options while aiming diagonally across list rows and gaps"
   expect(await menu.poll(no_setup_rpc, 100, 30, 2000)).toBe(false);
   expect(menu.item).toBe("clever_corgi");
   // Up and to the right, toward Keymap's options, crosses Shell.
-  hover(25, 9, 2100);
+  hover(25, 10, 2100);
   expect(menu.item).toBe("keyboard");
-  hover(30, 8, 2200);
+  hover(30, 9, 2200);
   expect(menu.item).toBe("keyboard");
   hover(36, 7, 2300);
   expect(menu.item).toBe("keyboard");
@@ -279,8 +281,8 @@ test("setup aims only at the options a click acts on", () => {
   }
   // Terminal capabilities has nothing to click, so nothing guards it.
   const menu = Menu.open();
-  menu.hover(100, 30, 15, 14, s, prefs, 0);
-  menu.hover(100, 30, 22, 10, s, prefs, 100);
+  menu.hover(100, 30, 15, 15, s, prefs, 0);
+  menu.hover(100, 30, 22, 11, s, prefs, 100);
   expect(menu.item).toBe("source_control");
 });
 
@@ -397,10 +399,49 @@ test("the top border says when the build was made and links its commit", () => {
   expect(rows.join("\n")).not.toContain("be82c7b");
 });
 
+test("translated setup titles and chart labels leave their borders intact", () => {
+  const previous = i18n.language();
+  try {
+    for (const language of i18n.locales) {
+      i18n.setLanguage(language);
+      const menu = Menu.open(),
+        s = status(),
+        prefs = new Preferences();
+      menu.openOptions(s, prefs);
+      const narrow = new Terminal(50, 30),
+        chart = new Terminal(80, 40);
+      try {
+        let w = new Writer();
+        menu.drawAt(w, s, prefs, 50, 30, 0);
+        narrow.feed(w.s);
+        expect(narrow.text()).toContain(`${i18n.t`Corgi setup`} › ${i18n.t`Clever Corgi`}`);
+        menu.item = "terminal";
+        menu.pacing = new Pacer();
+        menu.pacing.stamp(1000);
+        menu.pacing.answered(1024);
+        w = new Writer();
+        menu.drawAt(w, s, prefs, 80, 40, 0);
+        chart.feed(w.s);
+        const axis = chart
+          .text()
+          .split("\n")
+          .find(row => row.includes("└─"))!;
+        expect(axis).toContain(i18n.t` now`);
+        expect(axis.slice(axis.indexOf(i18n.t` now`) + i18n.t` now`.length)).toMatch(/^\s*│\s*$/);
+      } finally {
+        narrow.destroy();
+        chart.destroy();
+      }
+    }
+  } finally {
+    i18n.setLanguage(previous);
+  }
+});
+
 test("Model opens a dropdown on the choice in use, and Left closes it", () => {
   const menu = Menu.open(),
     prefs = new Preferences(),
-    s = status({ choice: "opencode2" });
+    s = status({ choice: "omp" });
   expect(menu.enter(s, prefs)).toBeNull();
   expect(menu.focus).toBe("options");
   expect(menu.cursor).toBe(0);
@@ -961,6 +1002,7 @@ test("cached models stay visible while refreshing with only a quiet heading indi
       available: [
         { provider: "pi", model: "custom/cached", name: "Cached model", account: "", ready: true },
         { provider: "opencode2", model: "custom/old", name: "Older model", account: "", ready: false },
+        { provider: "omp", model: "custom/omp", name: "omp model", account: "", ready: true },
       ],
     });
   menu.enter(s, prefs);
@@ -970,6 +1012,7 @@ test("cached models stay visible while refreshing with only a quiet heading indi
   text = draw(menu, 100, 40, 0, s, prefs).join("\n");
   expect(text).toMatch(/Pi\s+1 model ◌/);
   expect(text).toMatch(/OpenCode\s+1 model ◌/);
+  expect(text).toMatch(/omp\s+1 model ◌/);
   expect(text).toContain("Cached model");
   expect(text).toContain("Older model");
   expect(text).not.toContain("Fetching models");
@@ -1168,8 +1211,8 @@ test("Command keys turn on and off under the keymap", () => {
   expect(text).toMatch(/New tab +⌘T/);
   expect(text).toMatch(/Select tab +⌘1–9/);
   // Where Ghostty isn't local, the cursor passes the switch by.
-  // The presets, Prefix, then All keys; cmux is a preset only on macOS.
-  const all_keys = km.available_presets.length + 1;
+  // The presets, Prefix, Customize, then All keys; cmux is macOS-only.
+  const all_keys = km.available_presets.length + 2;
   menu.openOptions(s, prefs);
   for (let i = 0; i < 10; i++) menu.move(true, s, prefs, false);
   expect(menu.cursor).toBe(all_keys);
@@ -1186,6 +1229,27 @@ test("Command keys turn on and off under the keymap", () => {
   expect(text).not.toContain("Reload Ghostty");
   menu.reload_ghostty = true;
   expect(draw(menu, 100, 30, 0, s, prefs).join("\n")).toContain("Reload Ghostty with ⌘⇧, to apply.");
+});
+
+test("Command keys omit unbound actions and show customized cmux keys", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status();
+  menu.item = "keyboard";
+  menu.integration = "enabled";
+  prefs.keys = { new: [] };
+  let text = draw(menu, 100, 30, 0, s, prefs).join("\n");
+  expect(text).not.toMatch(/New tab +⌘T/);
+  expect(text).toMatch(/Close tab +⌘W/);
+  prefs.keys = { tab: "prefix+1..2" };
+  text = draw(menu, 100, 30, 0, s, prefs).join("\n");
+  expect(text).toMatch(/Select tab +⌘1–2/);
+  expect(text).not.toMatch(/Select tab +⌘1–9/);
+  prefs.preset = "cmux";
+  prefs.keys = { new: "cmd+f1" };
+  text = draw(menu, 100, 30, 0, s, prefs).join("\n");
+  expect(text).toMatch(/New tab +⌘F1/);
+  expect(text).not.toMatch(/New tab +⌘T/);
 });
 
 test("visual flourishes preview working and idle corgis with a keyboard slider", () => {
@@ -1275,6 +1339,22 @@ test("the theme under the cursor previews until Enter keeps it", () => {
   expect(menu.previewTheme(prefs)).toBe("animal_style");
 });
 
+test("language choices return stable locale codes and can follow the system", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status();
+  menu.item = "language";
+  menu.enter(s, prefs);
+  expect(menu.enter(s, prefs)).toBeNull();
+  menu.move(true, s, prefs);
+  expect(menu.enter(s, prefs)).toEqual({ kind: "language", language: "en" });
+  menu.move(true, s, prefs);
+  expect(menu.enter(s, prefs)).toEqual({ kind: "language", language: "zh" });
+  prefs.language = "zh";
+  menu.cursor = 0;
+  expect(menu.enter(s, prefs)).toEqual({ kind: "language", language: undefined });
+});
+
 test("terminal capabilities report what the terminal can do, not settings", () => {
   const menu = Menu.open(),
     prefs = new Preferences(),
@@ -1322,7 +1402,7 @@ test("frame pacing charts how fast the host answers, in one row on a short frame
   const rows = text.split("\n").filter(row => row.includes("┤"));
   expect(rows.map(row => row.split("┤")[0].split("│").at(-1)!.trim())).toEqual([
     "1 s",
-    "hold",
+    "wait",
     "100 ms",
     "",
     "10 ms",
@@ -1389,7 +1469,7 @@ test("shortcuts grow the frame into onboarding's preset detail", () => {
   menu.move(true, s, prefs);
   text = draw(menu, 140, 36, 2100, s, prefs).join("\n");
   expect(text).toContain("% Right");
-  expect(text).toContain("○ tmux       Classic splits");
+  expect(text).toMatch(/○ tmux +Classic splits/);
   expect(menu.enter(s, prefs)).toEqual({ kind: "preset", preset: "tmux" });
   // Clicks land on the grown frame's options.
   expect(hits(menu, 140, 36, s, prefs).filter(hit => "item" in hit)).toEqual([]);
@@ -1621,19 +1701,21 @@ test("Manage agents shares the launcher's view inside wide and narrow settings",
       prefs = new Preferences(),
       launch = new LauncherMenu();
     launch.managing = true;
-    launch.manager.back_label = "Settings";
+    launch.manager.back = "settings";
     menu.agents = launch;
     menu.item = "agents";
     expect(menu.openOptions(s, prefs)).toBe(true);
     expect(menu.managing()).toBe(true);
     let rows = draw(menu, cols, 24);
     expect(rows.join("\n")).toContain("Search");
-    expect(rows.join("\n")).toContain("Available to add");
+    expect(rows.join("\n")).toContain("Active ·");
+    expect(rows.join("\n")).toContain("Hidden ·");
     expect(rows.join("\n")).not.toContain("New tab");
     const searchY = rows.findIndex(row => row.includes("Search")),
       searchX = rows[searchY].indexOf("Search"),
       hit = menu.hit(cols, 24, searchX, searchY, s, prefs);
     expect(hit).toHaveProperty("manager");
+    launch.manager.key(47, launch.manageModel());
     for (const ch of "custom") menu.paste(ch.charCodeAt(0));
     expect(launch.manager.query.name()).toBe("custom");
     launch.manager.key(9, launch.manageModel());
@@ -1671,7 +1753,7 @@ test("Manage agents expands and returns with Keymap's easing, keeping visible po
   const y = middle.findIndex(row => row.includes("Search")),
     x = middle[y].indexOf("Search");
   const hit = menu.hit(160, 36, x, y, s, prefs);
-  expect(hit && "manager" in hit ? hit.manager.x + 3 : null).toBe(x);
+  expect(hit && "manager" in hit ? hit.manager.x + 7 : null).toBe(x);
   expect(width(draw(menu, 160, 36, 1280))).toBe(preferred_width + 2);
   menu.back();
   expect(width(draw(menu, 160, 36, 1300))).toBe(preferred_width + 2);
@@ -1738,10 +1820,11 @@ test("expanded settings and the popup render the same account rows and usage bar
   const w = new Writer();
   launch.manager.draw(w, new Rect(0, 0, preferred_width, 30), launch.manageModel());
   const popup = screen(w.s, 180, 36);
+  // Claude's accounts, by the mark each wears.
   const accountRows = (rows: string[]) =>
     rows
-      .filter(row => row.includes("Claude Code") && row.includes("@"))
-      .map(row => row.slice(row.indexOf("Claude Code")).replace(/[│ ]+$/, ""));
+      .filter(row => row.includes("≡ * ") && row.includes("@"))
+      .map(row => row.slice(row.indexOf("≡ * ")).replace(/[│ ]+$/, ""));
   expect(accountRows(expanded)).toEqual(accountRows(popup));
   expect(accountRows(expanded)).toHaveLength(2);
   for (const row of accountRows(expanded)) expect(row).toContain("━");
@@ -1810,4 +1893,14 @@ test("Report a bug shows what the issue will say, and opens it, or copies its li
   const attach = draw(menu, 100, 30, 0, s, prefs).join("\n");
   expect(attach).toContain("Please attach /tmp/full_bug_report.txt,");
   expect(attach).toContain("Corgi runs on.");
+});
+test("a setup choice or provider the viewer doesn't know reads as auto and none", () => {
+  expect([status({ choice: "future", provider: "future" }).choice, status({ provider: "future" }).provider]).toEqual([
+    "auto",
+    null,
+  ]);
+  expect([status({ choice: "off" }).choice, status({ choice: "codex", provider: "codex" }).provider]).toEqual([
+    "off",
+    "codex",
+  ]);
 });

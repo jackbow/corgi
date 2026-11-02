@@ -3,8 +3,10 @@ import { readdirSync } from "node:fs";
 import { Agent, Provider, Text, type State } from "./agents";
 import type { PaneMemory, PromptMemory } from "./providers/adapter";
 import { n, ptr, processArgs } from "./native_bridge";
-import { processJob, processPath, processTree } from "./os";
+import { adapter } from "./providers";
+import { processGroup, processJob, processPath, processTree } from "./os";
 import * as processName from "./process_name";
+import { getLogger } from "./log";
 export type Job = { pid: number; provider: Provider };
 /** A local bridge owns the identity; the provider itself may run elsewhere. */
 export type Claim = { provider: Provider; owner: number; parent: number };
@@ -17,6 +19,14 @@ export function claimAlive(claim: Claim): boolean {
   return processJob(claim.owner)?.ppid === claim.parent;
 }
 export const process_buffer = 1024 * 1024;
+const log = getLogger("detection");
+/** Tells the native layer every provider's programs, so a terminal knows the
+ * agent in front of it when its title changes. */
+export function configureNative() {
+  const table = Buffer.from(JSON.stringify(Provider.all.map(p => adapter(p).programs)));
+  // Titles then follow no agent, which is no reason to stop the daemon.
+  if (n.detection_configure(ptr(table), table.length) !== 0) log.warn("native detection refused the provider programs");
+}
 export function identify(argv: string[]): Provider | null {
   return locate(argv)?.provider ?? null;
 }
@@ -177,14 +187,14 @@ export function foreground(fd: number): Foreground | null {
  * with getpgid across the host where the kernel can't list children. */
 function groupMembers(pgid: number, roots: number[]): number[] | null {
   const tree = processTree(roots);
-  if (tree) return tree.filter(pid => processJob(pid)?.pgid === pgid).sort((a, b) => a - b);
+  if (tree) return tree.filter(pid => processGroup(pid) === pgid).sort((a, b) => a - b);
   const pids = new Int32Array(4096);
   const count = n.probe_group_pids(pgid, ptr(pids), pids.length);
   if (count < 0 || count === pids.length) return null;
   return [...pids.subarray(0, count)];
 }
 
-export function foregrounds(terminals: { fd: number; pid: number }[]) {
+export function foregrounds(terminals: { fd: number; pid: number; agent?: number }[]) {
   const result = new Map<number, Foreground | null>();
   if (process.platform === "darwin") {
     for (const { fd } of terminals) result.set(fd, foreground(fd));
@@ -193,7 +203,7 @@ export function foregrounds(terminals: { fd: number; pid: number }[]) {
   // Terminals with one foreground group share its reading.
   const fronts = new Map<number, Foreground>(),
     groups = new Map<number, number[]>();
-  for (const { fd, pid } of terminals) {
+  for (const { fd, pid, agent } of terminals) {
     const pgid = n.probe_foreground(fd);
     if (pgid <= 0) {
       result.set(fd, null);
@@ -203,7 +213,9 @@ export function foregrounds(terminals: { fd: number; pid: number }[]) {
     if (!front) {
       front = { pgid, program: null, job: null };
       fronts.set(pgid, front);
-      if (!inspect(front, pgid)) groups.set(pgid, []);
+      inspect(front, pgid);
+      if (!front.job && agent && agent !== pgid && processGroup(agent) === pgid) inspect(front, agent);
+      if (!front.job) groups.set(pgid, []);
     }
     result.set(fd, front);
     groups.get(pgid)?.push(pid);

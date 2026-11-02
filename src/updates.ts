@@ -19,9 +19,17 @@ import * as rpc from "./rpc";
 import { path as recoveryPath } from "./persist/recovery";
 import { testBuild } from "./build_assets";
 import * as config from "./build_config";
+import * as errors from "./errors";
 import * as json from "./json";
+import type { Failure } from "./state_report";
 export const abi = "1-a826bd22ebcdbe60";
-export const platform = process.platform === "darwin" ? "macos-aarch64" : "linux-x86_64";
+const platforms = ["macos-aarch64", "linux-x86_64", "linux-aarch64"] as const;
+type Platform = (typeof platforms)[number];
+export const platform: Platform =
+  process.platform === "darwin" ? "macos-aarch64" : process.arch === "arm64" ? "linux-aarch64" : "linux-x86_64";
+const parsePlatform = (name: string): Platform | null => platforms.find(p => p === name) ?? null;
+// Releases from before Linux arm64 reject a manifest naming a target they don't know, so it has its own channel.
+const channel = platform === "linux-aarch64" ? "stable-linux-aarch64" : "stable";
 export type Release = { version: string; commit: string; feed_url: string; public_key: string; test_mode: boolean };
 type Target = { url: string; sha256: string; size: number };
 type Manifest = {
@@ -29,8 +37,10 @@ type Manifest = {
   version: string;
   commit: string;
   update_abi: string;
-  targets: Record<string, Target>;
+  targets: Partial<Record<Platform, Target>>;
 };
+// parse() rejects a manifest without this platform's target.
+const own = (m: Manifest) => m.targets[platform]!;
 export function release(exe: string): Release {
   const r = {
     version: config.releaseVersion,
@@ -135,9 +145,11 @@ export function parse(rel: Release, bytes: string): Manifest {
   const m = record(json.parse(envelope.payload), ["schema_version", "version", "commit", "update_abi", "targets"]);
   integer(m, "schema_version", 32);
   for (const field of ["version", "commit", "update_abi"]) string(m, field);
-  const targets = record(m.targets, ["macos-aarch64", "linux-x86_64"]);
-  for (const platform of ["macos-aarch64", "linux-x86_64"]) {
-    const target = record(targets[platform], ["url", "sha256", "size"]);
+  const targets = record(m.targets, null);
+  for (const key of Object.keys(targets)) if (parsePlatform(key) === null) throw Error("UnknownField");
+  if (!Object.hasOwn(targets, platform)) throw Error("MissingField");
+  for (const key of Object.keys(targets)) {
+    const target = record(targets[key], ["url", "sha256", "size"]);
     string(target, "url");
     string(target, "sha256");
     integer(target, "size", 64);
@@ -157,8 +169,9 @@ export function parse(rel: Release, bytes: string): Manifest {
   secure(rel, t.url);
   return m as Manifest;
 }
-function record(value: unknown, fields: string[]): Record<string, any> {
+function record(value: unknown, fields: string[] | null): Record<string, any> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw Error("UnexpectedToken");
+  if (!fields) return value as Record<string, any>;
   for (const key of Object.keys(value)) if (!fields.includes(key)) throw Error("UnknownField");
   for (const key of fields) if (!Object.hasOwn(value, key)) throw Error("MissingField");
   return value as Record<string, any>;
@@ -214,7 +227,7 @@ async function feed(rel: Release, root: string, download: boolean, explicit: boo
   const unlock = await lock(root, "download.lock", explicit);
   if (!unlock) return;
   try {
-    const bytes = (await fetchBytes(rel, `${rel.feed_url}/channels/stable.json`, 1024 * 1024)).toString(),
+    const bytes = (await fetchBytes(rel, `${rel.feed_url}/channels/${channel}.json`, 1024 * 1024)).toString(),
       m = parse(rel, bytes),
       current = read(root, "current");
     if (!current) throw Error("MissingInstalledVersion");
@@ -230,12 +243,12 @@ async function feed(rel: Release, root: string, download: boolean, explicit: boo
       dir = dirname(dest);
     privateDirectory(dir);
     try {
-      verifyFile(dest, m.targets[platform]);
+      verifyFile(dest, own(m));
     } catch {
       const partial = join(dir, "download.tmp");
       try {
-        atomicWrite(partial, await fetchBytes(rel, m.targets[platform].url, m.targets[platform].size), 0o700);
-        verifyFile(partial, m.targets[platform]);
+        atomicWrite(partial, await fetchBytes(rel, own(m).url, own(m).size), 0o700);
+        verifyFile(partial, own(m));
         if (existsSync(dest)) throw Error("ExistingReleaseDiffers");
         renameSync(partial, dest);
       } finally {
@@ -274,7 +287,7 @@ function recordError(root: string, error: unknown) {
 async function activate(root: string, socket: string, v: string, target: string, live: boolean) {
   if (live)
     try {
-      await rpc.request(socket, "server.reload", { executable: target });
+      await rpc.reload(socket, target);
     } catch (error) {
       if ((await hello(socket))?.executable !== target) throw error;
     }
@@ -291,9 +304,128 @@ async function activate(root: string, socket: string, v: string, target: string,
   if (!h) throw Error("UpdateRuntimeNotReady");
   if (h.executable !== target) throw Error("UpdateRuntimeChanged");
   switchCurrent(root, v);
+  remove(root, "check-failed");
+}
+/** Whether a person can answer at this terminal; a viewer in a Corgi pane would block its own runtime. */
+const interactive = () => !!process.stdin.isTTY && !!process.stderr.isTTY && process.env.CORGI_PANE === undefined;
+/** How long a release that turned down the state waits before it's tried again. */
+const recheck_ms = 3600000;
+/** Has the runtime that said `h` save its session, in the runtime protocol
+ * it advertised: one from another release may speak another. */
+export async function save(socket: string, h: { protocol?: number }) {
+  // Untagged: a runtime before protocol 4 answers without the request id.
+  const conn = new rpc.Connection(socket, { requestIds: false });
+  try {
+    const reply: any = await conn.rawRequest({ op: "recovery.save", protocol: h.protocol });
+    if (reply && "err" in reply) throw Error(reply.err);
+  } finally {
+    conn.close();
+  }
+}
+const check_ms = 30000;
+/** Has `target` load the state it would be handed, saved fresh when a
+ * runtime runs. Only a release without the check is let through; one that
+ * crashes, takes too long or answers something else has failed it. */
+export async function check(
+  socket: string,
+  target: string,
+  h: { protocol?: number } | null,
+  limit_ms = check_ms,
+): Promise<Failure | null> {
+  if (h)
+    try {
+      await save(socket, h);
+    } catch {
+      // The runtime saves on its own too; the check reads the last of those.
+    }
+  let timed_out = false;
+  const p = Bun.spawn([target, "__update-check", socket, recoveryPath(socket)], {
+      env: { ...process.env, CORGI_APP_EXE: target },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    }),
+    timer = setTimeout(() => {
+      timed_out = true;
+      p.kill("SIGKILL");
+    }, limit_ms);
+  try {
+    const [out, err, code] = await Promise.all([
+      new Response(p.stdout).text(),
+      new Response(p.stderr).text(),
+      p.exited,
+    ]);
+    const report = await import("./state_report");
+    if (timed_out)
+      return report.failure({ error: "CheckTimedOut", why: `the check didn't finish in ${limit_ms / 1000}s` });
+    let result: any = null;
+    try {
+      result = json.parse(out.trim().split("\n").at(-1) ?? "");
+    } catch {}
+    if (result?.ok === true && code === 0) return null;
+    if (result?.ok === false) return report.failure(result);
+    // Releases without this command report it only through stderr.
+    if (
+      code !== 0 &&
+      /^(?:corgi: UnknownCommand|corgi: unknown command __update-check; see corgi --help)\r?$/m.test(err)
+    )
+      return null;
+    return report.failure({
+      error: "CheckFailed",
+      why:
+        code === 0
+          ? "the check answered something other than a result"
+          : `the check exited with status ${code}, without a result`,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+type Turned = { version: string; at: number; shown: boolean };
+function turnedDown(root: string): Turned | null {
+  try {
+    const v = json.parse(read(root, "check-failed") ?? "");
+    return typeof v?.version === "string" && typeof v.at === "number" ? { ...v, shown: v.shown === true } : null;
+  } catch {
+    return null;
+  }
+}
+/** Whether `candidate` may take over the runtime that said `h`: it loads the
+ * saved state, or it hasn't been an hour since it couldn't. A failure is
+ * shown once per release; the record of it goes only once the release takes over. */
+async function vetted(
+  root: string,
+  socket: string,
+  current: string,
+  candidate: string,
+  target: string,
+  h: { protocol?: number } | null,
+  explicit: boolean,
+) {
+  const last = turnedDown(root);
+  if (last?.version === candidate && !explicit && Date.now() - last.at < recheck_ms) return false;
+  const failure = await check(socket, target, h);
+  if (!failure) return true;
+  await refuse(root, current, candidate, failure, !!h, explicit);
+  return false;
+}
+async function refuse(
+  root: string,
+  current: string,
+  candidate: string,
+  failure: Failure,
+  running: boolean,
+  explicit: boolean,
+) {
+  recordError(root, Error("UpdateCheckFailed"));
+  const last = turnedDown(root),
+    shown = last?.version === candidate && last.shown,
+    show = (explicit || !shown) && interactive();
+  write(root, "check-failed", json.stringify({ version: candidate, at: Date.now(), shown: shown || show }));
+  if (show) await (await import("./state_report")).show({ kind: "turned_down", current, candidate, running }, failure);
 }
 async function confirmRestart(socket: string): Promise<boolean | null> {
-  if (!process.stdin.isTTY || !process.stderr.isTTY || process.env.CORGI_PANE !== undefined) return null;
+  if (!interactive()) return null;
   await rpc.request(socket, "session.snapshot");
   process.stderr.write(
     "\n /ᐠ•ᴥ•ᐟ\\  An update is ready, but this session could not be moved safely.\n\nRestarting will stop ALL shells and agents in this runtime and disconnect\nits other viewers. Saved layout and output can be restored; running processes\nwill not survive.\n\nEnter / Esc: keep working     r: restart and update… ",
@@ -353,16 +485,44 @@ async function select(
     if (bytes === null) throw Error("MissingReleaseManifest");
     const m = parse(rel, bytes);
     if (m.version !== candidate) throw Error("WrongReleaseManifest");
-    verifyFile(target, m.targets[platform]);
+    verifyFile(target, own(m));
     if (h && !(h.server_pid > 0)) throw Error("UpdateRuntimeChanged");
     const deferred = h ? `deferred-${Bun.hash.wyhash(socket, 0n).toString(16)}-${h.server_pid}` : null;
     if (!explicit && deferred && read(root, deferred) === candidate) return old;
+    if (!(await vetted(root, socket, current, candidate, target, h, explicit))) {
+      if (explicit) throw Error("UpdateCheckFailed");
+      return old;
+    }
     let safe = !h || h.update_abi === m.update_abi;
     if (safe) {
       try {
         await activate(root, socket, candidate, target, !!h);
       } catch (error) {
         recordError(root, error);
+        // The runtime is still running; restarting would hand the same state to a cold start.
+        if (errors.is(error, "InvalidCheckpoint")) {
+          await refuse(
+            root,
+            current,
+            candidate,
+            {
+              error: "InvalidCheckpoint",
+              why: "the live session it was handed, after its saved copy passed the check (see server.log)",
+              frames: [],
+              state: {
+                summary: "not recorded for a live handoff",
+                items: [],
+                repairs: [],
+                recent: [],
+                anonymized: "null",
+              },
+            },
+            true,
+            explicit,
+          );
+          if (explicit) throw Error("UpdateCheckFailed");
+          return old;
+        }
         safe = false;
       }
       if (safe) {
@@ -376,7 +536,7 @@ async function select(
     if (decision) {
       const fresh = await hello(socket);
       if (!fresh || fresh.server_pid !== h.server_pid) throw Error("UpdateRuntimeChanged");
-      await rpc.request(socket, "recovery.save");
+      await save(socket, h);
       copyFileSync(recoveryPath(socket), recoveryPath(socket) + ".before-update");
       await rpc.request(socket, "shutdown");
       let stopped = false;
@@ -511,12 +671,12 @@ async function install(rel: Release, exe: string, root: string, manifest: string
     const bytes = readFileSync(manifest, "utf8"),
       m = parse(rel, bytes);
     if (m.version !== rel.version || m.commit !== rel.commit) throw Error("WrongReleaseManifest");
-    verifyFile(exe, m.targets[platform]);
+    verifyFile(exe, own(m));
     const dest = executable(root, rel.version),
       dir = dirname(dest);
     privateDirectory(dir);
     try {
-      verifyFile(dest, m.targets[platform]);
+      verifyFile(dest, own(m));
     } catch {
       copyFileSync(exe, dest);
       chmodSync(dest, 0o700);
@@ -540,6 +700,12 @@ export async function internal(args: string[], exe: string): Promise<boolean> {
       console.log(
         JSON.stringify({ version: r.version, commit: r.commit, update_abi: abi, platform, test_mode: r.test_mode }),
       );
+      return true;
+    }
+    case "__update-check": {
+      if (args.length !== 3) return false;
+      const check = await import("./persist/check");
+      console.log(json.stringify(await check.run(args[2], args[1], exe)));
       return true;
     }
     case "__update-worker":

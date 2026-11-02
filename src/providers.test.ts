@@ -8,28 +8,59 @@ import { Hooks, timestampMs } from "./providers/common";
 import * as sim from "./providers/sim";
 import type { Settings } from "./providers/adapter";
 test("per-provider values are keyed by name, in the registry's order", () => {
-  expect(JSON.stringify(byProvider(p => p === "claude"))).toBe(
-    '{"codex":false,"claude":true,"pi":false,"opencode2":false}',
-  );
-  expect(Provider.all).toEqual(["codex", "claude", "pi", "opencode2"]);
+  const value = byProvider(p => p === "claude");
+  expect(Object.keys(value)).toEqual(Provider.all);
+  expect(Object.entries(value).filter(([, on]) => on)).toEqual([["claude", true]]);
+  expect(Provider.all.slice(0, 3)).toEqual(["codex", "claude", "pi"]);
   expect(Provider.parse("claude")).toBe("claude");
   expect(Provider.parse("other")).toBeNull();
   expect(Provider.owning("/opt/bin/claude-code")).toBe("claude");
 });
+test("the landing page's stand-in registry lists every provider", async () => {
+  const site = await import("../site/browser/providers");
+  expect(site.Provider.all).toEqual(Provider.all);
+  // Each provider's own command is among the programs that mark it.
+  for (const p of Provider.all) expect(site.adapter(p).programs.names).toContain(adapter(p).command);
+});
+test("every provider id is one corgi-hook forwards", () => {
+  for (const p of Provider.all) expect(Provider.wellFormed(p)).toBe(true);
+  for (const id of ["", "Claude", "gemini_cli", "open-code", "a".repeat(33)])
+    expect(Provider.wellFormed(id)).toBe(false);
+  expect(() => Provider.register({ ...sim.adapter, id: "Sim" })).toThrow("InvalidProvider");
+});
+test.each(Provider.all)("the %s adapter can initialize before the registry", async provider => {
+  const module = new URL(`./providers/${provider}/index.ts`, import.meta.url).href;
+  const registry = new URL("./providers.ts", import.meta.url).href;
+  // Separate processes and sequential imports exercise initialization order; static imports cannot isolate it.
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      "-e",
+      `const direct = await import(${JSON.stringify(module)});
+const registry = await import(${JSON.stringify(registry)});
+if (direct.adapter !== registry.adapter(${JSON.stringify(provider)})) throw Error("WrongAdapter");
+if (registry.Provider.owning(direct.adapter.command) !== ${JSON.stringify(provider)}) throw Error("WrongOwner");`,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const stderr = new Response(child.stderr).text();
+  expect(await child.exited, await stderr).toBe(0);
+});
 test("a registered provider is listed, parsed and found until it is removed", () => {
+  const builtIn = [...Provider.all];
   const remove = sim.register();
   try {
-    expect<string[]>(Provider.all).toEqual(["codex", "claude", "pi", "opencode2", "sim"]);
+    expect<string[]>(Provider.all).toEqual([...builtIn, "sim"]);
     expect(Provider.parse("sim")).toBe(sim.sim);
     expect(Provider.owning("sim")).toBe(sim.sim);
     expect(adapter(sim.sim).name).toBe("Sim");
     expect(adapter(sim.sim)).toBe(sim.adapter);
-    expect(Object.keys(byProvider(p => p))).toEqual(["codex", "claude", "pi", "opencode2", "sim"]);
+    expect(Object.keys(byProvider(p => p))).toEqual([...builtIn, "sim"]);
     expect(() => sim.register()).toThrow("ProviderExists");
   } finally {
     remove();
   }
-  expect(Provider.all).toEqual(["codex", "claude", "pi", "opencode2"]);
+  expect(Provider.all).toEqual(builtIn);
   expect(Provider.parse("sim")).toBeNull();
   expect(() => adapter(sim.sim)).toThrow("UnknownProvider");
 });

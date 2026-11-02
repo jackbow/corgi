@@ -11,6 +11,8 @@
     "pane": 1
   },
   "session.list": {},
+  "launcher.catalog": {},
+  "launcher.models": { "row": "codex" },
   "session.snapshot": {},
   "session.subscribe": {},
   "viewer.watch": {
@@ -21,13 +23,13 @@
     "cwd": "/tmp"
   },
   "viewer.open": {
-    "viewer_protocol": 3,
+    "viewer_protocol": 4,
     "cwd": "/tmp",
     "onboarding": true,
     "theme": {}
   },
   "viewer.sync": {
-    "viewer_protocol": 3,
+    "viewer_protocol": 4,
     "interests": [
       {
         "pane": 1,
@@ -37,11 +39,13 @@
     ],
     "ack": 2
   },
+  "viewer.surfaces": {},
   "viewer.search": {
     "pane": 1,
     "needle": "x",
     "skip": 1
   },
+  "viewer.pick": { "pane": 1, "offset": 0, "unit": "word", "x": 3, "y": 2, "to_x": 9, "to_y": 2 },
   "viewer.image": { "pane": 1, "image": "1-1", "offset": 0 },
   "pane.acknowledge": {
     "pane": 1,

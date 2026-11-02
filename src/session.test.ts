@@ -5,6 +5,7 @@ import { Workspace } from "./workspace";
 import { Terminal } from "./pane/terminal";
 import { execute, location, snapshot, viewerSnapshot } from "./session";
 import { stringify } from "./json";
+import { byProvider } from "./providers";
 import * as worktrees from "./worktrees";
 import { parseInventory } from "./trackers/worktrees";
 import { Path } from "./bounded_text";
@@ -24,6 +25,31 @@ function pane(r: Runtime, w: Workspace, split: number | null = null) {
   return id;
 }
 const topology = (r: Runtime) => stringify(r.workspaces.items.map(w => w.model));
+test("moving launcher rows atomically persists order and visibility only in the selected workspace", async () => {
+  const { r, home, away } = setup();
+  try {
+    const command = {
+      workspace: home.id,
+      row: "codex",
+      before: "claude",
+      order: ["claude", "codex", "profile:copy"],
+      shown: false,
+    };
+    await execute(r, ctx, protocol.decodeCommand({ "agent.launcher.move": command }));
+    expect(home.launcher_order).toEqual(["codex", "claude", "profile:copy"]);
+    expect(home.launcher_hidden).toEqual(["codex"]);
+    expect(away.launcher_order).toEqual([]);
+    await execute(r, ctx, protocol.decodeCommand({ "agent.launcher.move": { ...command, before: null, shown: true } }));
+    expect(home.launcher_order).toEqual(["claude", "profile:copy", "codex"]);
+    expect(home.launcher_hidden).toEqual([]);
+    await expect(
+      execute(r, ctx, protocol.decodeCommand({ "agent.launcher.move": { ...command, row: "bogus" } })),
+    ).rejects.toThrow("InvalidRow");
+    expect(home.launcher_order).toEqual(["claude", "profile:copy", "codex"]);
+  } finally {
+    r.destroy();
+  }
+});
 test("pane keys and send follow the destination's current keyboard modes", async () => {
   const { r, home } = setup();
   const id = pane(r, home),
@@ -289,10 +315,10 @@ test("an account's YOLO and Show are its own, apart from its provider's", async 
     await run({
       "agent.visibility": { hidden: { codex: true }, hidden_accounts: ["/accounts/work", "/accounts/work"] },
     });
-    // A viewer that sends no accounts keeps the hidden ones.
+    // A viewer that sends no accounts keeps the hidden ones, and one that leaves out a provider keeps it.
     await run({ "agent.visibility": { hidden: { claude: true } } });
     expect([r.agent_hidden, r.account_hidden]).toEqual([
-      { codex: false, claude: true, pi: false, opencode2: false },
+      byProvider(p => p === "claude" || p === "codex"),
       ["/accounts/work"],
     ]);
     await expect(run({ "agent.visibility": { hidden: {}, hidden_accounts: ["work"] } })).rejects.toThrow(
@@ -324,6 +350,21 @@ test("a workspace hides launcher rows for itself, and a deleted command's slot c
     await run({ "agent.command": { index: 0, command: "claude --model opus", resolve: false } });
     await run({ "agent.command": { index: 0, command: "", resolve: false } });
     expect([home.launcher_hidden, away.launcher_hidden]).toEqual([["claude:/accounts/work"], []]);
+  } finally {
+    r.destroy();
+  }
+});
+test("a command saved without semantics keeps its own until its text changes", async () => {
+  const { r } = setup();
+  try {
+    const run = (cmd: protocol.CommandInput) => execute(r, ctx, protocol.decodeCommand(cmd));
+    const semantics = { provider: "pi" as const, suggested_name: "Saved" };
+    await run({ "agent.command": { index: 0, command: "pi --model x", resolve: false, semantics } });
+    // A viewer that can't read the provider toggles the command without them.
+    await run({ "agent.command": { index: 0, command: "pi --model x", resolve: false, hidden: true } });
+    expect([r.agent_commands[0].hidden, r.agent_commands[0].semantics]).toMatchObject([true, semantics]);
+    await run({ "agent.command": { index: 0, command: "claude", resolve: false } });
+    expect(r.agent_commands[0].semantics.provider).toBe("claude");
   } finally {
     r.destroy();
   }
