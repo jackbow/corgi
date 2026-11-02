@@ -10,6 +10,10 @@ import { Text, adapter } from "./providers";
 import { logicalKey } from "./keys";
 import * as viewerNative from "./viewer_native";
 import * as accounts from "./accounts";
+import * as agentName from "./agent_name";
+import * as launcherConfig from "./launcher_config";
+import * as profiles from "./agent_profiles";
+import * as launcherOrder from "./launch/order";
 import * as integration from "./integration";
 import * as worktreeAgents from "./worktree_agents";
 import { Row } from "./launch/row";
@@ -89,13 +93,26 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
       ws.agent_order.move(r.agentTargets(ws), request.payload.target, request.payload.before ?? null);
       break;
     }
+    case "agent.pin": {
+      const ws = r.getWorkspace(request.payload.workspace);
+      r.starAgent(ws, request.payload.target, request.payload.pinned, request.payload.before ?? null);
+      break;
+    }
+    case "agent.place": {
+      const ws = r.getWorkspace(request.payload.workspace);
+      ws.activity_order.move(r.agentTargets(ws), request.payload.target, request.payload.before ?? null);
+      break;
+    }
     case "agent.command": {
+      if (request.payload.name !== null && request.payload.name !== undefined)
+        agentName.check(request.payload.name, true);
       if (request.payload.index < 0 || request.payload.index >= r.agent_commands.length) throw Error("InvalidCommand");
       const source =
           request.payload.resolve && request.payload.command
             ? await resolve(request.payload.command, request.payload.cwd ?? null)
             : request.payload.command,
-        e = r.agent_commands[Number(request.payload.index)];
+        e = r.agent_commands[Number(request.payload.index)],
+        unchanged = !request.payload.resolve && source === e.command;
       e.set(source);
       if (request.payload.original !== null && request.payload.original !== undefined)
         e.setOriginal(request.payload.original);
@@ -106,10 +123,9 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
         // A command saved in its slot later starts shown everywhere.
         const row = Row.ofCommand(Number(request.payload.index));
         for (const w of r.workspaces.items) w.launcher_hidden = w.launcher_hidden.filter(h => h !== row);
-      } else
-        e.semantics = request.payload.semantics
-          ? Object.assign(new Semantics(), request.payload.semantics)
-          : analyze(source, request.payload.cwd ?? ".");
+      } else if (request.payload.semantics) e.semantics = Object.assign(new Semantics(), request.payload.semantics);
+      // A viewer that can't read the provider sends none, so the stored ones stand.
+      else if (!unchanged) e.semantics = analyze(source, request.payload.cwd ?? ".");
       r.agent_commands[Number(request.payload.index)].hidden = !!source && request.payload.hidden;
       r.changed();
       return {};
@@ -128,7 +144,8 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
     case "agent.visibility": {
       const hidden = request.payload.hidden_accounts;
       if (hidden?.some(a => !a.startsWith("/"))) throw Error("InvalidAccount");
-      r.agent_hidden = { ...request.payload.hidden };
+      // A viewer that doesn't know a provider leaves it as it was.
+      r.agent_hidden = { ...r.agent_hidden, ...request.payload.hidden };
       // An older viewer sends no accounts, which keeps the hidden ones.
       if (hidden) r.account_hidden = [...new Set(hidden)];
       r.changed();
@@ -141,6 +158,60 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
       ws.launcher_hidden = [...ws.launcher_hidden.filter(h => h !== row), ...(shown ? [] : [row])];
       r.changed();
       return {};
+    }
+    case "agent.launcher.move": {
+      const q = request.payload,
+        ws = r.getWorkspace(q.workspace),
+        row = Row.parse(q.row),
+        before = q.before === null ? null : Row.parse(q.before);
+      if (!row || (q.before !== null && !before) || q.order.length > 4096 || q.order.some(r => Row.parse(r) === null))
+        throw Error("InvalidRow");
+      ws.launcher_order = launcherOrder.move(
+        launcherOrder.arrange(q.order as Row[], ws.launcher_order as Row[]),
+        row,
+        before,
+      );
+      ws.launcher_hidden = [...ws.launcher_hidden.filter(h => h !== row), ...(q.shown ? [] : [row])];
+      r.changed();
+      return {};
+    }
+    case "agent.launcher.copy": {
+      launcherConfig.copy(r, request.payload.from, request.payload.workspace);
+      r.changed();
+      return {};
+    }
+    case "agent.launcher.configure": {
+      const row = launcherConfig.configure(r, request.payload);
+      r.changed();
+      return { text: row };
+    }
+    case "agent.launcher.remove": {
+      const agent = launcherConfig.get(r, request.payload.row),
+        id = Row.profile(agent.row),
+        index = Row.custom(agent.row);
+      if (id) profiles.remove(id);
+      else if (index !== null) r.agent_commands[index] = new Entry();
+      else throw Error("UseLauncherHide");
+      for (const ws of r.workspaces.items) {
+        ws.launcher_order = ws.launcher_order.filter(row => row !== agent.row);
+        ws.launcher_hidden = ws.launcher_hidden.filter(row => row !== agent.row);
+      }
+      r.changed();
+      return {};
+    }
+    case "agent.profile.create": {
+      const profile = profiles.find(request.payload.id);
+      if (!profile) throw Error("InvalidAgent");
+      if (profile.account && !accounts.find(profile.provider, profile.account)) throw Error("AccountNotFound");
+      const chosen = await account(profile.provider, profile.account),
+        launch = Launch.in(profile.provider, chosen, profile.yolo, profile.options),
+        pane = await r.create({
+          ...spawnOptions(r, ctx, request.payload.workspace, null, request.payload.cwd),
+          ...launch.run(ctx.executable, launch.typed()),
+        });
+      r.pane(pane)!.launch = launch;
+      r.rememberAgent(pane, profile.provider);
+      return location(r, pane);
     }
     case "agent.yolo": {
       const { provider } = request.payload,
@@ -243,12 +314,8 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
       return location(r, ws.model.firstPane(ws.model.tabs[0].root));
     }
     case "workspace.edit": {
-      const ws = r.getWorkspace(request.payload.target);
-      await r.workspaces.edit(
-        request.payload.target,
-        request.payload.name ?? ws.customName(),
-        request.payload.cwd ?? ws.cwd,
-      );
+      r.getWorkspace(request.payload.target);
+      await r.workspaces.edit(request.payload.target, request.payload.name, request.payload.cwd);
       break;
     }
     case "workspace.close":
@@ -513,9 +580,14 @@ export function viewerSnapshot(r: Runtime) {
   return build(r, true);
 }
 function build(r: Runtime, viewer: boolean) {
+  // An agent's new state and its place at the top of its new section go out
+  // together, or a viewer would show it at its old place first. The tick
+  // would then find nothing to raise, so the change is marked here.
+  if (r.raiseEntered()) r.changed();
   const coarse = (s: number) => (s <= 0 ? s : Math.floor(s / 5000000) * 5000000);
+  const followed = viewer ? r.followed() : null;
   const conversations = r.conversations.items
-    .filter(a => !viewer || r.followed(a))
+    .filter(a => !followed || followed.has(a))
     .map((a: any) => {
       const usage = a.usageView?.(Date.now()) ?? {},
         out: any = {
@@ -526,6 +598,7 @@ function build(r: Runtime, viewer: boolean) {
           attachments: r.attachments(a),
           role: text(a.role),
           background_tasks: a.background_tasks?.view?.() ?? {},
+          checklist: a.checklist ?? { items: [], partial: false, at: 0 },
           model: text(a.model?.id),
           model_name: text(a.model?.name),
           model_price: a.model?.price ?? null,
@@ -551,7 +624,7 @@ function build(r: Runtime, viewer: boolean) {
       return out;
     });
   return {
-    type: "session",
+    type: "session" as const,
     protocol: protocol.version,
     conversations,
     release_version: "",
@@ -577,8 +650,13 @@ function build(r: Runtime, viewer: boolean) {
     accounts: accounts.known().map(a => ({ provider: a.provider, account: a.dir, name: a.name, managed: a.managed })),
     workspaces: r.workspaces.items.map((w: any) => ({
       agent_order: w.agent_order.slice(),
+      pinned_agents: w.pinned_agents.slice(),
+      starred_sessions: w.starred_sessions.slice(),
+      activity_order: w.activity_order.slice(),
+      starting_agents: r.startingAgents(w),
       last_agent: w.last_agent,
       launcher_hidden: w.launcher_hidden,
+      launcher_order: w.launcher_order,
       closed_agents: r.closedCount(w.id),
       git_commits:
         w.git_commits.items?.slice(0, w.git_commits.len).map((c: any) => ({
@@ -593,7 +671,6 @@ function build(r: Runtime, viewer: boolean) {
       id: w.id,
       name: w.name(),
       cwd: w.cwd,
-      custom_name: w.customName(),
       git_ahead: w.git_ahead,
       worktrees: r.worktree_tracker.snapshot(r, w),
       git_ref: w.git_ref.view?.() ?? w.git_ref,

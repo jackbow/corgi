@@ -1,7 +1,8 @@
 //! Compact, single-line usage and reset groups for the agent picker.
 //! Mirrors launcher_usage.zig.
+import * as i18n from "./i18n";
 import { fg } from "./palette";
-import { Writer, displayWidth, writeEllipsis, asciiText, truncatedText, sat } from "./text";
+import { Writer, displayWidth, writeEllipsis, truncatedText, sat } from "./text";
 import * as spend from "./usage/spend";
 import { expired } from "./usage/account";
 
@@ -11,6 +12,10 @@ const percent_width = 4;
 const separator = " │ ";
 /** Between a figure and its reset. */
 const gap = "   ";
+/** A bar's most cells. */
+const full_bar = 6;
+/** The widest countdown: "23h 59m". */
+const countdown_width = 7;
 
 export interface LimitWindow {
   minutes: number | null;
@@ -19,7 +24,7 @@ export interface LimitWindow {
 }
 export function windowLabel(w: LimitWindow): string {
   const n = w.minutes;
-  if (n === null || n === undefined || n <= 0) return "Window";
+  if (n === null || n === undefined || n <= 0) return i18n.t`Window`;
   if (n % 1440 === 0) return `${n / 1440}d`;
   if (n % 60 === 0) return `${n / 60}h`;
   return `${n}m`;
@@ -30,7 +35,7 @@ export function countdown(w: LimitWindow, now: number): string | null {
 }
 function resetCountdown(at: number, now: number): string {
   const seconds = at - now;
-  if (seconds <= 0) return "now";
+  if (seconds <= 0) return i18n.t`now`;
   const minutes = Math.trunc(seconds / 60) + (seconds % 60 > 0 ? 1 : 0);
   const days = Math.trunc(minutes / 1440);
   const hours = Math.trunc(minutes / 60) % 24;
@@ -81,10 +86,10 @@ export class Cell {
     byLength(windows).forEach((window, i) => {
       if (!window) return;
       cell.windows[i] = {
-        label: asciiText(windowLabel(window), text_capacity),
+        label: truncatedText(windowLabel(window), text_capacity),
         used: window.used,
         figure: `${window.used}%`,
-        reset: asciiText(countdown(window, now) ?? "unknown", text_capacity),
+        reset: truncatedText(countdown(window, now) ?? i18n.t`unknown`, text_capacity),
       };
     });
     return cell;
@@ -109,7 +114,7 @@ export class Cell {
   }
   static unavailable(reason: string): Cell {
     const cell = new Cell();
-    cell.fallback = truncatedText(`Unavailable · ${reason}`, text_capacity);
+    cell.fallback = truncatedText(i18n.t`Unavailable · ${reason}`, text_capacity);
     return cell;
   }
   limited(): boolean {
@@ -225,7 +230,16 @@ export class Grid {
     return Math.max(this.status, this.groupsWidth(0));
   }
   preferredWidth(): number {
-    return Math.max(this.status, this.groupsWidth(6));
+    return Math.max(this.status, this.groupsWidth(full_bar));
+  }
+  /** Groups with full bars and every reset as wide as a countdown gets, so
+   * a column sized by it holds still while they tick. */
+  steadyWidth(): number {
+    const steady = new Grid(),
+      widest = (slot: Slot | null) => slot && { ...slot, reset: Math.max(slot.reset, countdown_width) };
+    steady.slots = [widest(this.slots[0]), widest(this.slots[1])];
+    steady.amount = this.amount;
+    return steady.groupsWidth(full_bar);
   }
   groupsWidth(bar: number): number {
     const [first, second] = this.slots;
@@ -236,7 +250,7 @@ export class Grid {
   /** The same in every row: up to six cells, then none once a group would
    * get fewer than two. */
   barWidth(width: number): number {
-    for (let bar = 6; bar >= 2; bar--) if (this.groupsWidth(bar) <= width) return bar;
+    for (let bar = full_bar; bar >= 2; bar--) if (this.groupsWidth(bar) <= width) return bar;
     return 0;
   }
   /** A copy sized for `cell` as well. */

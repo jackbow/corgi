@@ -9,6 +9,7 @@ import {
   draw,
   drawOverview,
   fresh_window,
+  barInk,
   limitLine,
   spendSpark,
   presentChildren,
@@ -23,14 +24,33 @@ import { View as UsageView, Tokens } from "./usage/live";
 import { View as ContextView } from "./usage/context_window";
 import { Window } from "./usage/account";
 import type { Spark, SpendCell } from "./usage/limits";
-import { option } from "./agent_launcher";
+import type { Reading } from "./usage/spend";
+import { option, type Option } from "./agent_launcher";
 import { Writer } from "./text";
 import * as palette from "./palette";
+import * as i18n from "./i18n";
 import * as sidebar from "./sidebar";
 import { Terminal } from "./pane/terminal";
 import { microTimestamp } from "./clock";
 import type { Agent } from "./mirror";
 import { Model as ProviderModel } from "./providers/model";
+import { byProvider, type ByProvider } from "./providers";
+import { List } from "./activity/checklist";
+import * as checklist_view from "./checklist_view";
+
+test("conversation decodes checklist wire state and defaults an absent field", () => {
+  expect(conversation({}).checklist).toEqual(new List());
+  const checklist = {
+    items: [{ text: "Review", status: "blocked" as const, group: "Delivery" }],
+    partial: true,
+    at: 5,
+  };
+  expect(conversation({ checklist }).checklist).toEqual(new List(checklist.items, true, 5));
+  expect(() => conversation({ checklist: { ...checklist, partial: "true" } })).toThrow("UnexpectedToken");
+  expect(() =>
+    conversation({ checklist: { ...checklist, items: [{ text: "Review", status: "unknown", group: "" }] } }),
+  ).toThrow("InvalidEnumTag");
+});
 
 const base = new palette.Style({ fg: "text", bg: "bg" }).sgr();
 const usage = (
@@ -190,9 +210,8 @@ test("both agent rows open one safe card before a session is bound and exiting r
   expect(text).toContain("探索?[2J");
   expect(text).not.toContain("\x1b[2J");
   expect(text).toContain("Total");
-  expect(count(text, "—")).toBe(2);
+  expect(count(text, "—")).toBe(3);
   expect(text).toContain("Starting session");
-  expect(text).not.toContain("No subagents");
   entries[0].exit = { frame_ms: 1, progress: 0.5 };
   expect(sidebar.agentAt(view, entries, 5, top)).toBeNull();
 });
@@ -288,6 +307,41 @@ test("cards narrower than 70 columns pack their columns", () => {
   expect(wide).toContain("Verifier");
   expect(narrow).toContain("Fetching SHA256SUMS");
   expect(narrow).not.toContain("Verif");
+});
+
+test("translated usage headings and timeline stamps get their own cell widths", () => {
+  const previous = i18n.language();
+  try {
+    for (const language of ["en", "zh", "ja", "ko", "ru"] as const) {
+      i18n.setLanguage(language);
+      for (const width of [54, 88]) {
+        const w = new Writer(),
+          terminal = new Terminal(width, 6),
+          card = new Card(w, 0, width);
+        card.counted = true;
+        try {
+          card.tokenColumns(0, null, false, "faint");
+          card.drawPoint(1, i18n.t`  now`, "Current activity", usage(), true, "working");
+          card.drawPoint(2, i18n.t` last`, "Last activity", usage(), false, "faint");
+          card.drawPoint(3, "13:59", "Clock activity", usage(), false, "faint");
+          terminal.feed(w.buffered());
+          const rows = terminal.text().split("\n"),
+            gap = width < 70 ? " " : "  ";
+          expect(rows[0]).toContain(i18n.t`Tokens`);
+          expect(rows[0]).toContain(i18n.t`Cached`);
+          if (width >= 70) expect(rows[0]).toContain(i18n.t`Tools`);
+          expect(rows[1]).toContain(`${i18n.t`  now`}${gap}●${gap}Current activity`);
+          expect(rows[2]).toContain(`${i18n.t` last`}${gap}○${gap}Last activity`);
+          expect(rows[3]).toContain(`13:59${gap}○${gap}Clock activity`);
+          for (const row of rows.slice(0, 4)) expect(row.endsWith("  ")).toBe(true);
+        } finally {
+          terminal.destroy();
+        }
+      }
+    }
+  } finally {
+    i18n.setLanguage(previous);
+  }
 });
 
 test("timeline renders each phase once with its own interval including idle and clipped views", () => {
@@ -469,7 +523,8 @@ function testAccounts(now: number): Accounts {
     usage_fetched_at: now,
     limits: { windows: [{ minutes: 10080, used: 84, reset_at: now + 5 * 86400 + 14 * 3600 }, null] },
   });
-  return new Accounts({ system: "codex", now, options: { codex, claude, pi: codex, opencode2: option({}) } });
+  const options: Partial<ByProvider<Option>> = { codex, claude, pi: codex };
+  return new Accounts({ system: "codex", now, options: byProvider(p => options[p] ?? option({})) });
 }
 
 test("wide terminals put each account's limits beside its agents", () => {
@@ -685,31 +740,46 @@ test("sparks stipple the time left, and slots no reading covers fainter", () => 
   expect(high).toContain(`${Tone.ansi("hot")}100%`);
 });
 
-test("spend sparks scale to the busiest cell and set apart last month and unread days", () => {
+test("spend sparks draw the month's running spend like a window and set apart last month and unread cells", () => {
   const cell = (minor: number | null, earlier = false): SpendCell => ({ minor, earlier });
   const cells = [
     cell(null),
-    cell(400, true),
+    cell(5000, true),
     cell(0),
-    cell(100),
-    cell(800),
     cell(null),
-    ...Array.from({ length: 8 }, () => cell(50)),
+    cell(2500),
+    ...Array.from({ length: 7 }, () => cell(5000)),
+    cell(8500),
+    cell(10000),
   ];
-  const line = render(w => spendSpark(new Card(w, 0, 122), 5, 87, cells, true));
-  // Days Corgi didn't read are unknown, before the first reading or in a gap.
+  const reading: Reading = {
+    used_minor: 10000,
+    limit_minor: 10000,
+    currency: "USD",
+    exponent: 2,
+    period_start: 0,
+    reset_at: 30 * 86400,
+  };
+  const spark = (at: Reading, fresh = true, from = cells) =>
+    render(w => spendSpark(new Card(w, 0, 122), 5, 87, from, at, fresh));
+  const line = spark(reading);
+  // Cells Corgi didn't read are unknown, before the first reading or in a gap.
   expectSparkCell(line, 0, "⢕", unread_ink);
-  expectSparkCell(line, 5, "⢕", unread_ink);
+  expectSparkCell(line, 3, "⢕", unread_ink);
   // Last month's cells are dimmer whatever their height.
   expect(line).toContain(
     `${palette.bg("surface")}${palette.fgRgb(palette.mix(palette.colors.accent, palette.colors.faint, 60))}▄`,
   );
-  // Nothing spent is the gray floor; the busiest cell is full height.
-  expectSparkCell(line, 2, "▁", Tone.ansi("faint"));
-  expectSparkCell(line, 3, "▁", shallow_inks[0]);
-  expectSparkCell(line, 4, "█", Tone.ansi("live"));
-  const stale = render(w => spendSpark(new Card(w, 0, 122), 5, 87, cells, false));
-  expectSparkCell(stale, 4, "█", Tone.ansi("faint"));
+  // Each cell is the percent of the limit used so far, inked like a window's.
+  expectSparkCell(line, 2, "▁", barInk(0));
+  expectSparkCell(line, 4, "▂", barInk(25));
+  expectSparkCell(line, 12, "▇", Tone.ansi("warm_cell"));
+  expectSparkCell(line, 13, "█", Tone.ansi("hot_cell"));
+  expectSparkCell(spark(reading, false), 13, "█", Tone.ansi("faint"));
+  // A limit far above the spend is flat.
+  expectSparkCell(spark({ ...reading, limit_minor: 25_000_000 }), 13, "▁", barInk(0));
+  // Without a limit, the largest cell is full height but not hot.
+  expectSparkCell(spark({ ...reading, limit_minor: null }), 13, "█", shallow_inks[7]);
 });
 
 test("a finished agent the user has not seen shows a dot", () => {
@@ -826,10 +896,6 @@ test("unavailable or stale child discovery makes no subagent claims", () => {
   presentChildren(e, all, now);
   expect(e.children).toBe(1);
   expect(e.subagents.running).toBe(2);
-  e.subagents = { running: 0, blocked: 0, waiting: false };
-  all[0].agent.subagents = { running: 0, blocked: 0, waiting: false };
-  const output = render(w => draw(w, all.slice(0, 1), e, 100, 30, 5, 14));
-  expect(output).toContain("No subagents");
 });
 
 test("Claude's child list holds until its next Stop", () => {
@@ -863,6 +929,30 @@ test("Claude's child list holds until its next Stop", () => {
   presentChildren(e, all, now);
   expect(e.children).toBe(0);
   expect(e.subagents.waiting).toBe(false);
+});
+
+test("OMP children remain visible through quiet work and leave on settlement", () => {
+  const now = microTimestamp();
+  const old = now - 10 * fresh_window;
+  const parent = agent({ provider: "omp", subagents: { running: 1, blocked: 0, waiting: false } });
+  const child = agent({ provider: "omp", name: "ProviderAudit", activity: "Audit provider lifecycle" });
+  const all = [
+    convo({ id: 1, attachments: 1, agent: parent, children_observed_at: old }),
+    convo({ id: 2, parent: 1, agent: child, role: "reviewer", observed_at: old }),
+  ];
+  const e = entry({ conversation: 1, provider: "omp", state: "working", subagents: { ...parent.subagents } });
+  presentChildren(e, all, now);
+  expect(e.children).toBe(1);
+  expect(e.subagents.running).toBe(1);
+  expect(render(w => draw(w, all, e, 100, 30, 5, 14))).toContain("Audit provider lifecycle");
+  const overview = () => render(w => drawOverview(w, all, new UsageView(), false, "", "", {}, new Accounts(), 100, 30));
+  expect(overview()).toContain("ProviderAudit");
+  all[1].agent.state = "idle";
+  all[0].agent.subagents.running = 0;
+  e.subagents.running = 0;
+  presentChildren(e, all, now);
+  expect(e.children).toBe(0);
+  expect(overview()).not.toContain("ProviderAudit");
 });
 
 test("compact token counts round through unit boundaries without overflow", () => {
@@ -976,6 +1066,45 @@ test("the card shows sixteen recent phases when the terminal has room", () => {
   const e = entry({ conversation: 1, name: "long run", provider: "codex", state: "working", attention: "none" });
   const lines = screenLines(all, e, 100);
   for (let i = 1; i <= 16; i++) expect(lineWith(lines, `Phase ${String(i).padStart(2, "0")}`)).not.toBeNull();
+});
+
+test("the TODOs section draws each group once with a mark per status", () => {
+  const list = new List([
+    { text: "Plan", status: "done", group: "Prepare" },
+    { text: "Build", status: "active", group: "Implement" },
+    { text: "Wait on review", status: "blocked", group: "Implement" },
+    { text: "Ship", status: "pending", group: "Release" },
+  ]);
+  const host = Terminal.create(90, 12);
+  try {
+    host.feed(render(w => new Card(w, 0, 88).checklist(0, list, checklist_view.window(list))));
+    const lines = host.text().split("\n");
+    expect(lines[2]).toContain("TODOs");
+    expect(lines[2]).toContain("1/4 done");
+    const rows = ["Prepare", "  ✓ Plan", "Implement", "  ▶ Build", "  ! Wait on review", "Release", "  ☐ Ship"];
+    expect(lines.slice(3, 10).map(line => line.trimEnd())).toEqual(rows.map(row => `   ${row}`));
+  } finally {
+    host.destroy();
+  }
+});
+
+test("the card shows a finished checklist until it retires", () => {
+  const finished = new List([{ text: "Ship", status: "done", group: "" }]);
+  const card = (checklist: List) =>
+    screenLines(
+      [
+        convo({
+          id: 1,
+          agent: agent({ provider: "omp", session: "s", activity: "Shipping" }),
+          timeline: { points: [{ at: 1000, activity: "Shipping", usage: usage() }], pending: usage() },
+          checklist,
+        }),
+      ],
+      entry({ conversation: 1, name: "omp run", provider: "omp", state: "working", attention: "none" }),
+      100,
+    );
+  expect(lineWith(card(new List(finished.items, false, microTimestamp())), "✓ Ship")).not.toBeNull();
+  expect(lineWith(card(new List(finished.items, false, 1)), "TODOs")).toBeNull();
 });
 
 test("timeline rows older than the latest five recede toward the background", () => {

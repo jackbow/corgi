@@ -1,4 +1,4 @@
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Adapter } from "../adapter";
 import { Hooks } from "../common";
 import { ScreenWatcher } from "../watcher";
@@ -13,12 +13,11 @@ export const adapter: Adapter = {
   ...info,
   caps: {
     prompt_turns: false,
-    children_at_stop: false,
+    children_from_hooks: false,
     follows_cd: false,
     titles_once_loaded: false,
     transcript_tools: false,
   },
-  owns: p => ["opencode2", "opencode"].includes(basename(p)),
   version: s => /^opencode v2\./m.test(s.trim()),
   requires: "v2",
   installs: ({ home, root }) => [
@@ -48,6 +47,8 @@ export const adapter: Adapter = {
   watch: () => new ScreenWatcher(() => null),
   hook: v => hooks.decode(v),
   launch: {
+    models: (_account, quit) => import("./models").then(m => m.catalog(quit)),
+    options: (args, model) => (model ? commandLine.withoutModel(args) : args),
     prepare,
     start: s => [
       ...(s.permissions === "bypass" ? ["--auto"] : []),

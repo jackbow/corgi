@@ -3,6 +3,67 @@ import * as protocol from "./protocol";
 import * as json from "./json";
 import { Model, Selection } from "./layout";
 import samples from "./fixtures/protocol-requests.json";
+import * as checklist from "./activity/checklist";
+
+test("checklist wire state roundtrips labels and statuses unchanged", () => {
+  const original = new checklist.List(
+    checklist.statuses.map(status => ({ text: `Review ${status}`, status, group: "Delivery" })),
+    true,
+    1_700_000_000_000_000,
+  );
+  const decoded = protocol.decodeChecklist(json.parse(json.stringify(original)));
+  expect(decoded).toBeInstanceOf(checklist.List);
+  expect(decoded).toEqual(original);
+  expect(protocol.decodeChecklist(undefined)).toEqual(new checklist.List());
+  const labels = {
+    items: [{ text: "  Keep  spaces  ", status: "pending" as const, group: "  Group  " }],
+    partial: false,
+    at: 0,
+  };
+  expect(protocol.decodeChecklist(labels).items).toEqual(labels.items);
+});
+test("checklist wire state rejects malformed shapes and statuses instead of normalizing them", () => {
+  const item = { text: "Task", status: "pending", group: "" };
+  for (const value of [
+    null,
+    [],
+    { items: {}, partial: false, at: 0 },
+    { items: [], partial: "false", at: 0 },
+    { items: [], partial: false, at: "0" },
+    { items: [], partial: false, at: -1 },
+    { items: [], partial: false, at: 1.5 },
+    { items: [null], partial: false, at: 0 },
+    { items: [{ ...item, text: 1 }], partial: false, at: 0 },
+    { items: [{ ...item, status: 1 }], partial: false, at: 0 },
+    { items: [{ ...item, group: null }], partial: false, at: 0 },
+  ])
+    expect(() => protocol.decodeChecklist(value)).toThrow("UnexpectedToken");
+  for (const value of [
+    {},
+    { items: [], partial: false },
+    { items: [{ text: "Task", status: "pending" }], partial: false, at: 0 },
+  ])
+    expect(() => protocol.decodeChecklist(value)).toThrow("MissingField");
+  expect(() => protocol.decodeChecklist({ items: [{ ...item, status: "unknown" }], partial: false, at: 0 })).toThrow(
+    "InvalidEnumTag",
+  );
+});
+test("checklist wire state enforces item count and UTF-8 label bounds", () => {
+  const item = { text: "Task", status: "pending", group: "" };
+  for (const items of [
+    Array(65).fill(item),
+    [{ ...item, group: "é".repeat(81) }],
+    [{ ...item, text: "é".repeat(257) }],
+  ])
+    expect(() => protocol.decodeChecklist({ items, partial: false, at: 0 })).toThrow("Overflow");
+  const bounded = protocol.decodeChecklist({
+    items: Array.from({ length: 64 }, () => ({ text: "é".repeat(256), status: "pending", group: "é".repeat(80) })),
+    partial: false,
+    at: 0,
+  });
+  expect(bounded.items).toHaveLength(64);
+});
+
 test("every op decodes a sample request", () => {
   expect(Object.keys(samples).sort()).toEqual([...protocol.operations].sort());
   for (const op of protocol.operations) {
@@ -12,18 +73,29 @@ test("every op decodes a sample request", () => {
 });
 test("a client's envelope writes what the hand-written requests did", () => {
   for (const [op, payload, expected] of [
-    ["hello", {}, { op: "hello", protocol: 1, runtime_protocol: 3 }],
+    ["hello", {}, { op: "hello", protocol: protocol.management_version, runtime_protocol: protocol.version }],
     ["shutdown", {}, { op: "shutdown" }],
-    ["server.reload", { executable: "/bin/corgi" }, { op: "server.reload", protocol: 1, executable: "/bin/corgi" }],
+    [
+      "server.reload",
+      { executable: "/bin/corgi" },
+      { op: "server.reload", protocol: protocol.management_version, executable: "/bin/corgi" },
+    ],
     [
       "session.command",
       { command: { "pane.close": { target: 3 } } },
-      { op: "session.command", protocol: 3, command: { "pane.close": { target: 3 } } },
+      { op: "session.command", protocol: protocol.version, command: { "pane.close": { target: 3 } } },
     ],
     [
       "viewer.open",
       { cwd: "/tmp", onboarding: true },
-      { op: "viewer.open", protocol: 3, viewer_protocol: 3, cwd: "/tmp", theme: null, onboarding: true },
+      {
+        op: "viewer.open",
+        protocol: protocol.version,
+        viewer_protocol: protocol.viewer_version,
+        cwd: "/tmp",
+        theme: null,
+        onboarding: true,
+      },
     ],
     ["focus", { pane: 3, viewer: 2 }, { op: "focus", pane: 3, viewer: 2 }],
     ["workspace.switch", { workspace: 1, viewer: null }, { op: "workspace.switch", workspace: 1 }],
@@ -31,10 +103,13 @@ test("a client's envelope writes what the hand-written requests did", () => {
     expect(protocol.envelope(op, payload)).toEqual(expected);
 });
 test("management and runtime versions are checked independently", () => {
-  expect(() => protocol.require({ protocol: 1 }, null, "management")).not.toThrow();
-  expect(() => protocol.require({ protocol: 3 }, null)).not.toThrow();
-  expect(() => protocol.require({}, 3)).not.toThrow();
-  expect(() => protocol.require({ protocol: 1 }, 3)).toThrow("UnsupportedProtocol");
+  const { version, management_version } = protocol;
+  expect(() => protocol.require({ protocol: management_version }, null, "management")).not.toThrow();
+  expect(() => protocol.require({ protocol: version }, null)).not.toThrow();
+  expect(() => protocol.require({}, version)).not.toThrow();
+  expect(() => protocol.require({ protocol: version - 1 }, version)).toThrow("UnsupportedProtocol");
+  expect(() => protocol.require({}, version - 1)).toThrow("UnsupportedProtocol");
+  expect(() => protocol.require({ protocol: management_version }, version)).toThrow("UnsupportedProtocol");
   for (const version of [0, 2, 999, -1, "1", null])
     expect(() => protocol.require({ protocol: version }, null, "management")).toThrow("UnsupportedManagementProtocol");
   expect(() => protocol.require({}, null, "management")).toThrow("ProtocolRequired");
@@ -233,9 +308,11 @@ test("command defaults normalize nested semantics and tagged destinations", () =
       cwd: null,
     },
   });
-  expect(protocol.decodeCommand({ "agent.visibility": { hidden: { codex: true } } })).toEqual({
-    "agent.visibility": { hidden: { codex: true, claude: false, pi: false, opencode2: false }, hidden_accounts: null },
+  // A provider this daemon doesn't know is left out, not refused.
+  expect(protocol.decodeCommand({ "agent.visibility": { hidden: { codex: true, future: true } } })).toEqual({
+    "agent.visibility": { hidden: { codex: true }, hidden_accounts: null },
   });
+  expect(() => protocol.decodeCommand({ "agent.visibility": { hidden: { codex: "yes" } } })).toThrow("UnexpectedToken");
   // An older viewer sends no account, which picks the provider's own row.
   expect(protocol.decodeCommand({ "agent.yolo": { provider: "claude", enabled: true } })).toEqual({
     "agent.yolo": { provider: "claude", enabled: true, account: "" },
@@ -253,7 +330,6 @@ test("command defaults normalize nested semantics and tagged destinations", () =
 test("command schemas reject unknown nested fields while requests stay lenient", () => {
   for (const value of [
     { "agent.command": { index: 1, command: "x", semantics: { newer: 1 } } },
-    { "agent.visibility": { hidden: { newer: true } } },
     { "agent.move": { workspace: 1, target: { newer: 2 } } },
     { "pane.move": { target: 1, destination: { beside: { other: 2, newer: 3 } } } },
     { "pane.move": { target: 1, destination: { workspace: 2 } } },
@@ -276,6 +352,39 @@ test("command schemas reject unknown nested fields while requests stay lenient",
     known: null,
     cell: null,
   });
+});
+
+test("a pick names a unit and a cell, with an optional drag end", () => {
+  expect(protocol.decode("viewer.pick", { pane: 1, offset: 4, unit: "word", x: 2, y: 3 })).toEqual({
+    pane: 1,
+    offset: 4n,
+    unit: "word",
+    x: 2,
+    y: 3,
+    to_x: null,
+    to_y: null,
+  });
+  const wide = protocol.decode("viewer.pick", {
+    pane: 1n,
+    offset: 0xffffffffffffffffn,
+    unit: "line",
+    x: 0,
+    y: 0,
+    to_x: 7,
+    to_y: 1,
+  });
+  expect([wide.pane, wide.offset, wide.unit, wide.to_x, wide.to_y]).toEqual([1, 0xffffffffffffffffn, "line", 7, 1]);
+  const pick = { pane: 1, offset: 0, unit: "word", x: 2, y: 3 };
+  expect(() => protocol.decode("viewer.pick", { ...pick, unit: "char" })).toThrow("InvalidEnumTag");
+  expect(() => protocol.decode("viewer.pick", { ...pick, unit: 1 })).toThrow("UnexpectedToken");
+  const { pane, ...paneless } = pick;
+  expect(() => protocol.decode("viewer.pick", paneless)).toThrow("MissingField");
+  const { offset, ...offsetless } = pick;
+  expect(() => protocol.decode("viewer.pick", offsetless)).toThrow("MissingField");
+  expect(() => protocol.decode("viewer.pick", { ...pick, offset: 1n << 64n })).toThrow("Overflow");
+  expect(() => protocol.decode("viewer.pick", { ...pick, offset: 1.5 })).toThrow("UnexpectedToken");
+  expect(() => protocol.decode("viewer.pick", { ...pick, x: 65536 })).toThrow("Overflow");
+  void [pane, offset];
 });
 
 test("headless commands require provider session IDs and a first prompt", () => {

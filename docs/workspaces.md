@@ -1,7 +1,10 @@
 # Workspaces, activity and worktrees
 
 A workspace groups tabs and agents around a folder. Its sidebar shows activity,
-optional resource readings and linked Git worktrees.
+optional resource readings and linked Git worktrees. Its root stays at the folder
+chosen when creating or editing it; changing directories inside a tab, reordering
+tabs or deleting a linked worktree a tab is in does not change that root.
+`corgi workspace edit ID --cwd DIR` moves it.
 
 **Cmd+Shift+A** toggles the agent list between this workspace and all workspaces.
 The selection is remembered across viewer restarts.
@@ -90,6 +93,8 @@ any partial matches. Hold Enter or the **hold ↵ to create** button to plan it.
 **From** appears for a new worktree, defaulting to the repository's local
 default branch; Tab lets you search for another base. **Folder** previews
 the destination from the configured template.
+Reopening a planned worktree keeps its name and base, with all checkouts
+shown until you edit the name.
 
 The worktree is created only when an agent, saved command or terminal launches.
 Escaping the picker leaves nothing behind. An existing branch/folder or an
@@ -125,8 +130,8 @@ The comparison uses the local counterpart of `origin/HEAD`, then `main`,
 `master` or `trunk`; without one, comparison is unavailable.
 Enabled worktree briefs summarize commits and diffs while the overview is
 open. Press `r` to refresh them. Review changes with `e` or the worktree
-heading's menu; see [Review changes](reference.md#review-changes).
-The heading's menu also has Open folder, which focuses a shell already waiting
+name's menu in the agent list; see [Review changes](reference.md#review-changes).
+That menu also has Open folder, which focuses a shell already waiting
 at its prompt in the worktree or opens a tab there.
 
 ## Remove a worktree

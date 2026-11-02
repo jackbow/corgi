@@ -34,6 +34,7 @@ test("menu keys pick the rows each menu shows", () => {
   expect(agent.itemFor(c("f"))).toBe("fork");
   expect(agent.itemFor(c("c"))).toBe("copy-details");
   expect(agent.itemFor(c("u"))).toBe("mark-unread");
+  expect(agent.itemFor(c("s"))).toBe("star");
   expect(agent.itemFor(c("x"))).toBe("close");
   expect(agent.itemFor(c("n"))).toBeNull();
   expect(agent.itemFor(c("m"))).toBe("move");
@@ -130,7 +131,7 @@ test("crossed-out rows take no key, click or highlight", () => {
     tab: 1,
     anchor_x: 0,
     agent: true,
-    off: new Set(["rename", "fork", "copy-details", "mark-unread", "review", "move"]),
+    off: new Set(["rename", "fork", "copy-details", "mark-unread", "star", "review", "move"]),
   });
   expect(menu.itemFor(c("r"))).toBeNull();
   expect(menu.itemFor(c("f"))).toBeNull();
@@ -140,13 +141,14 @@ test("crossed-out rows take no key, click or highlight", () => {
   // Close sits apart below a rule; the menu never opens on it.
   menu.highlightFirst();
   expect(menu.highlightedItem()).toBeNull();
-  expect(menu.hit(80, 24, 5, 8)).toBeNull();
-  expect(menu.hit(80, 24, 5, 9)).toBe(6);
+  expect(menu.hit(80, 24, 5, 6)).toBeNull();
+  expect(menu.hit(80, 24, 5, 10)).toBeNull();
+  expect(menu.hit(80, 24, 5, 11)).toBe(7);
   menu.move(true);
   expect(menu.highlightedItem()).toBe("close");
   menu.move(true);
   expect(menu.highlightedItem()).toBe("close");
-  menu.off = new Set(["fork", "copy-details", "mark-unread", "review", "move"]);
+  menu.off = new Set(["fork", "copy-details", "mark-unread", "star", "review", "move"]);
   menu.move(false);
   expect(menu.highlightedItem()).toBe("rename");
   menu.move(false);

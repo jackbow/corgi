@@ -1,6 +1,7 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import {
   procSockets,
+  procInventory,
   type Socket,
   Snapshot,
   kind,
@@ -21,7 +22,9 @@ import {
   type Interface,
 } from "./ports";
 import { mkdtempSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
+import * as os from "node:os";
 import { join } from "node:path";
 test("socket inventory scopes descendants without widening network selection", () => {
   const list = processes("10 1 10 sh\n11 10 10 bun\n12 11 12 server\n20 1 20 other\n21 20 20 server");
@@ -33,6 +36,47 @@ test("socket inventory scopes descendants without widening network selection", (
   expect(command).toContain("-iUDP");
   const empty = socketCommand(list, []);
   expect(empty[empty.indexOf("-p") + 1]).toBe(String(process.pid));
+});
+test("proc inventory only opens descriptors for processes that can expose ports", async () => {
+  const list = processes("10 1 10 sh\n11 10 10 claude\n12 10 12 node\n13 12 13 server\n20 1 20 other"),
+    roots = [{ pid: 10, pane: 1, workspace: 1, agent_pid: 12 }],
+    directories = spyOn(fs, "readdir").mockResolvedValue([]);
+  try {
+    expect(await procInventory(list, roots)).toBe("");
+    expect(directories.mock.calls.map(call => call[0])).toEqual(["/proc/13/fd"]);
+  } finally {
+    directories.mockRestore();
+  }
+});
+test("interface discovery follows relevant listeners and reads fresh addresses on the next scan", () => {
+  const list = processes("10 1 10 sh\n11 10 11 server\n20 1 20 other"),
+    roots = [{ pid: 10, pane: 1, workspace: 1, agent_pid: 0 }],
+    listener = "f4\ntIPv4\nPTCP\nn*:3000\nTST=LISTEN\n",
+    addresses = spyOn(os, "networkInterfaces").mockReturnValue({});
+  try {
+    expect(sockets("", list, roots)).toEqual([]);
+    expect(sockets("p20\n" + listener, list, roots)).toEqual([]);
+    expect(sockets("p11\nf4\ntIPv4\nPTCP\nn127.0.0.1:51000->127.0.0.1:80\nTST=ESTABLISHED\n", list, roots)).toEqual([]);
+    expect(addresses).not.toHaveBeenCalled();
+    expect(sockets("p11\n" + listener + listener.replace("3000", "3001"), list, roots)).toHaveLength(2);
+    expect(addresses).toHaveBeenCalledTimes(1);
+    addresses.mockReturnValue({
+      eth0: [
+        {
+          address: "192.168.1.20",
+          family: "IPv4",
+          netmask: "255.255.255.0",
+          mac: "00:00:00:00:00:00",
+          internal: false,
+          cidr: "192.168.1.20/24",
+        },
+      ],
+    });
+    expect(sockets("p11\n" + listener, list, roots)[0].interfaces.map(i => i.address)).toEqual(["192.168.1.20"]);
+    expect(addresses).toHaveBeenCalledTimes(2);
+  } finally {
+    addresses.mockRestore();
+  }
 });
 const endpoint = (fields: Partial<Endpoint> = {}): Endpoint => ({
   label: "",

@@ -23,19 +23,22 @@ import {
 import { rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { Provider, adapter } from "./providers";
+import { Provider, adapter, byProvider } from "./providers";
 import type { Login } from "./providers/adapter";
 import { atomicWrite } from "./os";
+import * as agentName from "./agent_name";
 import * as agentOptions from "./agent_options";
 
 /** An account Corgi knows. `managed` when Corgi made its folder. */
 export type Known = { provider: Provider; dir: string; name: string; managed: boolean };
 /** The accounts besides the defaults, the folders the user removed, and
  * the names given to each provider's default account, whichever folder or
- * login that is. */
+ * login that is. `removed` says whose and what each removed folder was, so
+ * it can be added back. */
 type Saved = {
   accounts: (Known & { created?: string })[];
   forgotten: string[];
+  removed: { provider: Provider; dir: string; name: string }[];
   defaults: Partial<Record<Provider, string>>;
   launch: { provider: Provider; account: string; options: agentOptions.Options }[];
 };
@@ -90,6 +93,16 @@ export function of(provider: Provider, env: readonly (readonly [string, string])
 export function directory(provider: Provider, account: string) {
   return account || adapter(provider).accounts.home();
 }
+let homes: [string, string] = ["", ""];
+/** The folder `account` keeps its settings in, under `~` when it's in the
+ * user's home, as they would write it. */
+export function folder(provider: Provider, account: string) {
+  const dir = account || home(provider) || directory(provider, ""),
+    spelled = process.env.HOME ?? homedir();
+  if (homes[0] !== spelled) homes = [spelled, canonical(spelled)];
+  const user = homes[1];
+  return dir === user || dir.startsWith(user + "/") ? "~" + dir.slice(user.length) : dir;
+}
 /** The variables that pick `account`; none for the default. */
 export function env(provider: Provider, account: string): [string, string][] {
   return account ? [[adapter(provider).accounts.env, account]] : [];
@@ -103,11 +116,11 @@ let saved: { stamp: string; value: Saved } | null = null;
 function load(): Saved {
   let stamp = "";
   try {
-    const s = statSync(path());
-    stamp = `${s.ino}:${s.size}:${s.mtimeMs}`;
+    const s = statSync(path(), { throwIfNoEntry: false });
+    if (s) stamp = `${s.ino}:${s.size}:${s.mtimeMs}`;
   } catch {}
   if (saved?.stamp === stamp) return saved.value;
-  const value: Saved = { accounts: [], forgotten: [], defaults: {}, launch: [] };
+  const value: Saved = { accounts: [], forgotten: [], removed: [], defaults: {}, launch: [] };
   if (stamp)
     try {
       const raw = JSON.parse(readFileSync(path(), "utf8"));
@@ -130,6 +143,11 @@ function load(): Saved {
       }
       for (const dir of Array.isArray(raw?.forgotten) ? raw.forgotten : [])
         if (typeof dir === "string") value.forgotten.push(dir);
+      for (const a of Array.isArray(raw?.removed) ? raw.removed : []) {
+        const provider = Provider.parse(a?.provider);
+        if (provider && typeof a.dir === "string" && isAbsolute(a.dir) && valid(a.name))
+          value.removed.push({ provider, dir: a.dir, name: a.name });
+      }
       for (const provider of Provider.all)
         if (valid(raw?.defaults?.[provider])) value.defaults[provider] = raw.defaults[provider];
     } catch {}
@@ -140,11 +158,12 @@ function store(value: Saved) {
   atomicWrite(path(), JSON.stringify(value, null, 2) + "\n", 0o600, false);
   saved = null;
   found = null;
+  gone = null;
 }
 
 /** Names the CLI and the launcher can spell. */
 export function valid(name: unknown): name is string {
-  return typeof name === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/.test(name) && name !== "default";
+  return agentName.valid(name) && name !== "default";
 }
 /** What `dir` is called when nobody named it: `.claude-work` is "work". */
 function nameOf(provider: Provider, dir: string) {
@@ -179,7 +198,8 @@ export function known(): Known[] {
   const accounts: Known[] = [];
   for (const provider of Provider.all) {
     if (!adapter(provider).accounts.signin) continue;
-    const taken = new Set<string>(defaultName(provider) ? [defaultName(provider)] : []),
+    const name = value.defaults[provider],
+      taken = new Set<string>(name ? [name] : []),
       add = (dir: string, name: string, managed: boolean) => {
         const account = normalize(provider, dir);
         if (!account || accounts.some(a => a.provider === provider && a.dir === account)) return;
@@ -197,11 +217,15 @@ export function known(): Known[] {
 export function find(provider: Provider, account: string): Known | null {
   return account ? (known().find(a => a.provider === provider && a.dir === account) ?? null) : null;
 }
-/** The account the CLI names: `work`, or `claude/work` when two providers share it. */
+/** Match a literal display name or its provider-qualified spelling. */
+export function matchesName(spelled: string, provider: Provider, name: string): boolean {
+  return spelled === name || spelled === `${provider}/${name}`;
+}
+/** The account the CLI names, rejecting collisions between names and qualifiers. */
 export function named(spelled: string, provider: Provider | null = null): Known | null {
-  const [first, rest] = spelled.includes("/") ? spelled.split("/", 2) : [null, spelled],
-    only = first ? Provider.parse(first) : provider,
-    matches = known().filter(a => a.name === rest && (!only || a.provider === only));
+  const matches = known().filter(
+    a => (!provider || a.provider === provider) && matchesName(spelled, a.provider, a.name),
+  );
   if (matches.length > 1) throw Error("AmbiguousAccount");
   return matches[0] ?? null;
 }
@@ -262,6 +286,10 @@ export function unused(provider: Provider, name: string, except: string | null =
 export function defaultName(provider: Provider): string {
   return load().defaults[provider] ?? "";
 }
+export function defaultNames(): Record<Provider, string> {
+  const value = load();
+  return byProvider(provider => value.defaults[provider] ?? "");
+}
 /** Calls `provider`'s default account `name`, or nothing for "". The name
  * stays with the default, whoever signs in to it. */
 export function renameDefault(provider: Provider, name: string) {
@@ -272,9 +300,7 @@ export function renameDefault(provider: Provider, name: string) {
 /** Extra launch settings for an account, shared by every workspace and environment. */
 export function launchOptions(provider: Provider, account: string): agentOptions.Options {
   const options = load().launch.find(a => a.provider === provider && a.account === account)?.options;
-  return options
-    ? { flags: options.flags, env: options.env.map(([key, value]) => [key, value]) }
-    : agentOptions.empty();
+  return options ? { ...options, env: options.env.map(([key, value]) => [key, value]) } : agentOptions.empty();
 }
 /** Save the edit form as one private, atomic accounts.json update. */
 export function configure(provider: Provider, account: string, name: string, options: agentOptions.Options): void {
@@ -296,7 +322,9 @@ export function configure(provider: Provider, account: string, name: string, opt
     defaults: account ? value.defaults : { ...value.defaults, [provider]: name || undefined },
     launch: [
       ...value.launch.filter(a => a.provider !== provider || a.account !== account),
-      ...(clean.flags || clean.env.length ? [{ provider, account, options: clean }] : []),
+      ...(clean.flags || clean.env.length || clean.model || clean.effort
+        ? [{ provider, account, options: clean }]
+        : []),
     ],
   });
 }
@@ -398,6 +426,7 @@ function list(account: Known, created?: string) {
       { ...account, ...(created === undefined ? {} : { created }) },
     ],
     forgotten: value.forgotten.filter(d => d !== account.dir),
+    removed: value.removed.filter(r => !(r.provider === account.provider && r.dir === account.dir)),
   });
   return account;
 }
@@ -555,9 +584,58 @@ export async function remove(account: Known): Promise<boolean> {
       a => !(a.provider === account.provider && (a.dir === account.dir || canonical(a.dir) === dir)),
     ),
     forgotten: owned || value.forgotten.includes(dir) ? value.forgotten : [...value.forgotten, dir],
+    removed: [
+      ...value.removed.filter(r => !(r.provider === account.provider && r.dir === dir)),
+      ...(owned ? [] : [{ provider: account.provider, dir, name: account.name }]),
+    ],
     launch: value.launch.filter(a => a.provider !== account.provider || a.account !== account.dir),
   });
   return owned;
+}
+/** The accounts the user removed whose folders are still there, which
+ * Manage agents offers to add back: those Corgi recorded, then those Omarchy
+ * keeps. */
+let gone: { at: number; stamp: unknown; accounts: Known[] } | null = null;
+export function removed(): Known[] {
+  const value = load(),
+    now = Date.now();
+  if (gone && gone.stamp === value && now - gone.at < 5000) return gone.accounts;
+  const out: Known[] = [];
+  for (const provider of Provider.all) {
+    if (!adapter(provider).accounts.signin) continue;
+    const add = (dir: string, name: string) => {
+      const account = canonical(dir);
+      if (
+        value.forgotten.includes(account) &&
+        account !== home(provider) &&
+        existsSync(account) &&
+        !out.some(a => a.provider === provider && a.dir === account) &&
+        !find(provider, account)
+      )
+        out.push({ provider, dir: account, name, managed: false });
+    };
+    for (const r of value.removed) if (r.provider === provider) add(r.dir, r.name);
+    for (const a of omarchy(provider)) add(a.dir, a.name);
+  }
+  gone = { at: now, stamp: value, accounts: out };
+  return out;
+}
+/** Lists a removed account again, by the name it had when there's no other
+ * account by that name. */
+export function restore(provider: Provider, dir: string): Known {
+  const gone = removed().find(a => a.provider === provider && a.dir === dir);
+  if (!gone) throw Error("AccountNotFound");
+  const taken = new Set([...known().flatMap(a => (a.provider === provider ? [a.name] : [])), defaultName(provider)]);
+  let name = gone.name;
+  for (let i = 2; taken.has(name); i++) name = numbered(gone.name, i);
+  return list({ ...gone, name });
+}
+/** `name` numbered `n`, cut short so the whole stays a valid name. */
+function numbered(name: string, n: number): string {
+  const suffix = `-${n}`,
+    chars = [...name];
+  while (chars.length > 1 && Buffer.byteLength(chars.join("") + suffix) > agentName.limit) chars.pop();
+  return chars.join("").trimEnd() + suffix;
 }
 /** Fills an account's folder with links to the setup the default account
  * shares; its login and conversations stay its own. A folder the default
@@ -578,4 +656,5 @@ export function reset() {
   defaults.clear();
   saved = null;
   found = null;
+  gone = null;
 }

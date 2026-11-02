@@ -2,23 +2,29 @@
 //! under the text that glides from where the row was to where it lands,
 //! then fades there. The text itself only moves by whole rows. Hosts
 //! without Kitty graphics get a truecolor tint where the row lands.
-import { deflateSync } from "node:zlib";
+import { crc32, deflateSync } from "node:zlib";
 import { colors } from "./palette";
 import type { Cell } from "./fork_hero";
 
 export const glide_ms = 300,
+  /** How long the tint stays where it lands, at full strength, so the eye finds it. */
+  linger_ms = 900,
   land_ms = 700,
   /** The truecolor tint's fade, where there is no image to glide. */
   tint_ms = 900;
 /** How long after a move its row still animates. */
-export const total_ms = Math.max(glide_ms + land_ms, tint_ms);
+export const total_ms = Math.max(glide_ms + linger_ms + land_ms, linger_ms + tint_ms);
 const strength = 0.2,
   appear_ms = 70,
   /** The row's text fades in from halfway through the glide, over this long. */
   reveal_ms = 170;
 const image_id = 730120;
+export const manager_image_id = 730121;
 /** Hides the tint. Freeing it also discards unrelated unplaced images on old Kitty. */
-export const hide = `\x1b7\x1b[1;1H\x1b_Ga=d,d=i,i=${image_id},q=2\x1b\\\x1b8`;
+export function hideImage(id: number): string {
+  return `\x1b7\x1b[1;1H\x1b_Ga=d,d=i,i=${id},q=2\x1b\\\x1b8`;
+}
+export const hide = hideImage(image_id);
 
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
 function ease(x: number) {
@@ -33,11 +39,11 @@ function smooth(x: number) {
 export function position(from: number, to: number, ms: number): number {
   return from + (to - from) * ease(clamp01(ms / glide_ms));
 }
-/** The tint's opacity `ms` after the move: it appears as it sets off, and
- * fades where it lands. */
+/** The tint's opacity `ms` after the move: it appears as it sets off,
+ * lingers where it lands, then fades. */
 export function opacity(ms: number): number {
   if (ms < glide_ms) return strength * smooth(ms / appear_ms);
-  return strength * (1 - clamp01((ms - glide_ms) / land_ms)) ** 2;
+  return strength * (1 - smooth((ms - glide_ms - linger_ms) / land_ms));
 }
 /** How faded the moved row's text is, as `writeExit` takes it: gone while
  * the tint is on its way, then in as it lands; null once it is in. */
@@ -45,25 +51,39 @@ export function fade(ms: number): number | null {
   const shown = (ms - glide_ms / 2) / reveal_ms;
   return shown >= 1 ? null : 1 - clamp01(shown);
 }
-/** How far the truecolor fallback tints the row toward accent. */
+/** How far the truecolor fallback tints the row toward accent: fully while
+ * it lingers, then fading. */
 export function tint(ms: number): number {
-  return ms >= tint_ms ? 0 : strength * (1 - ms / tint_ms) ** 2;
+  return strength * (1 - smooth((ms - linger_ms) / tint_ms));
 }
 
+function chunk(type: string, data: Uint8Array): Buffer {
+  const out = Buffer.alloc(12 + data.length);
+  out.writeUInt32BE(data.length);
+  out.write(type, 4, "latin1");
+  out.set(data, 8);
+  out.writeUInt32BE(crc32(out.subarray(4, 8 + data.length)), 8 + data.length);
+  return out;
+}
 const encoded = new Map<string, string>();
+/** A 1-bit PNG whose one palette entry is the accent at `alpha`. PNG
+ * rather than o=z: Ghostty 1.3.1 crashes inflating o=z images over 64 KiB. */
 function pixels(width: number, height: number, alpha: number): string {
   const key = `${width}x${height}:${alpha}`;
   let data = encoded.get(key);
   if (data === undefined) {
-    const rgba = Buffer.alloc(width * height * 4);
-    const [r, g, b] = colors.accent;
-    for (let i = 0; i < rgba.length; i += 4) {
-      rgba[i] = r;
-      rgba[i + 1] = g;
-      rgba[i + 2] = b;
-      rgba[i + 3] = alpha;
-    }
-    data = deflateSync(rgba, { level: 1 }).toString("base64");
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(width);
+    ihdr.writeUInt32BE(height, 4);
+    ihdr.set([1, 3, 0, 0, 0], 8);
+    data = Buffer.concat([
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      chunk("IHDR", ihdr),
+      chunk("PLTE", Uint8Array.from(colors.accent)),
+      chunk("tRNS", Uint8Array.of(alpha)),
+      chunk("IDAT", deflateSync(new Uint8Array((Math.ceil(width / 8) + 1) * height))),
+      chunk("IEND", new Uint8Array()),
+    ]).toString("base64");
     if (encoded.size >= 128) encoded.clear();
     encoded.set(key, data);
   }
@@ -80,6 +100,7 @@ export function place(
   clip: { top: number; bottom: number },
   alpha: number,
   cell: Cell,
+  id = image_id,
 ): string {
   const width = cols * cell.width,
     height = rows * cell.height,
@@ -91,7 +112,7 @@ export function place(
   if (width <= 0 || to <= from || level === 0) return "";
   const shown = top + from,
     row = Math.floor(shown / cell.height);
-  const keys = `a=T,f=32,o=z,s=${width},v=${height},i=${image_id},p=1,Y=${shown - row * cell.height},y=${from},h=${to - from},z=-1,C=1,q=2`;
+  const keys = `a=T,f=100,i=${id},p=1,Y=${shown - row * cell.height},y=${from},h=${to - from},z=-1,C=1,q=2`;
   const data = pixels(width, height, level);
   let out = `\x1b7\x1b[${row + 1};${x + 1}H`;
   for (let offset = 0; offset < data.length; offset += 4096) {

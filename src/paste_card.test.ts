@@ -3,7 +3,10 @@ import { expect, test } from "bun:test";
 import { keycap } from "./palette";
 import { Rect } from "./layout";
 import { place, draw, linkAt, styles } from "./paste_card";
-import { State, nightly_url } from "./host_clipboard";
+import { State, download_url } from "./host_clipboard";
+import * as i18n from "./i18n";
+import { Terminal } from "./pane/terminal";
+import { displayWidth } from "./text";
 
 function sample() {
   const s = new State();
@@ -26,8 +29,9 @@ test("the card opens above the caret, or below it when the pane has no room", ()
   expect(below.arrow!.glyph).toBe("▴");
   // Near the right edge the card stays inside the pane.
   expect(place(notice, pane, { x: 94, y: 10 })!.x).toBe(pane.x + pane.w - above.w);
-  // A narrow pane shortens the download link before giving up.
-  expect(place(notice, new Rect(0, 0, 60, 14), { x: 3, y: 10 })!.w).toBe(60);
+  // The download link fits in the text's width; a narrower pane gives up.
+  expect(place(notice, new Rect(0, 0, 49, 14), { x: 3, y: 10 })!.w).toBe(49);
+  expect(place(notice, new Rect(0, 0, 48, 14), { x: 3, y: 10 })).toBeNull();
   expect(place(notice, new Rect(0, 0, 30, 14), { x: 3, y: 9 })).toBeNull();
   expect(place(notice, new Rect(0, 0, 80, 8), { x: 3, y: 4 })).toBeNull();
   expect(place(notice, pane, null)!.arrow).toBeNull();
@@ -44,9 +48,9 @@ test("the card shows its title, close key, reason and fix with a link", () => {
     keycap + " esc ",
     " close ",
     "Ghostty 1.3.1 can't send images over SSH.",
-    "\x1b]8;;" + nightly_url + "\x1b\\\x1b[4mGhostty Nightly\x1b[24m",
+    "\x1b]8;;" + download_url + "\x1b\\\x1b[4mGhostty 1.4\x1b[24m",
     styles.heading + "⌘+V",
-    "Download: " + styles.text + "\x1b]8;;" + nightly_url + "\x1b\\\x1b[4m" + nightly_url,
+    "Download: " + styles.text + "\x1b]8;;" + download_url + "\x1b\\\x1b[4m" + download_url,
     "\x1b[10;30H" + styles.pointer + "▾",
   ])
     expect(drawn).toContain(part);
@@ -61,11 +65,11 @@ test("both links answer the pointer, and nothing else on the card does", () => {
   const notice = sample();
   const at = place(notice, new Rect(26, 1, 80, 14), { x: 29, y: 10 })!;
   const left = at.x + 1 + 3;
-  // "Use " then "Ghostty Nightly" on the fix row.
+  // "Use " then "Ghostty 1.4" on the fix row.
   expect(linkAt(notice, at, left + 3, at.y + 4)).toBe(false);
   expect(linkAt(notice, at, left + 4, at.y + 4)).toBe(true);
-  expect(linkAt(notice, at, left + 18, at.y + 4)).toBe(true);
-  expect(linkAt(notice, at, left + 19, at.y + 4)).toBe(false);
+  expect(linkAt(notice, at, left + 14, at.y + 4)).toBe(true);
+  expect(linkAt(notice, at, left + 15, at.y + 4)).toBe(false);
   expect(linkAt(notice, at, left + 9, at.y + 5)).toBe(false);
   expect(linkAt(notice, at, left + 10, at.y + 5)).toBe(true);
   expect(linkAt(notice, at, left + 10, at.y + 2)).toBe(false);
@@ -77,4 +81,56 @@ test("both links answer the pointer, and nothing else on the card does", () => {
   expect(plain_at.h).toBe(7);
   // Nothing to open, so no hint.
   expect(draw(plain, plain_at, false)).not.toContain(styles.open_hint);
+});
+
+test("translated clipboard hints wrap in split panes and keep their links clickable", () => {
+  const original = i18n.language();
+  try {
+    for (const locale of i18n.locales) {
+      i18n.setLanguage(locale);
+      for (const width of [32, 44, 80]) {
+        const notice = sample(),
+          at = place(notice, new Rect(2, 0, width, 26), { x: 5, y: 24 });
+        expect(at).not.toBeNull();
+        const terminal = new Terminal(90, 26);
+        try {
+          terminal.feed(draw(notice, at!, false));
+          const lines = terminal.text().split("\n"),
+            card = lines.slice(at!.y, at!.y + at!.h),
+            prose = card
+              .slice(1, -1)
+              .map(line => line.trim().slice(1, -1).trim())
+              .join("");
+          expect(prose.replace(/\s/g, "")).toContain(notice.body.text().replace(/\s/g, ""));
+          const fix = notice
+            .fix()
+            .map(part => part.text.text())
+            .join("");
+          expect(prose.replace(/\s/g, "")).toContain(fix.replace(/\s/g, ""));
+          expect(card[0]).toContain("esc");
+          for (const line of card) expect(displayWidth(line.trimEnd())).toBe(at!.x + at!.w);
+          let linkedCells = 0,
+            linkedText = "";
+          for (let y = at!.y + 1; y < at!.y + at!.h - 1; y++) {
+            let x = 0;
+            for (const char of lines[y]) {
+              if (linkAt(notice, at!, x, y)) {
+                expect(char).not.toBe("│");
+                linkedCells++;
+                linkedText += char;
+              }
+              x += displayWidth(char);
+            }
+          }
+          expect(linkedCells).toBeGreaterThanOrEqual(displayWidth("Ghostty 1.4"));
+          expect(linkedText.replace(/\s/g, "")).toContain("Ghostty1.4");
+          expect(linkAt(notice, at!, at!.x + at!.w - 1, at!.y + 4)).toBe(false);
+        } finally {
+          terminal.destroy();
+        }
+      }
+    }
+  } finally {
+    i18n.setLanguage(original);
+  }
 });

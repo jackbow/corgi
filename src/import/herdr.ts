@@ -1,6 +1,7 @@
 //! Herdr read-only discovery and copy transactions.
+import * as breadcrumbs from "../breadcrumbs";
 import { createConnection } from "node:net";
-import { readdirSync, statSync, mkdirSync, writeFileSync, rmSync, readlinkSync } from "node:fs";
+import { readdirSync, statSync, mkdirSync, writeFileSync, rmSync, readlinkSync, realpathSync } from "node:fs";
 import { join, isAbsolute, basename } from "node:path";
 import { Runtime, Pane, Create } from "../runtime";
 import { Model, Tab, max_panes, max_workspaces } from "../layout";
@@ -204,6 +205,14 @@ export function clearTree(model: Model, index: number): void {
   }
   model.nodes[index] = null;
 }
+/** A folder as the kernel reports it, or as given when it's gone. */
+function resolved(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
 export function ratio(value: any): number {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.max(100, Math.min(900, Math.trunc(value * 1000)))
@@ -355,7 +364,7 @@ export function seedTerminal(terminal: import("../pane/terminal").Terminal, stat
 }
 
 import { randomBytes } from "node:crypto";
-import { Workspace } from "../workspace";
+import * as workspace from "../workspace";
 import { Terminal } from "../pane/terminal";
 import { n, ptr } from "../native_ffi";
 import { ReadyLoop, READ, WRITE, wouldBlock } from "../fd_loop";
@@ -542,6 +551,7 @@ export class Manager {
         job.reserved = true;
         job.approve?.();
       } catch (error) {
+        job.releaseBindings();
         job.preparation_failure = (error as Error).message;
         job.cancel = true;
         job.approve?.();
@@ -554,8 +564,10 @@ export class Manager {
         pane.terminal.adopt(job.fds[i], job.pids[i]);
         job.fds[i] = -1;
         runtime.panes.push(pane);
+        breadcrumbs.record("imported", { owner: pane });
       }
       runtime.workspaces.items.push(...job.staged.workspaces.items);
+      job.releaseBindings();
       job.staged.panes = [];
       job.staged.workspaces.items = [];
       job.adopted = true;
@@ -584,6 +596,8 @@ export class Job {
   failure = "";
   preparation_failure = "";
   staged = new Runtime();
+  /** Herdr's names for its workspaces, by id, read before the handoff. */
+  labels = new Map<string, string>();
   fds: number[] = [];
   pids: number[] = [];
   reserved = false;
@@ -603,6 +617,7 @@ export class Job {
     try {
       await this.transfer();
     } catch (error) {
+      this.releaseBindings();
       this.failure = this.cancel ? this.preparation_failure || (error as Error).message : (error as Error).message;
       for (const fd of this.fds) if (fd >= 0) n.probe_close(fd);
       this.fds = [];
@@ -621,9 +636,13 @@ export class Job {
   }
   cleanup() {
     if (this.phase === "complete" && !this.adopted) return;
+    this.releaseBindings();
     this.staged.destroy();
     for (const fd of this.fds) if (fd >= 0) n.probe_close(fd);
     this.fds = [];
+  }
+  releaseBindings() {
+    for (const pane of this.staged.panes) this.target?.pending_bindings.delete(pane.attachment);
   }
   prepare(runtime: Runtime) {
     if (
@@ -633,6 +652,7 @@ export class Job {
       throw Error("TooManyWorkspaces");
     const offset = runtime.workspaces.next_pane_id;
     if (offset > 0xffffffff - this.staged.workspaces.next_pane_id) throw Error("TooManyPanes");
+    this.target = runtime;
     for (const pane of this.staged.panes) {
       pane.id += offset;
       const hint = pane.resume_hint;
@@ -643,6 +663,7 @@ export class Job {
           actor.state.observation.source = "screen";
         }
         pane.attachment.select(actor);
+        runtime.pending_bindings.add(pane.attachment);
       }
     }
     for (const ws of this.staged.workspaces.items) {
@@ -653,7 +674,6 @@ export class Job {
       ws.model.next_id += offset;
     }
     runtime.workspaces.next_pane_id = offset + this.staged.workspaces.next_pane_id;
-    this.target = runtime;
   }
   restoreManifest(manifest: any) {
     const snapshots = list(manifest?.snapshot?.workspaces),
@@ -686,8 +706,14 @@ export class Job {
     for (const snapshot of snapshots) {
       const cwd = text(snapshot, "identity_cwd");
       if (!isAbsolute(cwd)) throw Error("InvalidHerdrDirectory");
-      const ws = new Workspace(this.staged.workspaces.next_id++, cwd);
-      ws.rename(text(snapshot, "custom_name"));
+      // The name Herdr shows: its custom name, or the one it derives.
+      const name = this.labels.get(text(snapshot, "id")) || text(snapshot, "custom_name");
+      // Panes report resolved folders.
+      const ws = new workspace.Workspace(
+        this.staged.workspaces.next_id++,
+        resolved(cwd),
+        workspace.label(name) ? name : undefined,
+      );
       const tabs = list(snapshot.tabs);
       if (!tabs.length) throw Error("InvalidHerdrLayout");
       for (const tab of tabs) {
@@ -722,6 +748,10 @@ export class Job {
   async transfer() {
     const pong = await rpc(this.source, "ping", {});
     if (pong?.capabilities?.live_handoff !== true) throw Error("HerdrHandoffUnsupported");
+    // The manifest saves only custom names; Herdr derives the rest as it draws them.
+    // Without them, workspaces take their custom names or folders'.
+    const shown = (await rpc(this.source, "session.snapshot", {}).catch(() => null))?.snapshot;
+    for (const ws of list(shown?.workspaces)) this.labels.set(text(ws, "workspace_id"), text(ws, "label"));
     const dir = `/tmp/corgi-${process.getuid?.() ?? 0}/herdr-${randomBytes(8).toString("hex")}`;
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const path = join(dir, "bridge.sock"),

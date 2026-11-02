@@ -34,16 +34,37 @@ Even an isolated Corgi environment imports from real source sessions.
 ## Tabs and panes
 
 **prefix c** opens the [agent and terminal picker](agent-launcher.md).
-**prefix N** creates a workspace; choose its name and folder, then press Enter
-to create it. Missing folders can be created from the folder picker.
+**prefix N** creates a workspace; choose its name and folder, then press Enter.
+The name starts as the folder's and stays as created until you rename it.
+Missing folders can be created from the folder picker. A name already in use
+gets a number: "Foo", "Foo · 2".
 
 Click a tab, pane or sidebar agent to focus it. Drag split dividers to resize.
 Right-click tabs, panes and agents for their actions; hold Shift when an
-application captures the mouse. Drag workspace or agent rows to reorder them.
+application captures the mouse. Drag workspace rows to reorder them.
+
+The agent list defaults to manual order, as dragged. New agents go on top,
+or first in their existing linked worktree group. Choose Sort: By activity
+in the "agents: … ▾" menu to group agents by what they are doing: working
+(including those waiting on you, in warm, and paused ones), ready to read,
+idle and done. A new agent stays dimmed in working through startup and idle,
+until its first prompt starts work. Each section keeps the order you drag it
+into; an agent that enters one goes on top. Agents next to each other in a linked worktree share a ⌥
+label, and ⌥ main marks where they stop. Click a section's header to fold it;
+done starts folded. Right-click an agent and choose **Star** or **Unstar**
+(`s` while the menu is open). Starred agents stay in the top **★ starred**
+section as their activity changes. Dragging only reorders agents within
+their section; it never stars or unstars them. Stars and order are shared
+and saved with the workspace; they don't move panes. Stars follow conversations
+when closed and resumed in that workspace, and show beside their titles in
+its new-tab history.
+Sort: Manual in the "agents: … ▾" menu keeps the dragged order and marks starred
+agents with ★. Starring does not change the selected sort.
+The default sort stays out of the preferences file until you choose a sort.
+
 Choose **Move tab to workspace…** on a tab or agent to move its whole tab,
 including splits and running processes, and follow it to the chosen workspace.
 Use Up/Down and Enter, a number key, or a click to choose; Esc goes back.
-Workspace and agent order is shared; rearranging agents does not move panes.
 
 Use **prefix w** to choose a workspace, **prefix a** to choose an agent, and
 **prefix g** to search agents in the Corgi preset; in the focused agent list,
@@ -65,14 +86,111 @@ Viewers share processes and layout but keep their own selection and zoom.
 A pane takes its size from the last-used viewer displaying it; other viewers
 clip or pad it. Hidden panes keep their last size.
 
+In the tmux preset, **prefix l** returns to the last visited tab in the current
+workspace, and **prefix L** returns to the last visited workspace. Press again
+to toggle back. Each viewer keeps its own history, including shell tabs. If the
+previous target has been closed, Corgi shows a notice and keeps the current
+selection. The `last-tab` and `last-workspace` actions can also be bound in any
+preset through the shortcut editor.
+
 After a crash or reboot, Corgi restores saved layout and output. Recorded agent
 sessions return dormant and resume when their pane gets focus; other panes
 start new shells. Recovery cannot restore arbitrary process memory. See
 [reload and recovery details](../HACKING.md).
 
+### Customize shortcuts
+
+Open **prefix ?**, then **Ctrl+E**, or **Corgi setup → Keymap → Customize**.
+Use `/` to filter by action or key, arrows or Tab to select a shortcut, and
+Enter to edit it. Click an alternate to edit that exact binding; `+` adds
+another. **Ctrl+L** hides or shows alternatives. The `◇` symbol means your
+prefix; direct bindings have no diamond. All text uses ordinary terminal
+cells, including the stacked Focus and Swap keycaps.
+
+Help caps at 112 columns and adapts to the available space. Focus and Swap
+stack when necessary while keeping their directional arrangement. In very
+narrow terminals, Panes follows Tabs before the remaining sections. Long
+bindings wrap, and a scroll indicator marks content outside the visible area.
+
+Every edit opens a compact dialog. Controls use unfilled outlines, color,
+and bold, with a green focus marker. Short or narrow terminals use a denser
+layout. Arrows move between controls; Enter chooses. Select a binding chip
+to edit that alternative, or `+` to add another. **Use prefix** toggles whether
+the shortcut follows the prefix or runs directly. Record a shortcut to capture
+its modifiers. `◇` denotes the prefix and `⇧` denotes Shift.
+
+For **Select tab** and **Select workspace**, the Keys dropdown offers numeric
+and function-key ranges (`[1..9]`, `[F1..F9]`), or an arbitrary ordered set recorded one key at a
+time. Enter finishes recording a set; Backspace removes its last key. Only
+key sets have a separate modifier dropdown: Ctrl, Alt and Shift toggle
+independently with Space, Enter or a click. The menu stays open for multiple
+changes. A dash means only some keys have that modifier; toggling it applies
+it to the whole set. Dropdowns open below their fields; Esc closes a dropdown
+first, otherwise it cancels the entire edit.
+
+**Remove** or Backspace deletes the selected binding and selects the next
+remaining binding. Keep pressing Backspace to clear the action. Ctrl+Z or
+Cmd+Z undoes removals one at a time. **Save** applies all edits to the action;
+**Cancel** discards them. **Use defaults** restores the action's preset bindings;
+Save applies the restoration. The defaults row stays hidden when the bindings
+already match the preset, without moving the controls or resizing the dialog.
+A conflicting key
+shows its current owner before **Move** saves it. A member of an indexed set
+cannot be reassigned separately.
+
+Overrides live in `$XDG_STATE_HOME/corgi/viewer.json`, normally
+`~/.local/state/corgi/viewer.json`. Add a `keys` object to the existing file:
+
+```json
+{
+  "preset": "corgi",
+  "prefix": "ctrl_b",
+  "keys": {
+    "new": ["prefix+y", "ctrl+alt+n"],
+    "split:right": "prefix+v",
+    "tab": "prefix+1..9",
+    "close": []
+  }
+}
+```
+
+An omitted action inherits the preset. A string replaces all its shortcuts;
+an array supplies alternatives; `[]` unbinds it. Action names are those used
+by `corgi action`; append an argument with a colon, such as `focus:left`.
+`tab` and `goto-workspace` each describe a complete indexed set. Numeric and
+function-key ranges expand in order. For another layout, use an explicit set:
+
+```json
+{ "tab": { "keys": ["prefix+&", "prefix+é", "prefix+'"] } }
+```
+
+Each key in that set selects the corresponding tab, starting with tab one.
+Use a literal single character, or `space`, `enter`, `tab`, `backspace`,
+`insert`, `delete`, `home`, `end`, `pageup`, `pagedown`, an arrow name, or
+`f1` through `f25`. Spell a literal plus as `plus`. Modifiers are `ctrl`,
+`alt` (`opt`), `shift`, and `cmd` (`super`). Unmodified uppercase ASCII letters imply
+Shift. Escape and the configured prefix key are reserved.
+
+Bindings follow the logical characters received from the terminal, so a set
+can use the characters on your keyboard instead of assuming a US number row.
+They do not track physical key positions after changing layouts. Some key
+combinations require terminal forwarding or an enhanced keyboard protocol;
+for example, legacy terminals cannot distinguish Ctrl+I from Tab or Ctrl+M
+from Enter. The recorder shows what Corgi actually receives. Command/Super
+also requires host forwarding. Its toggle appears only for an existing or
+recorded Command binding; ordinary modifier choices do not assume support.
+
+Valid edits reload in open viewers. Invalid JSON, unknown actions and
+conflicting custom shortcuts leave the working bindings active. A custom shortcut
+replaces an ordinary preset binding only when both its chord (key and modifiers)
+and prefix mode match. Direct and prefixed shortcuts coexist. Indexed sets must be
+changed as a whole. Viewers refuse to save over a malformed file or a stale
+editor. If you unbind help, run `corgi action keybindings` from a pane to reopen
+the editor. Remove an action's override to inherit its preset again.
+
 ### All shortcuts
 
-This is the table printed by `corgi keys`. Keys without `prefix` are held
+These are the preset defaults printed by `corgi keys`; the interactive help shows your active overrides. Keys without `prefix` are held
 with their modifiers. In resize mode, `h/j/k/l` resize and another key exits.
 tmux tab numbering starts at zero; other presets start at one.
 
@@ -81,6 +199,7 @@ tmux tab numbering starts at zero; other presets start at one.
 | New tab (agent picker) | `prefix c`, `Ctrl+T` | `prefix c` | `prefix c` | `Cmd+T`, `prefix c` |
 | Next tab | `prefix n` | `prefix n` | `prefix n` | `Cmd+Shift+]`, `prefix n` |
 | Previous tab | `prefix p` | `prefix p` | `prefix p` | `Cmd+Shift+[`, `prefix p` |
+| Last visited tab |  | `prefix l` |  |  |
 | Select tab | `prefix 1–9` | `prefix 0–9` | `prefix 1–9` | `Ctrl+1–9`, `prefix 1–9` |
 | Rename tab | `prefix T`, `prefix ,` | `prefix ,` | `prefix T` | `Cmd+R`, `prefix T`, `prefix ,` |
 | Close tab | `prefix X` | `prefix &` | `prefix X` | `prefix X` |
@@ -88,6 +207,7 @@ tmux tab numbering starts at zero; other presets start at one.
 | Edit workspace | `prefix W` | `prefix $` | `prefix W` | `Cmd+Shift+R`, `prefix W` |
 | Next workspace | `prefix }` | `prefix }` | `prefix }` | `prefix }` |
 | Previous workspace | `prefix {` | `prefix {` | `prefix {` | `prefix {` |
+| Last visited workspace |  | `prefix L` |  |  |
 | Choose workspace | `prefix w` | `prefix s` | `prefix w`, `prefix g` | `Cmd+P`, `prefix w` |
 | Select workspace |  |  |  | `Cmd+1–9` |
 | Close workspace |  |  | `prefix D` | `Cmd+Shift+W` |
@@ -214,13 +334,13 @@ says what each workspace shows.
 Commands do not implicitly start a missing runtime.
 
 When a coding agent (Claude Code, Codex, Cursor, Gemini CLI, Copilot, or one
-that sets `AI_AGENT`) runs these commands through a pipe, Corgi compacts what
-the agent reads: `--help` lists only these commands, and `pane read` trims line
-ends, shortens rules and collapses blank runs. `--agent` and `--no-agent` force
-it either way, as does `CORGI_AGENT_MODE=1` or `0`.
+that sets `AI_AGENT`) runs these commands through a pipe, `pane read` trims
+line ends, shortens rules and collapses blank runs. `--agent` and `--no-agent`
+force it either way, as does `CORGI_AGENT_MODE=1` or `0`.
 
-Use `corgi --help` and each command's `--help` for syntax, or `corgi --skill`
-for the [bundled scripting guide](../assets/corgi-skill.md).
+`corgi --help` always lists all commands. Use `corgi pane read --help` or
+`corgi help pane read` for a command's syntax, or `corgi --skill` for the
+[bundled scripting guide](../assets/corgi-skill.md).
 [Agent internals](agents.md) covers hooks and headless provider sessions.
 
 ### Agents behind a bridge

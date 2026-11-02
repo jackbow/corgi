@@ -1,3 +1,4 @@
+import type { Effort } from "./effort";
 import type { Hook, Text } from "./common";
 import type { Quit } from "../subprocess";
 import type { Info as Account } from "../usage/account";
@@ -41,6 +42,7 @@ export type Event =
   | { kind: "turn"; session: string; turn: string; phase: "started" }
   | { kind: "turn"; session: string; turn: string; phase: "ended"; outcome: Outcome }
   | { kind: "message"; session: string; text: string }
+  | { kind: "activity"; session: string; turn: string; text: string; amend: boolean }
   | { kind: "tool"; session: string; turn: string; id: string; done: boolean; wrote: string[] }
   | { kind: "request"; session: string; id: string; ask: Ask }
   | { kind: "request_closed"; session: string; id: string; running: boolean }
@@ -284,7 +286,12 @@ export type Info = {
   command: string;
   /** False when permission policy belongs to extensions, with no CLI bypass. */
   bypass?: boolean;
+  /** How its processes show; the native layer gets these too. */
+  programs: Programs;
 };
+/** An agent CLI's executable names, paths only its installs contain, and the
+ * scripts an interpreter runs for it. */
+export type Programs = { names: string[]; markers?: string[]; scripts?: string[] };
 /** How an agent asks before acting: as its own settings say, or never. */
 export type Permissions = "default" | "bypass";
 /** What a launch asks of a new agent: its permission checks and model, as
@@ -297,6 +304,8 @@ export type Kept = { args: string[]; env: [string, string][] };
 export type Inference = { instructions: string; model: string | null; schema: string | null };
 /** An authenticated chat model; prices are catalog dollars per million tokens. */
 export type InferenceModel = {
+  efforts?: Effort[];
+  default_effort?: Effort;
   id: string;
   name: string;
   /** The signed-in user for this model's provider, when available. */
@@ -320,14 +329,16 @@ export type Fork = {
 export type Caps = {
   /** A prompt's hook ID names the turn it opens. */
   prompt_turns: boolean;
-  /** The subagent list its Stop hook reports holds until the next one. */
-  children_at_stop: boolean;
+  /** Child lifecycle holds until another hook, rather than expiring between polls. */
+  children_from_hooks: boolean;
   /** The cwd its hooks report follows the shell's `cd`. */
   follows_cd: boolean;
   /** Its chat view titles the terminal; the screen it shows while a session loads doesn't. */
   titles_once_loaded: boolean;
   /** Its transcripts show which tools run, beyond what its hooks report. */
   transcript_tools: boolean;
+  /** Its own tool intents replace inferred activity summaries. */
+  native_activity?: boolean;
 };
 /** What a provider's hooks tell beyond its lifecycle. */
 export interface Conversation {
@@ -343,8 +354,6 @@ export interface Conversation {
 /** Everything core asks a provider. Each one lives in `providers/<name>/`. */
 export interface Adapter extends Info {
   caps: Caps;
-  /** Whether an executable, script or package at `path` is this provider. */
-  owns(path: string): boolean;
   inspect(c: CommandLine): Inspection;
   /** Where it may be installed besides PATH, most likely first. `root`
    * prefixes system locations so tests can stand in for them. */
@@ -369,6 +378,10 @@ export interface Adapter extends Info {
    * the pane then shows the conversation its title names. */
   titleSession?(title: string): Text | null;
   launch: {
+    /** Merge configured model and effort overrides with extra flags. */
+    options(args: string[], model?: string, effort?: Effort): string[];
+    /** Read-only launcher catalog, when inference discovery would probe access. */
+    models?(account: string, quit: Quit): Promise<InferenceModel[]>;
     /** Prepares a terminal session before exec, reporting its identity when
      * the provider's UI cannot report it itself, and variables the session
      * needs that the pane's shell does not set. */

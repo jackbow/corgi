@@ -1,8 +1,9 @@
 import { isAbsolute } from "node:path";
 import { Runtime, Pane, ClosedAgent, Launch, closed_per_workspace } from "../runtime";
-import { Workspace, Store } from "../workspace";
+import * as workspace from "../workspace";
 import { Model, Tab, max_workspaces } from "../layout";
-import { Order } from "../agent_order";
+import { Order, Pins, key as agentKey } from "../agent_order";
+import { Stars } from "../agent_stars";
 import { Agent, Provider, Text } from "../agents";
 import { Attachment, Registry, max_actors } from "../conversations";
 import { ResumeHint } from "../resume_hint";
@@ -10,16 +11,30 @@ import { Terminal } from "../pane/terminal";
 import { Tracker } from "../detection";
 import { Cache } from "../trackers/link_labels";
 import { Conversation } from "../activity/summary";
+import { decodeChecklist } from "../protocol";
 import { Entry } from "../launch/command";
 import { Meter, Tokens } from "../usage/live";
 import * as binary from "../base64";
 import * as json from "../json";
 import * as worktrees from "../worktrees";
+import * as breadcrumbs from "../breadcrumbs";
 import { validateCheckpoint } from "./schema";
+import { testBuild } from "../build_assets";
 
 export const version = 6;
-const invalid = (): never => {
-  throw Error("InvalidCheckpoint");
+/** A check the checkpoint failed. It is still named InvalidCheckpoint; `why`
+ * says which check, with ids and counts only, since it goes in bug reports. */
+export class Invalid extends Error {
+  constructor(public why: string) {
+    super("InvalidCheckpoint");
+  }
+}
+const invalid = (why: string): never => {
+  throw new Invalid(why);
+};
+/** Fails with `why` when `bad`. */
+const check = (bad: unknown, why: () => string) => {
+  if (bad) invalid(why());
 };
 
 // Restore value objects through their existing constructors, keeping methods and
@@ -62,7 +77,7 @@ export class Screen {
     return {
       cols: t.cols,
       rows: t.rows,
-      data: binary.encode(live ? t.liveSnapshot() : t.snapshot()),
+      data: live ? binary.encode(t.liveSnapshot()) : t.snapshotBase64(),
       pid: live ? t.pid : -1,
       title_pid: live ? t.title_pid : 0,
       fd: live ? t.fd : -1,
@@ -81,7 +96,7 @@ export class Screen {
       screen.rows < 1 ||
       screen.rows > 200
     )
-      invalid();
+      invalid(`a screen is ${screen.cols}×${screen.rows}, outside 1–500 × 1–200`);
     const bytes = binary.decode(screen.data),
       t = Terminal.create(screen.cols, screen.rows);
     t.restore(bytes, live ? (screen.title_pid ?? 0) : 0);
@@ -124,16 +139,31 @@ export function captureBinding(binding: Attachment, live: boolean) {
     provisional: live ? binding.provisional : historicalAgent(binding.provisional),
   };
 }
-export function restoreBinding(registry: Registry, value: any, live: boolean): Attachment {
+/** How a restore treats what it can repair: `repairs` collects what it
+ * dropped, and `strict` fails on it instead, as releases before repairs did. */
+export type Repairs = { what?: string; repairs?: string[]; strict?: boolean };
+export function restoreBinding(registry: Registry, value: any, live: boolean, how: Repairs = {}): Attachment {
   const binding = new Attachment(),
     agent = hydrate(new Agent(), value.provisional ?? {});
-  if (agent.observation.read > agent.observation.completed || (value.known?.length ?? 0) > 256) invalid();
+  check(agent.observation.read > agent.observation.completed, () => "a binding read more turns than finished");
+  check((value.known?.length ?? 0) > 256, () => `a binding knows ${value.known.length} conversations, over 256`);
   binding.provisional = agent;
   binding.generation = BigInt.asUintN(64, BigInt(value.generation ?? 1) + BigInt(!live));
   binding.selection_hash = live ? BigInt(value.selection_hash ?? 0) : 0n;
   binding.hook_seq = live ? BigInt(value.hook_seq ?? 0) : 0n;
-  if (value.actor) binding.actor = registry.byId(value.actor) ?? invalid();
-  binding.known = (value.known ?? []).map((id: number) => (registry.byId(id) ?? invalid()).id);
+  // A conversation forgotten while a pane still pointed at it costs the pane its
+  // binding, not the whole checkpoint.
+  const missing = new Set<number>(),
+    find = (id: number) => registry.byId(id) ?? (missing.add(id), null);
+  if (value.actor) binding.actor = find(value.actor);
+  binding.known = (value.known ?? []).flatMap((id: number) => find(id)?.id ?? []);
+  if (missing.size) {
+    const what = how.what ?? "a binding",
+      repair = `${what} pointed at conversation ${[...missing].join(", ")}, which isn't saved`;
+    if (how.strict) invalid(repair);
+    console.warn(`checkpoint: ${repair}; dropped`);
+    how.repairs?.push(`${repair}; dropped`);
+  }
   return binding;
 }
 export function capture(r: Runtime, live: boolean) {
@@ -157,13 +187,23 @@ export function capture(r: Runtime, live: boolean) {
     workspaces: r.workspaces.items.map(w => ({
       away: w.away,
       id: w.id,
-      name: w.customName(),
+      name: w.name(),
       cwd: w.cwd,
       worktrees: live ? w.worktrees : null,
       model: w.model,
       agent_order: w.agent_order.slice(),
+      pinned_agents: w.pinned_agents.slice(),
+      starred_sessions: w.starred_sessions.slice(),
+      star_bindings: live
+        ? r.agentTargets(w).flatMap(target => {
+            const conversation = w.star_bindings.get(agentKey(target));
+            return conversation ? [{ target, ...conversation }] : [];
+          })
+        : [],
+      activity_order: w.activity_order.slice(),
       last_agent: w.last_agent,
       launcher_hidden: w.launcher_hidden,
+      launcher_order: w.launcher_order,
       focus: w.focus,
     })),
     panes: r.panes.map(p => {
@@ -208,6 +248,7 @@ export function capture(r: Runtime, live: boolean) {
       workspace: actor.workspace,
       observed_at: live ? actor.observed_at : 0,
       children_observed_at: live ? actor.children_observed_at : 0,
+      checklist: actor.checklist,
       tracked_since: live ? actor.tracked_since : 0,
       headless_meter:
         live && actor.headless_usage
@@ -215,6 +256,7 @@ export function capture(r: Runtime, live: boolean) {
           : null,
     })),
     sessions: r.sessions.map(s => s.capture(live)),
+    breadcrumbs: breadcrumbs.capture(),
   };
   return copyValue(state);
 }
@@ -234,23 +276,33 @@ export async function restore(
   live: boolean,
   socket: string,
   executable: string,
-): Promise<void> {
+  recover = true,
+  repairs: string[] = [],
+): Promise<string[]> {
   state = json.parse(json.stringify(state));
+  // A check can play a release that failed on what this one repairs; only test builds do.
+  const strict = !recover && testBuild && !!process.env.CORGI_TEST_STRICT_REFERENCES;
   validateCheckpoint(state);
-  if (
-    state.version !== version ||
-    state.live !== live ||
-    !Array.isArray(state.workspaces) ||
-    !state.workspaces.length ||
-    state.workspaces.length > max_workspaces ||
-    !Array.isArray(state.panes) ||
-    !Array.isArray(state.closed) ||
-    !Array.isArray(state.sessions) ||
-    state.closed.length > closed_per_workspace * max_workspaces ||
-    state.sessions.length > 16 ||
-    (state.conversations?.length ?? 0) > max_actors
-  )
-    invalid();
+  check(state.version !== version, () => `version ${state.version}, expected ${version}`);
+  check(state.live !== live, () => `saved ${state.live ? "live" : "cold"}, loaded ${live ? "live" : "cold"}`);
+  check(
+    !Array.isArray(state.workspaces) || !Array.isArray(state.panes) || !Array.isArray(state.closed),
+    () => "workspaces, panes or closed isn't a list",
+  );
+  check(!Array.isArray(state.sessions), () => "sessions isn't a list");
+  check(
+    !state.workspaces.length || state.workspaces.length > max_workspaces,
+    () => `${state.workspaces.length} workspaces, outside 1–${max_workspaces}`,
+  );
+  check(
+    state.closed.length > closed_per_workspace * max_workspaces,
+    () => `${state.closed.length} closed tabs, over ${closed_per_workspace * max_workspaces}`,
+  );
+  check(state.sessions.length > 16, () => `${state.sessions.length} native sessions, over 16`);
+  check(
+    (state.conversations?.length ?? 0) > max_actors,
+    () => `${state.conversations.length} conversations, over ${max_actors}`,
+  );
   r.link_labels = new Cache();
   r.worktree_tracker.restore(state.worktree_placements);
   if (live && state.link_labels) {
@@ -268,8 +320,14 @@ export async function restore(
     r.link_labels = Cache.restore(r.link_labels);
   }
   for (const w of state.workspaces) {
-    if (!w.id || w.id >= state.next_workspace || r.workspaces.get(w.id) || !isAbsolute(w.cwd)) invalid();
-    const item = new Workspace(w.id, w.cwd);
+    check(
+      !w.id || w.id >= state.next_workspace,
+      () => `workspace ${w.id} isn't between 1 and next_workspace ${state.next_workspace}`,
+    );
+    check(r.workspaces.get(w.id), () => `workspace ${w.id} is saved twice`);
+    check(!isAbsolute(w.cwd), () => `workspace ${w.id}'s folder isn't an absolute path`);
+    check(typeof w.name !== "string" || !workspace.label(w.name), () => `workspace ${w.id} has no name`);
+    const item = new workspace.Workspace(w.id, w.cwd, w.name);
     if (live && w.worktrees != null) {
       item.worktrees = worktrees.snapshot(w.worktrees);
       if (
@@ -277,16 +335,29 @@ export async function restore(
         !isAbsolute(item.worktrees.common_dir) ||
         item.worktrees.entries.some(e => !isAbsolute(e.path))
       )
-        invalid();
+        invalid(`workspace ${w.id}'s worktrees aren't absolute paths`);
     }
-    item.rename(w.name);
     item.model = Model.fromData(w.model);
     item.agent_order = Order.restore(w.agent_order ?? []);
+    item.pinned_agents = Pins.restore(w.pinned_agents ?? []);
+    item.starred_sessions = Stars.restore(w.starred_sessions ?? []);
+    for (const binding of live ? (w.star_bindings ?? []) : []) {
+      const conversation = Stars.restore([binding]).slice()[0],
+        target = Order.restore([binding.target]).items[0];
+      if (conversation) item.star_bindings.set(agentKey(target), conversation);
+    }
+    // A checkpoint from before the sections starts them in the dragged order.
+    item.restoreActivity(Order.restore(w.activity_order ?? w.agent_order ?? []));
     item.last_agent = w.last_agent ?? null;
     item.launcher_hidden = w.launcher_hidden ?? [];
+    item.launcher_order = w.launcher_order ?? [];
     item.focus = w.focus ?? 0;
     item.away = hydrate(item.away, w.away);
-    for (const tab of item.model.tabs) if (tab.id >= state.next_pane) invalid();
+    for (const tab of item.model.tabs)
+      check(
+        tab.id >= state.next_pane,
+        () => `workspace ${w.id}'s tab ${tab.id} isn't below next_pane ${state.next_pane}`,
+      );
     item.model.next_id = state.next_pane;
     r.workspaces.items.push(item);
   }
@@ -303,24 +374,30 @@ export async function restore(
   for (const entry of r.agent_commands) entry.semantics.nameModel();
   for (const saved of state.conversations ?? []) {
     const agent = hydrate(new Agent(), saved.agent);
-    if (
-      !saved.id ||
-      saved.id >= (state.next_conversation ?? 1) ||
-      r.conversations.byId(saved.id) ||
-      agent.observation.read > agent.observation.completed ||
-      !agent.provider ||
-      !agent.session.len ||
-      r.conversations.find(agent.provider, agent.sessionId())
-    )
-      invalid();
+    check(
+      !saved.id || saved.id >= (state.next_conversation ?? 1),
+      () => `conversation ${saved.id} isn't between 1 and next_conversation ${state.next_conversation ?? 1}`,
+    );
+    check(r.conversations.byId(saved.id), () => `conversation ${saved.id} is saved twice`);
+    check(
+      agent.observation.read > agent.observation.completed,
+      () => `conversation ${saved.id} read more turns than finished`,
+    );
+    check(!agent.provider, () => `conversation ${saved.id} has no provider`);
+    check(!agent.session.len, () => `conversation ${saved.id} has no session`);
+    check(
+      r.conversations.find(agent.provider!, agent.sessionId()),
+      () =>
+        `conversation ${saved.id} has the same session as conversation ${r.conversations.find(agent.provider!, agent.sessionId())!.id}`,
+    );
     if (
       !Number.isInteger(saved.status_inference?.len ?? 0) ||
       (saved.status_inference?.len ?? 0) > (saved.status_inference?.recent?.length ?? 4) ||
       !Number.isInteger(saved.status_inference?.phases_len ?? 0) ||
       (saved.status_inference?.phases_len ?? 0) > (saved.status_inference?.phases?.length ?? 4)
     )
-      invalid();
-    const actor = r.conversations.get(agent.provider ?? invalid(), agent.sessionId());
+      invalid(`conversation ${saved.id}'s status inference is out of range`);
+    const actor = r.conversations.get(agent.provider!, agent.sessionId());
     actor.id = saved.id;
     actor.state = live ? agent : historicalAgent(agent);
     worktrees.restoreLocation(actor.state, saved.worktree_location);
@@ -330,6 +407,7 @@ export async function restore(
     actor.workspace = r.workspaces.get(saved.workspace) ? saved.workspace : 0;
     actor.observed_at = live ? (saved.observed_at ?? 0) : 0;
     actor.children_observed_at = live ? (saved.children_observed_at ?? 0) : 0;
+    actor.checklist = decodeChecklist(saved.checklist);
     if (live && saved.tracked_since) actor.tracked_since = saved.tracked_since;
     if (live && saved.headless_meter) {
       actor.headless_usage = true;
@@ -340,13 +418,21 @@ export async function restore(
     if (live) actor.restoreCompaction(saved.screen_compacting ?? null, Date.now() * 1000);
   }
   r.conversations.next_id = state.next_conversation ?? 1;
-  for (const actor of r.conversations.items)
-    if (actor.parent && (actor.parent === actor.id || !r.conversations.byId(actor.parent))) invalid();
+  for (const actor of r.conversations.items) {
+    check(actor.parent === actor.id, () => `conversation ${actor.id} is its own parent`);
+    check(
+      actor.parent && !r.conversations.byId(actor.parent),
+      () => `conversation ${actor.id}'s parent, conversation ${actor.parent}, isn't saved`,
+    );
+  }
   for (const p of state.panes) {
-    if (!p.id || p.id >= state.next_pane || r.pane(p.id) || !r.workspaces.owner(p.id) || !isAbsolute(p.cwd)) invalid();
+    check(!p.id || p.id >= state.next_pane, () => `pane ${p.id} isn't between 1 and next_pane ${state.next_pane}`);
+    check(r.pane(p.id), () => `pane ${p.id} is saved twice`);
+    check(!r.workspaces.owner(p.id), () => `pane ${p.id} isn't in any workspace's layout`);
+    check(!isAbsolute(p.cwd), () => `pane ${p.id}'s folder isn't an absolute path`);
     const pane = new Pane(p.id, Screen.restore(p.screen, live), p.cwd);
     pane.label = p.label ?? "";
-    pane.attachment = restoreBinding(r.conversations, p.binding, live);
+    pane.attachment = restoreBinding(r.conversations, p.binding, live, { what: `pane ${p.id}`, repairs, strict });
     pane.detection = live ? hydrate(new Tracker(), p.detection) : new Tracker();
     pane.resume_hint = hydrate(new ResumeHint(), p.resume_hint);
     pane.launch = p.launch ? Launch.from(p.launch) : null;
@@ -354,7 +440,11 @@ export async function restore(
     r.panes.push(pane);
   }
   for (const w of r.workspaces.items)
-    for (const node of w.model.nodes) if (node && "pane" in node && !r.pane(node.pane)) invalid();
+    for (const node of w.model.nodes)
+      check(
+        node && "pane" in node && !r.pane(node.pane),
+        () => `workspace ${w.id}'s layout shows pane ${(node as { pane: number }).pane}, which isn't saved`,
+      );
   for (const p of state.closed) {
     const hint = hydrate(new ResumeHint(), p.resume_hint);
     if (!hint.args() || !r.workspaces.get(p.workspace_id)) continue;
@@ -375,16 +465,20 @@ export async function restore(
     const { Session } = await import("../headless");
     for (const saved of state.sessions) {
       const tracker = saved.usage_tracker;
-      if (
-        !r.workspaces.get(saved.workspace_id) ||
+      check(
+        !r.workspaces.get(saved.workspace_id),
+        () => `native session ${saved.id}'s workspace ${saved.workspace_id} isn't saved`,
+      );
+      check(
         (tracker?.next_sample ?? 0) >= (tracker?.samples?.length ?? 128) ||
-        (tracker?.next_tool ?? 0) >= (tracker?.tools?.length ?? 256)
-      )
-        invalid();
-      r.sessions.push(await Session.restore(saved, r.conversations, live));
+          (tracker?.next_tool ?? 0) >= (tracker?.tools?.length ?? 256),
+        () => `native session ${saved.id}'s usage tracker is out of range`,
+      );
+      r.sessions.push(await Session.restore(saved, r.conversations, live, { repairs, strict }));
     }
   }
-  if (!live) {
+  // `recover` false only checks the checkpoint: no shells start.
+  if (!live && recover) {
     for (const p of r.panes) await recoverPane(p, socket, executable);
     for (const n of state.sessions) {
       if (n.exited) continue;
@@ -401,7 +495,7 @@ export async function restore(
       });
       const p = r.pane(id)!;
       p.resume_hint = hydrate(new ResumeHint(), n.resume_hint);
-      p.attachment = restoreBinding(r.conversations, n.binding, false);
+      p.attachment = restoreBinding(r.conversations, n.binding, false, { what: `pane ${id}`, repairs });
       for (const { event } of n.events) {
         const { kind, ...rest } = event;
         p.terminal.feed(`${kind} ${json.stringify(rest)}`.replace(/[\x00-\x1f\x7f]/g, " ") + "\r\n");
@@ -410,14 +504,17 @@ export async function restore(
       p.terminal.prefill(p.resume_hint.command());
     }
   }
+  breadcrumbs.restore(state.breadcrumbs);
+  breadcrumbs.record(live ? "restored_live" : "restored_cold");
   // Daemons that never pruned saved every conversation they had seen.
   r.pruneConversations();
+  return repairs;
 }
 async function safeDirectory(cwd: string): Promise<string> {
   try {
-    return await Store.directory(cwd);
+    return await workspace.Store.directory(cwd);
   } catch {
-    return await Store.directory(process.env.HOME ?? "/");
+    return await workspace.Store.directory(process.env.HOME ?? "/");
   }
 }
 async function recoverPane(p: Pane, socket: string, executable: string): Promise<void> {

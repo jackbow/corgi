@@ -6,6 +6,20 @@ import { codepointWidths } from "./viewer_native";
 /** An output buffer standing in for Zig's `*std.Io.Writer`. */
 export class Writer {
   s = "";
+  constructor(public column = 0) {}
+  /** A one-based terminal position relative to this writer's column origin. */
+  cup(row: number, column: number): string {
+    return `\x1b[${row};${column + this.column}H`;
+  }
+  withColumns<T>(columns: number, draw: () => T): T {
+    const previous = this.column;
+    this.column += columns;
+    try {
+      return draw();
+    } finally {
+      this.column = previous;
+    }
+  }
   write(text: string): void {
     this.s += text;
   }
@@ -70,6 +84,34 @@ export function clipped(text: string, room: number): string {
     end += ch.length;
   }
   return text.slice(0, end);
+}
+/** Wraps prose in terminal cells, breaking long words and unspaced CJK text. */
+export function wrap(value: string, width: number): string[] {
+  if (width <= 0 || !value) return [];
+  const lines: string[] = [];
+  for (let paragraph of value.split("\n")) {
+    paragraph = paragraph.trim();
+    if (!paragraph) {
+      lines.push("");
+      continue;
+    }
+    while (paragraph) {
+      let part = clipped(paragraph, width);
+      if (!part) {
+        const first = [...paragraph][0];
+        lines.push("…");
+        paragraph = paragraph.slice(first.length).trimStart();
+        continue;
+      }
+      if (part.length < paragraph.length) {
+        const space = part.lastIndexOf(" ");
+        if (space > 0) part = part.slice(0, space);
+      }
+      lines.push(part.trimEnd());
+      paragraph = paragraph.slice(part.length).trimStart();
+    }
+  }
+  return lines;
 }
 export function writeEllipsis(w: Writer, text: string, room: number): void {
   w.write(ellipsis(text, room));

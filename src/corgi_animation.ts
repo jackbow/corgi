@@ -2,6 +2,8 @@
 //! The landing page bundles this module, so it uses only what browsers have.
 import * as palette from "./palette";
 import * as frames from "./corgi_frames";
+import * as i18n from "./i18n";
+import { displayWidth, ellipsis } from "./text";
 const golden = 0x9e3779b97f4a7c15n;
 /** SplitMix64's finalizer. */
 function mix(value: bigint): bigint {
@@ -539,7 +541,131 @@ export function writeBone(room: number, value: Bone, tick: number, background = 
   }
   return out;
 }
+/** Fleas: the corgi scratches, gives up and shakes them off. They bounce
+ * where they land, then hop back into him one at a time, and one peeks out
+ * by his ear again. */
+export const fleas_tick_ms = 80,
+  fleas_width = 18,
+  fleas_ticks = 92;
+type Hop = { start: number; ticks: number; from: number; to: number; high: number };
+const flea_dog = 6,
+  flea_launch = 30,
+  flea_returns = [55, 61, 52, 58],
+  flea_hops: Hop[][] = [
+    [1, 8, 14, 3, 16],
+    [6, 7, 16, 3, 18],
+    [34, 8, 20, 3, 22],
+    [28, 6, 22, 2, 20],
+  ].map(([to, ticks, from, high, home], i) => [
+    { start: flea_launch, ticks, from, to, high },
+    { start: 41 + i, ticks: 3, from: to, to, high: 1 },
+    { start: 46 + ((i * 3) % 4), ticks: 3, from: to, to, high: 1 },
+    { start: flea_returns[i], ticks: 9, from: to, to: home, high: 3 },
+  ]);
+/** A flea's dot column and height `tick` ticks in, or null before its first hop. */
+function hopAt(hops: Hop[], tick: number): { x: number; y: number } | null {
+  let at: { x: number; y: number } | null = null;
+  for (const hop of hops) {
+    if (tick < hop.start) return at;
+    const p = Math.min(1, (tick - hop.start) / hop.ticks);
+    at = { x: Math.round(hop.from + (hop.to - hop.from) * p), y: Math.round(hop.high * 4 * p * (1 - p)) };
+  }
+  return at;
+}
+function fleasPose(tick: number): string {
+  if (flea_returns.some(r => tick >= r + 9 && tick < r + 11)) return "~ᐯ>ᴥ•ᐱ";
+  if (tick < 4) return "~ᐯ•ᴥ•ᐯ";
+  if (tick < 20) return tick % 2 ? "~ᐯ>ᴥ<ᐱ⸝" : "~ᐯ>ᴥ<ᐯ⸜";
+  if (tick < 24) return "~ᐯ•ˑ•ᐯ";
+  if (tick < 34) return tick % 2 ? "≈ᐱ-ᴥ-ᐱ≈" : "≋ᐯ-ᴥ-ᐯ≋";
+  if (tick < 38) return "~ᐱ•ᴥ•ᐱ";
+  if (tick < 52) return "~ᐯ◡ᴥ◡ᐯ";
+  if (tick < 61) return "~ᐱ•ᴥ•ᐱ";
+  if (tick < 72) return "~ᐯ•ᴥ•ᐯ";
+  if (tick < 76) return "~ᐯ-ᴥ-ᐯ";
+  return "~ᐯ•ˑ•ᐯ";
+}
+/** Dot positions of the fleas in sight; ones inside the corgi are hidden by it. */
+export function fleasScene(tick: number): { x: number; y: number }[] {
+  const riding = (i: number) => {
+    const shaking = tick >= 24 && tick < flea_launch;
+    return { x: 26 + i + (shaking ? (tick % 2 ? 1 : -1) : 0), y: [3, 1, 2, 0][(tick + i * 2) % 4] };
+  };
+  const fleas = flea_hops.map((hops, i) =>
+    tick < flea_launch ? (tick < 4 || i > 1 ? null : riding(i)) : hopAt(hops, tick),
+  );
+  if (tick >= 78) fleas.push(riding(0));
+  return fleas.filter(flea => flea !== null);
+}
+export function writeFleas(room: number, tick: number): string {
+  const pose = fleasPose(Math.min(tick, fleas_ticks - 1));
+  if (room < fleas_width) return palette.fgRgb(palette.colors.text) + frame(room, pose);
+  return drawFleas(room, pose, fleasScene(Math.min(tick, fleas_ticks - 1)));
+}
+/** The corgi at `flea_dog`, and fleas as braille dots wherever he isn't. */
+function drawFleas(room: number, pose: string, fleas: { x: number; y: number }[]): string {
+  const cells = Array.from({ length: room }, () => " "),
+    bits: number[] = Array(room).fill(0);
+  [...pose].forEach((glyph, i) => (cells[flea_dog + i] = glyph));
+  for (const { x, y } of fleas)
+    if (x >= 0 && x < 2 * room && cells[x >> 1] === " ") bits[x >> 1] |= dots[x & 1][Math.min(3, y)];
+  const flea = palette.fgRgb(palette.colors.muted),
+    dog = palette.fgRgb(palette.colors.text);
+  let out = "",
+    current = "";
+  for (let i = 0; i < room; i++) {
+    const glyph = bits[i] ? String.fromCodePoint(0x2800 + bits[i]) : cells[i],
+      color = bits[i] ? flea : dog;
+    if (glyph !== " " && color !== current) out += current = color;
+    out += glyph;
+  }
+  return out;
+}
+/** Fleas, over and over: the corgi scratches at his fleas, shakes them off
+ * and watches them bounce, then dozes off; one by one they hop back into his
+ * fur, and he opens an eye to scratch, then the other. Until he sleeps it
+ * plays like `writeFleas`. */
+export const flea_cycle_ticks = 121;
+const flea_asleep = 56,
+  flea_stirs = 110,
+  flea_one_eyed = 113,
+  flea_back = [64, 72, 80, 88],
+  cycle_hops: Hop[][] = flea_hops.map((hops, i) =>
+    hops.map((hop, k) => (k === 3 ? { ...hop, start: flea_back[i] } : hop)),
+  );
+function cyclePose(tick: number): string {
+  if (tick < 50) return fleasPose(tick);
+  if (tick < flea_asleep) return "~ᐯ-ᴥ-ᐯ";
+  // The sidebar's napping corgi.
+  if (tick < flea_stirs) return "~ᐯ◡ᴥ◡ᐯ";
+  if (tick < flea_one_eyed) return "~ᐯ-ᴥ•ᐯ";
+  return tick % 2 ? "~ᐯ-ᴥ•ᐱ⸝" : "~ᐯ-ᴥ•ᐯ⸜";
+}
+/** Dot positions of the cycle's fleas: on him, flung off, bouncing, then
+ * back into his fur, out of sight until he scratches again. */
+export function fleaCycleScene(tick: number): { x: number; y: number }[] {
+  // From his one-eyed scratch on, they ride by his paw as they do while he scratches.
+  if (tick >= flea_one_eyed) return fleasScene(4 + tick - flea_one_eyed);
+  if (tick < 4) return fleasScene(4 + tick);
+  if (tick < flea_launch) return fleasScene(tick);
+  return cycle_hops.flatMap(hops => {
+    const back = hops[hops.length - 1];
+    return tick < back.start + back.ticks ? (hopAt(hops, tick) ?? []) : [];
+  });
+}
+export function writeFleaCycle(room: number, tick: number): string {
+  const t = tick % flea_cycle_ticks,
+    pose = cyclePose(t);
+  if (room < fleas_width) return palette.fgRgb(palette.colors.text) + frame(room, pose);
+  return drawFleas(room, pose, fleaCycleScene(t));
+}
 export type Routine = "idle" | "sniff" | "fetch" | "bone";
+const routines: Record<Routine, { frame_ms: number; bright: boolean }> = {
+  idle: { frame_ms: 75, bright: false },
+  sniff: { frame_ms: 75, bright: false },
+  fetch: { frame_ms: 30, bright: true },
+  bone: { frame_ms: 30, bright: true },
+};
 export class Playback {
   /** Out of 100 when the corgi appears; the rest stay idle. Sniff is out of the rotation for now. */
   static odds: [Routine, number][] = [
@@ -631,35 +757,55 @@ export class Fetch {
     );
   }
 }
-export const herd_width = 18;
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+function wordCells(word: string) {
+  let start = 0;
+  return [...graphemes.segment(word)].map(({ segment: glyph }) => {
+    const width = displayWidth(glyph),
+      cell = { glyph, width, start };
+    start += width;
+    return cell;
+  });
+}
+export function herdWidth(): number {
+  return displayWidth(i18n.t`Compacting`) + 8;
+}
 export const walk_left = ["‹o[/\\]~", "‹o[||]~", "‹o[\\/]~", "‹o[||]~"];
-const herd_word = "Compacting",
-  curl = [
-    { after: 2, pose: "ᐯ◡ᴥ◡ᐯ" },
-    { after: 2, pose: "ᐯ◡ᴥ◡ᐯ" },
-    { after: 3, pose: "◡ᴥ◡" },
-    { after: 2, pose: "•ᴥ•" },
-    { after: 1, pose: "•.•" },
-    { after: 0, pose: "..." },
-    { after: 0, pose: "…" },
-  ];
+const curl = [
+  { after: 2, pose: "ᐯ◡ᴥ◡ᐯ" },
+  { after: 2, pose: "ᐯ◡ᴥ◡ᐯ" },
+  { after: 3, pose: "◡ᴥ◡" },
+  { after: 2, pose: "•ᴥ•" },
+  { after: 1, pose: "•.•" },
+  { after: 0, pose: "..." },
+  { after: 0, pose: "…" },
+];
 export function herdScene(width: number, step: number) {
-  const gaps = [1, 2, 0, 2, 1, 0, 2, 1, 1],
+  const word = wordCells(i18n.t`Compacting`),
+    word_width = word.reduce((sum, cell) => sum + cell.width, 0),
+    gap_pattern = [1, 2, 0, 2, 1, 0, 2, 1, 1],
+    gaps = word.slice(1).map((_, i) => gap_pattern[i % gap_pattern.length]),
+    gap_total = Math.max(
+      1,
+      gaps.reduce((sum, gap) => sum + gap, 0),
+    ),
     spread = [0];
   let sum = 0;
   for (const [i, gap] of gaps.entries()) {
     sum += gap;
-    spread.push(i + 1 + Math.floor((sum * (width - 11)) / 10));
+    spread.push(word[i + 1].start + Math.floor((sum * (width - word_width - 1)) / gap_total));
   }
-  const roundup = width - 9;
+  const roundup = width - word_width + 1;
   if (step < roundup) {
     const nose = width - step,
-      letters = [...spread];
-    letters[9] = Math.min(spread[9], nose - 1);
-    for (let i = 9; i > 0; i--) letters[i - 1] = Math.min(spread[i - 1], letters[i] - 1);
+      letters = [...spread],
+      last = word.length - 1;
+    letters[last] = Math.min(spread[last], nose - word[last].width);
+    for (let i = last; i > 0; i--) letters[i - 1] = Math.min(spread[i - 1], letters[i] - word[i - 1].width);
     return {
+      word,
       letters,
-      lit: letters.map((at, i) => at === i || at < spread[i]),
+      lit: letters.map((at, i) => at === word[i].start || at < spread[i]),
       dog: walk_left[step % 4],
       x: nose,
       finished: false,
@@ -668,14 +814,16 @@ export function herdScene(width: number, step: number) {
   const p = step - roundup,
     pose = p >= 10 ? curl[Math.min(p - 10, curl.length - 1)] : null;
   return {
-    letters: Array.from({ length: 10 }, (_, i) => i),
-    lit: Array(10).fill(true),
+    word,
+    letters: word.map(cell => cell.start),
+    lit: Array(word.length).fill(true),
     dog: pose?.pose ?? (p === 6 ? "~ᐯ◡ᴥ◡ᐯ" : "~ᐯ•ᴥ•ᐯ"),
-    x: pose ? 10 + pose.after : 11,
+    x: pose ? word_width + pose.after : word_width + 1,
     finished: p >= 10 + curl.length - 1,
   };
 }
 export function writeHerd(width: number, step: number) {
+  if (width < herdWidth()) return palette.fg("text") + ellipsis(i18n.t`Compacting…`, width);
   const scene = herdScene(width, step),
     dog = [...scene.dog];
   let at = 0,
@@ -691,8 +839,10 @@ export function writeHerd(width: number, step: number) {
     if (col >= scene.x && at < dog.length) {
       const glyph = dog[at++];
       out += tint(scene.finished ? "text" : "faint") + (glyph === "~" ? wagTail(Math.floor(step / 2)) : glyph);
-    } else if (letter < 10 && scene.letters[letter] === col) {
-      out += tint(scene.lit[letter] ? "text" : "faint") + herd_word[letter++];
+    } else if (letter < scene.word.length && scene.letters[letter] === col) {
+      const cell = scene.word[letter];
+      out += tint(scene.lit[letter++] ? "text" : "faint") + cell.glyph;
+      col += cell.width - 1;
     } else out += " ";
   }
   return out;
@@ -700,14 +850,25 @@ export function writeHerd(width: number, step: number) {
 export type Dig = "restoring" | "forking";
 export const Dig = {
   lead: 17,
-  wordWidth: (dig: Dig) => (dig === "restoring" ? 10 : 8),
-  width: (dig: Dig) => (dig === "restoring" ? 27 : 25),
+  word: (dig: Dig) => (dig === "restoring" ? i18n.t`Restoring…` : i18n.t`Forking…`),
+  wordWidth: (dig: Dig) => displayWidth(Dig.word(dig)),
+  width: (dig: Dig) => Dig.lead + Dig.wordWidth(dig),
 };
 /** An unfocused dormant pane's title: the corgi asleep where it will dig,
  * then what wakes it. */
-export const Asleep = { word: "Click to resume", wordWidth: 15, width: 32 };
+export const Asleep = {
+  get word() {
+    return i18n.t`Click to resume`;
+  },
+  get wordWidth() {
+    return displayWidth(Asleep.word);
+  },
+  get width() {
+    return Dig.lead + Asleep.wordWidth;
+  },
+};
 export function writeAsleep(width: number): string {
-  const word = "\x1b[1m" + palette.fg("accent") + Asleep.word;
+  const word = "\x1b[1m" + palette.fg("accent") + ellipsis(Asleep.word, width);
   if (width < Asleep.width) return word;
   return " ".repeat(7) + palette.fg("muted") + "~ᐯ◡ᴥ◡ᐯ " + palette.fg("faint") + "ᶻz " + word;
 }
@@ -720,9 +881,10 @@ export const dirt: palette.Rgb = [150, 126, 96],
   pile = [" ", "⣀", "⣤", "⣶", "⣿"],
   clods = ["⠄", "⠂", "⠁", "⠁", "⠂"];
 export function writeUnearth(width: number, shown_ms: number, dig: Dig): string {
-  const word = [...(dig === "restoring" ? "Restoring…" : "Forking…")],
+  const label = Dig.word(dig),
+    word = wordCells(label),
     restored = palette.colors.accent;
-  if (width < Dig.width(dig)) return "\x1b[1m" + palette.fg("accent") + word.join("");
+  if (width < Dig.width(dig)) return "\x1b[1m" + palette.fg("accent") + ellipsis(label, width);
   const step = Math.floor(Math.max(0, shown_ms) / 80),
     cells = Array.from({ length: Dig.width(dig) }, () => ({
       glyph: " ",
@@ -732,16 +894,17 @@ export function writeUnearth(width: number, shown_ms: number, dig: Dig): string 
     heights = [0, 0, 0, 0];
   for (const [i, letter] of word.entries()) {
     const age = step - i * 2;
-    cells[17 + i] =
-      age < 0
-        ? { glyph: buried[i % 10], color: dirt, bold: false }
-        : age < 2
-          ? { glyph: age === 0 ? "⣤" : "⠤", color: dirt, bold: false }
-          : {
-              glyph: letter,
-              color: age === 2 ? dirt : age === 3 ? blend(dirt, restored, 0.5) : restored,
-              bold: true,
-            };
+    for (let col = 0; col < letter.width; col++)
+      cells[Dig.lead + letter.start + col] =
+        age < 0
+          ? { glyph: buried[(letter.start + col) % buried.length], color: dirt, bold: false }
+          : age < 2
+            ? { glyph: age === 0 ? "⣤" : "⠤", color: dirt, bold: false }
+            : {
+                glyph: col === 0 ? letter.glyph : "",
+                color: age === 2 ? dirt : age === 3 ? blend(dirt, restored, 0.5) : restored,
+                bold: true,
+              };
     if (age < 0) continue;
     if (age < 5) cells[8 - age] = { glyph: clods[age], color: dirt, bold: false };
     else {
@@ -890,6 +1053,10 @@ export class Presentation {
       this.last_corgi = null;
     }
   }
+  frameDelay(): number {
+    if (this.reveal_started_ms !== null) return 30;
+    return this.mode === "awake" ? routines[this.playback.routine].frame_ms : 75;
+  }
   revealPosition(room: number, now: number) {
     return this.reveal_started_ms === null
       ? room + 3
@@ -903,8 +1070,7 @@ export class Presentation {
   }
   /** Whether the corgi has curled into the ellipsis, leaving the row past it free. */
   herded(room: number, now: number) {
-    // Rounding up takes room - 9 steps, sitting 10, then the curl.
-    return this.herdStep(now) >= room - 9 + 10 + curl.length - 1;
+    return room < herdWidth() || herdScene(room, this.herdStep(now)).finished;
   }
   private herdStep(now: number) {
     return Math.floor(Math.max(0, now - this.herd_started_ms) / 110);
@@ -915,8 +1081,9 @@ export class Presentation {
     if (!pose || sleep.intensity === 0) return "";
     if (pose === "asleep" && !working) return idle(room, sleep);
     const playback = pose === "asleep" ? new Playback() : this.playback;
-    const playful = playback.routine === "fetch" || playback.routine === "bone";
-    const color = playful ? palette.colors.text : intensityColor(sleep.background, sleep.intensity);
+    const color = routines[playback.routine].bright
+      ? palette.colors.text
+      : intensityColor(sleep.background, sleep.intensity);
     return palette.fgRgb(color) + playback.write(room, now, sleep.background);
   }
   hide() {
@@ -931,11 +1098,19 @@ const slots = Array.from({ length: 256 }, () => ({
   seen: false,
   presentation: new Presentation(),
 }));
+let frame_delay = 75;
 export function beginFrame() {
   for (const slot of slots) slot.seen = false;
 }
 export function endFrame() {
-  for (const slot of slots) if (!slot.seen) slot.presentation.hide();
+  frame_delay = 75;
+  for (const slot of slots) {
+    if (slot.seen) frame_delay = Math.min(frame_delay, slot.presentation.frameDelay());
+    else slot.presentation.hide();
+  }
+}
+export function frameDelay(): number {
+  return frame_delay;
 }
 export function observe(key: bigint, mode: Mode, now: number, herd_started_ms?: number): Presentation | null {
   const id = key;

@@ -2,7 +2,11 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { join } from "node:path";
 import { Runtime } from "./runtime";
 import { Viewer } from "./viewer_client";
-import { EXE, JsonSocket, Lines, Pty, registerCase, run } from "./support";
+import { EXE, JsonSocket, Lines, Pty, registerCase, run, versioned } from "./support";
+import * as protocol from "../src/protocol";
+
+const current = protocol.viewer_version,
+  newer = current + 1;
 
 class ReplyProxy {
   server: Server;
@@ -39,27 +43,36 @@ class ReplyProxy {
       client.destroy();
       replies.end();
     });
-    const loop = async () => {
-      try {
-        while (true) {
-          const line = await requests.next(30000),
-            request = JSON.parse(line);
-          server.write(line + "\n");
-          const upstreamReply = await replies.next(30000);
-          let reply = upstreamReply;
-          if (request.op === "viewer.open" && this.open_reply !== null) reply = JSON.stringify(this.open_reply);
-          if (request.op === "viewer.sync") {
-            if (this.sync_reply !== null) reply = JSON.stringify(this.sync_reply);
-            this.synced = true;
-          }
-          client.write(reply + "\n");
-        }
-      } catch {
-        client.destroy();
-        server.destroy();
+    const pending = new Map<number, protocol.Op>();
+    const forwardRequests = async () => {
+      for (;;) {
+        const line = await requests.next(30000),
+          request = JSON.parse(line),
+          id = protocol.requestId(request);
+        if (id !== null) pending.set(id, protocol.parse(request));
+        server.write(line + "\n");
       }
     };
-    void loop();
+    const forwardReplies = async () => {
+      for (;;) {
+        const line = await replies.next(30000),
+          id = protocol.requestId(JSON.parse(line)),
+          op = id === null ? null : pending.get(id);
+        if (id !== null) pending.delete(id);
+        let replacement: object | null = null;
+        if (op === "viewer.open") replacement = this.open_reply;
+        if (op === "viewer.sync") {
+          replacement = this.sync_reply;
+          this.synced = true;
+        }
+        const reply = replacement === null ? line : JSON.stringify({ ...replacement, request_id: id });
+        client.write(reply + "\n");
+      }
+    };
+    void Promise.all([forwardRequests(), forwardReplies()]).catch(() => {
+      client.destroy();
+      server.destroy();
+    });
   }
   async close() {
     for (const connection of this.connections) connection.destroy();
@@ -78,22 +91,20 @@ class ViewerCompatibility extends Runtime {
   assert_explanation(code: number | null, output: string) {
     this.assertEqual(code, 1, output);
     this.assertIn("this viewer is incompatible with the server", output);
-    this.assertIn("requires viewer protocol 3", output);
+    this.assertIn(`requires viewer protocol ${current}`, output);
     this.assertIn("Reattach using the same Corgi version as the server", output);
     this.assertNotIn("MissingField", output);
     this.assertNotIn("panic:", output);
   }
   async test_server_rejects_open_before_creating_or_attaching() {
-    for (const version of [null, 2, 4, -1, "3"]) {
-      const request: any = {
+    for (const version of [undefined, current - 1, newer, -1, String(current)]) {
+      const result = await this.raw_rpc({
         op: "viewer.open",
-        protocol: 3,
-        cwd: this.temp.name,
-      };
-      if (version !== null) request.viewer_protocol = version;
-      const result = await this.raw_rpc(request);
+        cwd: { incompatible: "payload" },
+        viewer_protocol: version,
+      });
       this.assertEqual(result.err, "UnsupportedViewerProtocol");
-      this.assertEqual(result.viewer_protocol, 3);
+      this.assertEqual(result.viewer_protocol, current);
     }
     this.assertEqual((await this.session()).panes, []);
     this.assertEqual((await this.raw_rpc({ op: "viewer.list" })).viewers, []);
@@ -101,28 +112,20 @@ class ViewerCompatibility extends Runtime {
   async test_server_rechecks_sync_on_inherited_connection() {
     const client = await JsonSocket.connect(this.path);
     try {
-      const call = (request: any) => client.request({ protocol: 3, ...request });
-      const opened = await call({
-        op: "viewer.open",
-        viewer_protocol: 3,
-        onboarding: true,
-      });
-      this.assertEqual(opened.viewer_protocol, 3);
+      const call = (request: { op: string; [field: string]: unknown }) => client.request(versioned(request));
+      const opened = await call({ op: "viewer.open", onboarding: true });
+      this.assertEqual(opened.viewer_protocol, current);
       const oldPid = (await this.session()).server_pid;
       await this.run_cli("reload", EXE);
       this.assertNotEqual((await this.session()).server_pid, oldPid);
       const rejected = await call({
         op: "viewer.sync",
-        viewer_protocol: 4,
+        viewer_protocol: newer,
         interests: "different format",
       });
       this.assertEqual(rejected.err, "UnsupportedViewerProtocol");
-      this.assertEqual(rejected.viewer_protocol, 3);
-      const accepted = await call({
-        op: "viewer.sync",
-        viewer_protocol: 3,
-        interests: [],
-      });
+      this.assertEqual(rejected.viewer_protocol, current);
+      const accepted = await call({ op: "viewer.sync", interests: [] });
       this.assertEqual(accepted.type, "view");
     } finally {
       client.close();
@@ -133,9 +136,9 @@ class ViewerCompatibility extends Runtime {
       originalEnv = this.env;
     const replies = [
       {},
-      { viewer_protocol: 4 },
-      { viewer_protocol: "3" },
-      { err: "UnsupportedViewerProtocol", viewer_protocol: 4 },
+      { viewer_protocol: newer },
+      { viewer_protocol: String(current) },
+      { err: "UnsupportedViewerProtocol", viewer_protocol: newer },
       { err: "UnsupportedProtocol" },
     ];
     for (const reply of replies) {
@@ -168,7 +171,7 @@ class ViewerCompatibility extends Runtime {
     pty.start([EXE, "--no-update"], { env, cwd: this.temp.name });
     await this.until(() => proxy.synced);
     await this.run_cli("reload", EXE);
-    proxy.sync_reply = { viewer_protocol: 4 };
+    proxy.sync_reply = { viewer_protocol: newer };
     const code = await pty.proc.exited;
     this.assert_explanation(code, pty.output);
     this.assertLess(pty.output.indexOf("\x1b[?1049l"), pty.output.indexOf("this viewer is incompatible"));

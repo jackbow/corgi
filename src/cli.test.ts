@@ -1,16 +1,60 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import { realpathSync } from "node:fs";
-import { asksHelp, handles, help, idle, launcher, launcherText, layout, list, parse, read, usage, words } from "./cli";
+import {
+  asksHelp,
+  handles,
+  help,
+  helpFor,
+  idle,
+  launcher,
+  launcherText,
+  layout,
+  list,
+  parse,
+  read,
+  run,
+  usage,
+  words,
+} from "./cli";
+import { Provider, adapter } from "./providers";
+import * as i18n from "./i18n";
 
 test("help is asked for only before --", () => {
   expect(asksHelp(["move", "3", "--help"])).toBe(true);
   expect(asksHelp(["read", "-h"])).toBe(true);
   expect(asksHelp(["send", "3", "--", "--help"])).toBe(false);
   expect(asksHelp(["send", "3", "help"])).toBe(false);
+  expect(asksHelp(["launcher", "edit", "codex", "--flags", "--help"])).toBe(false);
+  expect(asksHelp(["account", "add", "--dir", "--help"])).toBe(false);
+  expect(asksHelp(["launcher", "edit", "codex", "--flags", "--help", "-h"])).toBe(true);
+});
+test("help only skips values consumed by the command's parser", () => {
+  for (const args of [
+    ["shutdown", "--name", "--help"],
+    ["shutdown", "--cwd", "-h"],
+    ["action", "rename", "--name", "--help"],
+    ["reload", "--flags", "--help"],
+    ["account", "remove", "--name", "--help"],
+    ["account", "remove", "--dir", "--help"],
+    ["integration", "uninstall", "--dir", "--help"],
+    ["headless", "list", "--workspace", "--help"],
+    ["headless", "start", "codex", "--workspace", "--help"],
+  ])
+    expect(asksHelp(args)).toBe(true);
+  for (const args of [
+    ["tab", "new", "--name", "--help"],
+    ["tab", "new", "--command", "--help"],
+    ["launcher", "edit", "codex", "--flags", "--help"],
+    ["account", "add", "codex", "work", "--dir", "--help"],
+    ["integration", "status", "--account", "--help"],
+    ["headless", "start", "codex", "prompt", "--workspace", "--help"],
+    ["pane", "send", "current", "--", "--help"],
+  ])
+    expect(asksHelp(args)).toBe(false);
 });
 test("usage finds the lines for the longest command a line names", () => {
   expect(usage(help, ["pane", "split", "3", "--righ"]).map(line => line.trim())).toEqual([
-    "corgi pane split ID|current --right|--left|--up|--down [--cwd DIR]",
+    "corgi pane split ID|current --right|--left|--up|--down [--cwd DIR] [--command SHELL_COMMAND]",
   ]);
   expect(usage(help, ["pane", "move"])).toHaveLength(2);
   expect(usage(help, ["workspace", "new", "X"]).every(line => line.includes("corgi workspace"))).toBe(true);
@@ -20,6 +64,42 @@ test("usage finds the lines for the longest command a line names", () => {
     "corgi claim PROVIDER [--pane ID|current] [--owner PID]",
     "corgi claim --clear [--pane ID|current] [--owner PID]",
   ]);
+  expect(usage(help, ["workspace", "new"])).toEqual(["  corgi workspace new NAME [--cwd DIR]"]);
+  expect(usage(help, ["launcher", "show"])).toEqual([
+    "  corgi launcher show AGENT... [--workspace ID]  in one workspace only",
+  ]);
+  expect(helpFor(help, ["launcher", "edit"])).toContain("[--flags FLAGS] [--env JSON_OBJECT]");
+  expect(helpFor(help, ["launcher", "clone"])).toContain("[--flags FLAGS] [--env JSON_OBJECT]");
+  expect(helpFor(help, ["pane", "read"])).not.toContain("corgi tab");
+  expect(helpFor(help, ["tab", "new"])).toContain("[--command SHELL_COMMAND]");
+  expect(helpFor(help, ["pane", "split"])).toContain("[--command SHELL_COMMAND]");
+  expect(helpFor(help, [])).toBe(help);
+});
+
+test("bare command groups localize human help and preserve English agent help", async () => {
+  const previous = i18n.language(),
+    output = spyOn(process.stdout, "write").mockReturnValue(true);
+  i18n.setLanguage("ja");
+  try {
+    for (const args of [["pane"], ["pane", "--help"], ["workspace"], ["launcher"]]) {
+      output.mockClear();
+      await run("/missing-corgi-help-test.sock", args);
+      const human = String(output.mock.calls[0]?.[0]);
+      expect(human).toContain(`corgi ${args[0]}`);
+      expect(human).toMatch(/[\u3040-\u30ff]/);
+      expect(human).not.toContain("shells at their prompt");
+      output.mockClear();
+      await run("/missing-corgi-help-test.sock", args, true);
+      const machine = String(output.mock.calls[0]?.[0]);
+      expect(machine).toStartWith("Usage:\n");
+      expect(machine).toContain(`corgi ${args[0]}`);
+      expect(machine).not.toMatch(/[\u3040-\u30ff]/);
+      if (args[0] === "pane") expect(machine).toContain("shells at their prompt");
+    }
+  } finally {
+    output.mockRestore();
+    i18n.setLanguage(previous);
+  }
 });
 
 test("command lines are rejected before connecting", async () => {
@@ -55,7 +135,7 @@ test("command lines are rejected before connecting", async () => {
     [["tab", "rename", "4", "--clear", "oops"]],
     [["tab", "move", "4", "--before", "6", "--workspace", "1"]],
     [["tab", "merge", "4"]],
-    [["workspace", "edit", "2", "--name", "Oops", "--clear"]],
+    [["workspace", "edit", "2", "--clear"]],
     [["workspace", "close", "2", "--cwd", "/tmp"]],
     [["workspace", "close", "current"], "Usage", 3],
     [["focus", "3"]],
@@ -149,11 +229,11 @@ test("command lines parse to the request the daemon receives", async () => {
       { action: "workspace.new", command: { "workspace.create": { name: "Project", cwd: realpathSync("/tmp") } } },
     ],
     [
-      ["workspace", "edit", "2", "--clear", "--cwd", "/tmp"],
+      ["workspace", "edit", "2", "--cwd", "/tmp"],
       {
         action: "workspace.edit",
         target: 2,
-        command: { "workspace.edit": { target: 2, name: "", cwd: realpathSync("/tmp") } },
+        command: { "workspace.edit": { target: 2, name: null, cwd: realpathSync("/tmp") } },
       },
     ],
     [
@@ -314,38 +394,49 @@ test("launcher names each agent and says where it shows", () => {
       { id: 4, name: "", launcher_hidden: [] },
     ],
   };
-  expect(launcherText(launcher(snapshot))).toBe(
-    [
-      'workspace 1 "corgi"',
-      "  codex         Codex                shown",
-      "  claude        Claude Code          shown",
-      "  claude/work   Claude Code · work   hidden",
-      "  claude/codex  Claude Code · codex  not in the launcher",
-      "  pi            Pi                   shown",
-      "  opencode2     OpenCode             shown",
-      "  command/2     review-bot           hidden",
-      "  command/3     Codex command        not in the launcher",
-      "workspace 4",
-      "  codex         Codex                shown",
-      "  claude        Claude Code          shown",
-      "  claude/work   Claude Code · work   shown",
-      "  claude/codex  Claude Code · codex  not in the launcher",
-      "  pi            Pi                   shown",
-      "  opencode2     OpenCode             shown",
-      "  command/2     review-bot           shown",
-      "  command/3     Codex command        not in the launcher",
-      "",
-    ].join("\n"),
-  );
-  // Its own name comes first; another name must fit one agent.
+  const text = launcherText(launcher(snapshot)),
+    lines = text.trimEnd().split("\n"),
+    rest = Provider.all.slice(3).map(p => [p, adapter(p).label, "shown"]);
+  expect(lines.map(line => line.trim().split(/ {2,}/))).toEqual([
+    ['workspace 1 "corgi"'],
+    ["codex", "Codex", "shown"],
+    ["claude", "Claude Code", "shown"],
+    ["claude/work", "Claude Code · work", "hidden"],
+    ["claude/codex", "Claude Code · codex", "not in the launcher"],
+    ["pi", "Pi", "shown"],
+    ...rest,
+    ["command/2", "review-bot", "hidden"],
+    ["command/3", "Codex command", "not in the launcher"],
+    ["workspace 4"],
+    ["codex", "Codex", "shown"],
+    ["claude", "Claude Code", "shown"],
+    ["claude/work", "Claude Code · work", "shown"],
+    ["claude/codex", "Claude Code · codex", "not in the launcher"],
+    ["pi", "Pi", "shown"],
+    ...rest,
+    ["command/2", "review-bot", "shown"],
+    ["command/3", "Codex command", "not in the launcher"],
+  ]);
+  // Labels and places line up in columns.
+  const agents = lines.filter(line => line.startsWith("  "));
+  for (const column of [1, 2])
+    expect(new Set(agents.map(line => line.indexOf(line.trim().split(/ {2,}/)[column]))).size).toBe(1);
+  // Every spelling must fit one agent, including aliases of canonical names.
   const named = (...names: string[]) => launcher(snapshot, 1, names)[0].agents.map(a => a.agent);
-  expect(named("codex", "work", "review-bot", "command/3", "claude/default", "work")).toEqual([
+  expect(named("codex/default", "work", "review-bot", "command/3", "claude/default", "work")).toEqual([
     "codex",
     "claude/work",
     "command/2",
     "command/3",
     "claude",
   ]);
+  expect(() => named("codex")).toThrow("AmbiguousAgent");
+  const colliding = {
+    ...snapshot,
+    accounts: [...snapshot.accounts, { provider: "claude", account: "/literal", name: "claude/work" }],
+  };
+  expect(() => launcher(colliding, 1, ["claude/work"])).toThrow("AmbiguousAgent");
+  expect(launcher(colliding, 1, ["claude/claude/work"])[0].agents[0].agent).toBe("claude/claude/work");
   expect(() => named("default")).toThrow("UnknownAgent");
   expect(() => named("terminal")).toThrow("UnknownAgent");
   expect(() => launcher(snapshot, 2)).toThrow("NoWorkspace");

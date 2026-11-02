@@ -213,6 +213,35 @@ test("conversation names are queued only while attached to a live Corgi pane", (
   worker.reconcile([actor], [pane]);
   expect(worker.names.slots.size).toBe(0);
 });
+test("naming reconciliation visits each pane once for many attached conversations", () => {
+  const worker = new Worker("off"),
+    registry = new Registry();
+  let scans = 0;
+  const actors = Array.from({ length: 64 }, (_, i) => {
+      const actor = registry.get("pi", `session-${i}`);
+      actor.state.transcript = new Path(`/tmp/session-${i}.jsonl`);
+      return actor;
+    }),
+    panes = actors.map(actor => ({
+      attachment: { actor },
+      terminal: {
+        get exited() {
+          scans++;
+          return false;
+        },
+      },
+    })) as unknown as Parameters<Worker["reconcile"]>[1];
+  try {
+    worker.reconcile(actors, panes);
+    expect(scans).toBe(actors.length);
+    expect(worker.names.slots.size).toBe(actors.length);
+    worker.reconcile(actors, []);
+    expect(worker.names.slots.size).toBe(0);
+  } finally {
+    worker.stop();
+  }
+});
+
 test("conversation naming shares the worker's off switch and inference scheduling", async () => {
   const worker = new Worker("off");
   let calls = 0;
@@ -443,6 +472,36 @@ test("the first summary of a turn sees the tools read with its commentary", () =
     expect(slot.request.evidence.text()).toContain("exec_command: rg focus src");
     expect(slot.request.evidence.text().endsWith("Tracing focus from the transcript.")).toBe(true);
     expect(slot.request.completed_tools).toBe(3n);
+  } finally {
+    worker.stop();
+  }
+});
+
+test("native OMP activity is not queued or overwritten by old inference results", () => {
+  const registry = new Registry(),
+    omp = registry.get("omp", "native"),
+    pi = registry.get("pi", "inferred"),
+    worker = new Worker();
+  try {
+    for (const actor of [omp, pi]) {
+      actor.state.state = "working";
+      actor.state.setTurn("turn");
+      worker.submit(actor, new Text("Inspecting the protocol"), null, []);
+    }
+    expect(worker.slots.filter(Boolean).map(slot => slot!.request.actor)).toEqual([pi.id]);
+    omp.state.setActivity("Creating live protocol transition smoke");
+    const old = Object.assign(new Request(), {
+      actor: omp.id,
+      provider: "omp",
+      turn_epoch: omp.state.turn_epoch,
+      generation: omp.state.activity_generation,
+    });
+    expect(new Result(old, parseLabel("Inspecting protocol")).apply(omp)).toBe(false);
+    expect(omp.state.activity.text()).toBe("Creating live protocol transition smoke");
+    worker.slots[1] = new Slot(old);
+    worker.reconcile(registry.items);
+    expect(worker.slots[1]).toBeNull();
+    expect(worker.slots[0]?.request.actor).toBe(pi.id);
   } finally {
     worker.stop();
   }

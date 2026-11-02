@@ -2,7 +2,8 @@ import { test, expect } from "bun:test";
 import * as a from "./corgi_animation";
 import * as p from "./palette";
 import * as frames from "./corgi_frames";
-import { displayWidth } from "./text";
+import * as i18n from "./i18n";
+import { displayWidth, ellipsis } from "./text";
 const plain = (s: string) => s.replace(/\x1b\[[^m]*m/g, "");
 const len = (s: string) => [...s].length;
 const windup = 16,
@@ -219,6 +220,41 @@ test("a second try digs past a pebble when the row has room, and every dig fits 
   for (let n = 0; n < 20; n++) tries.add(a.Bone.random(r).tries);
   expect([...tries].sort()).toEqual([1, 2]);
 });
+test("the corgi shakes off his fleas, and they bounce back into him", () => {
+  const scenes = Array.from({ length: a.fleas_ticks }, (_, tick) => plain(a.writeFleas(a.fleas_width, tick))),
+    fleas = (scene: string) => [...scene].filter(glyph => /[⠁-⣿]/.test(glyph)).length;
+  for (const scene of scenes) expect(displayWidth(scene)).toBe(a.fleas_width);
+  expect(scenes[0]).toBe("      ~ᐯ•ᴥ•ᐯ" + " ".repeat(6));
+  expect(scenes[10]).toMatch(/~ᐯ>ᴥ<ᐯ⸜[⠁-⣿]/);
+  expect(scenes[28]).toContain("≋ᐯ-ᴥ-ᐯ≋");
+  // Scattered to both sides, then all back in, then one peeks out again.
+  expect(scenes[45]).toMatch(/^[⠀-⣿ ]{6}~ᐯ◡ᴥ◡ᐯ/);
+  expect(fleas(scenes[45])).toBe(4);
+  expect(fleas(scenes[75])).toBe(0);
+  expect(scenes.at(-1)).toMatch(/~ᐯ•ˑ•ᐯ [⠁-⣿]/);
+  for (const room of [0, 1, 6, a.fleas_width - 1])
+    for (let tick = 0; tick < a.fleas_ticks; tick += 5)
+      expect(displayWidth(plain(a.writeFleas(room, tick)))).toBeLessThanOrEqual(room);
+});
+test("the flea cycle plays the fleas, dozes off while they hop back, and wakes one eye at a time", () => {
+  const scenes = Array.from({ length: a.flea_cycle_ticks }, (_, tick) => plain(a.writeFleaCycle(a.fleas_width, tick))),
+    fleas = (scene: string) => [...scene].filter(glyph => /[⠁-⣿]/.test(glyph)).length;
+  for (const scene of scenes) expect(displayWidth(scene)).toBe(a.fleas_width);
+  // Scratching and shaking play as the one-shot does, the fleas already on him.
+  expect(scenes[0]).toMatch(/~ᐯ•ᴥ•ᐯ [⠁-⣿]/);
+  for (let tick = 4; tick < 40; tick++) expect(scenes[tick]).toBe(plain(a.writeFleas(a.fleas_width, tick)));
+  // Asleep while they hop back into his fur, then nothing stirs until he wakes.
+  expect(scenes[62]).toContain("~ᐯ◡ᴥ◡ᐯ");
+  expect(fleas(scenes[62])).toBe(4);
+  for (const scene of scenes.slice(100, 113)) expect(fleas(scene)).toBe(0);
+  expect(scenes[111]).toContain("~ᐯ-ᴥ•ᐯ");
+  expect(scenes[116]).toMatch(/~ᐯ-ᴥ•ᐯ⸜[⠁-⣿]/);
+  expect(scenes[0]).toContain("~ᐯ•ᴥ•ᐯ");
+  expect(plain(a.writeFleaCycle(a.fleas_width, a.flea_cycle_ticks + 12))).toBe(scenes[12]);
+  for (const room of [0, 1, 6, a.fleas_width - 1])
+    for (let tick = 0; tick < a.flea_cycle_ticks; tick += 5)
+      expect(displayWidth(plain(a.writeFleaCycle(room, tick)))).toBeLessThanOrEqual(room);
+});
 test("a delayed activity transition stays idle without another roll", () => {
   const x = playback(0);
   x.active = true;
@@ -326,6 +362,45 @@ test("herding fits every width with letters in order and clear of the corgi", ()
     expect(out.startsWith(p.fg("text") + "Compacting…")).toBe(true);
   }
 });
+test.each(["zh", "ja", "ko", "ru"] as const)(
+  "%s compaction herds complete graphemes without overlapping cells",
+  locale => {
+    const original = i18n.language();
+    try {
+      i18n.setLanguage(locale);
+      const word = i18n.t`Compacting`,
+        label = i18n.t`Compacting…`,
+        minimum = a.herdWidth();
+      expect(word).not.toBe("Compacting");
+      expect(minimum).toBe(displayWidth(word) + 8);
+      for (const width of [minimum, minimum + 8]) {
+        const presentation = new a.Presentation();
+        presentation.update("herding", 0);
+        let moving = false;
+        for (let step = 0; step <= width + 30; step++) {
+          const scene = a.herdScene(width, step);
+          expect(scene.word.map(cell => cell.glyph).join("")).toBe(word);
+          for (const [i, cell] of scene.word.entries()) {
+            const left = scene.letters[i],
+              right = left + cell.width;
+            expect(left).toBeGreaterThanOrEqual(0);
+            expect(right).toBeLessThanOrEqual(width);
+            if (i) expect(left).toBeGreaterThanOrEqual(scene.letters[i - 1] + scene.word[i - 1].width);
+            expect(right <= scene.x || left >= scene.x + displayWidth(scene.dog)).toBe(true);
+            moving ||= left > cell.start;
+          }
+          expect(displayWidth(plain(a.writeHerd(width, step)))).toBe(width);
+          expect(presentation.herded(width, step * 110)).toBe(scene.finished);
+        }
+        expect(moving).toBe(true);
+        expect(plain(a.writeHerd(width, 1000)).trimEnd()).toBe(label);
+      }
+      for (const width of [0, 1, 2, minimum - 1]) expect(plain(a.writeHerd(width, 0))).toBe(ellipsis(label, width));
+    } finally {
+      i18n.setLanguage(original);
+    }
+  },
+);
 test("each compaction herds from the start and ends without a reveal", () => {
   const x = new a.Presentation();
   x.update("awake", 0);
@@ -466,6 +541,37 @@ test("content reveal paints over a corgi that keeps playing and cancels when a c
   x.update("content", 1100);
   expect(x.reveal_started_ms).toBeNull();
 });
+test("only visible throws, digging and reveals need faster animation frames", () => {
+  a.beginFrame();
+  const row = a.observe(999999n, "awake", 0)!;
+  a.observe(999998n, "asleep", 0);
+  row.playback.enter("idle", 0);
+  a.endFrame();
+  expect(a.frameDelay()).toBe(75);
+  for (const routine of ["fetch", "bone"] as const) {
+    row.playback.enter(routine, 0);
+    a.endFrame();
+    expect(a.frameDelay()).toBe(30);
+  }
+  row.playback.enter("idle", 100);
+  a.observe(999999n, "content", 200);
+  a.endFrame();
+  expect(a.frameDelay()).toBe(30);
+  a.observe(999999n, "content", 650);
+  a.endFrame();
+  expect(a.frameDelay()).toBe(75);
+  a.observe(999999n, "awake", 700);
+  row.playback.enter("fetch", 700);
+  a.observe(999999n, "content", 750);
+  row.skipReveal();
+  a.endFrame();
+  expect(a.frameDelay()).toBe(75);
+  a.observe(999999n, "awake", 800);
+  row.playback.enter("fetch", 800);
+  a.beginFrame();
+  a.endFrame();
+  expect(a.frameDelay()).toBe(75);
+});
 test("the corgi digs the word out from the left, then turns and wags", () => {
   for (const [ms, text] of [
     [0, "        ⠄~[\\/]o› ⣤⣿⣷⣾⣿⣶⣷⣿⣾⣶"],
@@ -484,6 +590,36 @@ test("a fork's corgi digs out its own, shorter word", () => {
   ] as [number, string][])
     expect(plain(a.writeUnearth(a.Dig.width("forking"), ms, "forking"))).toBe(text);
   expect(plain(a.writeUnearth(a.Dig.width("forking") - 1, 0, "forking"))).toBe("Forking…");
+});
+test.each(["zh", "ja", "ko", "ru"] as const)("%s resume and dig labels fit both animated and narrow titles", locale => {
+  const original = i18n.language();
+  try {
+    i18n.setLanguage(locale);
+    const asleep = i18n.t`Click to resume`;
+    expect(asleep).not.toBe("Click to resume");
+    expect(a.Asleep.word).toBe(asleep);
+    expect(a.Asleep.wordWidth).toBe(displayWidth(asleep));
+    expect(displayWidth(plain(a.writeAsleep(a.Asleep.width)))).toBe(a.Asleep.width);
+    expect(plain(a.writeAsleep(a.Asleep.width))).toContain("~ᐯ◡ᴥ◡ᐯ");
+    expect(plain(a.writeAsleep(a.Asleep.width))).toEndWith(asleep);
+    for (const width of [0, 1, 2, a.Asleep.wordWidth, a.Asleep.width - 1])
+      expect(plain(a.writeAsleep(width))).toBe(ellipsis(asleep, width));
+    for (const dig of ["restoring", "forking"] as const) {
+      const label = dig === "restoring" ? i18n.t`Restoring…` : i18n.t`Forking…`,
+        width = a.Dig.width(dig);
+      expect(label).not.toBe(dig === "restoring" ? "Restoring…" : "Forking…");
+      expect(a.Dig.wordWidth(dig)).toBe(displayWidth(label));
+      expect(width).toBe(a.Dig.lead + displayWidth(label));
+      expect(plain(a.writeUnearth(width, 0, dig))).not.toContain(label);
+      for (let ms = 0; ms <= 6000; ms += 80) expect(displayWidth(plain(a.writeUnearth(width, ms, dig)))).toBe(width);
+      expect(plain(a.writeUnearth(width, 6000, dig))).toContain("ᐯ•ᴥ•ᐯ");
+      expect(plain(a.writeUnearth(width, 6000, dig))).toEndWith(label);
+      for (const narrow of [0, 1, 2, a.Dig.wordWidth(dig), width - 1])
+        expect(plain(a.writeUnearth(narrow, 0, dig))).toBe(ellipsis(label, narrow));
+    }
+  } finally {
+    i18n.setLanguage(original);
+  }
 });
 test("bundles for a browser, where the landing page plays it", async () => {
   const build = await Bun.build({ entrypoints: [`${import.meta.dir}/corgi_animation.ts`], target: "browser" }),

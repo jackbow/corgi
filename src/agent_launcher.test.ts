@@ -1,17 +1,67 @@
 // Mirrors the tests in agent_launcher.zig.
-import { expect, test } from "bun:test";
-import { Menu, Row, preview } from "./agent_launcher";
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import * as accounts from "./accounts";
+import * as i18n from "./i18n";
+import { parseInventory } from "./trackers/worktrees";
+import { Menu, Row, commandEntry, keyAgent, preview, resolution, returned } from "./agent_launcher";
 import { View as SidebarView } from "./sidebar";
 import { analyze } from "./launch/command";
 import { Terminal } from "./pane/terminal";
 import { Writer, displayWidth } from "./text";
+import { Provider, adapter, byProvider } from "./providers";
 
+/** The providers these tests install; the rest are listed as not installed. */
+const installed: Provider[] = ["codex", "claude", "pi"];
+const others = Provider.all.filter(p => !installed.includes(p));
 const menu = (fields: Partial<Menu> = {}) => {
   const value = new Menu({ workspace: 1, selected: "codex", last: "codex", pinned: true, ...fields });
-  value.preview.installed.opencode2 = false;
+  value.preview.installed = byProvider(p => installed.includes(p));
   return value;
 };
 const now = () => Math.floor(Date.now() / 1000);
+// The user's saved accounts and launch options would change what rows show.
+let state = "";
+const base = process.env.CORGI_ENV_BASE;
+beforeEach(() => {
+  state = mkdtempSync(join(tmpdir(), "corgi-launcher-"));
+  process.env.CORGI_ENV_BASE = state;
+  accounts.reset();
+});
+afterEach(() => {
+  if (base === undefined) delete process.env.CORGI_ENV_BASE;
+  else process.env.CORGI_ENV_BASE = base;
+  accounts.reset();
+  rmSync(state, { recursive: true, force: true });
+});
+test("an explicit clone model uses its display name in the launcher", () => {
+  const m = menu({
+    profiles: [
+      {
+        id: "astra",
+        provider: "codex",
+        account: "",
+        name: "Codex Astra",
+        options: { flags: "", env: [], model: "gpt-6-astra" },
+        yolo: false,
+      },
+    ],
+  });
+  expect(m.cells(Row.ofProfile("astra"))).toContain("GPT-6 Astra");
+  expect(m.cells(Row.ofProfile("astra"))).not.toContain("gpt-6-astra");
+});
+test("each agent has a launcher key of its own, apart from the launcher's", () => {
+  // The controller's own launcher keys: all, move, manage, terminal, usage, worktrees, YOLO, search, help.
+  const taken = "aAjkmtuwy/?";
+  const keys = Provider.all.map(p => adapter(p).launcher_key);
+  expect(new Set(keys).size).toBe(keys.length);
+  for (const [i, key] of keys.entries()) {
+    expect(taken).not.toContain(key);
+    expect(keyAgent(key.charCodeAt(0))).toBe(Provider.all[i]);
+  }
+});
 /** The screen `m` draws, as text. */
 function screen(m: Menu, cols: number, rows: number, side: SidebarView): string[] {
   const w = new Writer();
@@ -39,11 +89,36 @@ test("Pi's default and account rows do not offer a permission bypass", () => {
   expect(screen(m, 120, 32, side)[b.y + b.h - 2]).not.toContain("YOLO");
 });
 
+test("Pi account fallback follows the viewer language without translating account data", () => {
+  const m = menu(),
+    previous = i18n.language();
+  m.preview.pending = false;
+  try {
+    for (const language of i18n.locales) {
+      i18n.setLanguage(language);
+      m.preview.options.pi.account = "";
+      const label = i18n.t`Pi provider selection`;
+      expect(m.cells("pi")[3]).toBe(label);
+      expect(m.manageModel().agents.find(a => a.provider === "pi")?.who).toBe(label);
+      if (language !== "en") expect(label).not.toBe("Pi provider selection");
+      m.preview.options.pi.account = "Pi provider selection";
+      expect(m.cells("pi")[3]).toBe("Pi provider selection");
+      expect(m.manageModel().agents.find(a => a.provider === "pi")?.who).toBe("Pi provider selection");
+    }
+  } finally {
+    i18n.setLanguage(previous);
+  }
+});
+
 test("OpenCode stays manageable without offering unsupported account sign-in", () => {
   const m = menu({ selected: "opencode2" });
   m.preview = preview({ pending: false, options: { opencode2: { account: "OpenCode provider credentials" } } });
   expect(m.shown("opencode2")).toBe(true);
-  expect(m.manageModel().add).not.toContain("opencode2");
+  expect(m.manageModel().offers.find(o => o.provider === "opencode2")).toEqual({
+    provider: "opencode2",
+    installed: true,
+    signin: false,
+  });
   expect(m.manageModel().agents.find(a => a.provider === "opencode2")).toMatchObject({
     shown: true,
     here: true,
@@ -130,6 +205,7 @@ test("conversations sit below the agents and their rows hit-test", () => {
         branch: "",
         updated_at: 5,
         interrupted: false,
+        starred: false,
       },
       {
         provider: "codex",
@@ -142,6 +218,7 @@ test("conversations sit below the agents and their rows hit-test", () => {
         branch: "",
         updated_at: 4,
         interrupted: false,
+        starred: false,
       },
     ],
   };
@@ -216,7 +293,7 @@ test("single-line limit groups survive narrow terminal rendering", () => {
         expect(line).toContain("6d 18h");
         expect(line).not.toContain("5h");
       }
-      if (line.includes("Claude Code")) {
+      if (/\* Claude/.test(line)) {
         found[1] += 1;
         rows[1] = line;
         for (const value of ["7d", "35%", "1d 15h", " │ 5h", "17%", "1h 39m"]) expect(line).toContain(value);
@@ -259,7 +336,7 @@ test("viewer expires a delivered usage reading after twenty minutes", () => {
 test("launcher hides providers that are not installed", () => {
   const side = SidebarView.init(120, 24, true, 0, 0);
   const m = menu();
-  m.preview.installed = { codex: false, claude: true, pi: false, opencode2: false };
+  m.preview.installed = byProvider(p => p === "claude");
   m.normalize();
   expect(m.selected).toBe("claude");
   const b = m.bounds(120, 24, side);
@@ -271,7 +348,7 @@ test("launcher hides providers that are not installed", () => {
   expect(m.selected).toBe("terminal");
   m.move(true, true);
   expect(m.selected).toBe("claude");
-  m.preview.installed = { codex: false, claude: false, pi: false, opencode2: false };
+  m.preview.installed = byProvider(() => false);
   m.normalize();
   expect(m.selected).toBe("terminal");
   expect(m.first()).toBe("terminal");
@@ -290,8 +367,8 @@ test("Manage agents lists the signed-out and hidden agents the picker leaves out
   expect(m.manageModel().agents.map(a => [a.label, a.who, a.shown, a.signed_out])).toEqual([
     ["Codex", "Not signed in", true, true],
     ["Claude Code", "me@example.com", false, false],
-    ["Pi", "Unavailable", false, false],
-    ["OpenCode", "Not installed", true, false],
+    ["Pi", "Pi provider selection", false, false],
+    ...others.map(p => [adapter(p).label, "Not installed", true, false]),
   ]);
   m.commands[0].set("FOO=123 claude --whatever");
   m.commands[0].hidden = true;
@@ -321,7 +398,7 @@ test("rows hidden in this workspace leave its picker but stay in Manage agents, 
     ["Claude Code", true, false],
     ["Claude Code · work", true, false],
     ["Pi", true, true],
-    ["OpenCode", true, true],
+    ...others.map(p => [adapter(p).label, true, true]),
   ]);
   expect([model.here(0), model.here(1)]).toEqual([false, true]);
   expect(["codex", "claude:/a", "custom5", "terminal", "claude:work", "custom6", ""].map(Row.parse)).toEqual([
@@ -388,6 +465,7 @@ test("the title names the worktree once, on a button that drops the checkouts an
     bare: false,
     detached: false,
     locked: null,
+    holder: null,
     prunable: null,
     available: true,
     comparison: null,
@@ -464,6 +542,35 @@ test("the title names the worktree once, on a button that drops the checkouts an
   expect(m.worktreeHit(100, 30, side, pick.x, pick.y + 1)).toEqual({ pick: 1 });
 });
 
+test("narrow worktree creation footers leave the translated action intact", () => {
+  const previous = i18n.language();
+  try {
+    i18n.setLanguage("ru");
+    const m = menu({ cwd: "/src/app" });
+    m.worktrees = {
+      common_dir: "/src/app/.git",
+      base: { ref: "refs/heads/main", name: "main", head: "base" },
+      entries: parseInventory("worktree /src/app\0branch refs/heads/main\0\0"),
+      agents: [],
+      stale: false,
+    };
+    m.worktree.open(m.worktrees, m.cwd);
+    for (const byte of Buffer.from("topic")) m.worktree.edit(field => field.key(byte));
+    for (const width of [40, 100]) {
+      const side = SidebarView.init(width, 30, true, 0, 0),
+        box = m.worktreeBox(width, 30, side)!;
+      expect(box).not.toBeNull();
+      const row = screen(m, width, 30, side)[box.footer];
+      expect(row).toContain(i18n.t`hold ↵ to create`);
+      expect(row.includes(i18n.t`↑↓ choose`)).toBe(width === 100);
+      const inside = row.slice(box.rect.x + 1, box.rect.x + box.rect.w - 1).trim();
+      if (width === 40) expect(inside).toBe(i18n.t`hold ↵ to create`);
+    }
+  } finally {
+    i18n.setLanguage(previous);
+  }
+});
+
 test("an account's row reads its own account and has its own YOLO and launcher membership", () => {
   const m = menu({ selected: work });
   m.preview = preview({ accounts: [workAccount()] });
@@ -495,7 +602,8 @@ test("an account's row reads its own account and has its own YOLO and launcher m
   const side = SidebarView.init(120, 24, true, 0, 0);
   const b = m.bounds(120, 24, side);
   const line = screen(m, 120, 24, side)[b.y + 4];
-  for (const value of [" 2 ", "Claude Code · work", "✓", "Opus", "work@example.com", "Team", "5h", "17%"])
+  // The brand mark says whose account it is, beside the account's own name.
+  for (const value of [" 2 ", "* work ", "✓", "Opus", "work@example.com", "Team", "5h", "17%"])
     expect(line).toContain(value);
   expect(m.hit(120, 24, side, b.x + 2, b.y + 4)).toBe(work);
   const widths = m.columns(b.w);
@@ -543,7 +651,7 @@ test("a signed-out account's row stays listed and offers to sign in", () => {
   const side = SidebarView.init(120, 24, true, 0, 0);
   const b = m.bounds(120, 24, side);
   const lines = screen(m, 120, 24, side);
-  expect(lines[b.y + 3]).toMatch(/ 1 +Claude Code · work .* — +— +Sign in +│/);
+  expect(lines[b.y + 3]).toMatch(/ 1 +\* work .* — +— +Sign in +│/);
   expect(lines[b.y + b.h - 2]).toMatch(/a +sign in +y +YOLO/);
   m.account_hidden = ["/accounts/work"];
   expect(m.shown(work)).toBe(false);
@@ -555,15 +663,8 @@ test("digits count account rows like the agents'", () => {
   m.preview = preview({ accounts: [workAccount(), { provider: "codex", account: "/accounts/side", name: "side" }] });
   m.commands[0].set("claude --model opus");
   const c = (s: string) => s.charCodeAt(0);
-  expect([..."0123456"].map(digit => m.shortcutRow(c(digit)))).toEqual([
-    "codex",
-    side,
-    "claude",
-    work,
-    "pi",
-    "opencode2",
-    "custom0",
-  ]);
+  const rows: Row[] = ["codex", side, "claude", work, ...Provider.all.slice(2), "custom0"];
+  expect(rows.map((_, digit) => m.shortcutRow(c(String(digit))))).toEqual(rows);
   m.hidden.codex = true;
   expect([m.shortcutRow(c("0")), m.shortcutRow(c("1"))]).toEqual([side, "claude"]);
   m.account_hidden = ["/accounts/side"];
@@ -608,18 +709,17 @@ test("Manage agents takes the card with its own selection", () => {
   const before = m.bounds(120, 40, SidebarView.init(120, 40, true, 0, 0));
   m.manage();
   expect(m.managing).toBe(true);
-  expect(m.manager.focus).toBe("search");
-  m.manager.sequence("\x1b[B", m.manageModel());
+  expect(m.manager.focus).toBe("list");
   const side = SidebarView.init(120, 40, true, 0, 0),
     b = m.bounds(120, 40, side),
     lines = screen(m, 120, 40, side);
   expect(b.w).toBe(before.w);
   expect(lines[b.y]).toMatch(/╭─ ← New tab ─ Manage agents ─+ +esc +close ─╮/);
-  expect(lines[b.y + 6]).toMatch(/│› +Codex /);
-  expect(lines[b.y + 8]).toMatch(/│ +Claude Code · work +work@example.com +(— +)?✓ +│/);
+  expect(lines[b.y + 7]).toMatch(/│› ≡ † Codex /);
+  expect(lines[b.y + 9]).toMatch(/│  ≡ \* work +work@example.com +▾ Auto \(last chosen\) +│/);
   // The picker's rows don't answer clicks under it.
   expect(m.hit(120, 40, side, b.x + 6, b.y + 8)).toBeNull();
-  expect(lines[b.y + b.h - 2]).toMatch(/↵ +edit +space +hide in workspace +hold ⌫ +remove/);
+  expect(lines[b.y + b.h - 2].replaceAll("│", "").trim()).toBe("");
   m.back();
   expect(m.selected).toBe(work);
 });
@@ -642,15 +742,15 @@ test("Manage agents shows hidden accounts' own usage, keeps zero, and omits miss
       }),
     ],
   });
-  m.account_hidden = ["/accounts/work"];
+  m.workspace_hidden = [work];
   m.preview.options.codex.usage_error = "no usage returned";
   m.manage();
   const a = m.manageModel().agents.find(a => a.account === "/accounts/work")!;
-  expect(a.shown).toBe(false);
+  expect(a.here).toBe(false);
   expect(a.usage.windows.map(w => w?.used)).toEqual([82, 0]);
   const side = SidebarView.init(150, 40, true, 0, 0);
   const text = screen(m, 150, 40, side).join("\n");
-  expect(text).toContain("Usage (used)");
+  expect(text).toContain("Usage · resets in");
   expect(text).toContain("0%");
   expect(text).toContain("82%");
   expect(text).not.toContain("no usage returned");
@@ -672,6 +772,7 @@ test("both cards keep the same width with expanded history and on narrow termina
       branch: "",
       updated_at: 5,
       interrupted: false,
+      starred: false,
     },
   ];
   m.resume_view.expand();
@@ -760,4 +861,89 @@ test("both cards keep their bounds and columns as account details and usage arri
       m.back();
     }
   }
+});
+test("a command for a provider this viewer doesn't know runs no provider", () => {
+  const semantics = { provider: "future", suggested_name: "Future" };
+  expect(commandEntry({ command: "future", semantics }).semantics.provider).toBeNull();
+  const resolved = resolution({ semantics, command: { command: "future", semantics } });
+  expect([resolved.semantics.provider, resolved.command.semantics.provider]).toEqual([null, null]);
+  expect(resolved.semantics.suggested_name).toBe("Future");
+  // Sending them back would erase the provider, so they stay with the daemon.
+  expect([returned(resolved.semantics), returned(resolved.command.semantics)]).toEqual([null, null]);
+  for (const provider of ["codex", null]) {
+    const known = commandEntry({ command: "x", semantics: { provider } }).semantics;
+    expect(returned(known)).toBe(known);
+  }
+});
+
+test("launcher leaves room for model and compact effort without an ellipsis", () => {
+  const m = menu({
+    profiles: [
+      {
+        id: "astra",
+        provider: "codex",
+        account: "",
+        name: "Codex Astra",
+        options: { flags: "", env: [], model: "gpt-6-astra", effort: "xhigh" },
+        yolo: false,
+      },
+      {
+        id: "sol",
+        provider: "codex",
+        account: "",
+        name: "Codex Sol",
+        options: { flags: "", env: [], model: "gpt-6.1-sol", effort: "xhigh" },
+        yolo: false,
+      },
+    ],
+  });
+  for (const cols of [120, 146, 160]) {
+    const rows = screen(m, cols, 30, SidebarView.init(cols, 30, true, 0, 0));
+    expect(rows.some(row => row.includes("GPT-6 Astra XHigh"))).toBe(true);
+    expect(rows.some(row => row.includes("GPT-6.1 Sol XHigh"))).toBe(true);
+  }
+});
+
+/** Conversations in `cwd`, alternating agents, newest first. */
+function conversations(cwd: string, n: number) {
+  return Array.from({ length: n }, (_, i) => ({
+    provider: (i % 3 === 2 ? "codex" : "claude") as Provider,
+    account: "",
+    session: `s${i}`,
+    title: `Conversation ${i}`,
+    first: "",
+    last: "said something",
+    cwd,
+    branch: "",
+    updated_at: now() - i * 3600,
+    interrupted: false,
+    starred: false,
+  }));
+}
+
+test("each agent and conversation row leads with its brand mark", () => {
+  const side = SidebarView.init(120, 40, true, 0, 0),
+    m = menu({ cwd: "/w", workspace_cwd: "/w" });
+  m.history = { pending: false, entries: conversations("/w", 3) };
+  const placed: [Provider, number, number][] = [];
+  m.marks = (provider, col, row) => {
+    placed.push([provider, col, row]);
+    return "<mark>";
+  };
+  const b = m.bounds(120, 40, side);
+  m.draw(new Writer(), 120, 40, side);
+  // The agent rows: Codex, Claude Code and Pi, in the name column.
+  expect(placed.filter(([, , row]) => row < b.y + 2 + m.count())).toEqual([
+    ["codex", b.x + 7, b.y + 2],
+    ["claude", b.x + 7, b.y + 3],
+    ["pi", b.x + 7, b.y + 4],
+  ]);
+  // The conversations: a mark wherever a run of one agent starts.
+  const resume = placed.filter(([, , row]) => row >= b.y + 2 + m.count());
+  expect(resume.map(([provider]) => provider)).toEqual(["claude", "codex"]);
+  expect(new Set(resume.map(([, col]) => col))).toEqual(new Set([b.x + 3]));
+  // Without image support, each shows its glyph in the same cells.
+  m.marks = null;
+  const lines = screen(m, 120, 40, side);
+  expect(lines[b.y + 3].slice(b.x + 7, b.x + 9)).toBe("* ");
 });

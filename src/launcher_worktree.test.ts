@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import * as launcherWorktree from "./launcher_worktree";
 import * as palette from "./palette";
+import * as i18n from "./i18n";
+import { Terminal } from "./pane/terminal";
 import { Rect } from "./layout";
-import { Writer } from "./text";
+import { Writer, displayWidth } from "./text";
 import { default_template } from "./worktree_folder";
 import type * as worktrees from "./worktrees";
 
@@ -14,6 +16,7 @@ const checkout = (path: string, branch: string, primary = false, total = 0): wor
   bare: false,
   detached: false,
   locked: null,
+  holder: null,
   prunable: null,
   available: true,
   comparison: null,
@@ -68,6 +71,32 @@ test("the title's button turns warm off the comparison branch", () => {
   };
   expect(title("/src/app")).not.toContain(palette.fg("warm"));
   expect(title("/src/app-topic")).toContain(palette.fg("warm") + "⌥ \x1b[1m" + palette.fg("warm") + "topic");
+});
+
+test("a title without room for its location button still reads as a complete heading", () => {
+  const previous = i18n.language();
+  try {
+    for (const language of ["en", "zh", "ja", "ko", "ru"] as const) {
+      i18n.setLanguage(language);
+      const b = new Rect(0, 0, 80, 20),
+        right = displayWidth(i18n.t`New agent`) + 5;
+      const place = launcherWorktree.place(snapshot, "/src/app", null);
+      const w = new Writer(),
+        terminal = new Terminal(80, 2);
+      try {
+        expect(launcherWorktree.button(b, place, right)).toBeNull();
+        terminal.feed(`\x1b[1;${right + 1}Hprotected`);
+        launcherWorktree.drawTitle(w, b, place, right, false, "");
+        terminal.feed(w.buffered());
+        const title = terminal.text().split("\n")[0];
+        expect(title.trim()).toBe(`${i18n.t`New agent`}  protected`);
+      } finally {
+        terminal.destroy();
+      }
+    }
+  } finally {
+    i18n.setLanguage(previous);
+  }
 });
 
 test("Branch browses all checkouts without narrowing the list as arrows fill the field", () => {
@@ -128,6 +157,27 @@ test("partial matches offer creation, exact names switch, and editing resumes fi
   expect(c.field.name()).toBe("");
   expect(c.count(snapshot)).toBe(3);
   expect(c.creating(snapshot)).toBe(false);
+});
+
+test("reopening a planned worktree shows main even with more checkouts than fit", () => {
+  const many = {
+    ...snapshot,
+    entries: [...snapshot.entries, ...Array.from({ length: 10 }, (_, i) => checkout(`/src/other-${i}`, `other-${i}`))],
+  };
+  const c = new launcherWorktree.Chooser();
+  c.planned = { branch: "next", base: "refs/heads/topic", base_name: "topic", path: "/src/app-next" };
+  c.open(many, "/src/app-topic");
+  expect(c.field.name()).toBe("next");
+  expect(c.base?.name).toBe("topic");
+  expect(c.entries(many).map(e => e.branch)).toContain("refs/heads/main");
+  const choices = () => launcherWorktree.choices(many, "/src/app-topic", c);
+  expect(choices().at(-1)?.text).toBe("+ Create “next”");
+  expect(launcherWorktree.visible(c, choices(), 8)[0].text).toBe("main");
+  c.move(many, 1);
+  expect(c.selected(many)?.branch).toBe("refs/heads/main");
+  c.edit(field => field.key(21));
+  for (const byte of Buffer.from("other-9")) c.edit(field => field.key(byte));
+  expect(c.entries(many).map(e => e.branch)).toEqual(["refs/heads/other-9"]);
 });
 
 test("a new worktree goes where the template says, from main or the current branch", () => {

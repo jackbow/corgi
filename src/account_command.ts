@@ -4,10 +4,14 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isatty } from "node:tty";
 import { Provider, adapter } from "./providers";
+import * as agentName from "./agent_name";
 import * as accounts from "./accounts";
+import * as agentProfiles from "./agent_profiles";
 import * as integration from "./integration";
 import * as signin from "./signin";
 import * as errors from "./errors";
+import * as cli from "./cli";
+import * as i18n from "./i18n";
 
 const managed = Provider.all.filter(p => adapter(p).accounts.signin !== null);
 export const help = `Usage: corgi account COMMAND
@@ -27,6 +31,28 @@ providers both have one called work. Signing in runs the agent's own sign-in
 in the account's folder; agents then start there from the launcher, or with
 ${managed.map(p => adapter(p).accounts.env).join(" or ")} set.
 `;
+export function localizedHelp(): string {
+  const list = new Intl.ListFormat(i18n.language(), { type: "disjunction" }),
+    providers = list.format(managed),
+    variables = list.format(managed.map(p => adapter(p).accounts.env));
+  return i18n.t`Usage: corgi account COMMAND
+
+  list                          the accounts Corgi knows and who signed in
+  add [PROVIDER] [NAME]         make a new account and sign in to it; it's
+                                named from the login unless you name it
+  add PROVIDER NAME --dir DIR   use an account folder you already have
+  login NAME                    sign in to an account again
+  rename NAME NEW               call an account something else; NAME can be
+                                default, or claude/default, for the default
+  remove NAME                   remove an account: one Corgi made is signed
+                                out and deleted, another forgotten
+
+PROVIDER is ${providers}. Name an account claude/work when two
+providers both have one called work. Signing in runs the agent's own sign-in
+in the account's folder; agents then start there from the launcher, or with
+${variables} set.
+`;
+}
 /** `path` from `~` when it is under HOME, as typed or with links resolved. */
 const tilde = (path: string) => {
   const home = process.env.HOME ?? homedir();
@@ -86,11 +112,11 @@ function list() {
 /** The provider whose default account `spelled` names: `default`,
  * `claude/default`, or the name it was given. */
 function defaultOf(spelled: string): Provider | null {
-  const [first, rest] = spelled.includes("/") ? spelled.split("/", 2) : [null, spelled],
-    only = first ? Provider.parse(first) : null,
-    matches = Provider.all.filter(
-      p => (!first || p === only) && (rest === "default" || rest === accounts.defaultName(p)),
-    );
+  const matches = Provider.all.filter(
+    p =>
+      accounts.matchesName(spelled, p, "default") ||
+      (accounts.defaultName(p) && accounts.matchesName(spelled, p, accounts.defaultName(p))),
+  );
   if (matches.length > 1) throw Error("AmbiguousAccount");
   return matches[0] ?? null;
 }
@@ -139,7 +165,9 @@ async function run(args: string[]): Promise<number> {
     }
     case "rename": {
       if (rest.length !== 2) throw Error("Usage");
-      const provider = defaultOf(rest[0]);
+      const provider = defaultOf(rest[0]),
+        account = accounts.named(rest[0]);
+      if (provider && account) throw Error("AmbiguousAccount");
       if (provider) {
         accounts.renameDefault(provider, rest[1]);
         process.stdout.write(
@@ -149,7 +177,7 @@ async function run(args: string[]): Promise<number> {
         );
         return 0;
       }
-      const account = found(rest[0]);
+      if (!account) throw Error("UnknownAccount");
       accounts.rename(account, rest[1]);
       process.stdout.write(`Renamed ${account.name} to ${rest[1]}.\n`);
       return 0;
@@ -157,6 +185,7 @@ async function run(args: string[]): Promise<number> {
     case "remove": {
       if (rest.length !== 1) throw Error("Usage");
       const account = found(rest[0]);
+      agentProfiles.assertAccountUnused(account.provider, account.dir);
       if (accounts.owns(account)) await signin.signOut(account);
       const removed = await accounts.remove(account);
       process.stdout.write(
@@ -171,7 +200,13 @@ async function run(args: string[]): Promise<number> {
   }
 }
 const messages: Record<string, string> = {
-  InvalidAccountName: "an account name is letters, digits, dots, dashes and underscores, up to 32",
+  AccountHasProfiles: "delete this account’s cloned configurations first",
+  get InvalidAccountName() {
+    return agentName.accountMessage();
+  },
+  get InvalidAgentName() {
+    return agentName.message();
+  },
   AccountExists: "there's an account by that name already",
   UnknownAccount: "no account by that name; `corgi account list` shows them",
   AmbiguousAccount: "two providers have an account by that name; say claude/NAME or codex/NAME",
@@ -181,16 +216,16 @@ const messages: Record<string, string> = {
   AccountManagementUnsupported: "this agent uses its existing login; manage accounts in the agent itself",
 };
 /** `corgi account …`: the exit status. */
-export async function command(args: string[]): Promise<number> {
-  if (args[0] === "help" || args.includes("--help") || args.includes("-h")) {
-    process.stdout.write(help);
+export async function command(args: string[], agent = false): Promise<number> {
+  if (args[0] === "help" || cli.asksHelp(["account", ...args])) {
+    process.stdout.write(agent ? help : localizedHelp());
     return 0;
   }
   try {
     return await run(args);
   } catch (error) {
     const name = errors.name(error) ?? String(error);
-    process.stderr.write(name === "Usage" ? help : `corgi: ${messages[name] ?? name}\n`);
+    process.stderr.write(name === "Usage" ? (agent ? help : localizedHelp()) : `corgi: ${messages[name] ?? name}\n`);
     return name === "Usage" ? 2 : 1;
   }
 }

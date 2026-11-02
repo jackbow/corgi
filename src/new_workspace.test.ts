@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Browser, Dialog, isFolder, label, make, size, stat, subfolders, type Found } from "./new_workspace";
 import { printable, View as NameView } from "./name_dialog";
-import { Writer } from "./text";
+import { Writer, displayWidth } from "./text";
+import * as i18n from "./i18n";
+import { Terminal } from "./pane/terminal";
 import { bgRgb, colors, fgRgb, mix } from "./palette";
 
 const c = (s: string) => s.charCodeAt(0);
@@ -283,6 +285,38 @@ test("a folder that isn't there is offered to create, nested too", () => {
   expect(b.create).toBeNull();
 });
 
+test("translated Create rows preserve the folder list border when the path fills the row", () => {
+  const original = i18n.language();
+  try {
+    for (const locale of i18n.locales) {
+      i18n.setLanguage(locale);
+      const b = browse("/home/me/code");
+      for (const byte of Buffer.from("folder".repeat(20))) b.paste(byte);
+      const d = new Dialog(b),
+        w = new Writer(),
+        view = d.view(80, 30)!,
+        terminal = new Terminal(80, 30);
+      try {
+        view.draw(d, w, 1);
+        terminal.feed(w.s);
+        const line = terminal
+          .text()
+          .split("\n")
+          .find(row => row.includes("+ " + i18n.t`Create `))!;
+        expect(line).toBeDefined();
+        const end = line.indexOf("…") + 1,
+          following = line.slice(end).trim();
+        expect(following).toBe("│ │");
+        expect(displayWidth(line.slice(0, end))).toBe(view.text_x + view.text_width - 1);
+      } finally {
+        terminal.destroy();
+      }
+    }
+  } finally {
+    i18n.setLanguage(original);
+  }
+});
+
 test("opening the offer makes the folders and lists the last", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "corgi-folders-")));
   const b = Browser.init(root, "/nowhere", subfolders);
@@ -321,6 +355,10 @@ test("the name follows the folder until it is edited", () => {
   d.key(9);
   d.key(127);
   expect(d.name()).toBe("new_tasks");
+});
+
+test("the root folder names a workspace /", () => {
+  expect(new Dialog(browse("/")).name()).toBe("/");
 });
 
 test("clearing the name stops it following", () => {
@@ -372,8 +410,6 @@ test.each([false, true])("one press of enter creates with folder focus %s", focu
   const d = new Dialog(browse("/home/me/code"));
   d.browser.focused = focused;
   expect(d.key(13)).toBe("save");
-  expect(d.frame()).toBeNull();
-  expect(d.tick(3000)).toBe("none");
 });
 
 test.each([
@@ -384,9 +420,7 @@ test.each([
   const v = d.view(width, height) ?? NameView.init(width, height, d);
   const button = v.buttons().find(b => b.hit.tag === "save")!;
   expect(d.press(v, button.x + 1, v.buttons_y, 0)).toBe("save");
-  d.release(1);
-  expect(d.tick(3000)).toBe("none");
-  expect(d.frame()).toBeNull();
+  d.release();
 });
 
 test("the name is selected only until the keys first leave it", () => {

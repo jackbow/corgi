@@ -1,31 +1,25 @@
-import { test, expect, beforeEach, afterEach, setSystemTime } from "bun:test";
+import { test, expect, beforeEach, afterEach, setSystemTime, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import type { FSWatcher } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Option, Worker, active_every, idle_every } from "./preview";
 import { Info, Window } from "../usage/account";
-import { Text } from "../providers";
+import { Provider, Text } from "../providers";
 import * as accounts from "../accounts";
+import * as discovery from "../discovery";
 
-const variables = [
-  "CORGI_ENV_BASE",
-  "XDG_STATE_HOME",
-  "CORGI_CODEX_BIN",
-  "CORGI_CLAUDE_BIN",
-  "CORGI_PI_BIN",
-  "CORGI_OPENCODE2_BIN",
-] as const;
+const bin = (p: Provider) => `CORGI_${p.toUpperCase()}_BIN`;
+/** The providers these tests find installed. */
+const installed: Provider[] = Provider.all.filter(p => p !== "opencode2");
+const variables = ["CORGI_ENV_BASE", "XDG_STATE_HOME", ...Provider.all.map(bin)];
 let saved: NodeJS.ProcessEnv, root: string;
 beforeEach(() => {
   saved = { ...process.env };
   root = mkdtempSync(join(tmpdir(), "corgi-preview-"));
   process.env.CORGI_ENV_BASE = root;
   process.env.XDG_STATE_HOME = root;
-  process.env.CORGI_CODEX_BIN = process.execPath;
-  process.env.CORGI_CLAUDE_BIN = process.execPath;
-  process.env.CORGI_PI_BIN = process.execPath;
-  process.env.CORGI_OPENCODE2_BIN = "/nonexistent/opencode";
+  for (const p of Provider.all) process.env[bin(p)] = installed.includes(p) ? process.execPath : `/nonexistent/${p}`;
   accounts.reset();
 });
 afterEach(() => {
@@ -72,6 +66,78 @@ test("a launch preview names the model it shows and where it came from", () => {
   expect(o.model.text()).toBe("opus");
   expect(o.modelLabel()).toBe("Opus");
   expect(o.source.text()).toBe("Project");
+});
+
+test("unchanged launch previews retain identity across polling and installation refreshes", async () => {
+  const worker = new Worker(),
+    monotonic = spyOn(performance, "now").mockReturnValue(0);
+  worker.launcher = async () => ({
+    account: async () => new Info(),
+    model: async () => ({ model: "stable", source: "test" }),
+    close() {},
+  });
+  try {
+    const start = 1_000_000_000;
+    setSystemTime(new Date(start));
+    worker.preview(root);
+    await worker.pump();
+    const first = worker.preview(root);
+    expect(first.pending).toBe(false);
+    for (let ms = 100; ms <= 10000; ms += 100) {
+      setSystemTime(new Date(start + ms));
+      monotonic.mockReturnValue(ms);
+      expect(worker.preview(root)).toBe(first);
+    }
+    accounts.renameDefault("codex", "work");
+    const renamed = worker.preview(root);
+    expect(renamed).not.toBe(first);
+    expect(renamed.names.codex).toBe("work");
+    expect(first.names.codex).toBe("");
+    await worker.pump();
+    const settled = worker.preview(root);
+    expect(settled.pending).toBe(false);
+    expect(worker.preview(root)).toBe(settled);
+    // Starting a fresh read must not change the already-published snapshot.
+    const pending = worker.preview(root, true);
+    expect(pending.pending).toBe(true);
+    expect(settled.pending).toBe(false);
+  } finally {
+    await worker.stop();
+    monotonic.mockRestore();
+    setSystemTime();
+  }
+});
+
+test("install discovery expires despite wall-clock rollback and refresh sees changes immediately", async () => {
+  let available = true;
+  const found = spyOn(discovery, "installed").mockImplementation(() => available),
+    monotonic = spyOn(performance, "now").mockReturnValue(0),
+    worker = new Worker();
+  worker.launcher = async () => ({
+    account: async () => new Info(),
+    model: async () => ({ model: "", source: "test" }),
+    close() {},
+  });
+  try {
+    setSystemTime(new Date(1_000_000_000));
+    worker.preview(root);
+    await worker.pump();
+    expect(worker.preview(root).installed.codex).toBe(true);
+    available = false;
+    monotonic.mockReturnValue(4000);
+    setSystemTime(new Date(999_999_000));
+    expect(worker.preview(root).installed.codex).toBe(true);
+    monotonic.mockReturnValue(5000);
+    setSystemTime(new Date(999_998_000));
+    expect(worker.preview(root).installed.codex).toBe(false);
+    available = true;
+    expect(worker.preview(root, true).installed.codex).toBe(true);
+  } finally {
+    await worker.stop();
+    found.mockRestore();
+    monotonic.mockRestore();
+    setSystemTime();
+  }
 });
 
 test("a launch preview prefers the provider's model name and keeps its launch id", async () => {
@@ -143,7 +209,7 @@ test("accounts are listed before provider reads, and a slow account doesn't dela
     expect(first.accounts.every(a => a.option.pending)).toBe(true);
     await turn();
     const partial = worker.preview("/project");
-    expect(started).toHaveLength(5);
+    expect(started).toHaveLength(installed.length + 2);
     expect(partial.pending).toBe(true);
     expect(partial.options.codex.pending).toBe(false);
     expect(partial.accounts[0].option.pending).toBe(true);
@@ -210,6 +276,45 @@ const reading = (used: number) =>
     usage_fetched_at: 1000,
     limits: { windows: [null, new Window({ minutes: 10080, used, reset_at: 10080 * 60 })] },
   });
+
+test("sign-in refreshes during a pass run again as soon as it finishes", async () => {
+  const worker = new Worker(),
+    started = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  let reads = 0;
+  worker.launcher = async provider => ({
+    account: async () => {
+      if (provider !== "codex") return new Info();
+      const first = ++reads === 1;
+      if (first) {
+        started.resolve();
+        await release.promise;
+      }
+      return Object.assign(new Info(), {
+        signed_in: !first,
+        account: new Text(first ? "" : "codex@example.com"),
+      });
+    },
+    model: async () => ({ model: "test", source: "test" }),
+    close() {},
+  });
+  try {
+    worker.preview(root);
+    await started.promise;
+    worker.preview(root, true);
+    worker.preview(root, true);
+    release.resolve();
+    await worker.pump();
+    const preview = worker.preview(root);
+    expect(reads).toBe(2);
+    expect(preview.pending).toBe(false);
+    expect(preview.options.codex.signed_in).toBe(true);
+    expect(preview.options.codex.account.text()).toBe("codex@example.com");
+  } finally {
+    release.resolve();
+    await worker.stop();
+  }
+});
 
 test("folders signed in to one account share a read, through the folder that worked last", async () => {
   sameLogin(["stale", "fresh"]);

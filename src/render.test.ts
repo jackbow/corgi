@@ -32,6 +32,7 @@ import { TabMenu } from "./commands";
 import { agent, type Pane } from "./mirror";
 import { Icons } from "./tab_icons";
 import { Menu as LauncherMenu } from "./agent_launcher";
+import { Menu as SetupMenu } from "./corgi_setup";
 import { Writer } from "./text";
 import { Terminal } from "./pane/terminal";
 import type { Prefix } from "./keymap";
@@ -294,6 +295,8 @@ test("an agent's tab wears its provider's mark", () => {
     ({ label: "", cwd: "/w/corgi", command: "", brand: null, agent: agent(), ...fields }) as Pane;
   expect(tabBrand(pane({ agent: agent({ provider: "codex" }) }))).toBe("openai");
   expect(tabBrand(pane({ agent: agent({ provider: "claude" }), brand: "node" }))).toBe("claude");
+  expect(tabBrand(pane({ agent: agent({ provider: "omp" }), brand: "bun" }))).toBe("omp");
+  expect(tabBrand(pane({ agent: agent({ provider: "opencode2" }), brand: "bun" }))).toBe("opencode");
   expect(tabBrand(pane({ agent: agent({ provider: "pi" }), brand: "node" }))).toBe("node");
   expect(tabBrand(pane({ brand: "bun" }))).toBe("bun");
 });
@@ -742,4 +745,76 @@ test("a workspace ghost dims the top half with its tabs, each row where switchin
   expect(text).toContain("\x1b[12;29H");
   expect(testVisible(text)).toContain("┄┄ ↑ alpha ↑ ┄");
   expect(covered).toEqual(new Rect(28, 0, 72, 12));
+});
+
+test("Manage rows advertise grab, model-pointer and search-text cursors without moving keyboard focus", () => {
+  const view = emptyView(),
+    launch = new LauncherMenu({ workspace: 1, selected: "codex", last: "codex", pinned: true });
+  launch.preview.installed.codex = true;
+  launch.manage();
+  launch.transition.tick(Date.now() + 1000);
+  const u = ui({ agent_launcher: launch, message: "", copy_mode: false, pointer: null });
+  frame(view, [], 120, 34, u);
+  const box = launch.manager.last_box!,
+    selected = launch.manager.at;
+  for (const [x, y, shape] of [
+    [box.x + 10, box.y + 7, "grab"],
+    [box.x + box.w - 8, box.y + 7, "pointer"],
+    [box.x + 8, box.y + 2, "text"],
+  ] as const) {
+    u.pointer = { x, y };
+    expect(frame(view, [], 120, 34, u)).toContain(`\x1b]22;${shape}\x1b\\`);
+    expect(launch.manager.at).toBe(selected);
+  }
+  u.iterm2_pointer = true;
+  u.pointer = { x: box.x + 10, y: box.y + 7 };
+  expect(frame(view, [], 120, 34, u)).toContain("\x1b]22;fleur\x1b\\");
+});
+
+test("the launcher places provider marks with host images and falls back to glyphs", () => {
+  const launch = new LauncherMenu({ workspace: 1, selected: "codex", last: "codex", pinned: true }),
+    icons = new Icons(),
+    shown = (fields: Partial<Ui> = {}) =>
+      frame(emptyView(), [], 120, 40, ui({ message: "", copy_mode: false, agent_launcher: launch, ...fields }));
+  // Codex's glyph stands in for its mark.
+  expect(shown()).not.toContain("\x1b_Ga=p");
+  expect(shown()).toContain("†");
+  expect(launch.marks).toBeNull();
+  const graphics = { tab_icons: icons, cell_pixels: { width: 9, height: 18 } };
+  launch.preview.installed.opencode2 = true;
+  expect(shown(graphics)).not.toContain("\x1b_Ga=p");
+  const uploaded = icons.end();
+  expect(uploaded).toContain("\x1b_Ga=t");
+  expect(uploaded).toContain("i=730324,");
+  icons.begin();
+  const placed = shown(graphics);
+  expect(placed).toContain("\x1b_Ga=p");
+  expect(placed).toContain("\x1b_Ga=p,i=730324,");
+  expect(placed).not.toMatch(/\x1b\[1;\d+H\x1b_Ga=p/);
+  // A sign-in over the launcher leaves its marks as glyphs.
+  icons.begin();
+  const signin = shown({ ...graphics, signin_draw: () => null });
+  expect(signin).not.toContain("\x1b_Ga=p");
+  expect(signin).toContain("†");
+  icons.begin();
+  expect(shown()).not.toContain("\x1b_Ga=p");
+  expect(launch.marks).toBeNull();
+});
+
+test("settings' Manage agents places the same provider marks as the launcher's", () => {
+  const setup = SetupMenu.open(),
+    launch = new LauncherMenu({ workspace: 1 }),
+    icons = new Icons(),
+    shown = (fields: Partial<Ui> = {}) =>
+      frame(emptyView(), [], 160, 44, ui({ message: "", copy_mode: false, corgi_setup: setup, ...fields }));
+  Object.assign(setup, { agents: launch, item: "agents", focus: "options" });
+  expect(setup.managing()).toBe(true);
+  expect(shown()).not.toContain("\x1b_Ga=p");
+  expect(launch.manager.marks).toBeNull();
+  const graphics = { tab_icons: icons, cell_pixels: { width: 9, height: 18 } };
+  shown(graphics);
+  expect(icons.end()).toContain("\x1b_Ga=t");
+  icons.begin();
+  expect(shown(graphics)).toContain("\x1b_Ga=p");
+  expect(launch.manager.marks).not.toBeNull();
 });

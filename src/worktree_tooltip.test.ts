@@ -7,10 +7,11 @@ import * as worktreeRemoval from "./worktree_removal";
 import { View, workspaceEntry, worktreeAt, worktreeLabel, worktreeBadge, writeExit, spotlight_dim } from "./sidebar";
 import { bgRgb, colors, fg, fgRgb } from "./palette";
 import * as launcherResume from "./launcher_resume";
-import { Writer } from "./text";
+import { Writer, ellipsis } from "./text";
 import { Terminal } from "./pane/terminal";
 import { parseInventory } from "./trackers/worktrees";
 import * as clock from "./clock";
+import * as i18n from "./i18n";
 import * as worktrees from "./worktrees";
 import type { Brief, Snapshot } from "./worktrees";
 import { realpathSync } from "node:fs";
@@ -66,6 +67,23 @@ test("the count and table hide dead worktrees but retain locked and temporarily 
     expect(text).not.toContain("topic-1");
     for (const label of ["topic-2", "topic-3", "topic-4", "topic-5"]) expect(text).toContain(label);
     expect(data.entries).toHaveLength(7);
+  } finally {
+    terminal.destroy();
+  }
+});
+test("a locked worktree with a long name gives up room for its lock", () => {
+  const data = parseInventory(
+      "worktree /repo\0branch refs/heads/main\0\0" +
+        "worktree /repo/.worktrees/long\0branch refs/heads/worktree-a-very-long-branch-name-for-locks\0\0",
+    ),
+    state = new State(),
+    w = new Writer(),
+    terminal = new Terminal(100, 30);
+  data[1].locked = "on a USB disk";
+  try {
+    draw(w, geometry(100, 30, 28, 3, 1)!, "repo", "/repo", { ...snapshot(0), entries: data }, state);
+    terminal.feed(w.buffered());
+    expect(terminal.text()).toContain("› worktree-a-ver…  locked  0");
   } finally {
     terminal.destroy();
   }
@@ -282,6 +300,62 @@ test("a narrow card drops age, then the comparison, then the last edit", () => {
   expect(names(60)).toEqual(["agents", "changes"]);
   for (const width of [100, 88, 80, 70, 60]) expect(columnsFor(width).room).toBeGreaterThanOrEqual(24);
 });
+
+test("translated worktree columns keep name room and never overwrite their neighboring heading", () => {
+  const previous = i18n.language();
+  try {
+    for (const language of ["en", "zh", "ja", "ko", "ru"] as const) {
+      i18n.setLanguage(language);
+      for (const width of [52, 60, 80, 100]) {
+        const rect = geometry(width + 3, 30, 0, 3, 1)!,
+          layout = columnsFor(rect.w);
+        const w = new Writer(),
+          terminal = new Terminal(width + 3, 30);
+        try {
+          draw(w, rect, "repo", "/repo", snapshot(1), new State());
+          terminal.feed(w.buffered());
+          const heading = terminal.text().split("\n")[rect.y + 4];
+          expect(layout.room).toBeGreaterThanOrEqual(24);
+          for (const [name, label] of [
+            ["agents", i18n.t`AGENTS`],
+            ["main", i18n.t`VS MAIN`],
+            ["age", i18n.t`AGE`],
+            ["edited", i18n.t`EDITED`],
+            ["changes", i18n.t`UNCOMMITTED CHANGES`],
+          ] as const) {
+            if (layout.x[name] === undefined) continue;
+            expect(heading).toContain(ellipsis(label, layout.widths[name]! - Number(name !== "changes")));
+            expect(sortAt(rect, rect.x + layout.x[name]!, rect.y + 4)).toBe(name);
+          }
+          expect(heading.trimEnd().endsWith("│")).toBe(true);
+        } finally {
+          terminal.destroy();
+        }
+      }
+    }
+  } finally {
+    i18n.setLanguage(previous);
+  }
+});
+
+test("animated and settled worktree briefs preserve wide glyphs and combining marks", () => {
+  for (const phase of ["writing", "ready"] as const) {
+    const data = snapshot(1),
+      state = new State(),
+      entry = data.entries[1];
+    entry.comparison = { ahead: 1n, behind: 0n };
+    state.briefs = new Map([[entry.path, { path: entry.path, label: "Cafe\u0301 中文 か\u3099完了", phase }]]);
+    const w = new Writer(),
+      terminal = new Terminal(140, 30);
+    try {
+      draw(w, geometry(140, 30, 28, 3, 1, 0, 2)!, "repo", "/repo", data, state);
+      terminal.feed(w.buffered());
+      expect(terminal.text().normalize("NFC")).toContain("╰ Café 中文 が完了");
+    } finally {
+      terminal.destroy();
+    }
+  }
+});
 test("paths read from the main checkout, a temporary directory or home", () => {
   expect(displayPath("/repo/.claude/worktrees/a", "/repo")).toBe("./.claude/worktrees/a");
   expect(displayPath("/dev/repo-topic", "/dev/repo")).toBe("../repo-topic");
@@ -452,6 +526,64 @@ test("a big worktree shows Git still deleting it once the ending has played, and
     // Esc again closes it.
     await (view as any).key(27);
     expect(view.worktreeDetail()).toBeNull();
+  } finally {
+    clock.reset();
+  }
+});
+test("holding ⌫ on a locked worktree ends on its band; Esc keeps it and Enter removes it", async () => {
+  const { view, requests, report, screen } = await removing();
+  const lock = "claude session topic-0 (pid 20579 start Sat Oct 31 20:02:56 2026)";
+  try {
+    const data = snapshot(2);
+    data.entries[1].locked = lock;
+    data.entries[1].holder = "exited";
+    report(data, null);
+    expect(screen()).toContain("› topic-0  locked  ./…/0");
+    const hold = async () => {
+      await (view as any).key(127);
+      clock.advance(300);
+      for (let i = 0; i < 60 && view.worktree_card.removal.phase === "held"; i++) {
+        await (view as any).key(127);
+        if (i === 10) expect(screen()).toContain("Removing topic-0 · locked · branch kept");
+        clock.advance(50);
+      }
+    };
+    await hold();
+    expect(view.worktree_card.removal.phase).toBe("confirm");
+    clock.advance(1000);
+    const text = screen();
+    expect(text).toContain("› topic-0  locked");
+    expect(text).toMatch(/▎  LOCKED .* Enter  remove/);
+    expect(text).toContain("▎  claude session topic-0 · exited");
+    expect(text).toContain("Removing topic-0 · locked · branch kept");
+    expect(requests.some(r => r.op === "worktree.remove")).toBe(false);
+    // Esc keeps it: the row comes back, and the overview stays open.
+    await (view as any).key(27);
+    expect(view.worktreeDetail()).toBe(1);
+    clock.advance(1000);
+    await view.expireInput();
+    expect(view.worktree_card.removal.phase).toBe("idle");
+    expect(screen()).toContain("› topic-0  locked");
+    expect(screen()).not.toContain("LOCKED");
+    // A lock that changed while its band showed isn't the one Enter confirms.
+    await hold();
+    const relocked = snapshot(2);
+    relocked.entries[1].locked = "on a USB disk";
+    report(relocked, null);
+    await (view as any).key(13);
+    expect(requests.some(r => r.op === "worktree.remove")).toBe(false);
+    expect(view.worktree_card.removal.phase).toBe("failed");
+    expect(screen()).toContain("Couldn't remove topic-0 · its lock changed");
+    report(data, null);
+    clock.advance(worktreeRemoval.message_ms + 100);
+    await view.expireInput();
+    // Held again, Enter removes it, naming the lock it showed.
+    await hold();
+    await (view as any).key(13);
+    expect(requests.filter(r => r.op === "worktree.remove")).toEqual([
+      { op: "worktree.remove", workspace: 1, path: "/repo/.worktrees/0", locked: lock },
+    ]);
+    expect(view.worktree_card.removal.phase).toBe("removing");
   } finally {
     clock.reset();
   }
@@ -654,7 +786,7 @@ test("a ghost previews a worktree's newest conversations as agents; Enter brings
     );
     entries = (view as any).sidebarEntries();
     expect(entries.some((e: any) => e.worktree?.ghost || "asleep" in e.target)).toBe(false);
-    const group = entries.findIndex((e: any) => e.target.worktree === path);
+    const group = entries.findIndex((e: any) => e.target.checkout === path);
     expect(entries.slice(group + 1, group + 4).map((e: any) => [e.target, e.name])).toEqual([
       [{ pane: 2 }, "Recent 0"],
       [{ pane: 3 }, "Recent 1"],
@@ -706,7 +838,7 @@ test("browsing an offscreen group scrolls the existing sidebar without a duplica
   });
   await view.input(Buffer.from("\x1b[B"));
   const entries = (view as any).sidebarEntries();
-  const index = entries.findIndex((e: any) => e.target.worktree === "/repo/.worktrees/1");
+  const index = entries.findIndex((e: any) => "headless" in e.target && e.worktree?.path === "/repo/.worktrees/1");
   const side = view.sidebarView(entries);
   expect(side.offset).toBeGreaterThan(0);
   expect(index).toBeGreaterThanOrEqual(side.offset);
@@ -715,20 +847,34 @@ test("browsing an offscreen group scrolls the existing sidebar without a duplica
   expect(entries.filter((e: any) => e.name.startsWith("Root "))).toHaveLength(15);
   expect(entries.some((e: any) => e.worktree?.ghost)).toBe(false);
 });
-test("a worktree header folds its group on click and entering the worktree unfolds it", async () => {
+test("a section header folds its agents on click; a worktree's subhead opens its first agent", async () => {
   const { view } = browsing(),
     path = "/repo/.worktrees/1";
+  view.prefs.agent_sort = "activity";
   await view.input(Buffer.from("\x1b[27u"));
   const rows = () => (view as any).sidebarEntries();
-  const header = rows().findIndex((e: any) => e.target.worktree === path);
-  expect(rows()[header]).toMatchObject({ name: "topic-1", focused: false });
-  await view.perform({ name: "worktree-agent", value: header });
+  const header = rows().findIndex((e: any) => e.target.section === "idle" && !("workspace" in e.target));
+  expect(rows()[header]).toMatchObject({ name: "idle", focused: false });
+  await (view as any).selectAgent(rows()[header].target);
   expect(rows()[header].group.folded).toBe(true);
-  expect(rows().some((e: any) => e.name === "Search agent")).toBe(false);
-  await (view as any).enterWorktree({ workspace: 1, path });
-  expect(rows()[header].group.folded).toBe(false);
-  expect(rows()[header].focused).toBe(false);
-  expect(rows().some((e: any) => e.name === "Search agent")).toBe(true);
+  // Its rows fade out rather than vanish.
+  expect(rows().find((e: any) => e.name === "Search agent")?.exit).not.toBeNull();
+  await (view as any).selectAgent(rows()[header].target);
+  const subhead = rows().find((e: any) => e.target.checkout === path);
+  expect(subhead.name).toBe("topic-1");
+  await (view as any).selectAgent(subhead.target);
+  expect(view.headless_notice).toBe(7);
+});
+test("entering a worktree whose agents are in a folded section opens it and focuses them", async () => {
+  const { view } = browsing(),
+    path = "/repo/.worktrees/1";
+  view.prefs.agent_sort = "activity";
+  await view.input(Buffer.from("\x1b[27u"));
+  await (view as any).selectAgent({ section: "idle" });
+  expect((view as any).sidebarEntries().some((e: any) => e.name === "Search agent" && e.exit === null)).toBe(false);
+  (view as any).revealWorktree({ workspace: 1, path }, true);
+  expect(view.folded_sections.has("idle")).toBe(false);
+  expect(view.headless_notice).toBe(7);
 });
 /** Two claude panes in the first worktree and one in the primary checkout,
  * with a daemon that records closed panes. */
@@ -782,7 +928,7 @@ function paneWorktrees() {
     })!;
     return y + 1;
   };
-  const heading = (e: any) => e.target.worktree === data.entries[1].path;
+  const heading = (e: any) => e.target.checkout === data.entries[1].path;
   return { view, data, closed, rows, row, heading };
 }
 test("e in the overview starts a reviewer in the browsed worktree and pins the review to it", async () => {
@@ -806,33 +952,28 @@ test("a worktree heading's right-click menu closes only the agents listed under 
     "Review changes",
     "Open folder",
     "Copy full path",
-    "Fold",
     "Close all agents for topic-0",
   ]);
   await view.input(Buffer.from("x"));
   expect(view.tab_menu).toBeNull();
   expect(closed).toEqual([1, 2]);
 });
-test("browsing a folded worktree in the overview dims the rest and peeks it open in place", async () => {
+test("browsing a worktree in the overview dims the rest and lights its agents where they are", async () => {
   const { view, data, rows, row, heading } = paneWorktrees(),
     path = data.entries[1].path,
     dim = new Writer();
   writeExit(dim, fg("text"), spotlight_dim);
   const faded = "\x1b[22m" + dim.buffered() + "main";
-  // Hovering the heading in the sidebar lights nothing.
+  // Hovering the subhead in the sidebar lights nothing.
   await view.input(Buffer.from(`\x1b[<35;6;${row(heading)}M`));
   expect(view.frame()).not.toContain(faded);
-  (view as any).toggleWorktree({ workspace: 1, path });
-  const header = rows().findIndex(heading);
+  const before = rows().map(e => e.target);
   await view.perform({ name: "worktrees", value: 1 });
   await view.perform({ name: "worktree-select", value: path });
-  const peek = rows();
-  expect(peek.findIndex(heading)).toBe(header);
-  expect(peek[header].worktree.ghost).toBe(true);
-  expect(peek.filter(e => e.worktree?.ghost && "pane" in e.target).map(e => e.name)).toEqual(["one", "two"]);
+  expect(rows().map(e => e.target)).toEqual(before);
+  expect(rows().some(e => e.worktree?.ghost)).toBe(false);
   expect(view.frame()).toContain(faded);
   await view.input(Buffer.from("\x1b[27u"));
-  expect(rows()[header]).toMatchObject({ worktree: { ghost: false }, group: { folded: true } });
   expect(view.frame()).not.toContain(faded);
 });
 test("the card closes once the pointer leaves it, its badge and the triangle between, pinned or not", async () => {

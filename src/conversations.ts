@@ -1,4 +1,6 @@
 import * as background_tasks from "./activity/background_tasks";
+import * as breadcrumbs from "./breadcrumbs";
+import * as checklist from "./activity/checklist";
 import { Conversation, hash } from "./activity/summary";
 import { Timeline } from "./activity/timeline";
 import { View, Tokens, Counter } from "./usage/live";
@@ -42,6 +44,7 @@ export class Actor {
   status_inference = new Conversation();
   activity_timeline = new Timeline();
   background_tasks = new background_tasks.Inventory();
+  checklist = new checklist.List();
   /** The background shells its last Stop listed, each of which can wake it. */
   shells = new background_tasks.Shells();
   live_usage = new View();
@@ -70,6 +73,17 @@ export class Actor {
     if (text)
       this.activity_timeline.checkpoint(this.state.turnId(), new Text(text.slice(0, 80)), this.usageView(ms), ms);
   }
+  checkpointActivity(amend: boolean, now: number) {
+    if (this.state.compacting || !this.state.activity.len) return;
+    const ms = Math.floor(now / 1000),
+      timeline = this.activity_timeline;
+    if (amend) timeline.amend(this.state.turnId(), this.state.activity, this.usageView(ms), ms);
+    else timeline.checkpoint(this.state.turnId(), this.state.activity, this.usageView(ms), ms);
+  }
+  /** Keeps `list` unless the one it holds is newer. */
+  observeChecklist(list: checklist.List) {
+    if (list.at >= this.checklist.at) this.checklist = list;
+  }
   observeTaskEnds(ended: background_tasks.Ended) {
     this.shells.drop(ended);
     if (!this.state.paused || this.paused_for_wakeup || this.shells.len) return false;
@@ -88,6 +102,13 @@ export class Actor {
   }
   observeSnapshot(snapshot: Snapshot, watched: boolean, now: number) {
     const a = this.state;
+    if (!snapshot.lifecycle) {
+      if (a.sessionId() !== snapshot.session) return false;
+      if (snapshot.transcript.len && !a.transcript.len) a.transcript = snapshot.transcript;
+      if (snapshot.cwd.len && !a.cwd.len) a.cwd = snapshot.cwd;
+      if (snapshot.name.len && !a.name.len) a.name = snapshot.name;
+      return false;
+    }
     if (snapshot.observed_at <= a.last_seq) return false;
     this.child_refresh = false;
     const binding = a.last_seq === 0n;
@@ -171,7 +192,9 @@ export class Actor {
     const was = this.state.compacting;
     const ding = this.state.observeHook(this.provider(), event, seq, watched, now, presence);
     if (ding === null) return false;
-    if (this.state.last_seq === seq) this.screen_compacting = false;
+    if (event.checklist) this.observeChecklist(event.checklist.stamped(now));
+    if (event.kind === "checklist") return false;
+    if (this.state.last_seq === seq && event.kind !== "activity") this.screen_compacting = false;
     if (event.model) {
       this.model = Model.resolve(event.model);
       this.model_from_hook = true;
@@ -244,6 +267,8 @@ export class Attachment {
   side = false;
   hook_seq = 0n;
   known: ActorId[] = [];
+  /** The pane or native session it belongs to, for breadcrumbs. */
+  owner: breadcrumbs.Owner | null = null;
   get known_len() {
     return this.known.length;
   }
@@ -272,6 +297,7 @@ export class Attachment {
     }
     this.side = false;
     if (this.actor === actor) return;
+    breadcrumbs.record("bound", { owner: this.owner, actors: [actor.id] });
     this.actor = actor;
     this.generation = BigInt.asUintN(64, this.generation + 1n);
   }
@@ -279,13 +305,18 @@ export class Attachment {
     return this.known.includes(id as ActorId);
   }
   deselect() {
+    if (this.actor) breadcrumbs.record("unbound", { owner: this.owner, actors: [this.actor.id] });
+    this.clear();
+  }
+  private clear() {
     this.actor = null;
     this.side = false;
     this.provisional = new Agent();
     this.generation = BigInt.asUintN(64, this.generation + 1n);
   }
   detach() {
-    this.deselect();
+    if (this.actor || this.known.length) breadcrumbs.record("released", { owner: this.owner, actors: [...this.known] });
+    this.clear();
     this.known = [];
     this.selection_hash = 0n;
     this.hook_seq = 0n;
@@ -340,6 +371,7 @@ export class Registry {
         }
     }
     if (kept.size === this.items.length) return false;
+    breadcrumbs.record("forgot", { actors: this.items.flatMap(actor => (kept.has(actor.id) ? [] : [actor.id])) });
     this.items = this.items.filter(actor => kept.has(actor.id));
     return true;
   }
@@ -361,7 +393,17 @@ export class Registry {
   }
   observeHook(actor: Actor, event: any, seq: bigint, watched: boolean, now: number, presence: Presence = "detached") {
     if (event.kind === "subagent_start" || event.kind === "subagent_stop") {
+      // Child hooks share a transport, not their parent's or siblings' event order.
+      const child = this.find(actor.provider(), event.subagent);
+      if (
+        child &&
+        (seq < child.state.last_seq ||
+          (seq === child.state.last_seq && child.state.state === "idle" && event.kind === "subagent_start"))
+      )
+        return false;
       adapter(actor.provider()).conversation?.child?.(this, actor, event, now);
+      const updated = this.find(actor.provider(), event.subagent);
+      if (updated?.parent === actor.id) updated.state.last_seq = seq;
       return false;
     }
     const accepted = actor.state.last_seq;
@@ -404,6 +446,15 @@ export class Registry {
    * already shows. */
   routeHook(binding: Attachment, provider: Provider, event: any, binds: boolean) {
     if (!event.session) return null;
+    if (event.kind === "subagent_start" || event.kind === "subagent_stop") {
+      const actor = this.find(provider, event.session);
+      let ancestor = actor;
+      for (let i = 0; ancestor && i < max_actors; i++) {
+        if (binding.knows(ancestor.id)) return actor;
+        ancestor = ancestor.parent === null ? null : this.byId(ancestor.parent);
+      }
+      return null;
+    }
     if (!binds) {
       const actor = this.find(provider, event.session);
       return actor && binding.knows(actor.id) ? actor : null;

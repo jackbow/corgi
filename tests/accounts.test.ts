@@ -58,9 +58,9 @@ case "$1 $2" in
 esac
 if ! grep -q hasCompletedOnboarding "$dir/.claude.json" 2>/dev/null; then
   printf 'Select login method:\\n> 1. Claude account with subscription\\n'
-  read -r _
+  read -r _ || exit 1
   printf '${signin_url}\\nPaste code here if prompted > '
-  read -r code
+  read -r code || exit 1
   printf '{"oauthAccount":{"emailAddress":"%s@example.com","accountUuid":"%s","organizationUuid":"org"},"hasCompletedOnboarding":true}' "$code" "$code" > "$dir/.claude.json"
   sleep 30
 fi
@@ -131,19 +131,20 @@ exec ${quote(agent)} "$@"`,
     const side = join(this.temp.name, "side-claude");
     signIn(side, "me@side.com");
     const pane = (await this.open_pane({ cwd: this.temp.name })).pane,
-      start = `PATH=${quote(join(this.temp.name, "bin"))}:$PATH CLAUDE_CONFIG_DIR=${quote(side)} claude\r`;
-    await this.command("pane.input", { target: pane, data: start });
+      claude = `PATH=${quote(join(this.temp.name, "bin"))}:$PATH CLAUDE_CONFIG_DIR=${quote(side)} claude`;
+    // Still loading, it fires no hooks, so only its process can name its account.
+    await this.command("pane.input", { target: pane, data: `${claude} --loading\r` });
     const first = await this.until(async () =>
       (await this.panes()).find((p: any) => p.id === pane && p.provider === "claude"),
     );
     this.assertEqual(first.account, realpathSync(side));
-    this.assertEqual(first.session, "", "its folder had no hooks when it started");
+    this.assertEqual(first.session, "", "it has not reported");
     await this.until(() => hooked(join(side, "settings.json")));
     this.assertEqual(this.listed(), [
       { provider: "claude", dir: realpathSync(side), name: "side-claude", managed: false },
     ]);
     const next = (await this.open_pane({ cwd: this.temp.name })).pane;
-    await this.command("pane.input", { target: next, data: start });
+    await this.command("pane.input", { target: next, data: `${claude}\r` });
     await this.until(async () =>
       (await this.panes()).find((p: any) => p.id === next && p.session === "ordinary-claude"),
     );
@@ -210,9 +211,9 @@ exec ${quote(agent)} "$@"`,
     writeFileSync(this.path + ".viewer.json", JSON.stringify({ onboarding_complete: true }));
     const view = await Viewer.create(this, 160, 40);
     await view.input("\x02A");
-    await view.input("m");
+    await view.input("\x1b[C");
     await view.advance(0.3);
-    await view.input("add claude\t\r");
+    await view.input("/add claude\t\r");
     await this.until(async () => (await view.poll()).data.includes("Select login method"));
     await view.input("\r");
     await this.until(async () => (await view.poll()).data.includes("paste it here"));
@@ -264,10 +265,10 @@ exec ${quote(agent)} "$@"`,
     this.env.CORGI_CLAUDE_BIN = this.first_run;
     writeFileSync(this.path + ".viewer.json", JSON.stringify({ onboarding_complete: true }));
     const view = await Viewer.create(this, 160, 40);
-    await view.input("\x02Am");
+    await view.input("\x02A\x1b[C");
     await view.advance(0.3);
     await this.until(async () => (await view.poll()).data.includes("Manage agents"));
-    await view.input("add claude\t");
+    await view.input("/add claude\t");
     const before = screen_text((await view.poll()).data, 160, 40),
       row = before.findIndex(row => /›\s+\+ New Claude Code account/.test(row)),
       col = before[row].indexOf("Claude Code");
@@ -303,11 +304,15 @@ exec ${quote(agent)} "$@"`,
     writeFileSync(this.path + ".viewer.json", JSON.stringify({ onboarding_complete: true }));
     const view = await Viewer.create(this, 160, 40);
     await view.input("\x02A");
-    await view.input("m");
+    await view.input("\x1b[C");
     await view.advance(0.3);
     await this.until(async () => (await view.poll()).data.includes("Manage agents"));
-    await view.input("add claude\t");
-    const before = screen_text((await view.poll()).data, 160, 40);
+    await view.input("/add claude\t");
+    // Add agent shows its accounts' readings; compare once they've arrived.
+    const before = await this.until(async () => {
+      const rows = screen_text((await view.poll()).data, 160, 40);
+      return rows.some(row => row.includes("Reading…")) ? null : rows;
+    });
     this.assertTrue(
       before.some(row => /›\s+\+ New Claude Code account/.test(row)),
       before.join("\n"),
@@ -360,7 +365,7 @@ exec ${quote(agent)} "$@"`,
     await click(settings[y].indexOf("Manage agents"), y);
     await view.input("\r");
     await this.until(async () => (await rows()).some(row => row.includes("me@work.com")));
-    await view.input("work\t\x7f");
+    await view.input("/work\t\x7f");
     await view.advance(0.4);
     for (let i = 0; i < 30; i++) {
       await view.input("\x7f");
@@ -383,7 +388,7 @@ exec ${quote(agent)} "$@"`,
     await this.until(async () => !(await view.poll()).data.includes("Corgi setup"));
     await view.input("\x02A");
     this.assertFalse((await rows()).some(row => row.includes("me@work.com")));
-    await view.input("m");
+    await view.input("\x1b[C");
     await view.advance(0.3);
     await this.until(async () => (await rows()).some(row => row.includes("claude --model opus")));
     // The account stays removed after reopening the manager.
@@ -425,10 +430,10 @@ exec ${quote(agent)} "$@"`,
     const view = await Viewer.create(this, 160, 40);
     let holding: Promise<void> | null = null;
     try {
-      await view.input("\x02Am");
+      await view.input("\x02A\x1b[C");
       await view.advance(0.3);
       await this.until(async () => (await view.poll()).data.includes("slow"));
-      await view.input("slow\t");
+      await view.input("/slow\t");
       holding = (async () => {
         await view.input("\x7f");
         await view.advance(0.4);

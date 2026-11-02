@@ -1,3 +1,4 @@
+import * as telemetry from "../telemetry";
 import type { Runtime } from "../runtime";
 import { open, lstat } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -8,11 +9,12 @@ import { str, timestampMs } from "../providers/common";
 import { Model } from "../providers/model";
 import { parse } from "../json";
 import { head } from "../transcript";
-import { Counts, Tracker } from "./tokens";
+import { Counts, Tracker, type Window } from "./tokens";
 import { Counter, Meter, View } from "./live";
 import { Reading } from "./context_window";
 import { Tracker as Tools, View as Progress } from "../activity/tools";
 import { Ended } from "../activity/background_tasks";
+import * as checklist from "../activity/checklist";
 import * as accounts from "../accounts";
 import { max_actors } from "../conversations";
 import { hydrate } from "../persist/checkpoint";
@@ -42,6 +44,7 @@ export class Result {
   update_at = 0;
   spoke_at = 0;
   ended = new Ended();
+  checklist: checklist.List | null = null;
   fallback(agent: Agent, now: number) {
     return agent.provider ? (adapter(agent.provider).transcript?.fallback(this, agent, now) ?? false) : false;
   }
@@ -68,6 +71,7 @@ export class Tail {
   update_at = 0;
   spoke_at = 0;
   ended = new Ended();
+  checklist: checklist.List | null = null;
   /** Where the daemon before a handoff stopped counting, until the file opens. */
   carried: Position | null = null;
   closeFile() {
@@ -92,92 +96,114 @@ export class Tail {
     if (id && id !== "<synthetic>") this.model = Model.resolve(id);
   }
   ingest(req: Request, reader: TranscriptReader, bytes: Buffer | string, start_offset: number) {
-    if (adapter(req.agent.provider!).caps.prompt_turns) this.progress.bind(req.agent.turnId());
-    const input = typeof bytes === "string" ? Buffer.from(bytes) : bytes,
-      found = new Counts();
-    let start = 0;
-    while (start < input.length) {
-      const at = input.indexOf(10, start),
-        complete = at >= 0,
-        end = complete ? at : input.length,
-        segment = input.subarray(start, end);
-      start = end + Number(complete);
-      if (!this.discard && this.partial.length + segment.length > 1024 * 1024) {
-        this.live.meter.lose();
-        this.partial = Buffer.alloc(0);
-        this.discard = true;
-      }
-      if (!this.discard) this.partial = Buffer.concat([this.partial, segment]);
-      if (!complete) continue;
-      if (!this.discard)
-        try {
-          const value = parse(this.partial.toString()),
-            appended = start_offset + start > this.initial_until,
-            stamp = timestampMs(str(value, "timestamp")),
-            delta = reader.record(this, req, value, appended, stamp);
-          if (appended && stamp !== null && stamp > req.since) found.add(delta);
-        } catch {
-          this.live.meter.lose();
-        }
-      this.partial = Buffer.alloc(0);
-      this.discard = false;
-    }
-    return found;
-  }
-  async poll(req: Request, reader: TranscriptReader) {
-    const file = await open(
-      req.agent.transcriptPath(),
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    );
+    const telemetry_started = telemetry.begin();
     try {
-      const stat = await file.stat(),
-        named = await lstat(req.agent.transcriptPath());
-      if (!stat.isFile()) throw Error("NotRegular");
-      const resumed =
-        this.inode !== 0 && stat.ino === this.inode && stat.dev === this.device && stat.size >= this.offset;
-      if (!resumed) {
-        const first = await head(file);
-        adapter(req.agent.provider!).transcript?.verify?.(first, req.agent.sessionId());
-        const carried = this.carried,
-          continues =
-            carried !== null &&
-            stat.ino === carried.inode &&
-            stat.dev === carried.device &&
-            stat.size >= carried.offset;
-        this.carried = null;
-        this.initial_until = continues ? carried.offset : stat.size;
-        this.offset = Math.max(0, this.initial_until - 256 * 1024);
-        const catch_up = req.child && !this.opened && stat.size <= 2 * 1024 * 1024;
-        if (catch_up) this.offset = 0;
-        this.catch_up = catch_up;
-        const retained = this.live.meter;
-        this.live = new Counter();
-        if (!continues) {
-          this.live.meter = retained;
-          if (this.opened) this.live.meter.lose();
+      if (adapter(req.agent.provider!).caps.prompt_turns) this.progress.bind(req.agent.turnId());
+      const input = typeof bytes === "string" ? Buffer.from(bytes) : bytes,
+        found = new Counts();
+      let start = 0;
+      while (start < input.length) {
+        const at = input.indexOf(10, start),
+          complete = at >= 0,
+          end = complete ? at : input.length,
+          segment = input.subarray(start, end);
+        start = end + Number(complete);
+        if (!this.discard && this.partial.length + segment.length > 1024 * 1024) {
+          this.live.meter.lose();
+          this.partial = Buffer.alloc(0);
+          this.discard = true;
         }
-        this.opened = true;
+        if (!this.discard) this.partial = Buffer.concat([this.partial, segment]);
+        if (!complete) continue;
+        if (!this.discard)
+          try {
+            const value = parse(this.partial.toString()),
+              appended = start_offset + start > this.initial_until,
+              stamp = timestampMs(str(value, "timestamp")),
+              delta = reader.record(this, req, value, appended, stamp);
+            if (appended && stamp !== null && stamp > req.since) found.add(delta);
+          } catch {
+            this.live.meter.lose();
+          }
         this.partial = Buffer.alloc(0);
-        this.tracker = new Tracker();
-        this.progress = new Tools();
-        this.context = new Reading();
-        reader.open(this, req, first, catch_up);
-        // The carried count already covers the file up to initial_until; opening readies a new one.
-        if (continues) this.live.meter = retained;
-        this.discard = this.offset > 0;
+        this.discard = false;
       }
-      this.inode = stat.ino;
-      this.device = stat.dev;
-      if (!named.isFile() || named.ino !== this.inode || named.dev !== this.device || stat.size < this.offset)
-        throw Error("Replaced");
-      if (stat.size === this.offset) return new Counts();
-      const bytes = Buffer.alloc(65536),
-        start = this.offset,
-        { bytesRead } = await file.read(bytes, 0, bytes.length, this.offset);
-      this.offset += bytesRead;
-      return this.ingest(req, reader, bytes.subarray(0, bytesRead), start);
+      return found;
     } finally {
-      await file.close();
+      telemetry.end("agent.usage.ingest", telemetry_started);
+    }
+  }
+  async poll(req: Request, reader: TranscriptReader, window?: Window) {
+    const telemetry_started = telemetry.begin();
+    try {
+      const current = await lstat(req.agent.transcriptPath());
+      // At EOF, historical counts survive revoked read access until more bytes need reading.
+      if (
+        this.inode !== 0 &&
+        current.isFile() &&
+        current.ino === this.inode &&
+        current.dev === this.device &&
+        current.size === this.offset
+      )
+        return new Counts();
+      const file = await open(
+        req.agent.transcriptPath(),
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      try {
+        const stat = await file.stat(),
+          named = await lstat(req.agent.transcriptPath());
+        if (!stat.isFile()) throw Error("NotRegular");
+        const resumed =
+          this.inode !== 0 && stat.ino === this.inode && stat.dev === this.device && stat.size >= this.offset;
+        if (!resumed) {
+          const first = await head(file);
+          adapter(req.agent.provider!).transcript?.verify?.(first, req.agent.sessionId());
+          const carried = this.carried,
+            continues =
+              carried !== null &&
+              stat.ino === carried.inode &&
+              stat.dev === carried.device &&
+              stat.size >= carried.offset;
+          this.carried = null;
+          this.initial_until = continues ? carried.offset : stat.size;
+          this.offset = Math.max(0, this.initial_until - 256 * 1024);
+          const catch_up = req.child && !this.opened && stat.size <= 2 * 1024 * 1024;
+          if (catch_up) this.offset = 0;
+          this.catch_up = catch_up;
+          const retained = this.live.meter;
+          this.live = new Counter();
+          if (!continues) {
+            this.live.meter = retained;
+            if (this.opened) this.live.meter.lose();
+          }
+          this.opened = true;
+          this.partial = Buffer.alloc(0);
+          this.tracker = new Tracker();
+          this.progress = new Tools();
+          this.context = new Reading();
+          reader.open(this, req, first, catch_up);
+          // The carried count already covers the file up to initial_until; opening readies a new one.
+          if (continues) this.live.meter = retained;
+          this.discard = this.offset > 0;
+        }
+        this.inode = stat.ino;
+        this.device = stat.dev;
+        if (!named.isFile() || named.ino !== this.inode || named.dev !== this.device || stat.size < this.offset)
+          throw Error("Replaced");
+        if (stat.size === this.offset) return new Counts();
+        const bytes = Buffer.alloc(65536),
+          start = this.offset,
+          { bytesRead } = await file.read(bytes, 0, bytes.length, this.offset);
+        this.offset += bytesRead;
+        // Visits during file I/O must also bound the bytes about to be counted.
+        req.since = window?.since ?? req.since;
+        return this.ingest(req, reader, bytes.subarray(0, bytesRead), start);
+      } finally {
+        await file.close();
+      }
+    } finally {
+      telemetry.end("agent.usage.poll", telemetry_started);
     }
   }
 }
@@ -187,6 +213,7 @@ export class Worker {
   cursor = 0;
   results: Result[] = [];
   watchers = new Map<number, Tail>();
+  private windows = new Map<number, Window>();
   /** Each provider's transcript reader, opened on first use. */
   readers = new Map<Provider, TranscriptReader | null>();
   timer: ReturnType<typeof setInterval> | null = null;
@@ -236,15 +263,19 @@ export class Worker {
     return this.readers.get(p)!;
   }
   reconcile(runtime: Runtime) {
+    const telemetry_started = telemetry.begin();
     this.requests = [];
-    for (const id of this.watchers.keys()) if (!runtime.conversations.byId(id)) this.watchers.delete(id);
+    this.windows.clear();
+    const actors = new Set<number>(runtime.conversations.items.map(actor => actor.id)),
+      followed = runtime.followed();
+    for (const id of this.watchers.keys()) if (!actors.has(id)) this.watchers.delete(id);
     for (const actor of runtime.conversations.items) {
       const agent = actor.state,
         reader = agent.provider ? this.reader(agent.provider) : null;
-      if (!reader || !agent.session.len || (!agent.transcript.len && !reader.name) || !runtime.followed(actor))
-        continue;
+      if (!reader || !agent.session.len || (!agent.transcript.len && !reader.name) || !followed.has(actor)) continue;
       const ws = runtime.workspaces.get(actor.workspace);
       if (!ws) continue;
+      this.windows.set(ws.id, ws.away);
       this.requests.push({
         actor: actor.id,
         workspace: ws.id,
@@ -254,6 +285,7 @@ export class Worker {
         tracked_since: actor.tracked_since,
       });
     }
+    telemetry.end("agent.usage.reconcile", telemetry_started);
   }
   take() {
     const out = this.results;
@@ -268,7 +300,9 @@ export class Worker {
       const count = Math.min(64, this.requests.length);
       const batch = Array.from({ length: count }, (_, i) => this.requests[(this.cursor + i) % this.requests.length]);
       if (this.requests.length) this.cursor = (this.cursor + count) % this.requests.length;
-      for (const req of batch) {
+      for (const queued of batch) {
+        const window = this.windows.get(queued.workspace),
+          req = { ...queued, since: window?.since ?? queued.since };
         const reader = this.reader(req.agent.provider!),
           existing = this.results.find(r => r.actor === req.actor);
         if (!reader || (!existing && this.results.length >= 64)) continue;
@@ -281,7 +315,7 @@ export class Worker {
         let delta = new Counts();
         if (req.agent.transcript.len)
           try {
-            delta = await t.poll(req, reader);
+            delta = await t.poll(req, reader, window);
           } catch {
             if (t.live.meter.value.known) t.live.meter.lose();
             t.closeFile();
@@ -298,6 +332,7 @@ export class Worker {
           !t.update.len &&
           !t.spoke_at &&
           !t.ended.len &&
+          !t.checklist &&
           !t.context.at
         )
           continue;
@@ -320,6 +355,7 @@ export class Worker {
         r.update_at = t.update_at;
         r.spoke_at = t.spoke_at;
         r.ended = Object.assign(new Ended(), { items: [...t.ended.items] });
+        r.checklist = t.checklist;
         if (existing) this.results[this.results.indexOf(existing)] = r;
         else this.results.push(r);
         if (t.progress.turn.text() === req.agent.turnId()) t.progress.dirty = false;

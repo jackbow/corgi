@@ -1,8 +1,9 @@
+import type * as checklist from "../activity/checklist";
 import { readdirSync } from "node:fs";
 import { BoundedText } from "../bounded_text";
 import path from "node:path";
 import { field, str } from "../json";
-import type { Permissions } from "./adapter";
+import type { Permissions, Programs } from "./adapter";
 export { field, str } from "../json";
 export type Outcome = "completed" | "interrupted" | "failed";
 export type SessionRef = { id: string } | { path: string };
@@ -89,13 +90,15 @@ export type Hook = ReturnType<Hooks["decode"]>;
 /** Where Claude's EnterWorktree and ExitWorktree report moving the session. */
 const moves: Record<string, string> = { EnterWorktree: "worktreePath", ExitWorktree: "restoredCwd" };
 export class Hooks {
-  decode(v: any) {
+  decode(v: unknown) {
     if (!v || typeof v !== "object" || Array.isArray(v)) return null;
     const session_kinds: Record<string, string> = {
       SessionStart: "session_start",
       Idle: "idle",
       UserPromptSubmit: "prompt",
       PreToolUse: "tool_start",
+      Activity: "activity",
+      Checklist: "checklist",
       PostToolUse: "tool_finish",
       PostToolUseFailure: "tool_failure",
       PermissionRequest: "permission",
@@ -126,6 +129,11 @@ export class Hooks {
       kind,
       /** A provider settlement event, unlike a pre-completion Stop hook. */
       outcome: null as Outcome | null,
+      awaiting_async_work: false,
+      child_transcript: "",
+      /** This event updates only its named child, not a session-wide child list. */
+      independent_child: false,
+      owner_pid: 0,
       session: str(v, "session_id"),
       turn: str(v, "turn_id"),
       prompt: str(v, "prompt_id"),
@@ -150,9 +158,13 @@ export class Hooks {
           : [],
       location: path.isAbsolute(moved) ? moved : "",
       description: str(input, "description"),
+      activity_amend: field(v, "amend") === true,
+      /** The whole checklist this event reports, if it reports one. */
+      checklist: null as checklist.List | null,
       background_tasks: field(v, "background_tasks"),
       session_crons: field(v, "session_crons"),
       subagent: agent || (launched ? str(response, "agentId") : ""),
+      subagent_name: "",
       subagent_type: agent ? str(v, "agent_type") : launched ? str(input, "subagent_type") : "",
       target:
         ["file_path", "notebook_path", "pattern", "query", "url", "command", "skill"]
@@ -164,4 +176,12 @@ export class Hooks {
       confirm: "now" as "now" | "screen",
     };
   }
+}
+/** Whether an executable, script or package at `path` is the one `programs` describes. */
+export function owns(programs: Programs, p: string): boolean {
+  return (
+    programs.names.includes(path.basename(p)) ||
+    (programs.markers ?? []).some(marker => p.includes(marker)) ||
+    (programs.scripts ?? []).some(script => p.endsWith(script))
+  );
 }

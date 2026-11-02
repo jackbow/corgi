@@ -1,6 +1,8 @@
+import * as i18n from "./i18n";
 //! One complete frame of the viewer: tabs, panes, sidebar and overlays.
 //! Mirrors render.zig.
 import * as palette from "./palette";
+import * as composition from "./composition";
 import { Style, keycap } from "./palette";
 import { Rect, View as LayoutView, cleanLabel, type Axis, type Border } from "./layout";
 import * as sidebar from "./sidebar";
@@ -41,6 +43,7 @@ import * as bindings from "./bindings";
 import { Preferences } from "./preferences";
 import { providerName, type Pane } from "./mirror";
 import type { Notice } from "./host_clipboard";
+import type { Marks } from "./provider_mark";
 import {
   Writer,
   codepointWidth,
@@ -456,6 +459,22 @@ function noOverlay(u: Ui): boolean {
     !u.sidebar_focus
   );
 }
+/** Whether a pane's cells can stay in its native surface. The viewer's own
+ * decorations (overlays, dimming, hover, restoring) are decided here; native
+ * composition rechecks the terminal's facts (selection, size, images) and
+ * falls back to a cell diff when they disagree. */
+function retainable(u: Ui, p: Pane, r: Rect, dim: boolean, hovered: bigint | null): boolean {
+  return (
+    noOverlay(u) &&
+    !dim &&
+    hovered === null &&
+    p.restoring.length === 0 &&
+    !p.terminal.selection &&
+    p.terminal.images.length === 0 &&
+    r.w === p.terminal.inner.cols &&
+    r.h === p.terminal.inner.rows
+  );
+}
 /** The open menus that can reach past the sidebar. */
 function menuBoxes(u: Ui, width: number, height: number): Rect[] {
   const boxes: Rect[] = [];
@@ -495,18 +514,21 @@ function writeChip(
 }
 /** A bar over the pane area's bottom row while the prefix waits for its key.
  * A narrow bar drops "send prefix", then "cancel". */
-export function drawPrefixBar(w: Writer, area: Rect, preset: keymap.Preset, prefix: keymap.Prefix): void {
+export function drawPrefixBar(w: Writer, area: Rect, preset: bindings.Source, prefix: keymap.Prefix): void {
   if (area.w === 0 || area.h === 0) return;
+  const help = bindings.first(preset, { name: "help" }, true);
   const hints = [
-    { key: "Esc", label: "cancel" },
-    { key: keymap.prefixName(prefix), label: "send prefix" },
-    { key: bindings.format(bindings.first(preset, { name: "help" }, true)!), label: "shortcuts" },
+    { key: "Esc", label: i18n.t`cancel` },
+    { key: keymap.prefixName(prefix), label: i18n.t`send prefix` },
+    { key: help ? bindings.format(help) : "", label: help ? i18n.t`shortcuts` : "" },
   ];
-  const hintWidth = (h: { key: string; label: string }) => displayWidth(h.key) + h.label.length + 3;
-  const label = " PREFIX ";
-  let shown = [true, true, true];
-  let used = label.length;
-  for (const hint of hints) used += hintWidth(hint);
+  const hintWidth = (h: { key: string; label: string }) => displayWidth(h.key) + displayWidth(h.label) + 3;
+  const label = i18n.t` PREFIX `;
+  let shown = [true, true, help !== null];
+  let used = displayWidth(label);
+  hints.forEach((hint, i) => {
+    if (shown[i]) used += hintWidth(hint);
+  });
   for (const i of [1, 0]) {
     if (used <= area.w) break;
     shown[i] = false;
@@ -514,11 +536,10 @@ export function drawPrefixBar(w: Writer, area: Rect, preset: keymap.Preset, pref
   }
   if (used > area.w) {
     shown = [false, false, false];
-    used = label.length;
+    used = displayWidth(label);
   }
-  w.write(
-    `\x1b[${area.y + area.h};${area.x + 1}H\x1b]8;;\x1b\\${keycap}${label.slice(0, Math.min(label.length, area.w))}`,
-  );
+  w.write(`\x1b[${area.y + area.h};${area.x + 1}H\x1b]8;;\x1b\\${keycap}`);
+  w.write(clipped(label, area.w));
   hints.forEach((hint, i) => {
     if (shown[i]) w.write(`${hint_key} ${hint.key}${hint_label} ${hint.label} `);
   });
@@ -585,7 +606,14 @@ function drawTabs(
   w.write(button_edge + "▐" + button + "+" + button_edge + "▌");
   w.write("\x1b[0m");
 }
-export function frame(view: LayoutView, panes: Pane[], width: number, height: number, u: Ui): string {
+export function frame(
+  view: LayoutView,
+  panes: Pane[],
+  width: number,
+  height: number,
+  u: Ui,
+  retained?: composition.Frame,
+): string {
   const model = view.model;
   const w = new Writer();
   const entries = u.dragged_agent ? u.dragged_agent.apply(u.agents) : u.agents;
@@ -629,9 +657,18 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
     w.write(`\x1b[1;${side.tabX() + u.tab_drop_x + 1}H\x1b[1m` + palette.fg("strong") + "│\x1b[0m");
   if (model.count === 0) {
     const prefix_key = keymap.prefixName(u.prefs.prefix);
-    const empty = ` No panes. ${prefix_key} ${bindings.format(bindings.first(u.prefs.preset, { name: "new" }, true)!)}: agent picker | ${prefix_key} ${bindings.format(bindings.first(u.prefs.preset, { name: "help" }, true)!)}: shortcuts`;
+    const hint = (name: string, label: string) => {
+      const binding =
+        bindings.first(u.prefs.bindings(), { name }, true) ?? bindings.first(u.prefs.bindings(), { name }, false);
+      return binding
+        ? `${binding.prefixed ? prefix_key + " " : ""}${bindings.format(binding)}: ${label}`
+        : `corgi action ${name}: ${label}`;
+    };
+    const newAgent = hint("new", i18n.t`agent picker`),
+      shortcuts = hint("help", i18n.t`shortcuts`);
+    const empty = i18n.t` No panes. ${newAgent} | ${shortcuts}`;
     w.write(`\x1b[2;${side.area().x + 1}H`);
-    w.write(byteSlice(empty, side.area().w));
+    writeEllipsis(w, empty, side.area().w);
   }
   const area = side.area();
   let hovered_uri: string | null = null;
@@ -793,7 +830,8 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
       u.corgi_setup !== null ||
       u.sidebar_drawer !== null ||
       u.review_keys;
-    w.write(p.terminal.rows(p.id, r.x, r.y, r.w, r.h, dim, hovered));
+    if (retained && retainable(u, p, r, dim, hovered)) retained.pane(w, p.terminal, p.id, r);
+    else w.write(p.terminal.rows(p.id, r.x, r.y, r.w, r.h, dim, hovered));
     w.write("\x1b[0m");
     if (p.restoring.length > 0) {
       drawRestoring(
@@ -823,7 +861,8 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
     side.hovered = sidebar.agentIndexAt(side, entries, u.pointer.x, u.pointer.y);
   side.spotlight = u.worktree_spotlight;
   // A moving row's tint and a link's thumbnail are placed again by each frame that shows them.
-  if (u.supports_kitty_graphics) w.write(rowGlide.hide + linkThumbnail.hide);
+  if (u.supports_kitty_graphics)
+    w.write(rowGlide.hide + rowGlide.hideImage(rowGlide.manager_image_id) + linkThumbnail.hide);
   side.draw(w, entries, workspaces);
   if (u.git_hover !== null) sidebar.drawGitAction(w, side, u.workspaces, u.git_hover);
   if (u.review_draw) {
@@ -837,35 +876,38 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
     if (paste_at.arrow) cover(new Rect(paste_at.arrow.x, paste_at.arrow.y, 1, 1));
   }
   if (u.prefix) {
-    drawPrefixBar(w, area, u.prefs.preset, u.prefs.prefix);
+    drawPrefixBar(w, area, u.prefs.bindings(), u.prefs.prefix);
     if (area.h > 0) cover(new Rect(area.x, area.y + area.h - 1, area.w, 1));
   } else {
     // A card that doesn't fit its pane says why in the status line instead.
     const unplaced = u.paste_card !== null && paste_at === null ? u.paste_card.body.text() : null;
-    const search = u.sidebar_focus === "agents" && u.sidebar_drawer === null ? "/ search  " : "";
+    const search = u.sidebar_focus === "agents" && u.sidebar_drawer === null ? i18n.t`/ search  ` : "";
     const text =
       hovered_uri ??
       unplaced ??
       (u.message.length > 0
         ? u.message
         : u.copy_mode
-          ? "SCROLL  j/k move  y copy viewport  q exit"
+          ? i18n.t`SCROLL  j/k move  y copy viewport  q exit`
           : u.sidebar_focus
-            ? `SIDEBAR  ↑↓ move  ↵ open  ${search}Esc back`
+            ? i18n.t`SIDEBAR  ↑↓/j/k move  ↵ open  ${search}Esc back`
             : "");
     // Beside the sidebar while it has focus, clear of its box's bottom edge.
     cover(writeChip(w, text, width, height, u.pointer, u.sidebar_focus ? side.width : 0));
   }
   // The prefix bar covers the area's last row.
   const cursor_rows = area.y + area.h - (u.prefix && area.h > 0 ? 1 : 0);
-  if (model.count > 0 && !u.copy_mode && !u.link_tooltip && !u.review_focused && noOverlay(u)) {
+  const pane_cursor_owned = model.count > 0 && !u.copy_mode && !u.link_tooltip && !u.review_focused && noOverlay(u);
+  let pane_cursor: composition.Cursor = null;
+  if (pane_cursor_owned) {
     for (const place of view.placements(area)) {
       if (place.id !== view.selection.tabs[view.selection.active].focus || place.rect.h === 0) continue;
       const p = panes.find(pane => pane.id === place.id && pane.restoring.length === 0);
       if (!p) continue;
       const cursor = p.terminal.cursor();
-      if (cursor && cursor.x < place.rect.w && cursor.y < place.rect.h && place.rect.y + cursor.y < cursor_rows)
-        w.write(`\x1b[${place.rect.y + cursor.y + 1};${place.rect.x + cursor.x + 1}H\x1b[?25h`);
+      if (cursor && cursor.x < place.rect.w && cursor.y < place.rect.h && place.rect.y + cursor.y < cursor_rows) {
+        pane_cursor = { x: place.rect.x + cursor.x, y: place.rect.y + cursor.y };
+      }
     }
   }
   if (paste_at) w.write(pasteCard.draw(u.paste_card!, paste_at, u.paste_copied));
@@ -888,7 +930,7 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
         worktreeTooltip.draw(w, rect, ws.name, ws.cwd, ws.worktrees, u.worktree_card, badge, now);
         cover(rect);
         if (u.pointer && worktreeTooltip.sortAt(rect, u.pointer.x, u.pointer.y) !== null) link_pointer = true;
-      } else cover(writeChip(w, "Worktrees: enlarge terminal · Esc to close", width, height, u.pointer));
+      } else cover(writeChip(w, i18n.t`Worktrees: enlarge terminal · Esc to close`, width, height, u.pointer));
     }
   } else if (git_ws && git_rect) {
     const card = u.git_card!;
@@ -968,11 +1010,41 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
     NameView.init(width, height, dialog).draw(dialog, w, number);
   }
   if (u.scope_menu) {
-    u.scope_menu.draw(w, side, width, height, u.workspaces, u.prefs.agents as Scope);
+    u.scope_menu.draw(w, side, width, height, u.workspaces, u.prefs.agents as Scope, u.prefs.agentSort());
     cover(ScopeMenu.bounds(side, width, height));
   }
-  if (u.agent_launcher) u.agent_launcher.draw(w, width, height, side);
+  const managed = u.corgi_setup?.managing()
+    ? u.corgi_setup.agents
+    : u.agent_launcher?.managing
+      ? u.agent_launcher
+      : null;
+  if (managed) {
+    managed.manager.cell = u.supports_kitty_graphics ? u.cell_pixels : null;
+    managed.manager.pointer_at = u.pointer;
+  }
+  // Marks sit above text: none under a sign-in drawn over them, and none
+  // under a link card.
+  const icons = u.tab_icons,
+    cell = u.cell_pixels,
+    card = u.link_card && u.pointer ? link_rect : null,
+    brand_marks: Marks | null =
+      icons && cell && !u.signin_draw && !u.signin_exit
+        ? (provider, col, row) => {
+            const brand = brandOf(provider);
+            if (!brand || card?.contains(col, row) || card?.contains(col + tabIcons.cols - 1, row)) return "";
+            return icons.place(brand, col, row, cell);
+          }
+        : null;
+  if (u.agent_launcher) {
+    // None under the setup drawn over the launcher.
+    u.agent_launcher.marks = u.corgi_setup ? null : brand_marks;
+    u.agent_launcher.draw(w, width, height, side);
+  }
+  // Settings' Manage agents wears them as the launcher's does.
+  if (u.corgi_setup?.agents) u.corgi_setup.agents.manager.marks = brand_marks;
   if (u.corgi_setup) u.corgi_setup.draw(w, u.inference, u.prefs, width, height);
+  if (managed?.manager.last_box && !managed.transition.active)
+    w.write(managed.manager.glideImage(managed.manager.last_box, managed.manageModel()));
   cover(signinExit.draw(w, u.added_feedback, width, height, u.signin_exit));
   // A sign-in takes the whole screen, its cursor included.
   if (u.signin_draw) {
@@ -983,6 +1055,7 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
   if (u.signin_exit) w.write("\x1b[?25l");
   if (u.link_card && link_rect && u.pointer) {
     w.write("\x1b[?25l");
+    pane_cursor = null;
     linkTooltip.draw(w, link_rect, u.link_card, linkTooltip.copyAt(link_rect, u.pointer.x, u.pointer.y));
     if (u.link_card.thumbnail) w.write(linkThumbnail.place(link_rect, u.link_card.thumbnail));
     cover(link_rect);
@@ -999,29 +1072,56 @@ export function frame(view: LayoutView, panes: Pane[], width: number, height: nu
     for (const { brand, x } of marks)
       if (!covered.some(box => box.y === 0 && box.h > 0 && box.x < x + tabIcons.cols && box.x + box.w > x))
         w.write(u.tab_icons.place(brand, x, 0, u.cell_pixels));
-  if (dragging) w.write("\x1b[?25l");
+  if (dragging) {
+    w.write("\x1b[?25l");
+    pane_cursor = null;
+  }
+  if (pane_cursor_owned) {
+    if (retained?.panes.length) {
+      retained.cursor = pane_cursor;
+      retained.cursor_at = w.s.length;
+    } else w.write(composition.cursorBytes(pane_cursor));
+  } else if (retained?.panes.length) retained.reusable = false;
   // Include the shape in each complete frame so reconnects and overlay changes
   // cannot leave the host pointer stuck on a previously hovered link.
   // iTerm2 has a pointing hand and an open hand, but no closed-hand shape.
   // "default" also clears its override because unrecognized names reset it.
   const axis = u.resizing ?? resize_hover;
-  const shape = dragging
-    ? u.iterm2_pointer
-      ? "fleur"
-      : "grabbing"
-    : axis !== null
-      ? axis === "horizontal"
-        ? u.iterm2_pointer
-          ? "sb_h_double_arrow"
-          : "ew-resize"
-        : u.iterm2_pointer
-          ? "sb_v_double_arrow"
-          : "ns-resize"
-      : link_pointer || hovered_uri !== null
+  const manager_box = managed?.manager.last_box,
+    manager_shape =
+      managed &&
+      manager_box &&
+      u.pointer &&
+      (manager_box.contains(u.pointer.x, u.pointer.y) || managed.manager.drag?.active)
+        ? managed.manager.pointerShape(manager_box, managed.manageModel(), u.pointer.x, u.pointer.y)
+        : null;
+  const shape =
+    manager_shape !== null
+      ? manager_shape === "pointer"
         ? handShape(u.iterm2_pointer)
-        : "default";
+        : (manager_shape === "grab" || manager_shape === "grabbing") && u.iterm2_pointer
+          ? "fleur"
+          : manager_shape === "text" && u.iterm2_pointer
+            ? "xterm"
+            : manager_shape
+      : dragging
+        ? u.iterm2_pointer
+          ? "fleur"
+          : "grabbing"
+        : axis !== null
+          ? axis === "horizontal"
+            ? u.iterm2_pointer
+              ? "sb_h_double_arrow"
+              : "ew-resize"
+            : u.iterm2_pointer
+              ? "sb_v_double_arrow"
+              : "ns-resize"
+          : link_pointer || hovered_uri !== null
+            ? handShape(u.iterm2_pointer)
+            : "default";
   w.write(`\x1b]22;${shape}\x1b\\`);
   w.write("\x1b[?2026l");
+  if (retained) for (const rect of covered) retained.cover(rect);
   return w.buffered();
 }
 

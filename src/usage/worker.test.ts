@@ -1,8 +1,9 @@
-import { mkdtempSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, appendFileSync, rmSync, renameSync, symlinkSync } from "node:fs";
+import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { View as ToolView } from "../activity/tools";
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import { Tail, Worker, Result as UsageResult, type Request } from "./worker";
 import { Agent, Text, Path } from "../agents";
 import { Result as ActivityResult, Request as ActivityRequest, Slot } from "../activity/worker";
@@ -11,6 +12,10 @@ import { hash } from "../activity/summary";
 import * as claudeUsage from "../providers/claude/usage";
 import * as codexUsage from "../providers/codex/usage";
 import * as json from "../json";
+import { Runtime, Pane } from "../runtime";
+import { Terminal } from "../pane/terminal";
+import { Workspace } from "../workspace";
+import type { Session } from "../headless";
 const readers = { codex: codexUsage.open(() => ["/nonexistent/session_index.jsonl"]), claude: claudeUsage.open() };
 const reader = (req: Request) => readers[req.agent.provider as "codex" | "claude"];
 function request(provider: "codex" | "claude"): Request {
@@ -25,6 +30,115 @@ function request(provider: "codex" | "claude"): Request {
     tracked_since: 0,
   };
 }
+test("usage reconciliation follows current attachments with one pane scan", () => {
+  const runtime = new Runtime(),
+    worker = new Worker(),
+    terminal = Terminal.create(20, 4),
+    pane = new Pane(1, terminal, "/tmp");
+  runtime.workspaces.items = [new Workspace(1, "/tmp")];
+  runtime.panes.push(pane);
+  const actors = Array.from({ length: 64 }, (_, i) => {
+    const actor = runtime.conversations.get("claude", `session-${i}`);
+    actor.workspace = 1;
+    actor.state.transcript = new Path("/tmp/usage.jsonl");
+    return actor;
+  });
+  for (let i = 1; i < 60; i++) actors[i].parent = actors[i - 1].id;
+  pane.attachment.select(actors[0]);
+  const headless = { exited: false, members: [actors[60]] } as Session;
+  runtime.sessions.push(headless);
+  actors[61].parent = actors[62].id;
+  actors[62].parent = actors[61].id;
+  actors[63].parent = runtime.conversations.get("claude", "missing").id;
+  runtime.conversations.items.pop();
+  let scans = 0,
+    exited = false;
+  Object.defineProperty(terminal, "exited", {
+    get: () => (scans++, exited),
+    set: (value: boolean) => {
+      exited = value;
+    },
+  });
+  try {
+    worker.reconcile(runtime);
+    expect(scans).toBe(1);
+    expect(worker.requests.map(r => r.actor)).toEqual(actors.slice(0, 61).map(a => a.id));
+    exited = true;
+    worker.reconcile(runtime);
+    expect(worker.requests.map(r => r.actor)).toEqual([actors[60].id]);
+    pane.dormant = true;
+    worker.reconcile(runtime);
+    expect(worker.requests.map(r => r.actor)).toEqual(actors.slice(0, 61).map(a => a.id));
+    pane.attachment.deselect();
+    headless.exited = true;
+    worker.reconcile(runtime);
+    expect(worker.requests).toEqual([]);
+  } finally {
+    worker.stop();
+    terminal.destroy();
+  }
+});
+
+test("usage reads count against visits after scheduling and during file I/O", async () => {
+  const root = mkdtempSync(join(tmpdir(), "corgi-usage-")),
+    file = join(root, "usage.jsonl"),
+    runtime = new Runtime(),
+    workspace = new Workspace(1, root),
+    worker = new Worker(),
+    terminal = Terminal.create(20, 4),
+    pane = new Pane(1, terminal, root),
+    actor = runtime.conversations.get("claude", "session"),
+    opened = Promise.withResolvers<void>(),
+    resume = Promise.withResolvers<void>(),
+    open = fs.open;
+  const line = (id: string, at: number, input: number) =>
+    JSON.stringify({
+      type: "assistant",
+      sessionId: "session",
+      timestamp: new Date(at).toISOString(),
+      message: { id, usage: { input_tokens: input, output_tokens: 1 } },
+    }) + "\n";
+  runtime.workspaces.items.push(workspace);
+  runtime.panes.push(pane);
+  actor.workspace = workspace.id;
+  actor.state.transcript = new Path(file);
+  pane.attachment.select(actor);
+  writeFileSync(file, line("baseline", 0, 10));
+  worker.reconcile(runtime);
+  await worker.run();
+  worker.take();
+  workspace.away.visit(1000);
+  appendFileSync(file, line("before-visit", 1500, 20) + line("after-visit", 2500, 30));
+  const read = spyOn(fs, "open").mockImplementation(async (...args) => {
+    const handle = await open(...args);
+    opened.resolve();
+    await resume.promise;
+    return handle;
+  });
+  const running = worker.run();
+  try {
+    await opened.promise;
+    workspace.away.visit(2000);
+    resume.resolve();
+    await running;
+    const [result] = worker.take();
+    expect(result.since).toBe(2000);
+    expect(result.delta.input).toBe(30n);
+    expect(result.delta.output).toBe(1n);
+    expect(workspace.away.record(result.since, result.delta)).toBe(true);
+    expect(workspace.away.counts.input).toBe(30n);
+    workspace.away.visit(3000);
+    expect(workspace.away.record(result.since, result.delta)).toBe(false);
+  } finally {
+    resume.resolve();
+    await running;
+    read.mockRestore();
+    worker.stop();
+    runtime.destroy();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("usage tail frames records, ignores history and advances baselines while watched", () => {
   const t = new Tail(),
     r = request("codex");
@@ -421,6 +535,88 @@ test("file metadata prefers fresh protocol and rejects other turns", () => {
   expect(result.fallback(agent, 6000000)).toBe(false);
 });
 
+test("unchanged usage files need no reopen and appends are still counted", async () => {
+  const root = mkdtempSync(join(tmpdir(), "corgi-usage-")),
+    opened = spyOn(fs, "open");
+  try {
+    const file = join(root, "usage.jsonl"),
+      line = (id: string, input: number) =>
+        JSON.stringify({
+          type: "assistant",
+          sessionId: "session",
+          timestamp: "1970-01-01T00:00:02.000Z",
+          message: { id, usage: { input_tokens: input, output_tokens: 1 } },
+        }) + "\n";
+    writeFileSync(file, line("first", 10));
+    const req = request("claude"),
+      tail = new Tail();
+    req.agent.transcript = new Path(file);
+    await tail.poll(req, reader(req));
+    expect(opened).toHaveBeenCalledTimes(1);
+    expect((await tail.poll(req, reader(req))).any()).toBe(false);
+    expect(opened).toHaveBeenCalledTimes(1);
+    appendFileSync(file, line("second", 20));
+    expect((await tail.poll(req, reader(req))).input).toBe(20n);
+    expect(opened).toHaveBeenCalledTimes(2);
+    expect((await tail.poll(req, reader(req))).any()).toBe(false);
+    expect(opened).toHaveBeenCalledTimes(2);
+  } finally {
+    opened.mockRestore();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("usage EOF checks still reopen truncation and verify a same-size replacement", async () => {
+  const root = mkdtempSync(join(tmpdir(), "corgi-usage-")),
+    opened = spyOn(fs, "open");
+  try {
+    const file = join(root, "usage.jsonl"),
+      replacement = join(root, "replacement.jsonl"),
+      header = (id: string, instructions = "") =>
+        JSON.stringify({ type: "session_meta", payload: { id, instructions } }) + "\n";
+    writeFileSync(file, header("session", "long original instructions"));
+    const req = request("codex"),
+      tail = new Tail();
+    req.agent.transcript = new Path(file);
+    await tail.poll(req, reader(req));
+    const original = tail.inode;
+    writeFileSync(file, header("session"));
+    await tail.poll(req, reader(req));
+    expect(opened).toHaveBeenCalledTimes(2);
+    expect(tail.inode).toBe(original);
+    expect(tail.offset).toBe(Buffer.byteLength(header("session")));
+    writeFileSync(replacement, header("another"));
+    expect(Buffer.byteLength(header("another"))).toBe(tail.offset);
+    renameSync(replacement, file);
+    await expect(tail.poll(req, reader(req))).rejects.toThrow("WrongSession");
+    expect(opened).toHaveBeenCalledTimes(3);
+  } finally {
+    opened.mockRestore();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("usage EOF checks reject a symlink to the previously read regular file", async () => {
+  const root = mkdtempSync(join(tmpdir(), "corgi-usage-")),
+    opened = spyOn(fs, "open");
+  try {
+    const file = join(root, "usage.jsonl"),
+      moved = join(root, "moved.jsonl");
+    writeFileSync(file, JSON.stringify({ type: "session_meta", payload: { id: "session" } }) + "\n");
+    const req = request("codex"),
+      tail = new Tail();
+    req.agent.transcript = new Path(file);
+    await tail.poll(req, reader(req));
+    renameSync(file, moved);
+    symlinkSync(moved, file);
+    await expect(tail.poll(req, reader(req))).rejects.toThrow();
+    expect(opened).toHaveBeenCalledTimes(2);
+  } finally {
+    opened.mockRestore();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("real file usage reader accepts large Codex metadata and counts later activity", async () => {
   const root = mkdtempSync(join(tmpdir(), "corgi-usage-"));
   try {
@@ -536,6 +732,13 @@ test("a Codex subagent's count stays whole through a handoff", async () => {
               last_token_usage: { input_tokens: last, output_tokens: last / 10 },
             },
           },
+        }) + "\n",
+      call = (ordinal: number, id: string) =>
+        JSON.stringify({
+          type: "response_item",
+          timestamp: "1970-01-01T00:00:06.000Z",
+          ordinal,
+          payload: { type: "function_call", call_id: id, name: "exec_command", arguments: "{}" },
         }) + "\n";
     writeFileSync(
       file,
@@ -544,8 +747,10 @@ test("a Codex subagent's count stays whole through a handoff", async () => {
         payload: { id: "child", subagent_history_start_ordinal: 2, timestamp: "1970-01-01T00:00:05.000Z" },
       }) +
         "\n" +
+        call(0, "parent") +
         count(1, 900, 900) +
         count(2, 100, 100) +
+        call(3, "own") +
         count(3, 150, 50),
     );
     const req = request("codex");
@@ -557,12 +762,14 @@ test("a Codex subagent's count stays whole through a handoff", async () => {
     tail.actor = 2;
     await tail.poll(req, reader(req));
     expect(tail.live.meter.value.tokens.input).toBe(150n);
+    expect(tail.live.meter.value.tools).toBe(1n);
     expect(tail.live.meter.value.partial).toBe(false);
     const after = handOver(tail)();
     appendFileSync(file, count(4, 200, 50));
     await after.poll(req, reader(req));
     expect(after.live.meter.value.tokens.input).toBe(200n);
     expect(after.live.meter.value.tokens.output).toBe(20n);
+    expect(after.live.meter.value.tools).toBe(1n);
     expect(after.live.meter.value.partial).toBe(false);
   } finally {
     rmSync(root, { recursive: true, force: true });

@@ -1,7 +1,7 @@
 import { closeSync, fstatSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { Server } from "../server";
-import type { Client } from "../peer";
+import { Reply, type Client } from "../peer";
 import { ReadyLoop, AsyncFD, n, ptr } from "../native_bridge";
 import { native as fdNative } from "../fd_loop";
 import { Theme } from "../theme";
@@ -13,6 +13,7 @@ import { Worker as SummaryWorker } from "../activity/worker";
 import { Worker as UsageWorker } from "../usage/worker";
 import * as build_id from "../build_id";
 import * as setup from "../inference/setup";
+import * as breadcrumbs from "../breadcrumbs";
 
 export const terminal_abi = 0xa826bd22ebcdbe60n;
 export const update_abi = `1-${terminal_abi.toString(16)}`;
@@ -68,13 +69,14 @@ export function restoreClient(server: Server, value: unknown): Client {
   client.output = Buffer.from(output, "base64");
   return client;
 }
-export function captureManifest(server: Server, requester: Client) {
+export function captureManifest(server: Server, requester: Client, request_id: number | null = null) {
   return {
     version: migrations.handoff_version,
     update_abi,
     terminal_abi,
     listener: server.listener,
     requester: requester.fd,
+    request_id,
     runtime: checkpoint.capture(server.runtime, true),
     summaries: server.summaries?.capture() ?? null,
     usage: server.usage?.capture() ?? null,
@@ -137,7 +139,12 @@ function descriptors(manifest: any): { fds: number[]; state: any } {
   for (const slot of state.summaries?.pool?.slots ?? []) if (slot) slot.client.handles = slot.client.handles.map(add);
   return { fds, state };
 }
-export async function replace(server: Server, requester: Client, executable: string): Promise<void> {
+export async function replace(
+  server: Server,
+  requester: Client,
+  executable: string,
+  request_id: number | null = null,
+): Promise<void> {
   if (!isAbsolute(executable)) throw Error("InvalidExecutable");
   await server.flushWorkspaceWrites();
   await recovery.save(server.runtime, server.socket);
@@ -163,6 +170,7 @@ export async function replace(server: Server, requester: Client, executable: str
   }
   await server.summaries?.pause();
   server.pause();
+  breadcrumbs.record("reloading");
   const fds = new Int32Array(2);
   let stateFD = -1,
     controlFD = -1,
@@ -171,7 +179,7 @@ export async function replace(server: Server, requester: Client, executable: str
     candidate: Bun.Subprocess | undefined,
     timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const manifest = captureManifest(server, requester);
+    const manifest = captureManifest(server, requester, request_id);
     const transfer = descriptors(manifest),
       bytes = Buffer.from(json.stringify(transfer.state));
     if (bytes.length > 256 * 1024 * 1024) throw Error("CheckpointTooLarge");
@@ -225,7 +233,10 @@ export async function replace(server: Server, requester: Client, executable: str
     ]);
     clearTimeout(timeout);
     if (ready !== "ready") {
-      if (["MissingStateVersion", "InvalidStateVersion", "UnsupportedStateVersion"].includes(ready)) throw Error(ready);
+      if (
+        ["MissingStateVersion", "InvalidStateVersion", "UnsupportedStateVersion", "InvalidCheckpoint"].includes(ready)
+      )
+        throw Error(ready);
       console.error("reload candidate:", ready);
       throw Error("ReloadCandidateFailed");
     }
@@ -281,7 +292,8 @@ export async function importAndRun(
     server.listener = m.listener;
     fdNative.fd_cloexec(m.listener);
     server.theme = Object.assign(new Theme(), m.theme);
-    await checkpoint.restore(server.runtime, m.runtime, true, socket, executable);
+    const repairs = await checkpoint.restore(server.runtime, m.runtime, true, socket, executable);
+    await recovery.recordRepairs(socket, m.runtime, repairs, executable);
     if (m.summaries) {
       server.summaries = SummaryWorker.restore(m.summaries);
       // Handoffs carry the model choice; what it is used for lives in settings.
@@ -295,7 +307,7 @@ export async function importAndRun(
       fdNative.fd_cloexec(saved.fd);
       const client = restoreClient(server, saved);
       if (saved.fd === m.requester)
-        client.queue({ ok: true, server_pid: process.pid, panes: server.runtime.panes.length });
+        new Reply(client, m.request_id ?? null).ok({ server_pid: process.pid, panes: server.runtime.panes.length });
     }
     await control.write(Buffer.from("ready\n"));
     if ((await line(control, 32)) !== "commit") throw Error("ReloadNotCommitted");

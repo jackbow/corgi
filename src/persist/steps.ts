@@ -12,7 +12,7 @@ export function object(value: any): Record<string, any> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw Error("InvalidCheckpoint");
   return value;
 }
-function items(value: any, key: string): any[] {
+export function items(value: any, key: string): any[] {
   const field = object(value)[key];
   if (field === undefined) return [];
   if (!Array.isArray(field)) throw Error("InvalidCheckpoint");
@@ -363,5 +363,23 @@ function handoff4To5(value: any) {
       delete fields[key];
   }
 }
+function handoff5To6(value: any) {
+  // Spend cells held their own days' spend; now they hold the month's so far.
+  for (const client of items(value, "clients")) {
+    const saved = object(client).launch_preview;
+    if (saved === undefined || saved === null) continue;
+    const preview = object(saved).preview;
+    if (preview === undefined) continue;
+    const options = object(preview).options;
+    if (options === undefined) continue;
+    for (const option of Object.values(object(options)))
+      for (const cell of items(option, "spend_history")) object(cell).minor = null;
+  }
+}
+function workspaces1To2(value: any) {
+  for (const workspace of items(value, "workspaces")) delete object(workspace).pinned;
+}
 export const checkpoint: Step[] = [table, checkpoint2To3, checkpoint3To4, checkpoint4To5, checkpoint5To6];
-export const handoff: Step[] = [handoff1To2, handoff2To3, handoff3To4, handoff4To5];
+export const handoff: Step[] = [handoff1To2, handoff2To3, handoff3To4, handoff4To5, handoff5To6];
+/** workspaces.json, the workspaces kept apart from checkpoints. */
+export const workspaces: Step[] = [workspaces1To2];

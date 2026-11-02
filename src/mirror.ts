@@ -4,10 +4,10 @@
 import { Terminal as NativeTerminal } from "./pane/terminal";
 import * as viewerNative from "./viewer_native";
 import { Model, max_workspaces } from "./layout";
-import { stringify } from "./json";
 import * as surface from "./pane/surface";
 import * as resources from "./trackers/resources";
 import * as protocol from "./protocol";
+import { Stars, type Session as StarredSession } from "./agent_stars";
 import * as viewerVersion from "./viewer_version";
 import { commandEntry, Row } from "./agent_launcher";
 import type { Entry as CommandEntry } from "./launch/command";
@@ -30,6 +30,9 @@ import {
 
 export interface Transport {
   socket?: string;
+  onEvent?(listener: (event: protocol.Event) => void): () => void;
+  /** Whether the daemon sends this viewer `viewer.wake`. */
+  watches?(): boolean;
   request<K extends protocol.Op>(op: K, ...args: protocol.Arguments<K>): Promise<protocol.Response<K>>;
 }
 /** An RPC call that throws the daemon's error name, as Zig's `call` does. */
@@ -62,43 +65,99 @@ interface Selection {
   end_x: number;
   end_y: number;
 }
+/** Text without its row joins: the mirror breaks and trims rows the daemon unwraps. */
+export function joinRows(text: string): string {
+  return text.replace(/\s*\n\s*/g, "");
+}
 
 export class Terminal {
-  inner: NativeTerminal;
+  private native: NativeTerminal | null = null;
+  private closed = false;
   offset: number | null = null;
   bottom = 0;
   selection: Selection | null = null;
   holding_selection = false;
+  /** The text a pick's highlight must keep showing; null for drag selections. */
+  pinned: string | null = null;
   known: Stamp | null = null;
   images: surface.ImagePlacement[] = [];
   render_dirty = true;
+  render_revision = 0;
   /** Bytes for the program, sent with the next sync. */
   pending: number[] = [];
-  private links: Link[] = [];
+  private links: Link[] | null = null;
+  private installed: surface.View | null = null;
+  private changed_rows = new Uint16Array(0);
+  private rendered: { key: string; rows: string } | null = null;
 
   constructor(
     public conn: Transport,
     public id: number,
-    cols: number,
-    rows: number,
+    private initial_cols: number,
+    private initial_rows: number,
   ) {
-    this.inner = NativeTerminal.create(Math.max(1, cols), Math.max(1, rows));
+    this.initial_cols = Math.max(1, initial_cols);
+    this.initial_rows = Math.max(1, initial_rows);
+  }
+  private ensure(cols = this.initial_cols, rows = this.initial_rows): NativeTerminal {
+    if (this.closed) throw Error("TerminalClosed");
+    if (this.native) return this.native;
+    const view = this.installed,
+      native = NativeTerminal.create(view?.surface.cols ?? cols, view?.surface.rows ?? rows);
+    try {
+      if (view) {
+        viewerNative.receiveFrame(native.handle, view);
+        viewerNative.updateRender(native.handle);
+        this.render_dirty = false;
+        this.render_revision++;
+      }
+      return (this.native = native);
+    } catch (error) {
+      native.destroy();
+      throw error;
+    }
+  }
+  get inner(): NativeTerminal {
+    return this.ensure();
   }
   get handle() {
     return this.inner.handle;
   }
   hyperlinks(): Link[] {
-    return this.links;
+    this.updateRender();
+    return (this.links ??= this.inner.hyperlinks());
   }
   updateRender(): void {
     if (!this.render_dirty) return;
-    viewerNative.updateRender(this.handle);
-    this.links = this.inner.hyperlinks();
+    const native = this.ensure();
+    if (!this.render_dirty) return;
+    this.rendered = null;
+    this.links = null;
+    viewerNative.updateRender(native.handle);
     this.render_dirty = false;
+    this.render_revision++;
+  }
+  /** Keep the received screen and modes while an uninterested pane releases its VT. */
+  release(): boolean {
+    if (this.closed || !this.native || !this.installed || this.selection || this.holding_selection) return false;
+    this.native.destroy();
+    this.native = null;
+    this.rendered = null;
+    this.links = null;
+    this.render_dirty = true;
+    return true;
   }
   destroy(): void {
-    this.inner.destroy();
+    if (this.closed) return;
+    this.closed = true;
+    this.native?.destroy();
+    this.native = null;
     this.pending = [];
+    this.installed = null;
+    this.rendered = null;
+    this.links = null;
+    this.images = [];
+    this.changed_rows = new Uint16Array(0);
   }
   atBottom(): boolean {
     return this.offset === null;
@@ -106,7 +165,8 @@ export class Terminal {
   clearSelection(): void {
     this.selection = null;
     this.holding_selection = false;
-    this.inner.clearSelection();
+    this.pinned = null;
+    this.native?.clearSelection();
     this.render_dirty = true;
   }
   scrollViewport(scroll: "bottom" | "top" | { row: number } | { delta: number }): void {
@@ -121,11 +181,49 @@ export class Terminal {
   }
   select(x: number, y: number, end_x: number, end_y: number): void {
     this.selection = { x, y, end_x, end_y };
+    this.pinned = null;
     this.inner.select(x, y, end_x, end_y);
     this.render_dirty = true;
   }
+  /** Selects a pick's range, kept only while it shows `shown`. */
+  pin(range: Selection, shown: string): void {
+    this.select(range.x, range.y, range.end_x, range.end_y);
+    this.pinned = shown;
+  }
+  pinnedMatches(): boolean {
+    return this.pinned !== null && this.shows(this.pinned);
+  }
+  /** Whether the selection shows `text`, row joins aside. */
+  shows(text: string): boolean {
+    // Without a selection, selectedText() reads the whole screen.
+    if (this.selection === null) return false;
+    return joinRows(this.selectedText()) === joinRows(text);
+  }
   selectedText(): string {
     return this.inner.selectedText();
+  }
+  /** The word, line or link at a cell; its `match` is null when there is
+   * none, and the whole result null when the request fails. */
+  async pick(
+    unit: protocol.PickUnit,
+    x: number,
+    y: number,
+    to: { x: number; y: number } | null = null,
+  ): Promise<protocol.PickResult | null> {
+    try {
+      const reply = await call(this.conn, "viewer.pick", {
+        pane: this.id,
+        offset: this.offset ?? this.bottom,
+        unit,
+        x,
+        y,
+        to_x: to?.x ?? null,
+        to_y: to?.y ?? null,
+      });
+      return { match: reply.match ?? null, shown: reply.shown, copy: reply.copy };
+    } catch {
+      return null;
+    }
   }
   async search(needle: string, skip: number): Promise<boolean> {
     const response = await call(this.conn, "viewer.search", { pane: this.id, needle, skip });
@@ -135,6 +233,7 @@ export class Terminal {
     this.offset = offset;
     // A match on the current viewport still needs its selection applied.
     this.known = null;
+    this.pinned = null;
     if (response.match)
       this.selection = {
         x: response.match.x,
@@ -160,25 +259,54 @@ export class Terminal {
     this.pending = [];
   }
   receive(value: protocol.Reply<"viewer.sync">["surfaces"][number]): void {
+    if (this.closed) throw Error("TerminalClosed");
     // Keep the displayed text stable for the entire mouse gesture. The
     // runtime continues collecting output; release resumes the live surface.
     if (this.holding_selection) return;
     const view = surface.view(value);
     const frame = view.surface;
     if (!frame || frame.cols === 0 || frame.rows === 0) return;
-    this.render_dirty = true;
-    viewerNative.receive(this.handle, stringify(view));
-    this.inner.cols = frame.cols;
-    this.inner.rows = frame.rows;
+    const previous = this.installed;
+    let changed: Uint16Array | undefined;
+    if (
+      previous &&
+      !this.selection &&
+      previous.stamp.identity === view.stamp.identity &&
+      previous.stamp.offset === view.stamp.offset &&
+      previous.surface.pane === frame.pane &&
+      previous.surface.cols === frame.cols &&
+      previous.surface.rows === frame.rows
+    ) {
+      if (this.changed_rows.length < frame.rows) this.changed_rows = new Uint16Array(frame.rows);
+      let count = 0;
+      for (let row = 0; row < frame.rows; row++)
+        if ((previous.surface.lines[row] ?? "") !== (frame.lines[row] ?? "")) this.changed_rows[count++] = row;
+      changed = this.changed_rows.subarray(0, count);
+    }
+    const inner = this.ensure(frame.cols, frame.rows);
+    // Input modes and receipts can advance without changing the visible surface.
+    this.render_dirty ||=
+      changed === undefined ||
+      changed.length > 0 ||
+      previous?.surface.cursor?.x !== frame.cursor?.x ||
+      previous?.surface.cursor?.y !== frame.cursor?.y ||
+      (previous?.surface.images?.length ?? 0) > 0 ||
+      (frame.images?.length ?? 0) > 0;
+    viewerNative.receiveFrame(inner.handle, view, changed);
+    inner.cols = frame.cols;
+    inner.rows = frame.rows;
     this.bottom = view.bottom;
     if (this.offset !== null) this.offset = view.offset;
     const sel = this.selection;
     if (sel) this.inner.select(sel.x, sel.y, sel.end_x, sel.end_y);
+    // A pick's highlight goes once the text under it changes.
+    if (this.pinned !== null && !this.pinnedMatches()) this.clearSelection();
     this.updateRender();
     // Only acknowledge surfaces actually installed. A mouse gesture may
     // hold the old display while the daemon continues collecting output.
     this.known = view.stamp ?? null;
     this.images = frame.images ?? [];
+    this.installed = view;
   }
   async image(id: string, offset: number): Promise<string | null> {
     return (await call(this.conn, "viewer.image", { pane: this.id, image: id, offset })).data;
@@ -202,7 +330,11 @@ export class Terminal {
     return viewerNative.cursor(this.handle, false);
   }
   rows(pane: number, x: number, y: number, w: number, h: number, dimmed: boolean, hovered: bigint | null): string {
-    return viewerNative.rows(this.handle, pane, x, y, w, h, dimmed, hovered);
+    this.updateRender();
+    const key = `${pane}:${x}:${y}:${w}:${h}:${dimmed}:${hovered}`;
+    if (this.rendered?.key !== key)
+      this.rendered = { key, rows: viewerNative.rows(this.handle, pane, x, y, w, h, dimmed, hovered) };
+    return this.rendered.rows;
   }
 }
 
@@ -256,7 +388,7 @@ export function agent(value: any = {}): Agent {
     recent_activity: value.recent_activity ?? "",
     changed_at: Number(value.changed_at ?? 0),
     working_since: Number(value.working_since ?? 0),
-    provider: value.provider ?? null,
+    provider: Provider.parse(value.provider),
     state: value.state ?? "unknown",
     attention: value.attention ?? "none",
     session: value.session ?? "",
@@ -298,13 +430,18 @@ export interface Pane {
 export interface Workspace {
   id: number;
   name: string;
-  custom_name: string;
   cwd: string;
   model: Model;
   agent_order: ({ pane: number } | { headless: number })[];
+  pinned_agents: ({ pane: number } | { headless: number })[];
+  starred_sessions: StarredSession[];
+  activity_order: ({ pane: number } | { headless: number })[];
+  /** Agents the daemon holds in working until their first turn. */
+  starting_agents: ({ pane: number } | { headless: number })[];
   last_agent: Provider | null;
   /** The launcher rows hidden in this workspace only. */
   launcher_hidden: Row[];
+  launcher_order: Row[];
   closed_agents: number;
   git_commits: GitCommit[];
   git_diff: GitDiff;
@@ -317,16 +454,28 @@ export interface Workspace {
   worktree_briefs: Brief[];
   stats: any;
 }
+/** A daemon's stars; a list it can't read shows none. */
+function starredSessions(value: unknown): StarredSession[] {
+  try {
+    return Stars.restore(value ?? []).slice();
+  } catch {
+    return [];
+  }
+}
 function workspace(value: any): Workspace {
   return {
     id: value.id,
     name: value.name ?? "",
-    custom_name: value.custom_name ?? "",
     cwd: value.cwd ?? "",
     model: Model.fromData(value.model),
     agent_order: value.agent_order ?? [],
-    last_agent: value.last_agent ?? null,
+    pinned_agents: value.pinned_agents ?? [],
+    starred_sessions: starredSessions(value.starred_sessions),
+    activity_order: value.activity_order ?? [],
+    starting_agents: value.starting_agents ?? [],
+    last_agent: Provider.parse(value.last_agent),
     launcher_hidden: strings(value.launcher_hidden).flatMap(text => Row.parse(text) ?? []),
+    launcher_order: strings(value.launcher_order).flatMap(text => Row.parse(text) ?? []),
     closed_agents: Number(value.closed_agents ?? 0),
     git_commits: (value.git_commits ?? []).map((c: any) => ({
       hash: c.hash ?? "",
@@ -501,7 +650,7 @@ export class Runtime {
     this.snapshot_hash = null;
     this.panes = panes;
     this.workspaces.items = parsed;
-    this.sessions = (snapshot.headless_sessions ?? []).map(headless);
+    this.sessions = (snapshot.headless_sessions ?? []).filter((s: any) => Provider.parse(s?.provider)).map(headless);
     this.conversations = (snapshot.conversations ?? []).map(conversation);
     this.system_model = snapshot.system_model ?? "";
     this.system_model_name = snapshot.system_model_name ?? "";
@@ -514,7 +663,7 @@ export class Runtime {
     this.system_working = snapshot.system_working === true;
     this.smart_links = snapshot.smart_links !== false;
     this.ports = snapshot.ports ?? { workspaces: [] };
-    this.last_agent = snapshot.last_agent ?? Provider.first;
+    this.last_agent = Provider.parse(snapshot.last_agent) ?? Provider.first;
     this.agent_yolo = byProvider(p => snapshot.agent_yolo?.[p] === true);
     this.agent_hidden = byProvider(p => snapshot.agent_hidden?.[p] === true);
     this.account_yolo = strings(snapshot.account_yolo);

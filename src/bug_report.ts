@@ -155,7 +155,8 @@ export async function collect(
     ask = async (op: "hello" | "session.list" | "bugreport"): Promise<any> => {
       let connection: rpc.Connection | null = null;
       try {
-        connection = new rpc.Connection(socket);
+        // Each query has its own connection; older daemons answer without ids.
+        connection = new rpc.Connection(socket, { requestIds: false });
         const reply = await within(connection.call(op), timeout_ms);
         if (reply === null)
           slow[({ hello: "daemon", "session.list": "sessions", bugreport: "report" } as const)[op]] = true;
@@ -948,6 +949,11 @@ export function issueUrl(r: Report, s: Settings, attached = false): string | nul
       ...(attached ? ["<!-- Please attach full_bug_report.txt. -->", ""] : []),
     ].join("\n"),
     url = `${issues_url}?body=${encodeURIComponent(body)}`;
+  return url.length <= max_url ? url : null;
+}
+/** A new issue with `title` and `body` filled in; null when too long for GitHub. */
+export function issueLink(title: string, body: string): string | null {
+  const url = `${issues_url}?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
   return url.length <= max_url ? url : null;
 }
 /** Where the full report is written. */
