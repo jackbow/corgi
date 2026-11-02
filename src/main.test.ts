@@ -423,3 +423,17 @@ test("headless CLI passes provider IDs intact and includes the first prompt", as
     output.mockRestore();
   }
 });
+
+test("remote help is available without starting a daemon or touching Tailscale", async () => {
+  const output = spyOn(process.stdout, "write").mockReturnValue(true),
+    request = spyOn(rpc, "request");
+  try {
+    await run(["remote", "--help"]);
+    await run(["help", "remote"]);
+    expect(output.mock.calls.map(call => String(call[0])).join("")).toContain("Tailscale only");
+    expect(request).not.toHaveBeenCalled();
+  } finally {
+    output.mockRestore();
+    request.mockRestore();
+  }
+});

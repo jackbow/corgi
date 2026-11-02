@@ -1,0 +1,80 @@
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: auto;
+  max-width: 54rem;
+  padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+    max(2rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  font:
+    16px/1.5 system-ui,
+    sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+h1 {
+  font-size: 1.4rem;
+  margin-bottom: 0;
+}
+header p,
+#activity {
+  color: var(--muted);
+}
+label {
+  display: block;
+  margin: 0.75rem 0;
+}
+input,
+select,
+textarea,
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--muted);
+  border-radius: 0.4rem;
+  padding: 0.65rem;
+}
+select,
+textarea,
+input:not([type="checkbox"]) {
+  display: block;
+  width: 100%;
+}
+button {
+  cursor: pointer;
+  min-height: 44px;
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+pre {
+  min-height: 14rem;
+  max-height: 52dvh;
+  overflow: auto;
+  padding: 0.8rem;
+  border: 1px solid var(--muted);
+  font:
+    13px/1.4 ui-monospace,
+    monospace;
+  white-space: pre;
+  overscroll-behavior: contain;
+}
+.check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+#status {
+  min-height: 1.5em;
+}
+[hidden] {
+  display: none !important;
+}
