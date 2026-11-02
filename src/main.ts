@@ -30,7 +30,7 @@ export const executable = build_id.executablePath(
 );
 export const actionNames = (() => {
   const lines = ["Actions:"];
-  for (const name of Object.keys(actionSpecs).filter(name => name !== "relaunch")) {
+  for (const name of Object.keys(actionSpecs).filter(name => !["relaunch", "open-notification"].includes(name))) {
     if (Buffer.byteLength(lines.at(-1)!) + name.length + 2 > 80) lines.push("  " + name + ",");
     else lines[lines.length - 1] += " " + name + ",";
   }

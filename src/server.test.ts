@@ -417,11 +417,13 @@ test("a buffered data reply delivers the latest wake when it drains", async () =
 test("attention prioritizes input within a burst and releases the next completion", () => {
   const { server, dispose } = fixture();
   try {
-    server.attention(true, "blocked");
-    server.attention(true, "idle");
+    server.attention(true, "blocked", { conversation: 12 });
+    server.attention(true, "idle", { conversation: 13 });
     (server as any).flushBell(2000);
     expect(server.bell_seq).toBe(1n);
     expect(server.last_bell_kind).toBe("needs_input");
+    expect(server.last_bell_target).toEqual({ conversation: 12 });
+    expect(server.bell_target).toBeNull();
     expect(server.bell_kind).toBe("none");
     const actor = server.runtime.conversations.get("codex", "session");
     actor.state.observation.completed = 1n;
@@ -489,12 +491,14 @@ test("handoff restoration normalizes small and wide viewer counters before wakin
         history_sent: seq,
       };
       source.server.bell_seq = seq;
+      source.server.last_bell_target = { pane: 1, binding: seq };
       const captured = handoff.captureManifest(source.server, original),
         bytes = json.stringify(captured),
         saved = json.parse(bytes);
       handoff.restoreMetadata(target.server, saved);
       const restored = handoff.restoreClient(target.server, saved.clients[0]);
       expect(target.server.bell_seq).toBe(seq);
+      expect(target.server.last_bell_target).toEqual({ pane: 1, binding: seq });
       expect(restored.next_control).toBe(seq + 1n);
       expect(restored.last_control).toBe(seq);
       expect(restored.snapshot_revision).toBe(seq);

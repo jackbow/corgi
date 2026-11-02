@@ -93,6 +93,11 @@ $.view.surfaces[].stamp.offset: optional
 $.view.surfaces[].stamp.offset?: usize
 $.view.bell_seq: u64
 $.view.bell_kind: enum none finished needs_input
+$.view.bell_target: optional
+$.view.bell_target?.conversation: u32
+$.view.bell_target?.pane: u32
+$.view.bell_target?.binding: u64
+$.view.bell_target?.headless: u32
 $.view.controls[].seq: u64
 $.view.controls[].kind: enum focus workspace action
 $.view.controls[].id: u32

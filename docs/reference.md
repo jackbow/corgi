@@ -416,6 +416,15 @@ use the workflow in [HACKING](../HACKING.md).
 For remote work, run `ssh -t host corgi`; detaching or losing the connection
 leaves the runtime on that host. Image paste and sound behavior depend on the
 outer terminal; plain SSH uses the terminal bell for notifications.
+On macOS, Corgi uses a bundled notification helper. Allow **Corgi** in System
+Settings → Notifications when prompted. Clicking an alert selects its originating
+conversation in the attached viewer; Ghostty users may also be asked to allow
+Corgi to control Ghostty so the correct terminal can be focused. Notifications
+are removed when that viewer detaches. Corgi keeps playing its own alert sounds.
+Other platforms, SSH, and unavailable native notifications use terminal
+notification requests (OSC 777); Ghostty enables `desktop-notifications` by
+default. Muting Corgi or setting `CORGI_BELL=off` suppresses both sounds and
+desktop notification requests.
 
 For a bug report, include `corgi --version`, OS, terminal, whether SSH/tmux is
 involved, and the shortest reproduction. The runtime's `server.log` sits beside
