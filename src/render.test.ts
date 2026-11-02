@@ -239,12 +239,15 @@ test("agent tab names preserve Unicode and clip by cells without shifting the ne
       ["🐶 fix tabs", "🐶 fix t"],
       ["🐶🐱🐭🐹🐰", "🐶🐱🐭🐹"],
       ["cafe\u0301 fixes", "cafe\u0301 fix"],
-      ["🐶\ufe0f fixes", "🐶\ufe0f fixes"],
+      // Grapheme capture omits the redundant emoji presentation selector.
+      ["🐶\ufe0f fixes", "🐶 fixes"],
       ["abcdefg🐶", "abcdefg"],
       ["🐶\x1b\x07\u009bfix", "🐶???fix"],
     ]) {
       pane.agent.name = name;
-      screen.feed(frame(view, [pane], 40, 10, ui({ sidebar_open: false, message: "", copy_mode: false })));
+      const rendered = frame(view, [pane], 40, 10, ui({ sidebar_open: false, message: "", copy_mode: false }));
+      if (name === "🐶\ufe0f fixes") expect(rendered).toContain(name);
+      screen.feed(rendered);
       const row = screen.text().split("\n")[0];
       const padding = name === "abcdefg🐶" ? "  " : " ";
       expect(row).toStartWith(`▐1▌${label}${padding}▐2▌next     ▐+▌`);

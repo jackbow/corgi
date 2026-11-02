@@ -4,6 +4,22 @@ import { Theme } from "../theme";
 import { n } from "../native_bridge";
 const info = (t: Terminal) => t.native({ op: "info" });
 const pending = (t: Terminal) => t.native({ op: "takePending" }) as string;
+test("grapheme clustering gives emoji their cell width and survives a reset", () => {
+  const t = Terminal.create(12, 2);
+  try {
+    t.feed("\x1b[?2027$p");
+    expect(pending(t)).toBe("\x1b[?2027;1$y");
+    // Feed the variation selector separately, as a PTY can split a cluster.
+    t.feed("✍");
+    t.feed("️!");
+    expect(t.surface(0).surface.cursor).toMatchObject({ x: 3, y: 0 });
+    t.feed("\x1b[?2027l\x1bc\x1b[?2027$p👩‍💻!");
+    expect(pending(t)).toBe("\x1b[?2027;1$y");
+    expect(t.surface(0).surface.cursor).toMatchObject({ x: 3, y: 0 });
+  } finally {
+    t.destroy();
+  }
+});
 test("title observations contain one current identity and retain prior revisions", () => {
   const t = Terminal.create(20, 4),
     title = "11111111-1111-4111-8111-111111111111";
