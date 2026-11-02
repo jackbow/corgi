@@ -50,6 +50,37 @@ function controller(): any {
 const bytes = (text: string) => new TextEncoder().encode(text);
 const c = (text: string) => text.charCodeAt(0);
 
+test("a notification selects its conversation across workspaces and ignores a reused pane", async () => {
+  const s = controller(),
+    snapshot = folders("/a", "/b");
+  snapshot.panes[1].agent = { ...snapshot.panes[1].agent, conversation: 17 } as any;
+  s.receiveSnapshot(snapshot);
+  await s.perform({ name: "open-notification", value: '{"conversation":17}' });
+  expect(s.current().id).toBe(2);
+  expect(s.focused().id).toBe(2);
+  s.switchWorkspace(1);
+  await s.perform({ name: "open-notification", value: '{"pane":2,"binding":999}' });
+  expect(s.current().id).toBe(1);
+  await s.perform({ name: "open-notification", value: '{"conversation":999}' });
+  expect(s.current().id).toBe(1);
+  viewer.close(s);
+});
+test("a notification opens the associated headless conversation in its workspace", async () => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a", "/b"));
+  const session = { id: 8, workspace: 2, agent: agent({ conversation: 17 }) };
+  s.runtime.sessions.push(session);
+  const opened = spyOn(s, "noticeHeadlessSession").mockImplementation(() => {});
+  try {
+    await s.perform({ name: "open-notification", value: '{"conversation":17}' });
+    expect(s.current().id).toBe(2);
+    expect(opened).toHaveBeenCalledWith(session);
+  } finally {
+    opened.mockRestore();
+    viewer.close(s);
+  }
+});
+
 test("notices keep Unicode while stripping controls and truncating at UTF-8 boundaries", () => {
   const s = controller();
   s.notice("设置 日本語 한국어 Русский\n\x1b\u009b");

@@ -45,8 +45,10 @@ export class Server {
   default_folder_pending = true;
   bell_seq = 0n;
   last_bell_kind: protocol.View["bell_kind"] = "none";
+  last_bell_target: protocol.AttentionTarget | null = null;
   bell = false;
   bell_kind: protocol.View["bell_kind"] = "none";
+  bell_target: protocol.AttentionTarget | null = null;
   last_bell = 0;
   resource_readings = true;
   dirty = true;
@@ -106,10 +108,13 @@ export class Server {
       this.dirty = true;
     }
   }
-  attention(ding: boolean, state: string): void {
+  attention(ding: boolean, state: string, target: protocol.AttentionTarget | null = null): void {
     if (!ding) return;
     this.bell = true;
-    if (this.bell_kind !== "needs_input") this.bell_kind = state === "blocked" ? "needs_input" : "finished";
+    if (this.bell_kind !== "needs_input") {
+      this.bell_kind = state === "blocked" ? "needs_input" : "finished";
+      this.bell_target = target;
+    }
   }
   private flushBell(now: number): void {
     if (this.bell && this.bell_kind === "finished") {
@@ -120,13 +125,16 @@ export class Server {
       if (!unread) {
         this.bell = false;
         this.bell_kind = "none";
+        this.bell_target = null;
       }
     }
     if (this.bell && now - this.last_bell > 1500) {
       this.bell_seq++;
       this.last_bell_kind = this.bell_kind;
+      this.last_bell_target = this.bell_target;
       this.bell = false;
       this.bell_kind = "none";
+      this.bell_target = null;
       this.last_bell = now;
       this.dirty = true;
     }

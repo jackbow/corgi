@@ -15,7 +15,7 @@ import { Launch, type Runtime, type Pane } from "./runtime";
 import type { Text } from "./providers";
 import type { Known, Observer, Watcher } from "./providers/adapter";
 import type { Snapshot, Request as ObserverRequest } from "./providers/snapshot";
-import type { Request } from "./protocol";
+import type { Request, AttentionTarget } from "./protocol";
 import { Model } from "./providers/model";
 import * as accounts from "./accounts";
 import * as integration from "./integration";
@@ -125,8 +125,8 @@ function changed(server: Server) {
   server.dirty = true;
   server.runtime.changed();
 }
-function attention(server: Server, ding: boolean, state: string) {
-  server.attention(ding, state);
+function attention(server: Server, ding: boolean, state: string, target: AttentionTarget) {
+  server.attention(ding, state, target);
 }
 
 /** The pane, when it still shows the title session `request` asked about. */
@@ -328,7 +328,14 @@ function detect(server: Server, pane: Pane, observedJob?: detection.Job | null) 
   }
   if (!claim) pane.resume_hint.observe(pane.agent());
   if (generation !== pane.attachment.generation || !Bun.deepEquals(before, pane.agent().comparison())) changed(server);
-  attention(server, ding, pane.agent().state);
+  attention(
+    server,
+    ding,
+    pane.agent().state,
+    pane.attachment.actor
+      ? { conversation: pane.attachment.actor.id }
+      : { pane: pane.id, binding: pane.attachment.generation },
+  );
 }
 /** The live pane that shows `provider`'s `session`, if one does. */
 function showing(runtime: Runtime, provider: Provider, session: string) {
@@ -372,6 +379,7 @@ export function hook(server: Server, query: Request<"hook">) {
     server,
     runtime.conversations.observeHook(actor, event, seq, actorWatched(server, actor.id), now, presence),
     actor.state.state,
+    { conversation: actor.id },
   );
   workers.summaries.reconcile(runtime.conversations.items, runtime.panes);
   if (event.initial_request) workers.summaries.names.offer(actor, event.initial_request);
@@ -413,6 +421,7 @@ export async function tick(server: Server) {
           server,
           actor.observeSnapshot(snapshot, actorWatched(server, actor.id), clock.microTimestamp()),
           actor.state.state,
+          { conversation: actor.id },
         );
         if (snapshot.lifecycle) {
           runtime.conversations.observeChildren(actor, snapshot, clock.microTimestamp());
@@ -521,6 +530,7 @@ export async function tick(server: Server) {
         server,
         actor.confirmStop(result.seq, result.outcome, clock.microTimestamp()) && !actorWatched(server, actor.id),
         actor.state.state,
+        { conversation: actor.id },
       );
       changed(server);
     }
@@ -528,7 +538,12 @@ export async function tick(server: Server) {
   }
   for (const session of runtime.sessions) {
     const seq = session.next_seq;
-    attention(server, session.poll(runtime.conversations), session.status());
+    attention(
+      server,
+      session.poll(runtime.conversations),
+      session.status(),
+      session.attachment.actor ? { conversation: session.attachment.actor.id } : { headless: session.id },
+    );
     const workspace = runtime.workspaces.get(session.workspace_id);
     if (workspace && !workspaceWatched(server, session.workspace_id))
       workspace.away.record(workspace.away.since, session.usage_pending);

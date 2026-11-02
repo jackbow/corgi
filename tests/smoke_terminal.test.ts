@@ -333,10 +333,24 @@ appendFileSync(${JSON.stringify(played)}, JSON.stringify({hash:createHash('sha25
 `;
     for (const name of ["afplay", "paplay", "pw-play", "ffplay", "mpg123", "mpv"])
       writeExecutable(join(players, name), player);
+    const notified = join(this.temp.name, "notified.jsonl"),
+      notifier = join(players, "notify");
+    writeExecutable(
+      notifier,
+      `import { appendFileSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+console.log(JSON.stringify({ready:true}));
+createInterface({input:process.stdin}).on('line', line => {
+  const message = JSON.parse(line);
+  appendFileSync(${JSON.stringify(notified)}, line + '\\n');
+  if (message.body === 'Finished') setTimeout(() => console.log(JSON.stringify({clicked:message.id})), 100);
+});`,
+    );
     const env: Record<string, string | undefined> = {
       ...this.env,
       PATH: players + ":" + (this.env.PATH ?? ""),
       TMPDIR: this.temp.name,
+      CORGI_TEST_NOTIFY_HELPER: notifier,
     };
     for (const name of ["CORGI_BELL", "SSH_CONNECTION", "SSH_TTY"]) delete env[name];
     const pty = await Pty.spawn([EXE], { env, cwd: this.temp.name, cols: 80, rows: 24 });
@@ -400,6 +414,7 @@ appendFileSync(${JSON.stringify(played)}, JSON.stringify({hash:createHash('sha25
     await hook("PreToolUse", 4);
     await this.until(() => records().length === 1);
     this.assertEqual(records()[0].hash, hash(join(ROOT, "assets/sounds/request.mp3")));
+    await this.until(() => existsSync(notified) && file(notified).includes("Needs input"));
     await hook("PreToolUse", 5);
     await hook("UserPromptSubmit", 6);
     await hook("Stop", 7);
@@ -413,12 +428,15 @@ appendFileSync(${JSON.stringify(played)}, JSON.stringify({hash:createHash('sha25
     await hook("Stop", 9);
     await this.until(() => records().length === 2);
     this.assertEqual(records()[1].hash, hash(join(ROOT, "assets/sounds/done.mp3")));
+    await this.until(() => file(notified).includes("Finished"));
+    await this.until(async () => (await this.rpc({ op: "viewer.list" })).viewers.some((v: any) => v.pane === pane));
     await this.until(() => records().every((record: any) => !existsSync(record.path)));
     await this.rpc({ op: "action", name: "mute" });
     await hook("UserPromptSubmit", 10);
     await hook("PreToolUse", 11);
     await sleep(1.6);
     this.assertEqual(records().length, 2);
+    this.assertEqual(file(notified).trim().split("\n").length, 2);
   }
   async test_attention_is_deduplicated_and_explicitly_acknowledged() {
     await this.attach();
