@@ -5,8 +5,9 @@
 <key>CFBundleName</key><string>Corgi</string>
 <key>CFBundleDisplayName</key><string>Corgi</string>
 <key>CFBundleExecutable</key><string>corgi-notify</string>
+<key>CFBundleIconFile</key><string>corgi.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleVersion</key><string>2</string>
 <key>LSUIElement</key><true/>
 <key>NSAppleEventsUsageDescription</key><string>Open the terminal containing the Corgi conversation you clicked.</string>
 </dict></plist>

@@ -417,8 +417,10 @@ For remote work, run `ssh -t host corgi`; detaching or losing the connection
 leaves the runtime on that host. Image paste and sound behavior depend on the
 outer terminal; plain SSH uses the terminal bell for notifications.
 On macOS, Corgi uses a bundled notification helper. Allow **Corgi** in System
-Settings → Notifications when prompted. Clicking an alert selects its originating
-conversation in the attached viewer; Ghostty users may also be asked to allow
+Settings → Notifications when prompted. Alerts show the conversation title and
+an excerpt from its latest assistant message (Codex, Claude, Pi, and omp), falling
+back to the alert status when the transcript is unavailable. Clicking an alert
+selects its originating conversation in the attached viewer; Ghostty users may also be asked to allow
 Corgi to control Ghostty so the correct terminal can be focused. Notifications
 are removed when that viewer detaches. Corgi keeps playing its own alert sounds.
 Other platforms, SSH, and unavailable native notifications use terminal

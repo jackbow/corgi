@@ -16,7 +16,7 @@ function install(): string {
   privateDirectory(root);
   if (
     !existsSync(join(app, binary)) ||
-    ![binary, "Contents/Info.plist"].every(
+    ![binary, "Contents/Info.plist", "Contents/Resources/corgi.icns"].every(
       file => existsSync(join(app, file)) && readFileSync(join(source, file)).equals(readFileSync(join(app, file))),
     )
   ) {
@@ -96,9 +96,9 @@ export class Notifications {
       }
     }));
   }
-  async show(kind: string, target: AttentionTarget | null, subtitle = ""): Promise<void> {
+  async show(kind: string, target: AttentionTarget | null, title = "Corgi", preview = ""): Promise<void> {
     if (this.closed || process.env.CORGI_BELL === "off") return;
-    const body = kind === "needs_input" ? i18n.t`Needs input` : i18n.t`Finished`;
+    const body = preview || (kind === "needs_input" ? i18n.t`Needs input` : i18n.t`Finished`);
     const child =
       (this.helper || (process.platform === "darwin" && !process.env.SSH_CONNECTION && !process.env.SSH_TTY)) && target
         ? await this.start()
@@ -108,9 +108,10 @@ export class Notifications {
       const id = crypto.randomUUID();
       this.targets.set(id, target!);
       if (this.targets.size > 128) this.targets.delete(this.targets.keys().next().value!);
-      child.stdin.write(JSON.stringify({ id, title: "Corgi", subtitle, body }) + "\n");
+      child.stdin.write(JSON.stringify({ id, title, body }) + "\n");
     } else {
-      process.stdout.write(`\x1b]777;notify;Corgi;${body}\x1b\\`);
+      const safe = (value: string) => value.replace(/[\x00-\x1f\x7f-\x9f;]/g, " ");
+      process.stdout.write(`\x1b]777;notify;${safe(title)};${safe(body)}\x1b\\`);
     }
   }
   close(): void {

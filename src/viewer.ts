@@ -16,6 +16,7 @@ import * as framePacing from "./frame_pacing";
 import { Openers } from "./url_opener";
 import * as sound from "./sound";
 import { Notifications } from "./desktop_notifications";
+import * as notificationContent from "./notification_content";
 import * as notificationTarget from "./notification_target";
 import * as json from "./json";
 import { testBuild } from "./build_assets";
@@ -307,12 +308,14 @@ export async function run(
   );
   view.notify = (kind, target) => {
     const selected = target && notificationTarget.resolve(target, view.runtime),
-      name =
+      agent =
         selected &&
         ("pane" in selected
-          ? view.runtime.panes.find(p => p.id === selected.pane)?.agent.name
-          : view.runtime.sessions.find(s => s.id === selected.headless)?.agent?.name);
-    void notifications.show(kind, target, name || "");
+          ? view.runtime.panes.find(p => p.id === selected.pane)?.agent
+          : view.runtime.sessions.find(s => s.id === selected.headless)?.agent);
+    void notificationContent
+      .content(agent || undefined)
+      .then(({ title, body }) => notifications.show(kind, target, title, body));
   };
   try {
     const bell = { seq: await openMode(view, folder ?? process.cwd(), probe.theme, start_onboarding) };

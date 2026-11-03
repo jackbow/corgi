@@ -1,5 +1,5 @@
 import { test, expect, spyOn } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Notifications } from "./desktop_notifications";
@@ -15,8 +15,9 @@ test("native notification clicks resolve only known tokens and are consumed once
     `#!${process.execPath}
 import { createInterface } from 'node:readline';
 console.log(JSON.stringify({ready:true}));
-createInterface({input:process.stdin}).on('line', line => {
+createInterface({input:process.stdin}).on('line', async line => {
   const {id} = JSON.parse(line);
+  await Bun.write(${JSON.stringify(join(root, "message"))}, line);
   for (const token of ['unknown',id,id]) console.log(JSON.stringify({clicked:token}));
 });`,
     { mode: 0o700 },
@@ -28,10 +29,14 @@ createInterface({input:process.stdin}).on('line', line => {
   const prior = process.env.CORGI_BELL;
   delete process.env.CORGI_BELL;
   try {
-    await notifications.show("finished", { conversation: 7 });
+    await notifications.show("finished", { conversation: 7 }, "Fix notifications", "Changes are ready");
     expect(await clicked.promise).toEqual({ conversation: 7 });
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(seen).toEqual([{ conversation: 7 }]);
+    expect(JSON.parse(readFileSync(join(root, "message"), "utf8"))).toMatchObject({
+      title: "Fix notifications",
+      body: "Changes are ready",
+    });
   } finally {
     notifications.close();
     if (prior === undefined) delete process.env.CORGI_BELL;
@@ -51,6 +56,11 @@ test("unavailable native notifications fall back to the host terminal and honor 
     delete process.env.CORGI_BELL;
     await notifications.show("needs_input", { conversation: 1 });
     expect(output.mock.calls.map(args => args[0])).toEqual(["\x1b]777;notify;Corgi;Needs input\x1b\\"]);
+    output.mockClear();
+    await notifications.show("finished", { conversation: 1 }, "Conversation; title", "Latest\nmessage\x1b");
+    expect(output.mock.calls.map(args => args[0])).toEqual([
+      "\x1b]777;notify;Conversation  title;Latest message \x1b\\",
+    ]);
     output.mockClear();
     process.env.CORGI_BELL = "off";
     await notifications.show("finished", { conversation: 1 });
