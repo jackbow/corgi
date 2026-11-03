@@ -17,6 +17,11 @@ required: cellular plus Tailscale works.
    corgi remote pair
    ```
 
+   Run Corgi as your normal user, without `sudo`. Homebrew Tailscale may
+   require administrator permission to configure a Unix-socket proxy. If so,
+   Corgi runs only that Tailscale command through `sudo` and prompts in your
+   terminal. Corgi and its connection to your existing panes remain unprivileged.
+
 3. Open the printed one-time HTTPS link on the phone within 60 seconds. Enter
    a phone name and tap **Pair**. Compare the code with your computer, then
    type the matching code in the terminal to approve. Approval expires after

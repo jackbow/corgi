@@ -26,7 +26,10 @@ const args = process.argv.slice(2), file = process.env.CORGI_FAKE_TS_STATE;
 if (args[0] === "status") console.log(JSON.stringify({BackendState:"Running",Self:{DNSName:"mac.example.ts.net.",Online:true}}));
 else if (args[0] === "serve" && args[1] === "status") console.log(readFileSync(file,"utf8"));
 else if (args[0] === "serve") {
-  if (process.env.CORGI_FAKE_TS_FAIL) { console.error("Serve is unavailable"); process.exit(1); }
+  if (process.env.CORGI_FAKE_TS_FAIL) {
+    console.error(process.env.CORGI_FAKE_TS_FAIL === "permission" ? "401 Unauthorized: must be root" : "Serve is unavailable");
+    process.exit(1);
+  }
   const config = JSON.parse(readFileSync(file,"utf8"));
   if (args.at(-1) === "off") { delete config.TCP["8443"]; delete config.Web["mac.example.ts.net:8443"]; }
   else { config.TCP["8443"]={HTTPS:true}; config.Web["mac.example.ts.net:8443"]={Handlers:{"/":{Proxy:args.at(-1)}}}; }
@@ -163,6 +166,16 @@ else if (args[0] === "serve") {
     delete this.env.CORGI_FAKE_TS_FAIL;
     await this.remote("start");
     this.assertEqual((await this.local("status")).origin, origin);
+  }
+  async test_permission_denial_without_a_terminal_explains_sudo_and_rolls_back() {
+    const file = this.env.CORGI_FAKE_TS_STATE!,
+      original = readFileSync(file, "utf8");
+    this.env.CORGI_FAKE_TS_FAIL = "permission";
+    const failed = await run([EXE, "remote", "start"], { env: this.env, check: false });
+    this.assertNotEqual(failed.code, 0);
+    this.assertIn("interactive terminal as your normal user, without sudo", failed.stderr);
+    await this.wait_stopped();
+    this.assertEqual(readFileSync(file, "utf8"), original);
   }
 }
 registerCase("RemoteControl", RemoteControl, { inherited: false });

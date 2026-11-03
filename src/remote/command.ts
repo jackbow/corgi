@@ -119,6 +119,10 @@ export async function command(socket: string, executable: string, args: string[]
     process.stdout.write(help);
     return;
   }
+  if (process.getuid?.() === 0)
+    throw Error(
+      "Do not run Corgi with sudo. Run corgi remote start as your normal user; only Tailscale setup may request administrator permission.",
+    );
   if (op === "__serve" && rest.length === 1) return serve(socket, rest[0]);
   if (
     (op === "revoke" ? rest.length !== 1 : rest.length !== 0) ||
@@ -166,7 +170,7 @@ export async function command(socket: string, executable: string, args: string[]
       // Recheck after startup; never intentionally replace another service.
       const config = JSON.parse(await tailscale.run(["serve", "status", "--json"]));
       if (tailscale.route(config, address, target) === "absent")
-        await tailscale.run(["serve", "--bg", "--yes", `--https=${tailscale.httpsPort}`, target]);
+        await tailscale.configure(["serve", "--bg", "--yes", `--https=${tailscale.httpsPort}`, target]);
       if (tailscale.route(JSON.parse(await tailscale.run(["serve", "status", "--json"])), address, target) !== "owned")
         throw Error("Tailscale Serve did not install the Corgi route.");
     } catch (error) {
@@ -185,7 +189,7 @@ export async function command(socket: string, executable: string, args: string[]
         ? str(current, "origin")
         : tailscale.origin(JSON.parse(await tailscale.run(["status", "--json"])));
       if (tailscale.route(JSON.parse(await tailscale.run(["serve", "status", "--json"])), address, target) === "owned")
-        await tailscale.run(["serve", `--https=${tailscale.httpsPort}`, "off"]);
+        await tailscale.configure(["serve", `--https=${tailscale.httpsPort}`, "off"]);
     } finally {
       if (current) await stopLocal(socket);
     }
