@@ -2,7 +2,7 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Runtime, EXE } from "./runtime";
-import { registerCase, run, sleep, writeExecutable } from "./support";
+import { Pty, deadline, registerCase, run, sleep, writeExecutable } from "./support";
 import { paths } from "../src/remote/paths";
 import { signed } from "../src/remote/auth";
 
@@ -23,16 +23,18 @@ class RemoteControl extends Runtime {
       `
 import { readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2), file = process.env.CORGI_FAKE_TS_STATE;
-if (args[0] === "status") console.log(JSON.stringify({BackendState:"Running",Self:{DNSName:"mac.example.ts.net.",Online:true}}));
+if (args[0] === "status") console.log(JSON.stringify({BackendState:"Running",Self:{DNSName:"mac.example.ts.net.",Online:true,TailscaleIPs:["100.101.102.103","fd7a:115c:a1e0::1234"]}}));
 else if (args[0] === "serve" && args[1] === "status") console.log(readFileSync(file,"utf8"));
 else if (args[0] === "serve") {
-  if (process.env.CORGI_FAKE_TS_FAIL) {
+  if (process.env.CORGI_FAKE_TS_FAIL && (process.env.CORGI_FAKE_TS_FAIL !== "redirect" || args.includes("--tcp=8080"))) {
     console.error(process.env.CORGI_FAKE_TS_FAIL === "permission" ? "401 Unauthorized: must be root" : "Serve is unavailable");
     process.exit(1);
   }
   const config = JSON.parse(readFileSync(file,"utf8"));
-  if (args.at(-1) === "off") { delete config.TCP["8443"]; delete config.Web["mac.example.ts.net:8443"]; }
-  else { config.TCP["8443"]={HTTPS:true}; config.Web["mac.example.ts.net:8443"]={Handlers:{"/":{Proxy:args.at(-1)}}}; }
+  const tcp = args.includes("--tcp=8080"), port = tcp ? "8080" : "8443";
+  if (args.at(-1) === "off") { delete config.TCP[port]; if (!tcp) delete config.Web["mac.example.ts.net:8443"]; }
+  else if (tcp) config.TCP[port]={TCPForward:args.at(-1)};
+  else { config.TCP[port]={HTTPS:true}; config.Web["mac.example.ts.net:8443"]={Handlers:{"/":{Proxy:args.at(-1)}}}; }
   writeFileSync(file,JSON.stringify(config));
 } else process.exit(2);
 `,
@@ -176,6 +178,72 @@ else if (args[0] === "serve") {
     this.assertIn("interactive terminal as your normal user, without sudo", failed.stderr);
     await this.wait_stopped();
     this.assertEqual(readFileSync(file, "utf8"), original);
+  }
+  async test_redirect_setup_failure_removes_only_new_routes() {
+    const file = this.env.CORGI_FAKE_TS_STATE!,
+      original = readFileSync(file, "utf8");
+    this.env.CORGI_FAKE_TS_FAIL = "redirect";
+    const failed = await run([EXE, "remote", "start"], { env: this.env, check: false });
+    this.assertNotEqual(failed.code, 0);
+    await this.wait_stopped();
+    this.assertEqual(readFileSync(file, "utf8"), original);
+  }
+  async test_pair_prints_qr_and_three_links_until_interrupted() {
+    await this.remote("start");
+    const redirect = await fetch("http://localhost/api/session?secret=discard", {
+      unix: paths(this.path).redirect,
+      redirect: "manual",
+    });
+    this.assertEqual(redirect.status, 303);
+    this.assertEqual(redirect.headers.get("Location"), origin + "/");
+    const pty = await Pty.spawn([EXE, "remote", "pair"], { env: this.env, cols: 140, rows: 60 });
+    try {
+      await pty.waitFor("Waiting for your phone");
+      this.assertIn("\x1b[30;47m", pty.output);
+      const url = pty.output.match(/MagicDNS: (\S+)/)![1],
+        token = new URL(url).hash.slice(6);
+      this.assertIn(`IPv4:     http://100.101.102.103:8080/#pair=${token}`, pty.output);
+      this.assertIn(`IPv6:     http://[fd7a:115c:a1e0::1234]:8080/#pair=${token}`, pty.output);
+      const keys = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+      const claim = await (
+        await this.api("/api/pair", {
+          token,
+          name: "QR phone",
+          key: keys.publicKey.export({ format: "der", type: "spki" }).toString("base64url"),
+        })
+      ).json();
+      await pty.waitFor("to approve");
+      pty.write(claim.code + "\n");
+      await pty.waitFor(output => (output.match(/MagicDNS:/g)?.length ?? 0) === 2);
+      this.assertEqual((await (await this.api("/api/pair/status", { claim: claim.claim })).json()).state, "approved");
+      this.assertEqual(pty.proc.exitCode, null);
+      const next = [...pty.output.matchAll(/MagicDNS: (\S+)/g)].at(-1)![1];
+      // Cross a heartbeat, then verify the command still accepts a new phone.
+      await sleep(11);
+      const pending = await (
+        await this.api("/api/pair", {
+          token: new URL(next).hash.slice(6),
+          name: "Second phone",
+          key: keys.publicKey.export({ format: "der", type: "spki" }).toString("base64url"),
+        })
+      ).json();
+      await pty.waitFor("Second phone");
+      pty.write("\x03");
+      this.assertEqual(await deadline(pty.proc.exited, 3000), 0);
+      this.assertEqual((await this.api("/api/pair/status", { claim: pending.claim })).status, 400);
+      this.assertEqual(
+        (
+          await this.api("/api/pair", {
+            token: new URL(next).hash.slice(6),
+            name: "Too late",
+            key: keys.publicKey.export({ format: "der", type: "spki" }).toString("base64url"),
+          })
+        ).status,
+        400,
+      );
+    } finally {
+      await pty.close();
+    }
   }
 }
 registerCase("RemoteControl", RemoteControl, { inherited: false });

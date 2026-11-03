@@ -14,6 +14,7 @@ export interface Device {
   key: string;
 }
 interface Pairing {
+  id: string;
   digest: string;
   expires: number;
   claim?: { id: string; code: string; device: Device; expires: number; state: "waiting" | "approved" | "denied" };
@@ -31,6 +32,7 @@ function publicKey(key: string) {
 export class Auth {
   private devices: Device[] = [];
   private pairing: Pairing | null = null;
+  private outcomes = new Map<string, { state: "approved" | "denied"; device: string | null; expires: number }>();
   private challenges = new Map<string, { device: string; expires: number }>();
   private sessions = new Map<string, { device: string; expires: number }>();
   constructor(
@@ -90,8 +92,18 @@ export class Auth {
   }
   mint(now = Date.now()) {
     const token = secret();
-    this.pairing = { digest: digest(token), expires: now + pairingTTL };
-    return { url: `${this.origin}/#pair=${token}`, expires: now + pairingTTL };
+    const id = secret();
+    this.pairing = { id, digest: digest(token), expires: now + pairingTTL };
+    return { id, url: `${this.origin}/#pair=${token}`, expires: now + pairingTTL };
+  }
+  renew(id: string, now = Date.now()) {
+    const p = this.pairing;
+    if (!p || p.id !== id || now >= p.expires) throw Error("InvalidPairing");
+    p.expires = now + pairingTTL;
+    if (p.claim?.state === "waiting") p.claim.expires = now + approvalTTL;
+  }
+  close(id: string) {
+    if (this.pairing?.id === id) this.pairing = null;
   }
   claim(token: string, name: string, key: string, now = Date.now()) {
     const p = this.pairing;
@@ -123,8 +135,13 @@ export class Auth {
       this.save([...this.devices, c.device]);
     }
     c.state = allow ? "approved" : "denied";
+    for (const [id, outcome] of this.outcomes) if (now >= outcome.expires) this.outcomes.delete(id);
+    if (this.outcomes.size >= 16) this.outcomes.delete(this.outcomes.keys().next().value!);
+    this.outcomes.set(id, { state: c.state, device: allow ? c.device.id : null, expires: now + approvalTTL });
   }
   outcome(id: string, now = Date.now()) {
+    const finished = this.outcomes.get(id);
+    if (finished && now < finished.expires) return { state: finished.state, device: finished.device };
     const c = this.pairing?.claim;
     if (!c || c.id !== id || now >= c.expires) throw Error("InvalidPairing");
     return { state: c.state, device: c.state === "approved" ? c.device.id : null };
@@ -173,5 +190,6 @@ export class Auth {
     for (const [key, s] of this.sessions) if (s.device === id) this.sessions.delete(key);
     for (const [key, c] of this.challenges) if (c.device === id) this.challenges.delete(key);
     if (this.pairing?.claim?.device.id === id) this.pairing = null;
+    for (const [claim, outcome] of this.outcomes) if (outcome.device === id) this.outcomes.delete(claim);
   }
 }

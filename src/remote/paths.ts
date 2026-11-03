@@ -11,6 +11,7 @@ export function paths(socket: string) {
     runtime,
     state,
     http: join(runtime, "http.sock"),
+    redirect: join(runtime, "redirect.sock"),
     control: join(runtime, "control.sock"),
     lock: join(runtime, "lock"),
     devices: join(state, "devices.json"),

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { CommandError, configure, elevatedCommand, origin, route } from "./tailscale";
+import { CommandError, addresses, configure, elevatedCommand, origin, redirectRoute, route } from "./tailscale";
 const address = "https://mac.example.ts.net:8443",
   target = "unix:/tmp/corgi/http.sock";
 const config = () => ({
@@ -27,6 +27,40 @@ test("Serve setup preserves other services and refuses Funnel", () => {
     "Funnel",
   );
   expect(() => route({ TCP: { "8443": { TCPForward: "localhost:22" } } }, address, target)).toThrow("another service");
+});
+test("pairing addresses use only this node's IPs and bracket IPv6", () => {
+  const status = {
+    BackendState: "Running",
+    Self: {
+      DNSName: "mac.example.ts.net.",
+      Online: true,
+      TailscaleIPs: [null, "invalid", "100.101.102.103", "fd7a:115c:a1e0::1234"],
+    },
+  };
+  expect(addresses(status)).toEqual({
+    dns: address,
+    ipv4: "http://100.101.102.103:8080/",
+    ipv6: "http://[fd7a:115c:a1e0::1234]:8080/",
+  });
+  expect(
+    addresses({
+      ...status,
+      Self: { ...status.Self, TailscaleIPs: [] },
+      Peer: { other: { TailscaleIPs: ["100.1.2.3"] } },
+    }),
+  ).toEqual({ dns: address, ipv4: null, ipv6: null });
+});
+test("IP redirect ownership requires the exclusive TCP forwarding route", () => {
+  expect(redirectRoute(config(), target)).toBe("absent");
+  expect(redirectRoute({ TCP: { "8080": { TCPForward: target } } }, target)).toBe("owned");
+  for (const conflict of [
+    { TCP: { "8080": { TCPForward: "unix:/other.sock" } } },
+    { TCP: { "8080": { TCPForward: target, TerminateTLS: "other" } } },
+    { Web: { "mac.example.ts.net:8080": {} } },
+    { TCP: { "8080": { HTTPS: true } } },
+  ])
+    expect(() => redirectRoute(conflict, target)).toThrow("another service");
+  expect(() => redirectRoute({ AllowFunnel: { "mac.example.ts.net:8080": true } }, target)).toThrow("Funnel");
 });
 
 test("Serve permission failures elevate only Tailscale, preserving exact arguments", async () => {

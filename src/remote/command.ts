@@ -1,24 +1,24 @@
 import { closeSync, openSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { createInterface } from "node:readline/promises";
 import { dirname } from "node:path";
 import { flock } from "../native_bridge";
 import { field, str } from "../json";
 import { paths, privateDirectory } from "./paths";
 import { Daemon } from "./daemon";
-import { Remote, listen } from "./server";
+import { Remote, listen, redirect } from "./server";
 import * as tailscale from "./tailscale";
+import * as pairing from "./pair";
 
 export const help = `Corgi remote control (Tailscale only)
   corgi remote start       start background service and Tailscale HTTPS on port 8443
   corgi remote status      show service address and paired phones
-  corgi remote pair        open a one-time pairing; approve the matching phone code
+  corgi remote pair        show a QR and three links; keep pairing open until Ctrl+C
   corgi remote devices     list paired phone IDs
   corgi remote revoke ID   revoke a phone immediately
   corgi remote stop        remove Corgi's Tailscale route and stop the service
 
 Connect both devices to the same tailnet first. Tailscale Serve and HTTPS must
-be available; tailnet policy must allow the phone to reach this computer:8443.
+be available; tailnet policy must allow ports 8443 (HTTPS) and 8080 (IP redirects).
 CORGI_SOCKET selects the existing Corgi runtime. Remote start does not start it.
 `;
 export async function control(socket: string, command: string, value: Record<string, unknown> = {}) {
@@ -59,9 +59,11 @@ async function serve(socket: string, origin: string) {
     closeSync(lock);
     throw Error("RemoteAlreadyRunning");
   }
-  let http: ReturnType<typeof listen> | undefined, local: ReturnType<typeof listen> | undefined;
+  let http: ReturnType<typeof listen> | undefined,
+    local: ReturnType<typeof listen> | undefined,
+    gateway: ReturnType<typeof listen> | undefined;
   try {
-    for (const path of [p.http, p.control])
+    for (const path of [p.http, p.redirect, p.control])
       try {
         unlinkSync(path);
       } catch (error) {
@@ -69,14 +71,26 @@ async function serve(socket: string, origin: string) {
       }
     const remote = new Remote(p.devices, origin, new Daemon(socket));
     http = listen(p.http, request => remote.fetch(request));
+    gateway = listen(p.redirect, async request => redirect(request, origin));
     local = listen(p.control, async request => {
       try {
         const body: unknown = await request.json();
         switch (str(body, "command")) {
           case "status":
-            return Response.json({ origin, pid: process.pid, devices: remote.auth.list() });
+            return Response.json({
+              origin,
+              pid: process.pid,
+              remote_protocol: pairing.remoteProtocol,
+              devices: remote.auth.list(),
+            });
           case "pair":
             return Response.json(remote.auth.mint());
+          case "pair.renew":
+            remote.auth.renew(str(body, "id"));
+            return Response.json({ ok: true });
+          case "pair.close":
+            remote.auth.close(str(body, "id"));
+            return Response.json({ ok: true });
           case "pending":
             return Response.json({ pending: remote.auth.pending() });
           case "approve":
@@ -108,10 +122,28 @@ async function serve(socket: string, origin: string) {
     });
   } finally {
     await http?.stop(true);
+    await gateway?.stop(true);
     await local?.stop(true);
     flock(lock, false);
     closeSync(lock);
   }
+}
+function networkRoutes(address: string, socket: string) {
+  const p = paths(socket),
+    https = `unix:${p.http}`,
+    tcp = `unix:${p.redirect}`;
+  return [
+    {
+      flag: `--https=${tailscale.httpsPort}`,
+      target: https,
+      check: (config: unknown) => tailscale.route(config, address, https),
+    },
+    {
+      flag: `--tcp=${tailscale.redirectPort}`,
+      target: tcp,
+      check: (config: unknown) => tailscale.redirectRoute(config, tcp),
+    },
+  ];
 }
 export async function command(socket: string, executable: string, args: string[]) {
   const [op, ...rest] = args;
@@ -129,16 +161,21 @@ export async function command(socket: string, executable: string, args: string[]
     !["start", "stop", "status", "pair", "devices", "revoke"].includes(op)
   )
     throw Error(help);
-  const p = paths(socket),
-    target = `unix:${p.http}`;
+  const p = paths(socket);
   if (op === "start") {
     const address = tailscale.origin(JSON.parse(await tailscale.run(["status", "--json"])));
-    tailscale.route(JSON.parse(await tailscale.run(["serve", "status", "--json"])), address, target);
+    const routes = networkRoutes(address, socket),
+      initial = JSON.parse(await tailscale.run(["serve", "status", "--json"]));
+    for (const route of routes) route.check(initial);
     await new Daemon(socket).list();
     let current = await status(socket),
       started = false;
     if (current && str(current, "origin") !== address)
       throw Error("Tailscale address changed. Run corgi remote stop before starting again.");
+    if (current && field(current, "remote_protocol") !== pairing.remoteProtocol) {
+      await stopLocal(socket);
+      current = null;
+    }
     if (!current) {
       privateDirectory(dirname(p.runtime));
       privateDirectory(p.runtime);
@@ -166,14 +203,26 @@ export async function command(socket: string, executable: string, args: string[]
         closeSync(fd);
       }
     }
+    const created: typeof routes = [];
     try {
       // Recheck after startup; never intentionally replace another service.
-      const config = JSON.parse(await tailscale.run(["serve", "status", "--json"]));
-      if (tailscale.route(config, address, target) === "absent")
-        await tailscale.configure(["serve", "--bg", "--yes", `--https=${tailscale.httpsPort}`, target]);
-      if (tailscale.route(JSON.parse(await tailscale.run(["serve", "status", "--json"])), address, target) !== "owned")
-        throw Error("Tailscale Serve did not install the Corgi route.");
+      for (const route of routes) {
+        const config = JSON.parse(await tailscale.run(["serve", "status", "--json"]));
+        if (route.check(config) === "absent") {
+          await tailscale.configure(["serve", "--bg", "--yes", route.flag, route.target]);
+          created.push(route);
+        }
+      }
+      const installed = JSON.parse(await tailscale.run(["serve", "status", "--json"]));
+      for (const route of routes)
+        if (route.check(installed) !== "owned") throw Error("Tailscale Serve did not install the Corgi routes.");
     } catch (error) {
+      for (const route of created.reverse()) {
+        try {
+          if (route.check(JSON.parse(await tailscale.run(["serve", "status", "--json"]))) === "owned")
+            await tailscale.configure(["serve", route.flag, "off"]);
+        } catch {}
+      }
       if (started) await stopLocal(socket).catch(() => {});
       throw error;
     }
@@ -188,8 +237,10 @@ export async function command(socket: string, executable: string, args: string[]
       const address = current
         ? str(current, "origin")
         : tailscale.origin(JSON.parse(await tailscale.run(["status", "--json"])));
-      if (tailscale.route(JSON.parse(await tailscale.run(["serve", "status", "--json"])), address, target) === "owned")
-        await tailscale.configure(["serve", `--https=${tailscale.httpsPort}`, "off"]);
+      for (const route of networkRoutes(address, socket)) {
+        if (route.check(JSON.parse(await tailscale.run(["serve", "status", "--json"]))) === "owned")
+          await tailscale.configure(["serve", route.flag, "off"]);
+      }
     } finally {
       if (current) await stopLocal(socket);
     }
@@ -207,29 +258,11 @@ export async function command(socket: string, executable: string, args: string[]
     return;
   }
   if (!process.stdin.isTTY) throw Error("Run corgi remote pair in an interactive terminal to approve the phone.");
-  const offer = await control(socket, "pair");
-  process.stdout.write(
-    `Connect your phone to Tailscale, then open this one-time link (valid for 60 seconds):\n${str(offer, "url")}\nWaiting for your phone…\n`,
-  );
-  const until = Date.now() + 60_000;
-  while (Date.now() < until) {
-    const pending = field(await control(socket, "pending"), "pending");
-    if (pending) {
-      const reader = createInterface({ input: process.stdin, output: process.stdout });
-      try {
-        const code = str(pending, "code");
-        const answer = await reader.question(
-          `Phone ${JSON.stringify(str(pending, "name"))}. If its code is ${code}, type ${code} to approve (anything else denies): `,
-          { signal: AbortSignal.timeout(120_000) },
-        );
-        await control(socket, "approve", { claim: str(pending, "claim"), code, allow: answer.trim() === code });
-        process.stdout.write(answer.trim() === code ? "Phone paired.\n" : "Pairing denied.\n");
-      } finally {
-        reader.close();
-      }
-      return;
-    }
-    await Bun.sleep(1000);
-  }
-  throw Error("Pairing expired. Run corgi remote pair again.");
+  const current = await control(socket, "status");
+  if (field(current, "remote_protocol") !== pairing.remoteProtocol)
+    throw Error("Remote service needs updating. Run corgi remote start, then pair again.");
+  const addresses = tailscale.addresses(JSON.parse(await tailscale.run(["status", "--json"])));
+  if (addresses.dns !== str(current, "origin"))
+    throw Error("Tailscale address changed. Restart remote control before pairing.");
+  await pairing.run((command, value) => control(socket, command, value), addresses);
 }
