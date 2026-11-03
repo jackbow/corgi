@@ -3,10 +3,25 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Limit, Remote, listen } from "./server";
+import { Limit, Remote, listen, redirect } from "./server";
 import { signed } from "./auth";
 import { input, type Backend, type Input } from "./daemon";
 const origin = "https://mac.example.ts.net:8443";
+
+test("IP listener only redirects navigation to the fixed HTTPS origin", async () => {
+  for (const method of ["GET", "HEAD"]) {
+    const response = redirect(new Request("http://100.1.2.3:8080/api/session?token=discard", { method }), origin);
+    expect(response.status).toBe(303);
+    expect(response.headers.get("Location")).toBe(origin + "/");
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(await response.text()).toBe("");
+  }
+  for (const method of ["POST", "PUT", "DELETE"]) {
+    const response = redirect(new Request("http://100.1.2.3:8080/api/pair", { method }), origin);
+    expect(response.status).toBe(405);
+    expect(response.headers.get("Location")).toBe(null);
+  }
+});
 
 test("private HTTP socket pairs, authenticates, restricts commands, and revokes access", async () => {
   const dir = mkdtempSync(join(tmpdir(), "corgi-web-")),

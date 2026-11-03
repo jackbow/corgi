@@ -16,6 +16,11 @@ const headers = {
   "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 };
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers });
+/** IP links carry tokens only in their fragment; browsers retain it across this redirect. */
+export function redirect(request: Request, origin: string) {
+  if (request.method !== "GET" && request.method !== "HEAD") return json({ error: "MethodNotAllowed" }, 405);
+  return new Response(null, { status: 303, headers: { ...headers, Location: `${origin}/` } });
+}
 export class Limit {
   private buckets = new Map<string, { start: number; count: number }>();
   take(key: string, max: number, now = Date.now()) {

@@ -28,7 +28,8 @@
     "zlib": "./site/browser/zlib.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-tui": "1.0.4"
+    "@earendil-works/pi-tui": "1.0.4",
+    "qr": "0.6.0"
   },
   "devDependencies": {
     "happy-dom": "21.0.4",

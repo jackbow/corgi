@@ -190,8 +190,7 @@ async function start() {
         const claim = await api("/api/pair", { token: pair, name: el("name").value, key }, false);
         el("code").textContent = `Confirm code ${claim.code} on your computer.`;
         status("Waiting for approval…");
-        const deadline = Date.now() + 120000;
-        while (Date.now() < deadline) {
+        while (true) {
           await new Promise(resolve => setTimeout(resolve, 2000));
           const outcome = await api("/api/pair/status", { claim: claim.claim }, false);
           if (outcome.state === "denied") throw new Error("Pairing denied");
@@ -204,7 +203,6 @@ async function start() {
             return;
           }
         }
-        throw new Error("Pairing expired");
       } catch (error) {
         status(`${error.message}. Run corgi remote pair again for a fresh link.`);
       }

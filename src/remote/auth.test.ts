@@ -131,3 +131,35 @@ test("phone tabs may sign in concurrently and session counts stay bounded", () =
     f.dispose();
   }
 });
+
+test("a live command renews the same link and pending approval beyond their original deadlines", () => {
+  const f = fixture();
+  try {
+    const offer = f.auth.mint(0),
+      token = new URL(offer.url).hash.slice(6);
+    for (let now = 10_000; now <= 180_000; now += 10_000) f.auth.renew(offer.id, now);
+    const claim = f.auth.claim(token, "Phone", f.p.key, 180_001);
+    for (let now = 190_000; now <= 400_000; now += 10_000) f.auth.renew(offer.id, now);
+    f.auth.approve(claim.claim, claim.code, true, 400_001);
+    f.auth.mint(400_002);
+    expect(f.auth.outcome(claim.claim, 400_003).state).toBe("approved");
+  } finally {
+    f.dispose();
+  }
+});
+test("closing an owner invalidates its offer; stale owners cannot close or renew a replacement", () => {
+  const f = fixture();
+  try {
+    const old = f.auth.mint(0),
+      next = f.auth.mint(1);
+    expect(() => f.auth.renew(old.id, 2)).toThrow("InvalidPairing");
+    f.auth.close(old.id);
+    f.auth.renew(next.id, 2);
+    f.auth.close(next.id);
+    expect(() => f.auth.claim(new URL(next.url).hash.slice(6), "Phone", f.p.key, 3)).toThrow("InvalidPairing");
+    const abandoned = f.auth.mint(10);
+    expect(() => f.auth.renew(abandoned.id, 10 + pairingTTL)).toThrow("InvalidPairing");
+  } finally {
+    f.dispose();
+  }
+});

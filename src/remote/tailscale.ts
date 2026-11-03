@@ -1,5 +1,31 @@
 import { str, field } from "../json";
+import { isIP } from "node:net";
 export const httpsPort = 8443;
+export const redirectPort = 8080;
+export function addresses(value: unknown) {
+  const dns = origin(value),
+    ips: unknown = field(field(value, "Self"), "TailscaleIPs");
+  const entries = Array.isArray(ips) ? ips.filter((ip): ip is string => typeof ip === "string") : [];
+  const ipv4 = entries.find(ip => isIP(ip) === 4),
+    ipv6 = entries.find(ip => isIP(ip) === 6);
+  return {
+    dns,
+    ipv4: ipv4 ? `http://${ipv4}:${redirectPort}/` : null,
+    ipv6: ipv6 ? `http://[${ipv6}]:${redirectPort}/` : null,
+  };
+}
+export type Addresses = ReturnType<typeof addresses>;
+export function redirectRoute(config: unknown, target: string): "absent" | "owned" {
+  const funnel = field(config, "AllowFunnel"),
+    web = field(config, "Web");
+  if (funnel && Object.entries(funnel).some(([host, enabled]) => host.endsWith(`:${redirectPort}`) && enabled))
+    throw Error("Disable Funnel on the Corgi redirect port.");
+  const tcp = field(field(config, "TCP"), String(redirectPort));
+  const hasWeb = web && Object.keys(web).some(host => host.endsWith(`:${redirectPort}`));
+  if (!tcp && !hasWeb) return "absent";
+  if (!hasWeb && tcp && Object.keys(tcp).length === 1 && str(tcp, "TCPForward") === target) return "owned";
+  throw Error(`Tailscale port ${redirectPort} already has another service; its configuration was left unchanged.`);
+}
 export function origin(value: unknown): string {
   const self = field(value, "Self"),
     dns = str(self, "DNSName").replace(/\.$/, "");
