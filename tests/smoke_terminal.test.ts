@@ -343,7 +343,7 @@ console.log(JSON.stringify({ready:true}));
 createInterface({input:process.stdin}).on('line', line => {
   const message = JSON.parse(line);
   appendFileSync(${JSON.stringify(notified)}, line + '\\n');
-  if (message.body === 'Finished') setTimeout(() => console.log(JSON.stringify({clicked:message.id})), 100);
+  if (message.body === 'Notification changes are ready.') setTimeout(() => console.log(JSON.stringify({clicked:message.id})), 100);
 });`,
     );
     const env: Record<string, string | undefined> = {
@@ -363,9 +363,13 @@ createInterface({input:process.stdin}).on('line', line => {
     const terminal = write_codex_terminal(join(this.temp.name, "codex"), session);
     const observer = new CodexObserver(this.env.CODEX_HOME!, [session]);
     observer.paths[session] = transcript;
+    observer.names[session] = "Polish notifications";
     try {
       await this.command("pane.input", { target: pane, data: `exec ${quote(terminal)}\r` });
       await this.until(async () => (await this.panes()).find((p: any) => p.id === pane).session === session);
+      await this.until(
+        async () => (await this.session()).panes.find((p: any) => p.id === pane).agent.name === "Polish notifications",
+      );
     } finally {
       await observer.close();
     }
@@ -425,10 +429,25 @@ createInterface({input:process.stdin}).on('line', line => {
       (await this.rpc({ op: "viewer.list" })).viewers.some((v: any) => v.pane === background),
     );
     await hook("UserPromptSubmit", 8);
+    writeFileSync(
+      transcript,
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Notification changes are ready." }],
+        },
+      }) + "\n",
+      { flag: "a" },
+    );
     await hook("Stop", 9);
     await this.until(() => records().length === 2);
     this.assertEqual(records()[1].hash, hash(join(ROOT, "assets/sounds/done.mp3")));
-    await this.until(() => file(notified).includes("Finished"));
+    await this.until(() => file(notified).includes("Notification changes are ready."));
+    const notification = JSON.parse(file(notified).trim().split("\n").at(-1)!);
+    this.assertEqual(notification.title, "Polish notifications");
+    this.assertEqual(notification.body, "Notification changes are ready.");
     await this.until(async () => (await this.rpc({ op: "viewer.list" })).viewers.some((v: any) => v.pane === pane));
     await this.until(() => records().every((record: any) => !existsSync(record.path)));
     await this.rpc({ op: "action", name: "mute" });

@@ -69,6 +69,8 @@ if (!process.argv.includes("--no-native")) {
   if (platform === "darwin") {
     const bundle = `${nativeRoot}/bin/Corgi Notifications.app/Contents`;
     mkdirSync(`${bundle}/MacOS`, { recursive: true });
+    mkdirSync(`${bundle}/Resources`, { recursive: true });
+    copyFileSync(`${root}/native/notify.icns`, `${bundle}/Resources/corgi.icns`);
     copyFileSync(`${root}/native/notify.plist`, `${bundle}/Info.plist`);
     const compile = Bun.spawn(
       [
@@ -106,7 +108,7 @@ const suffix = platform === "darwin" ? "dylib" : "so";
 const files = [`lib/libcorgi_term.${suffix}`, `lib/libcorgi_system.${suffix}`, "bin/pty-exec", "bin/corgi-hook"];
 if (platform === "darwin")
   files.push(
-    ...["Info.plist", "MacOS/corgi-notify", "_CodeSignature/CodeResources"].map(
+    ...["Info.plist", "MacOS/corgi-notify", "Resources/corgi.icns", "_CodeSignature/CodeResources"].map(
       file => `bin/Corgi Notifications.app/Contents/${file}`,
     ),
   );
