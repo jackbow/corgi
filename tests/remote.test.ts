@@ -153,13 +153,22 @@ else if (args[0] === "serve") {
     const manifest = await this.api("/manifest.webmanifest");
     this.assertEqual(manifest.status, 200);
     this.assertIn("application/manifest+json", manifest.headers.get("Content-Type") ?? "");
-    this.assertEqual((await manifest.json()).display, "standalone");
+    const manifestData = await manifest.json();
+    this.assertEqual(manifestData.display, "standalone");
     const worker = await this.api("/sw.js");
     this.assertIn("javascript", worker.headers.get("Content-Type") ?? "");
     const workerSource = await worker.text();
     this.assertIn('addEventListener("push"', workerSource);
     this.assertNotIn('addEventListener("fetch"', workerSource);
-    this.assertEqual((await this.api("/apple-touch-icon.png")).status, 200);
+    const iconResponse = await this.api("/apple-touch-icon.png"),
+      icon = Buffer.from(await iconResponse.arrayBuffer());
+    this.assertEqual(iconResponse.status, 200);
+    this.assertEqual(icon.readUInt32BE(16), 180);
+    this.assertEqual(icon.readUInt32BE(20), 180);
+    this.assertEqual(
+      manifestData.icons.find((i: { src: string }) => i.src === "/apple-touch-icon.png").sizes,
+      "180x180",
+    );
     this.assertEqual((await this.api("/api/push")).status, 401);
     const notifications = await (await this.api("/api/push", undefined, token)).json();
     this.assertEqual(notifications.enabled, false);
