@@ -5,11 +5,13 @@ import { RouterProvider } from "@tanstack/react-router";
 import { phoneRouter } from "./router";
 import { configure, Pairing } from "./app";
 import { client, type Client } from "./client";
+import { applyAppearance, pureBlack } from "./appearance";
 import * as fixtures from "./fixtures";
 import "@fontsource-variable/geist";
 import "@fontsource-variable/fira-code";
 import "./style.css";
 
+applyAppearance(pureBlack());
 const fixture = import.meta.env.DEV ? new URLSearchParams(location.search).get("fixture") : null;
 const preview: Client = {
   list: async () => {

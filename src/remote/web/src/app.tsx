@@ -6,6 +6,7 @@ import { Agent, identityKey, useViewport } from "./agent";
 import { Back, Button, Empty, Home } from "./ui";
 import { claim, finishPair, stored, RequestError, type Client } from "./client";
 import type { Conversation, Pane, Snapshot } from "./types";
+import { pureBlack, setPureBlack } from "./appearance";
 
 export let transport: Client;
 export function configure(client: Client) {
@@ -157,7 +158,8 @@ export function Pairing() {
   );
 }
 export function SettingsScreen() {
-  const navigate = useNavigate();
+  const navigate = useNavigate(),
+    [black, setBlack] = useState(pureBlack);
   return (
     <>
       <header className="header">
@@ -165,6 +167,28 @@ export function SettingsScreen() {
         <h1>Settings</h1>
       </header>
       <main className="settings scroll">
+        <h2>Appearance</h2>
+        <button
+          className="appearance-toggle"
+          role="switch"
+          aria-checked={black}
+          aria-labelledby="pure-black-label"
+          aria-describedby="pure-black-description"
+          onClick={() => {
+            setPureBlack(!black);
+            setBlack(!black);
+          }}
+        >
+          <span>
+            <span id="pure-black-label">Pure black</span>
+            <span id="pure-black-description" className="muted">
+              Use a black background for OLED screens.
+            </span>
+          </span>
+          <span className="switch-track" aria-hidden="true">
+            <span />
+          </span>
+        </button>
         <h2>Connection</h2>
         <p>Connected through Tailscale</p>
         <p className="muted break">{location.origin}</p>
