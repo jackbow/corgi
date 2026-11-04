@@ -1,8 +1,10 @@
 .tools/
 .zig-cache/
 zig-out/
+/native/zig-out
 node_modules/
 dist/
+src/remote/web/dist/
 .wrangler/
 /site/.generated/
 *.log

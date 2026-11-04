@@ -134,6 +134,46 @@ else if (args[0] === "serve") {
     this.assertEqual(statSync(paths(this.path).http).mode & 0o777, 0o600);
     const css = await this.api("/app.css");
     this.assertIn("--text:rgb(", await css.text());
+    const identity = `?server=${session.server}&binding=${target.binding}&conversation=${encodeURIComponent(target.conversation)}`;
+    const surface = await this.api(`/api/panes/${pane}/terminal${identity}`, undefined, token);
+    this.assertEqual(surface.status, 200);
+    this.assertEqual((await surface.json()).cols, before.cols);
+    this.assertEqual(
+      (await this.api(`/api/panes/${pane}/terminal${identity.replace("binding=", "binding=9")}`, undefined, token))
+        .status,
+      400,
+    );
+    this.assertEqual(
+      (await (await this.api(`/api/panes/${pane}/conversation${identity}`, undefined, token)).json()).availability,
+      "unavailable",
+    );
+    const html = await (await this.api(`/agents/${pane}`)).text();
+    this.assertIn('id="root"', html);
+    for (const match of html.matchAll(/(?:src|href)="(\/assets\/[^\"]+)"/g)) {
+      const asset = await this.api(match[1]);
+      this.assertEqual(asset.status, 200);
+      this.assertGreater((await asset.arrayBuffer()).byteLength, 100);
+      if (match[1].endsWith(".css")) {
+        const sheet = await (await this.api(match[1])).text();
+        for (const font of sheet.matchAll(/url\((\/assets\/[^)]+\.woff2)\)/g)) {
+          const response = await this.api(font[1]);
+          this.assertEqual(response.headers.get("Content-Type"), "font/woff2");
+          this.assertGreater((await response.arrayBuffer()).byteLength, 1000);
+        }
+      }
+    }
+    for (const provider of ["codex", "claude"]) {
+      const created = await this.api("/api/agents", { server: session.server, workspace: 1, provider }, token);
+      this.assertEqual(created.status, 200);
+      const identity = await created.json();
+      this.assertNotEqual(identity.pane, pane);
+      this.assertEqual(identity.server, session.server);
+      this.assertTrue(typeof identity.binding === "string");
+    }
+    this.assertEqual(
+      (await this.api("/api/agents", { server: session.server, workspace: 99999, provider: "codex" }, token)).status,
+      400,
+    );
     this.assertEqual((await this.api("/api/rpc", { op: "shutdown" }, token)).status, 404);
     await this.remote("stop");
     await this.wait_stopped();
