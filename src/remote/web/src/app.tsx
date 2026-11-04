@@ -15,12 +15,15 @@ export function configure(client: Client) {
 }
 export const pairingToken = new URLSearchParams(location.hash.slice(1)).get("pair") ?? "";
 if (pairingToken) history.replaceState(null, "", location.pathname + location.search);
+const unauthorized = (error: unknown) => error instanceof RequestError && error.status === 401;
 export function useSnapshot(interval = 2000) {
   return useQuery({
     queryKey: ["session"],
     queryFn: ({ signal }) => transport.list(signal),
-    refetchInterval: interval,
-    retry: 1,
+    refetchInterval: q => (unauthorized(q.state.error) ? false : interval),
+    refetchOnWindowFocus: q => !unauthorized(q.state.error),
+    refetchOnReconnect: q => !unauthorized(q.state.error),
+    retry: (failures, error) => !unauthorized(error) && failures < 1,
   });
 }
 export function Root() {
@@ -69,6 +72,7 @@ function ConnectionError() {
 }
 export function Pairing() {
   const [name, setName] = useState("My phone"),
+    [link, setLink] = useState(""),
     [offer, setOffer] = useState<Awaited<ReturnType<typeof claim>>>(),
     [error, setError] = useState(""),
     [pending, setPending] = useState(false);
@@ -98,51 +102,72 @@ export function Pairing() {
       <p className="muted">Your Mac’s agents, wherever you are.</p>
       <div className="pair-card">
         <h2>{offer ? "Confirm on your Mac" : "Pair this phone"}</h2>
-        {pairingToken ? (
-          offer ? (
-            <>
-              <p>Check that this code matches the code on your Mac.</p>
-              <strong className="pair-code">{offer.code}</strong>
-              <p role="status">Waiting for approval…</p>
-            </>
-          ) : (
-            <form
-              onSubmit={async e => {
-                e.preventDefault();
-                if (pending) return;
-                setPending(true);
-                setError("");
-                try {
-                  setOffer(await claim(pairingToken, name));
-                } catch {
-                  setError("Pairing failed. Run corgi remote pair again for a fresh link.");
-                } finally {
-                  setPending(false);
-                }
-              }}
-            >
-              <label>
-                Phone name
-                <input
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  maxLength={64}
-                  required
-                  autoComplete="nickname"
-                />
-              </label>
-              <Button variant="primary" disabled={pending}>
-                {pending ? "Pairing…" : "Pair phone"}
-              </Button>
-            </form>
-          )
-        ) : (
+        {offer ? (
           <>
-            <p>Connect your phone to Tailscale, then run this on your Mac:</p>
-            <pre>corgi remote pair</pre>
-            <p>Open the pairing link on this phone and confirm the code on your Mac.</p>
-            <Button onClick={() => location.reload()}>Try reconnecting</Button>
+            <p>Check that this code matches the code on your Mac.</p>
+            <strong className="pair-code">{offer.code}</strong>
+            <p role="status">Waiting for approval…</p>
           </>
+        ) : (
+          <form
+            onSubmit={async e => {
+              e.preventDefault();
+              if (pending) return;
+              setPending(true);
+              setError("");
+              try {
+                let token = pairingToken;
+                if (!token) {
+                  const url = new URL(link.trim());
+                  token = new URLSearchParams(url.hash.slice(1)).get("pair") ?? "";
+                  if (url.origin !== location.origin || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
+                    setError("Paste the HTTPS pairing link for this Mac from corgi remote pair.");
+                    return;
+                  }
+                }
+                setOffer(await claim(token, name));
+              } catch {
+                setError("Pairing failed. Run corgi remote pair again for a fresh link.");
+              } finally {
+                setPending(false);
+              }
+            }}
+          >
+            {!pairingToken && (
+              <>
+                <p>Run this on your Mac:</p>
+                <pre>corgi remote pair</pre>
+                <p>Paste its HTTPS pairing link here to pair this Home Screen app.</p>
+                <label>
+                  Pairing link
+                  <input
+                    value={link}
+                    onChange={e => setLink(e.target.value)}
+                    type="url"
+                    required
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    autoComplete="off"
+                    placeholder="https://…/#pair=…"
+                  />
+                </label>
+              </>
+            )}
+            <label>
+              Phone name
+              <input
+                value={name}
+                onChange={e => setName(e.target.value)}
+                maxLength={64}
+                required
+                autoComplete="nickname"
+              />
+            </label>
+            <Button variant="primary" disabled={pending}>
+              {pending ? "Pairing…" : "Pair phone"}
+            </Button>
+          </form>
         )}
         {(error || complete.error) && (
           <p className="notice" role="alert">

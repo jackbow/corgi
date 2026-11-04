@@ -59,6 +59,9 @@ Exiting the pairing command invalidates its pending offer. An abruptly killed
 command loses its offer within 60 seconds. Starting another pairing command
 replaces the earlier offer. Use the same browser for pairing and later use;
 Safari and Home Screen apps can have separate storage, so pair each separately.
+To enroll the Home Screen app, run `corgi remote pair` on the Mac and paste its
+HTTPS MagicDNS pairing link into **Pairing link** inside the app. Keep that
+command running and approve the matching code on the Mac.
 
 ## Connection and privacy
 
