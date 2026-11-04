@@ -86,9 +86,18 @@ sending again. Input is rejected when the daemon or pane identity changes.
 The phone does not resize the desktop terminal or steal desktop focus.
 
 Conversation reads use the pane's current provider identity. System instructions,
-hidden reasoning, and provider metadata are omitted. Reads are bounded to 16 MiB
-and 50,000 records per transcript, with 40 messages per page and shortened long
-messages. Missing, malformed, and oversized transcripts offer Terminal instead.
+hidden reasoning, and provider metadata are omitted. Transcripts are indexed
+incrementally without a total file-size or record-count limit. The first read
+shows indexing progress; subsequent reads process only appended bytes. The index
+retains file offsets and Claude ancestry, with a small cache of recent message
+bodies. Reads scan at most 8 MiB in 256 KiB chunks per request and return 40 messages
+per page. The phone renders only rows near the viewport, preserving the reading
+position when history is loaded or messages change height.
+
+Long messages are shortened independently. Unusually complex individual records
+that exceed the decoded-record budget are omitted with a notice; uncached records
+that exceed the page read budget show a placeholder. Neither blocks the rest of
+the conversation. Missing or malformed transcripts offer Terminal instead.
 The terminal displays styled, selectable text at its existing column count, with
 horizontal scrolling and a separate recent plain-text history section.
 

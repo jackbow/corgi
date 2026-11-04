@@ -6,10 +6,12 @@ export interface Message {
   truncated?: boolean;
 }
 export interface Conversation {
-  availability: "available" | "unavailable" | "oversized" | "replaced";
+  availability: "available" | "unavailable" | "indexing" | "replaced";
   version: string;
   messages: Message[];
   before: string | null;
   after: string | null;
   more: boolean;
+  progress?: { read: number; total: number };
+  omitted?: number;
 }

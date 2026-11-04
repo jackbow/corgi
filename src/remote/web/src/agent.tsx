@@ -1,10 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { ArrowDown, ArrowUp, ChevronDown, TerminalSquare } from "lucide-react";
+import { ArrowDown, ArrowUp } from "lucide-react";
 import { Back, Button, Empty, Status } from "./ui";
 import { spans } from "./terminal";
+import { Messages } from "./messages";
 import type { Conversation, Identity, Pane, Terminal } from "./types";
 import { clearSubmitted, useDraft } from "./drafts";
 
@@ -68,48 +67,6 @@ export function ScrollContent({ id, children, revision }: { id: string; children
           <ArrowDown size={16} />
           Jump to latest
         </Button>
-      )}
-    </div>
-  );
-}
-function Messages({ data, older, pending }: { data: Conversation; older?: () => void; pending?: boolean }) {
-  return (
-    <div className="messages" data-first={data.messages[0]?.id}>
-      {data.before && (
-        <Button className="older" onClick={older} disabled={pending}>
-          Load earlier messages
-        </Button>
-      )}
-      {data.messages.map(m =>
-        m.role === "tool" ? (
-          <details className="tool" key={m.id}>
-            <summary>
-              <TerminalSquare size={14} />
-              {m.name || "Tool activity"}
-              <ChevronDown size={14} />
-            </summary>
-            <pre>{m.text}</pre>
-            {m.truncated && <p className="muted">Output shortened. Full output is available on your Mac.</p>}
-          </details>
-        ) : (
-          <article className={`message ${m.role}`} key={m.id}>
-            <span className="message-label">{m.role === "user" ? "You" : "Assistant"}</span>
-            <Markdown
-              remarkPlugins={[remarkGfm]}
-              skipHtml
-              components={{
-                a: ({ children, ...props }) => (
-                  <a {...props} target="_blank" rel="noreferrer noopener">
-                    {children}
-                  </a>
-                ),
-              }}
-            >
-              {m.text}
-            </Markdown>
-            {m.truncated && <p className="muted">Message shortened. Continue in Terminal.</p>}
-          </article>
-        ),
       )}
     </div>
   );
@@ -268,31 +225,41 @@ export function Agent({
             </p>
           )}
           <Tabs.Content value="conversation" className="tab-panel">
-            <ScrollContent id={`${key}:conversation`} revision={data}>
-              {pane.exited ? (
-                <Empty title="This agent has ended" text="Return to your workspaces to choose another agent." />
-              ) : !data && error ? (
-                <div className="empty">
-                  <h2>Conversation unavailable</h2>
-                  <p>Reconnect or try the terminal view.</p>
-                  <Button onClick={() => setMode("terminal")}>Open Terminal</Button>
-                </div>
-              ) : !data ? (
-                <Empty title="Reading conversation…" text="Checking the current transcript on your Mac." />
-              ) : data.availability !== "available" ? (
-                <div className="empty">
-                  <h2>
-                    {data.availability === "oversized" ? "Conversation is too large" : "Conversation unavailable"}
-                  </h2>
-                  <p>Read and interact with this agent in Terminal.</p>
-                  <Button onClick={() => setMode("terminal")}>Open Terminal</Button>
-                </div>
-              ) : data.messages.length ? (
-                <Messages data={data} older={older} pending={olderPending} />
-              ) : (
-                <Empty title="No messages yet" text="Send the first instruction below." />
-              )}
-            </ScrollContent>
+            {data?.availability === "available" && data.messages.length && !pane.exited ? (
+              <Messages
+                key={`${key}:${data.version}`}
+                id={`${key}:${data.version}`}
+                data={data}
+                older={older}
+                pending={olderPending}
+              />
+            ) : (
+              <ScrollContent id={`${key}:conversation`} revision={data}>
+                {pane.exited ? (
+                  <Empty title="This agent has ended" text="Return to your workspaces to choose another agent." />
+                ) : !data && error ? (
+                  <div className="empty">
+                    <h2>Conversation unavailable</h2>
+                    <p>Reconnect or try the terminal view.</p>
+                    <Button onClick={() => setMode("terminal")}>Open Terminal</Button>
+                  </div>
+                ) : !data ? (
+                  <Empty title="Reading conversation…" text="Checking the current transcript on your Mac." />
+                ) : data.availability !== "available" ? (
+                  <div className="empty">
+                    <h2>{data.availability === "indexing" ? "Reading conversation…" : "Conversation unavailable"}</h2>
+                    <p>
+                      {data.progress
+                        ? `Indexing history: ${Math.floor((100 * data.progress.read) / Math.max(1, data.progress.total))}%. You can use Terminal while it loads.`
+                        : "Read and interact with this agent in Terminal."}
+                    </p>
+                    <Button onClick={() => setMode("terminal")}>Open Terminal</Button>
+                  </div>
+                ) : (
+                  <Empty title="No messages yet" text="Send the first instruction below." />
+                )}
+              </ScrollContent>
+            )}
           </Tabs.Content>
           <Tabs.Content value="terminal" className="tab-panel">
             <ScrollContent id={`${key}:terminal`} revision={surface}>

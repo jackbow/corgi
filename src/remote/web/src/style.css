@@ -393,6 +393,10 @@ textarea::placeholder {
   flex: 1;
   padding: 8px 16px 24px;
   overflow-x: hidden;
+  min-height: 0;
+}
+.conversation-wrap {
+  flex-direction: column;
 }
 .jump {
   position: absolute;

@@ -1,6 +1,7 @@
 import { open } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { field, str } from "../json";
+import { Line } from "./transcript_line";
 
 import type { Provider } from "./types";
 import type { Message, Conversation } from "./conversation_types";
@@ -8,21 +9,43 @@ interface RecordLine {
   value: unknown;
   offset: number;
 }
+interface Ref {
+  id: string;
+  role: Message["role"];
+  name?: string;
+  start: number;
+  end: number;
+}
+interface Node {
+  parent: string;
+  refs: Ref[];
+}
 interface Cached {
-  file: string;
   stamp: string;
   prefix: string;
+  tail: string;
   size: number;
   mtime: number;
   offset: number;
-  records: RecordLine[];
+  lineStart: number;
+  line: Line;
+  valid: boolean;
+  first: boolean;
+  nodes: Map<string, Node>;
+  items: Map<string, Ref>;
+  leaf: string;
+  refs: Ref[];
+  indices: Map<string, number>;
+  bodies: Map<string, Message>;
+  changed: boolean;
+  omitted: number;
   version: string;
 }
-const MAX_FILE = 16 * 1024 * 1024,
-  MAX_LINE = 256 * 1024,
-  MAX_TEXT = 16 * 1024,
-  PAGE = 40,
-  MAX_RECORDS = 50000;
+const MAX_TEXT = 16 * 1024,
+  PAGE = 40;
+const CHUNK = 256 * 1024,
+  SCAN_BYTES = 8 * 1024 * 1024,
+  PAGE_BYTES = 8 * 1024 * 1024;
 const rows = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 function content(v: unknown): string {
   if (typeof v === "string") return v;
@@ -36,7 +59,7 @@ function userText(text: string): string {
     /^\s*(?:# AGENTS\.md instructions|<environment_context>|<permissions instructions>|<user_instructions>)/.test(text)
   )
     return "";
-  return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+  return text.replace(/<system-reminder>[\s\S]*?(?:<\/system-reminder>|$)/g, "").trim();
 }
 function message(id: string, role: Message["role"], text: string, name?: string): Message {
   return {
@@ -142,7 +165,9 @@ const empty = (availability: Conversation["availability"], version = ""): Conver
 });
 const digest = (v: string | Buffer) => createHash("sha256").update(v).digest("hex").slice(0, 24);
 
+/** A disposable offset/ancestry index. Message bodies are cached only for recent pages. */
 export class Reader {
+  constructor(private scanBytes = SCAN_BYTES) {}
   private cache = new Map<string, Cached>();
   private pending = new Map<string, Promise<Conversation>>();
   private queues = new Map<string, Promise<unknown>>();
@@ -167,6 +192,66 @@ export class Reader {
     this.queues.set(file, result);
     return result;
   }
+  private remember(c: Cached, m: Message) {
+    c.bodies.delete(m.id);
+    c.bodies.set(m.id, m);
+    while (c.bodies.size > 128) c.bodies.delete(c.bodies.keys().next().value!);
+  }
+  private index(c: Cached, value: unknown, provider: Provider, session: string, end: number, truncated: boolean) {
+    if (c.first) {
+      c.first = false;
+      if (provider === "codex")
+        c.valid = str(value, "type") === "session_meta" && str(field(value, "payload"), "id") === session;
+    }
+    if (provider === "codex" && !c.valid) return;
+    const offset = c.lineStart;
+    let messages: Message[];
+    if (provider === "codex") {
+      messages = codex(
+        [
+          { value: { type: "session_meta", payload: { id: session } }, offset: 0 },
+          { value, offset },
+        ],
+        session,
+      )!;
+    } else {
+      if (str(value, "sessionId") !== session || field(value, "isSidechain") === true) return;
+      const uuid = str(value, "uuid");
+      if (!uuid) return;
+      messages = claude([{ value, offset }], session) ?? [];
+      c.nodes.set(uuid, { parent: str(value, "parentUuid"), refs: [] });
+      if (["user", "assistant"].includes(str(value, "type"))) {
+        c.leaf = uuid;
+        c.valid = true;
+      }
+    }
+    const refs = messages.map(m => {
+      this.remember(c, { ...m, ...(truncated ? { truncated: true } : {}) });
+      return { id: m.id, role: m.role, name: m.name, start: offset, end };
+    });
+    if (provider === "codex") for (const ref of refs) c.items.set(ref.id, ref);
+    else c.nodes.get(str(value, "uuid"))!.refs = refs;
+    c.changed = true;
+  }
+  private order(c: Cached, provider: Provider) {
+    if (!c.changed) return;
+    if (provider === "codex") c.refs = [...c.items.values()];
+    else {
+      const chain: Node[] = [],
+        seen = new Set<string>();
+      let leaf = c.leaf;
+      while (leaf && !seen.has(leaf)) {
+        seen.add(leaf);
+        const node = c.nodes.get(leaf);
+        if (!node) break;
+        chain.push(node);
+        leaf = node.parent;
+      }
+      c.refs = chain.reverse().flatMap(n => n.refs);
+    }
+    c.indices = new Map(c.refs.map((ref, i) => [ref.id, i]));
+    c.changed = false;
+  }
   private async load(
     file: string,
     provider: Provider,
@@ -180,82 +265,162 @@ export class Reader {
     try {
       const stat = await handle.stat();
       if (!stat.isFile()) return empty("unavailable");
-      if (stat.size > MAX_FILE) return empty("oversized");
       const prefixBuffer = Buffer.alloc(Math.min(stat.size, 256));
       await handle.read(prefixBuffer, 0, prefixBuffer.length, 0);
       const stamp = `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`,
         prefix = prefixBuffer.toString("hex");
-      let cached = this.cache.get(file);
-      const replaced =
-        !cached ||
-        cached.stamp !== stamp ||
-        stat.size < cached.size ||
-        !prefix.startsWith(cached.prefix) ||
-        (stat.size === cached.size && stat.mtimeMs !== cached.mtime);
-      if (replaced)
-        cached = {
-          file,
+      const key = JSON.stringify([file, provider, session]);
+      let c = this.cache.get(key);
+      const tailBuffer = Buffer.alloc(Math.min(c?.offset ?? 0, 256));
+      if (tailBuffer.length) await handle.read(tailBuffer, 0, tailBuffer.length, c!.offset - tailBuffer.length);
+      if (
+        !c ||
+        c.stamp !== stamp ||
+        stat.size < c.size ||
+        !prefix.startsWith(c.prefix) ||
+        tailBuffer.toString("hex") !== c.tail ||
+        (stat.size === c.size && stat.mtimeMs !== c.mtime)
+      ) {
+        c = {
           stamp,
           prefix,
+          tail: "",
           size: 0,
           mtime: stat.mtimeMs,
           offset: 0,
-          records: [],
+          lineStart: 0,
+          line: new Line(),
+          valid: false,
+          first: true,
+          nodes: new Map(),
+          items: new Map(),
+          leaf: "",
+          refs: [],
+          indices: new Map(),
+          bodies: new Map(),
+          changed: false,
+          omitted: 0,
           version: digest(stamp + prefix + stat.mtimeMs),
         };
-      // Cache is per file; a concurrent query may read a newer prefix, never mutate it in place.
-      cached = { ...cached!, records: [...cached!.records] };
-      const bytes = Buffer.alloc(stat.size - cached.offset);
-      let read = 0;
-      while (read < bytes.length) {
-        const chunk = await handle.read(bytes, read, Math.min(256 * 1024, bytes.length - read), cached.offset + read);
-        if (!chunk.bytesRead) break;
-        read += chunk.bytesRead;
       }
-      let start = 0;
-      for (let end = bytes.indexOf(10); end >= 0 && end < read; end = bytes.indexOf(10, start)) {
-        if (end - start > MAX_LINE) return empty("oversized");
-        const line = bytes.subarray(start, end).toString("utf8");
-        if (line.trim()) {
-          try {
-            if (cached.records.length >= MAX_RECORDS) return empty("oversized");
-            cached.records.push({ value: JSON.parse(line), offset: cached.offset + start });
-          } catch {
-            return empty("unavailable");
+      this.cache.delete(key);
+      this.cache.set(key, c);
+      while (this.cache.size > 4) this.cache.delete(this.cache.keys().next().value!);
+      const bytes = Buffer.alloc(CHUNK),
+        deadline = performance.now() + 150;
+      let scanned = 0;
+      while (c.offset < stat.size && scanned < this.scanBytes && performance.now() < deadline) {
+        const { bytesRead } = await handle.read(
+          bytes,
+          0,
+          Math.min(CHUNK, stat.size - c.offset, this.scanBytes - scanned),
+          c.offset,
+        );
+        if (!bytesRead) break;
+        for (let i = 0; i < bytesRead; i++) {
+          if (bytes[i] !== 10) c.line.push(bytes[i]);
+          else {
+            const end = c.offset + i + 1;
+            if (c.line.omitted) c.omitted++;
+            else {
+              let value: unknown;
+              try {
+                value = c.line.value();
+              } catch {
+                this.cache.delete(key);
+                return empty("unavailable");
+              }
+              if (value !== null) this.index(c, value, provider, session, end, c.line.truncated);
+            }
+            c.line = new Line();
+            c.lineStart = end;
           }
         }
-        start = end + 1;
+        c.offset += bytesRead;
+        scanned += bytesRead;
       }
-      if (read - start > MAX_LINE) return empty("oversized");
-      cached.offset += start;
-      cached.size = stat.size;
-      cached.mtime = stat.mtimeMs;
-      cached.prefix = prefix;
-      this.cache.delete(file);
-      this.cache.set(file, cached);
-      while (this.cache.size > 4) this.cache.delete(this.cache.keys().next().value!);
-      const messages = provider === "codex" ? codex(cached.records, session) : claude(cached.records, session);
-      if (!messages) return empty("unavailable");
-      const version = cached.version;
-      let index = messages.length;
+      if (scanned) {
+        const tail = Buffer.alloc(Math.min(c.offset, 256));
+        await handle.read(tail, 0, tail.length, c.offset - tail.length);
+        c.tail = tail.toString("hex");
+      }
+      c.size = stat.size;
+      c.mtime = stat.mtimeMs;
+      c.prefix = prefix;
+      if (c.offset < stat.size)
+        return { ...empty("indexing", c.version), progress: { read: c.offset, total: stat.size } };
+      if (!c.valid) return empty("unavailable");
+      this.order(c, provider);
+      let index = c.refs.length;
       if (cursor) {
         const split = cursor.indexOf(":");
-        if (cursor.slice(0, split) !== version) return empty("replaced", version);
-        const id = cursor.slice(split + 1);
-        index = messages.findIndex(m => m.id === id);
-        if (index < 0) return empty("replaced", version);
-        // Re-send the cursor record: providers can amend a persisted message in place.
+        if (cursor.slice(0, split) !== c.version) return empty("replaced", c.version);
+        index = c.indices.get(cursor.slice(split + 1)) ?? -1;
+        if (index < 0) return empty("replaced", c.version);
       }
       const from = cursor && direction === "after" ? index : Math.max(0, index - PAGE);
-      const to = cursor && direction === "after" ? Math.min(messages.length, from + PAGE) : index;
-      const page = messages.slice(from, to);
+      const to = cursor && direction === "after" ? Math.min(c.refs.length, from + PAGE) : index;
+      const refs = c.refs.slice(from, to),
+        messages: Message[] = [],
+        loaded = new Map<string, Message>();
+      let budget = PAGE_BYTES;
+      for (const ref of refs) {
+        let body = loaded.get(ref.id) ?? c.bodies.get(ref.id);
+        if (!body) {
+          const length = ref.end - ref.start;
+          if (length <= budget) {
+            budget -= length;
+            const line = new Line();
+            let offset = ref.start;
+            while (offset < ref.end) {
+              const { bytesRead } = await handle.read(bytes, 0, Math.min(CHUNK, ref.end - offset), offset);
+              if (!bytesRead) return empty("replaced", c.version);
+              for (let i = 0; i < bytesRead; i++) if (bytes[i] !== 10) line.push(bytes[i]);
+              offset += bytesRead;
+            }
+            const value = line.value();
+            const normalized =
+              provider === "codex"
+                ? codex(
+                    [
+                      { value: { type: "session_meta", payload: { id: session } }, offset: 0 },
+                      { value, offset: ref.start },
+                    ],
+                    session,
+                  )
+                : claude([{ value, offset: ref.start }], session);
+            for (const m of normalized ?? []) {
+              const preview = { ...m, ...(line.truncated ? { truncated: true } : {}) };
+              loaded.set(m.id, preview);
+              this.remember(c, preview);
+            }
+            body = loaded.get(ref.id);
+          }
+        }
+        messages.push(
+          body ?? {
+            id: ref.id,
+            role: ref.role,
+            name: ref.name,
+            text: "This record is too large to preview. Read its full contents on your Mac.",
+            truncated: true,
+          },
+        );
+      }
+      // Detect replacement or rewriting while the page bodies were being read.
+      const final = await handle.stat();
+      if (final.size < stat.size || (final.size === stat.size && final.mtimeMs !== stat.mtimeMs)) {
+        this.cache.delete(key);
+        return empty("replaced", c.version);
+      }
       return {
         availability: "available",
-        version,
-        messages: page,
-        before: from > 0 && page.length ? `${version}:${page[0].id}` : null,
-        after: page.length ? `${version}:${page.at(-1)!.id}` : cursor || null,
-        more: to < messages.length,
+        version: c.version,
+        messages,
+        before: from > 0 && refs.length ? `${c.version}:${refs[0].id}` : null,
+        after: refs.length ? `${c.version}:${refs.at(-1)!.id}` : cursor || null,
+        more: to < c.refs.length,
+        ...(c.omitted ? { omitted: c.omitted } : {}),
       };
     } finally {
       await handle.close();
