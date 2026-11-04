@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
-import { ArrowDown, ArrowUp } from "lucide-react";
+import { ArrowDown, ArrowUp, Ellipsis } from "lucide-react";
 import { Back, Button, Empty, Status } from "./ui";
 import { spans } from "./terminal";
 import { Messages } from "./messages";
@@ -124,35 +124,61 @@ export function Composer({
         </label>
         <textarea
           id="message"
+          aria-describedby="message-hint"
           ref={textarea}
           placeholder={pane.exited ? "This agent has ended" : "Message this agent…"}
           value={draft}
           onChange={e => save(e.target.value)}
-          rows={2}
+          rows={1}
           maxLength={8192}
           disabled={pane.exited}
         />
         <div className="composer-actions">
-          <Button
-            type="button"
-            variant="ghost"
-            disabled={pending || disabled || pane.exited || !draft}
-            onClick={() => void submit({ text: draft, enter: false })}
+          <details
+            className="composer-options"
+            onBlur={e => {
+              if (!e.currentTarget.contains(e.relatedTarget)) e.currentTarget.open = false;
+            }}
+            onKeyDown={e => {
+              if (e.key === "Escape") {
+                e.currentTarget.open = false;
+                e.currentTarget.querySelector("summary")?.focus();
+              }
+            }}
           >
-            Paste without Enter
-          </Button>
+            <summary aria-label="Message options" title="Message options" tabIndex={0}>
+              <Ellipsis size={18} />
+            </summary>
+            <div className="composer-menu">
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={pending || disabled || pane.exited || !draft}
+                onClick={e => {
+                  e.currentTarget.closest("details")!.open = false;
+                  void submit({ text: draft, enter: false });
+                }}
+              >
+                Paste without Enter
+              </Button>
+            </div>
+          </details>
           <Button
             variant="primary"
             aria-label="Send message"
+            title={pending ? "Sending…" : "Send message"}
+            aria-busy={pending}
             disabled={pending || disabled || pane.exited || !draft.trim()}
           >
             <ArrowUp size={18} />
-            {pending ? "Sending…" : "Send"}
           </Button>
         </div>
       </form>
-      <p className="delivery" role="status">
-        {delivery || "Return adds a new line · Send presses Enter"}
+      <p id="message-hint" className="sr-only">
+        Return adds a new line · Send presses Enter
+      </p>
+      <p className={delivery ? "delivery" : "sr-only"} role="status">
+        {delivery}
       </p>
     </footer>
   );
