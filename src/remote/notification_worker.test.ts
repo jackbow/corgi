@@ -54,12 +54,17 @@ test("the push worker displays payloads without fetching or caching conversation
   expect(w.handlers.has("fetch")).toBe(false);
   await w.event("push", {
     data: {
-      json: () => ({ title: "ignored", body: "Agent needs input.", tag: "one", url: "/agents/2?view=terminal" }),
+      json: () => ({
+        title: "finished",
+        body: "context panel migration\nUpdated the migration.",
+        tag: "one",
+        url: "/agents/2?view=conversation",
+      }),
     },
   });
-  expect(w.shown[0].title).toBe("Corgi");
-  expect(w.shown[0].options.body).toBe("Agent needs input.");
-  expect(w.shown[0].options.data.url).toBe("https://mac.example.ts.net:8443/agents/2?view=terminal");
+  expect(w.shown[0].title).toBe("finished");
+  expect(w.shown[0].options.body).toBe("context panel migration\nUpdated the migration.");
+  expect(w.shown[0].options.data.url).toBe("https://mac.example.ts.net:8443/agents/2?view=conversation");
   for (const json of [
     () => null,
     () => {
@@ -68,6 +73,11 @@ test("the push worker displays payloads without fetching or caching conversation
   ])
     await w.event("push", { data: { json } });
   expect(w.shown.at(-1)!.options.body).toContain("An agent has an update");
+  expect(w.shown.at(-1)!.title).toBe("Agent update");
+  await w.event("push", { data: { json: () => ({ title: "😀".repeat(100), body: "Agent\n" + "😀".repeat(600) }) } });
+  expect(Array.from(w.shown.at(-1)!.title)).toHaveLength(80);
+  expect(Array.from(w.shown.at(-1)!.options.body)).toHaveLength(500);
+  expect(w.shown.at(-1)!.options.body).toStartWith("Agent\n");
 });
 test("notification clicks only navigate to local agent routes and reuse an existing app window", async () => {
   const w = worker();

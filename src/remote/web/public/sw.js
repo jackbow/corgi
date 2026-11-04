@@ -11,8 +11,9 @@ function destination(value) {
 self.addEventListener("push", event => {
   let data = {};
   try { const value = event.data?.json(); if (value && typeof value === "object") data = value; } catch {}
-  const body = typeof data.body === "string" ? data.body.slice(0, 300) : "An agent has an update. Open Corgi to check.";
-  event.waitUntil(self.registration.showNotification("Corgi", {
+  const title = typeof data.title === "string" && data.title.trim() ? Array.from(data.title.trim()).slice(0, 80).join("") : "Agent update";
+  const body = typeof data.body === "string" ? Array.from(data.body).slice(0, 500).join("") : "An agent has an update. Open Corgi to check.";
+  event.waitUntil(self.registration.showNotification(title, {
     body, tag: typeof data.tag === "string" ? data.tag.slice(0, 150) : "corgi-update",
     icon: "/apple-touch-icon.png", data: {url: destination(data.url)},
   }));

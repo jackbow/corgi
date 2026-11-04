@@ -43,6 +43,8 @@ export class Remote {
       origin,
       () => this.auth.list(),
       () => this.backend.activity?.() ?? this.backend.list(),
+      undefined,
+      (pane, identity) => this.backend.lastResponse?.(pane, identity) ?? Promise.resolve(""),
     );
   }
   async fetch(request: Request): Promise<Response> {

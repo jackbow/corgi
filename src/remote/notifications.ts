@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSy
 import { dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 import { field, str } from "../json";
-import type { Snapshot } from "./types";
+import type { Identity, Snapshot } from "./types";
 import { generateKey, publicKey, send, subscription, type Subscription } from "./web_push";
 
 export interface Alert {
@@ -11,6 +11,14 @@ export interface Alert {
   tag: string;
   url: string;
 }
+interface AgentAlert extends Alert {
+  pane: number;
+  identity: Identity;
+}
+function preview(text: string, limit: number) {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > limit ? flat.slice(0, limit - 1).replace(/[\uD800-\uDBFF]$/, "") + "…" : flat;
+}
 interface Observed {
   waiting: boolean;
   completion: string;
@@ -18,9 +26,9 @@ interface Observed {
 }
 export class Changes {
   private prior = new Map<string, Observed>();
-  update(snapshot: Snapshot): Alert[] {
+  update(snapshot: Snapshot): AgentAlert[] {
     const next = new Map<string, Observed>(),
-      alerts: Alert[] = [];
+      alerts: AgentAlert[] = [];
     for (const pane of snapshot.panes) {
       if (!pane.provider || !pane.conversation || pane.exited) continue;
       const identity = JSON.stringify([snapshot.server, pane.id, pane.binding, pane.conversation]);
@@ -41,10 +49,12 @@ export class Changes {
       if (!waiting && !finished) continue;
       const search = new URLSearchParams({ view: waiting ? "terminal" : "conversation", notification: identity });
       alerts.push({
-        title: "Corgi",
-        body: `${pane.name.slice(0, 100)} ${waiting ? "needs input" : pane.outcome === "failed" ? "stopped with an error" : "finished"}.`,
+        title: waiting ? "needs input" : pane.outcome === "failed" ? "failed" : "finished",
+        body: preview(pane.name, 100),
         tag: `corgi-${snapshot.server}-${pane.id}-${pane.binding}`,
         url: `/agents/${pane.id}?${search}`,
+        pane: pane.id,
+        identity: { server: snapshot.server, binding: pane.binding, conversation: pane.conversation },
       });
     }
     this.prior = next;
@@ -67,6 +77,7 @@ export class Notifications {
     private devices: () => { id: string }[],
     private snapshot: () => Promise<Snapshot>,
     private deliver = send,
+    private response: (pane: number, identity: Identity) => Promise<string> = async () => "",
   ) {
     try {
       const saved: unknown = JSON.parse(readFileSync(file, "utf8"));
@@ -152,7 +163,7 @@ export class Notifications {
     const target = this.subscriptions.get(device);
     if (!target) throw Error("NotificationsDisabled");
     await this.notify(device, target, {
-      title: "Corgi",
+      title: "test notification",
       body: "Notifications are working. Your Mac will alert you when an agent needs input or finishes.",
       tag: "corgi-test",
       url: "/",
@@ -169,7 +180,11 @@ export class Notifications {
     const alerts = this.changes.update(await this.snapshot());
     let failed = false;
     // Changes are consumed once; a failed request is not replayed into duplicate alerts.
-    for (const alert of alerts) {
+    for (const { pane, identity, ...alert } of alerts) {
+      try {
+        const text = preview(await this.response(pane, identity), 240);
+        if (text) alert.body += `\n${text}`;
+      } catch {} // A missing transcript must not suppress an agent status alert.
       const deliveries = await Promise.allSettled(
         [...this.subscriptions].map(([device, target]) => this.notify(device, target, alert)),
       );
