@@ -315,7 +315,7 @@ it("replaces the recent window when the active conversation branch changes", asy
 it("shows only the latest window, refreshes amendments, and offers no history loading", async () => {
   const api = client();
   let reads = 0;
-  const messages: Conversation["messages"] = Array.from({ length: 9 }, (_, i) => ({
+  const messages: Conversation["messages"] = Array.from({ length: 19 }, (_, i) => ({
     id: String(i),
     role: "user",
     text: "Prompt " + i,
@@ -348,7 +348,7 @@ it("shows only the latest window, refreshes amendments, and offers no history lo
   expect(screen.queryByText("Initial")).toBeNull();
   expect(screen.getAllByText("Amended")).toHaveLength(1);
   const data = queries.getQueriesData<Conversation>({ queryKey: ["conversation"] })[0][1]!;
-  expect(data.messages).toHaveLength(10);
+  expect(data.messages).toHaveLength(20);
   expect(data.messages[0].id).toBe("1");
   for (const call of vi.mocked(api.conversation).mock.calls) {
     expect(call[2]).toBe("");
