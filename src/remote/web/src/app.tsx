@@ -286,6 +286,8 @@ export function NewScreen() {
   );
 }
 function merge(previous: Conversation | undefined, next: Conversation, older = false): Conversation {
+  if (next.availability === "indexing" && previous?.availability === "available" && previous.version === next.version)
+    return { ...previous, progress: next.progress };
   if (!previous || !previous.messages.length || previous.version !== next.version || next.availability !== "available")
     return next;
   const messages = new Map(

@@ -3,6 +3,14 @@ import { mkdtempSync, writeFileSync, appendFileSync, renameSync, rmSync } from "
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Reader, codex, claude } from "./conversation";
+import type { Conversation } from "./conversation_types";
+async function ready(reader: Reader, ...args: Parameters<Reader["read"]>) {
+  let page: Conversation;
+  do {
+    page = await reader.read(...args);
+  } while (page.availability === "indexing");
+  return page;
+}
 const lines = (...values: unknown[]) => values.map((value, offset) => ({ value, offset }));
 const head = { type: "session_meta", payload: { id: "thread" } };
 const item = (text: string, id?: string) => ({
@@ -93,12 +101,15 @@ test("bounded pagination, incremental complete records, replacement and invalid 
     write([head, item("x".repeat(20000))]);
     expect((await reader.read(file, "codex", "thread")).messages[0].truncated).toBe(true);
     write([head, item("x".repeat(300000))]);
-    expect((await reader.read(file, "codex", "thread")).availability).toBe("oversized");
+    const large = await ready(reader, file, "codex", "thread");
+    expect(large.availability).toBe("available");
+    expect(large.messages[0].text).toHaveLength(16384);
+    expect(large.messages[0].truncated).toBe(true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
-test("missing, malformed and oversized files report availability explicitly", async () => {
+test("missing and malformed files report availability explicitly", async () => {
   const dir = mkdtempSync(join(tmpdir(), "corgi-transcripts-")),
     file = join(dir, "thread.jsonl"),
     reader = new Reader();
@@ -106,8 +117,6 @@ test("missing, malformed and oversized files report availability explicitly", as
     expect((await reader.read(file, "claude", "s")).availability).toBe("unavailable");
     writeFileSync(file, '{"bad"}\n');
     expect((await reader.read(file, "codex", "thread")).availability).toBe("unavailable");
-    writeFileSync(file, "x".repeat(17 * 1024 * 1024));
-    expect((await reader.read(file, "codex", "thread")).availability).toBe("oversized");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -144,4 +153,140 @@ test("provider context and system reminders do not become user messages", () => 
   expect(claude(lines(record("u", null, "Hello<system-reminder>hidden</system-reminder>", "user")), "s")![0].text).toBe(
     "Hello",
   );
+  expect(
+    claude(lines(record("u", null, "Hello<system-reminder>shortened private context", "user")), "s")![0].text,
+  ).toBe("Hello");
+});
+
+test("indexes beyond old file/record caps in bounded steps and lazily pages old bodies", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-large-")),
+    file = join(dir, "thread.jsonl"),
+    reader = new Reader(1024 * 1024);
+  try {
+    writeFileSync(file, JSON.stringify(head) + "\n");
+    for (let batch = 0; batch < 60; batch++) {
+      appendFileSync(
+        file,
+        Array.from({ length: 1000 }, (_, i) =>
+          JSON.stringify(item(`${batch * 1000 + i}: ${"x".repeat(300)}`, String(batch * 1000 + i))),
+        ).join("\n") + "\n",
+      );
+    }
+    let page = await reader.read(file, "codex", "thread"),
+      offset = 0;
+    expect(page.availability).toBe("indexing");
+    while (page.availability === "indexing") {
+      expect(page.progress!.read).toBeGreaterThan(offset);
+      expect(page.progress!.read - offset).toBeLessThanOrEqual(1024 * 1024);
+      offset = page.progress!.read;
+      page = await reader.read(file, "codex", "thread");
+    }
+    expect(page.availability).toBe("available");
+    expect(page.messages[0].id).toBe("message:59960");
+    expect(page.messages.at(-1)!.id).toBe("message:59999");
+    const old = await reader.read(file, "codex", "thread", `${page.version}:message:200`);
+    expect(old.messages[0].id).toBe("message:160");
+    expect(old.messages.at(-1)!.text).toBe(`199: ${"x".repeat(300)}`);
+    appendFileSync(file, JSON.stringify(item("latest", "60000")) + "\n");
+    const update = await reader.read(file, "codex", "thread", page.after!, "after");
+    expect(update.messages.map(m => m.id)).toEqual(["message:59999", "message:60000"]);
+    expect(update.version).toBe(page.version);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("large Claude strings, split escapes and incomplete records preserve ancestry and identity", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-large-claude-")),
+    file = join(dir, "s.jsonl"),
+    reader = new Reader(8192);
+  try {
+    writeFileSync(file, JSON.stringify(record("u", null, "Hello", "user")) + "\n");
+    const text = "a".repeat(65535) + '\\"\n😀' + "z".repeat(300000);
+    appendFileSync(file, JSON.stringify(record("old", "u", text)) + "\n");
+    appendFileSync(file, JSON.stringify(record("active", "u", text)) + "\n");
+    appendFileSync(file, JSON.stringify({ ...record("side", "active", "hidden"), isSidechain: true }) + "\n");
+    const initial = await ready(reader, file, "claude", "s");
+    expect(initial.messages.map(m => m.id)).toEqual(["u:0", "active:0"]);
+    expect(initial.messages[1].truncated).toBe(true);
+    const next = JSON.stringify(record("next", "active", "Next message"));
+    appendFileSync(file, next.slice(0, -1));
+    expect((await ready(reader, file, "claude", "s", initial.after!, "after")).messages).toHaveLength(1);
+    appendFileSync(file, "}\n");
+    expect((await ready(reader, file, "claude", "s", initial.after!, "after")).messages.at(-1)!.text).toBe(
+      "Next message",
+    );
+    appendFileSync(file, JSON.stringify(record("branch", "u", "New branch")) + "\n");
+    expect((await ready(reader, file, "claude", "s", initial.after!, "after")).availability).toBe("replaced");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("replacement during indexing discards partial records and never mixes versions", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-indexing-")),
+    file = join(dir, "thread.jsonl"),
+    reader = new Reader(256);
+  try {
+    writeFileSync(file, JSON.stringify(head) + "\n" + JSON.stringify(item("x".repeat(10000), "old")) + "\n");
+    const indexing = await reader.read(file, "codex", "thread");
+    expect(indexing.availability).toBe("indexing");
+    renameSync(file, join(dir, "old"));
+    writeFileSync(file, JSON.stringify(head) + "\n" + JSON.stringify(item("New", "new")) + "\n");
+    const page = await ready(reader, file, "codex", "thread");
+    expect(page.version).not.toBe(indexing.version);
+    expect(page.messages.map(m => m.text)).toEqual(["New"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an unusually complex record is omitted explicitly without rejecting the conversation", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-complex-")),
+    file = join(dir, "thread.jsonl"),
+    reader = new Reader();
+  try {
+    writeFileSync(
+      file,
+      [
+        head,
+        item("Before", "b"),
+        { type: "event_msg", data: Array.from({ length: 80000 }, () => "x".repeat(32)) },
+        item("After", "a"),
+      ]
+        .map(v => JSON.stringify(v))
+        .join("\n") + "\n",
+    );
+    const page = await ready(reader, file, "codex", "thread");
+    expect(page.availability).toBe("available");
+    expect(page.messages.map(m => m.text)).toEqual(["Before", "After"]);
+    expect(page.omitted).toBe(1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("uncached giant records cannot exceed a page read budget or block adjacent messages", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-page-budget-")),
+    file = join(dir, "thread.jsonl"),
+    reader = new Reader();
+  try {
+    writeFileSync(
+      file,
+      JSON.stringify(head) + "\n" + JSON.stringify(item("x".repeat(9 * 1024 * 1024), "giant")) + "\n",
+    );
+    appendFileSync(
+      file,
+      Array.from({ length: 200 }, (_, i) => JSON.stringify(item(`Message ${i}`, String(i)))).join("\n") + "\n",
+    );
+    const recent = await ready(reader, file, "codex", "thread");
+    const page = await reader.read(file, "codex", "thread", `${recent.version}:message:1`);
+    expect(page.availability).toBe("available");
+    expect(page.messages[0].id).toBe("message:giant");
+    expect(page.messages[0].truncated).toBe(true);
+    expect(page.messages[0].text).toContain("too large to preview");
+    expect(page.messages[1].text).toBe("Message 0");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

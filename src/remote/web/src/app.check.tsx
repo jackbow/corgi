@@ -370,3 +370,44 @@ it("returns revoked phones to enrollment without showing cached agent output", a
   await screen.findByText("Pair this phone");
   expect(screen.queryByText("Assistant")).toBeNull();
 });
+
+it("keeps existing messages visible during incremental indexing and replaces a new transcript cleanly", async () => {
+  const api = client();
+  let reads = 0;
+  api.conversation = vi.fn<Client["conversation"]>(async () => {
+    reads++;
+    if (reads === 1)
+      return { ...fixtures.conversation, messages: [{ id: "first", role: "assistant", text: "Existing history" }] };
+    if (reads === 2)
+      return { ...fixtures.conversation, availability: "indexing", messages: [], progress: { read: 10, total: 100 } };
+    if (reads === 3)
+      return {
+        ...fixtures.conversation,
+        version: "replacement",
+        availability: "indexing",
+        messages: [],
+        progress: { read: 20, total: 100 },
+      };
+    return {
+      ...fixtures.conversation,
+      version: "replacement",
+      messages: [{ id: "new", role: "assistant", text: "Replacement history" }],
+    };
+  });
+  const { queries } = app(api, "/agents/1");
+  await screen.findByText("Existing history");
+  await act(async () => {
+    await queries.invalidateQueries({ queryKey: ["conversation"] });
+  });
+  expect(screen.getByText("Existing history")).toBeTruthy();
+  await screen.findByText("Updating conversation…");
+  await act(async () => {
+    await queries.invalidateQueries({ queryKey: ["conversation"] });
+  });
+  await screen.findByText(/Indexing history: 20%/);
+  expect(screen.queryByText("Existing history")).toBeNull();
+  await act(async () => {
+    await queries.invalidateQueries({ queryKey: ["conversation"] });
+  });
+  await screen.findByText("Replacement history");
+});
