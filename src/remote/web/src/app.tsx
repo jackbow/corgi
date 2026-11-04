@@ -4,10 +4,17 @@ import { Outlet, useNavigate, useParams, useSearch } from "@tanstack/react-route
 import { Plus, TerminalSquare } from "lucide-react";
 import { Agent, identityKey, useViewport } from "./agent";
 import { Back, Button, Empty, Home } from "./ui";
-import { claim, finishPair, stored, RequestError, type Client } from "./client";
+import { claim, finishPair, stored, forgetToken, RequestError, type Client } from "./client";
 import type { Conversation, Pane, Snapshot } from "./types";
 import { pureBlack, setPureBlack } from "./appearance";
 import { NotificationSettings, disableNotifications } from "./notifications";
+import { useLive } from "./live";
+import { DeviceSettings, UnlockScreen } from "./devices";
+import { AgentActions, WorkspaceControls } from "./management";
+import { Playback, terminalInterval } from "./playback";
+import { PromptCard } from "./prompt";
+import { ArchiveBrowser } from "./archive";
+import { forgetDrafts } from "./drafts";
 
 export let transport: Client;
 export function configure(client: Client) {
@@ -17,9 +24,14 @@ export const pairingToken = new URLSearchParams(location.hash.slice(1)).get("pai
 if (pairingToken) history.replaceState(null, "", location.pathname + location.search);
 const unauthorized = (error: unknown) => error instanceof RequestError && error.status === 401;
 export function useSnapshot(interval = 2000) {
+  const cache = useQueryClient();
   return useQuery({
     queryKey: ["session"],
-    queryFn: ({ signal }) => transport.list(signal),
+    queryFn: async ({ signal }) => {
+      const next = await transport.list(signal),
+        prior = cache.getQueryData<Snapshot>(["session"]);
+      return prior?.observed && next.observed && prior.observed > next.observed ? prior : next;
+    },
     refetchInterval: q => (unauthorized(q.state.error) ? false : interval),
     refetchOnWindowFocus: q => !unauthorized(q.state.error),
     refetchOnReconnect: q => !unauthorized(q.state.error),
@@ -28,21 +40,57 @@ export function useSnapshot(interval = 2000) {
 }
 export function Root() {
   useViewport();
+  const me = useMe();
+  const [locked, setLocked] = useState(false);
+  useLive(transport, !locked && !me.error && (!transport.me || !!me.data));
+  useEffect(() => {
+    const visibility = () => {
+      if (document.visibilityState === "hidden" && me.data?.locked) {
+        forgetToken();
+        setLocked(true);
+      }
+    };
+    document.addEventListener("visibilitychange", visibility);
+    return () => document.removeEventListener("visibilitychange", visibility);
+  }, [me.data?.locked]);
+  if (locked)
+    return (
+      <div className="app">
+        <UnlockScreen unlocked={() => setLocked(false)} />
+      </div>
+    );
+  if (me.error instanceof RequestError && me.error.status === 423)
+    return (
+      <div className="app">
+        <UnlockScreen />
+      </div>
+    );
   return (
     <div className="app">
       <Outlet />
     </div>
   );
 }
+export function useMe() {
+  return useQuery({
+    queryKey: ["me"],
+    enabled: !!transport.me,
+    queryFn: ({ signal }) => transport.me!(signal),
+    retry: false,
+    refetchOnWindowFocus: true,
+  });
+}
 export function HomeScreen() {
   const query = useSnapshot(),
-    navigate = useNavigate();
+    navigate = useNavigate(),
+    me = useMe();
   if (pairingToken || (query.error instanceof RequestError && query.error.status === 401)) return <Pairing />;
   return (
     <>
       {query.data ? (
         <Home
           data={query.data}
+          readOnly={!!transport.me && me.data?.role !== "controller"}
           open={id =>
             void navigate({ to: "/agents/$pane", params: { pane: String(id) }, search: { view: "conversation" } })
           }
@@ -187,6 +235,8 @@ export function SettingsScreen() {
   const navigate = useNavigate(),
     [black, setBlack] = useState(pureBlack),
     [forgetError, setForgetError] = useState("");
+  const me = useMe(),
+    snapshot = useSnapshot();
   return (
     <>
       <header className="header">
@@ -217,6 +267,10 @@ export function SettingsScreen() {
           </span>
         </button>
         <NotificationSettings />
+        {me.data && <DeviceSettings me={me.data} />}
+        {snapshot.data && (!transport.me || me.data?.role === "controller") && (
+          <WorkspaceControls client={transport} data={snapshot.data} />
+        )}
         <h2>Connection</h2>
         <p>Connected through Tailscale</p>
         <p className="muted break">{location.origin}</p>
@@ -230,6 +284,7 @@ export function SettingsScreen() {
             try {
               await disableNotifications();
               await stored(null);
+              forgetDrafts();
               location.replace("/");
             } catch {
               setForgetError(
@@ -254,6 +309,14 @@ export function NewScreen() {
     navigate = useNavigate(),
     [workspace, setWorkspace] = useState(""),
     [provider, setProvider] = useState<"codex" | "claude">("codex");
+  const [profile, setProfile] = useState("");
+  const me = useMe(),
+    profiles = useQuery({
+      queryKey: ["profiles"],
+      enabled: !!transport.profiles,
+      queryFn: ({ signal }) => transport.profiles!(signal),
+      retry: false,
+    });
   const busy = useRef(false);
   const launching = useIsMutating({ mutationKey: ["launch"] }) > 0;
   const create = useMutation({
@@ -264,6 +327,7 @@ export function NewScreen() {
         server: data.server,
         workspace: Number(workspace || data.workspaces[0]?.id),
         provider,
+        ...(profile ? { profile } : {}),
       });
     },
     retry: false,
@@ -288,7 +352,7 @@ export function NewScreen() {
         <form
           onSubmit={e => {
             e.preventDefault();
-            if (busy.current || launching || create.isError) return;
+            if (busy.current || launching || create.isError || me.data?.role === "reader") return;
             busy.current = true;
             create.mutate(undefined, {
               onSettled: () => {
@@ -320,7 +384,10 @@ export function NewScreen() {
                     name="provider"
                     value={p}
                     checked={p === provider}
-                    onChange={() => setProvider(p)}
+                    onChange={() => {
+                      setProvider(p);
+                      setProfile("");
+                    }}
                   />
                   <TerminalSquare size={22} />
                   <span>{p === "codex" ? "Codex" : "Claude"}</span>
@@ -328,10 +395,31 @@ export function NewScreen() {
               ))}
             </div>
           </fieldset>
+          {!!profiles.data?.some(p => p.provider === provider) && (
+            <label>
+              Launch profile
+              <select value={profile} onChange={e => setProfile(e.target.value)}>
+                <option value="">Configured defaults</option>
+                {profiles.data
+                  .filter(p => p.provider === provider)
+                  .map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          )}
           <Button
             variant="primary"
             className="launch"
-            disabled={launching || create.isPending || create.isError || !query.data?.workspaces.length}
+            disabled={
+              launching ||
+              create.isPending ||
+              create.isError ||
+              !query.data?.workspaces.length ||
+              me.data?.role === "reader"
+            }
           >
             <Plus size={18} />
             {create.isPending ? "Starting…" : "Start agent"}
@@ -410,6 +498,24 @@ function AgentData({
     id = { server: snapshot.server, binding: pane.binding, conversation: pane.conversation },
     key = ["conversation", identityKey(pane, snapshot.server)],
     lock = useRef(false);
+  const me = useMe(),
+    readOnly = !!transport.me && me.data?.role !== "controller",
+    [browsing, setBrowsing] = useState(false),
+    [historyLines, setHistoryLines] = useState(300);
+  const prompt = useQuery({
+    queryKey: ["prompt", ...key.slice(1)],
+    enabled: !!transport.prompt && !pane.exited && (pane.attention === "needs_input" || pane.state === "blocked"),
+    queryFn: ({ signal }) => transport.prompt!(pane.id, id, signal),
+    refetchInterval: 1000,
+    retry: false,
+  });
+  const commands = useQuery({
+    queryKey: ["commands", ...key.slice(1)],
+    enabled: !!transport.commands && !pane.exited && !readOnly,
+    queryFn: ({ signal }) => transport.commands!(pane.id, id, signal),
+    staleTime: 60_000,
+    retry: false,
+  });
   const conversation = useQuery({
     queryKey: key,
     enabled: mode === "conversation" && !pane.exited,
@@ -427,13 +533,13 @@ function AgentData({
     queryKey: ["terminal", ...key.slice(1)],
     enabled: mode === "terminal" && !pane.exited,
     queryFn: ({ signal }) => transport.terminal(pane.id, id, signal),
-    refetchInterval: 1000,
+    refetchInterval: terminalInterval(),
     retry: 1,
   });
   const history = useQuery({
-    queryKey: ["history", ...key.slice(1)],
+    queryKey: ["history", ...key.slice(1), historyLines],
     enabled: mode === "terminal" && !pane.exited,
-    queryFn: ({ signal }) => transport.history(pane.id, id, signal),
+    queryFn: ({ signal }) => transport.history(pane.id, id, signal, historyLines),
     refetchInterval: 2000,
     retry: 1,
   });
@@ -465,14 +571,21 @@ function AgentData({
       data={conversation.data}
       surface={surface.data}
       history={history.data?.text}
+      historyLines={historyLines}
+      setHistoryLines={setHistoryLines}
       mode={mode}
       setMode={setMode}
       back={back}
       send={async body => {
-        if (inputPending) throw Error("InputPending");
-        await send.mutateAsync(body);
-        void cache.invalidateQueries({ queryKey: key });
-        void surface.refetch();
+        if (inputPending || lock.current || readOnly) throw Error("InputPending");
+        lock.current = true;
+        try {
+          await send.mutateAsync(body);
+          void cache.invalidateQueries({ queryKey: key });
+          void surface.refetch();
+        } finally {
+          lock.current = false;
+        }
       }}
       terminalKey={key => {
         if (lock.current || inputPending) return;
@@ -482,6 +595,57 @@ function AgentData({
       }}
       keyPending={inputPending}
       keyStatus={keyStatus}
+      readOnly={readOnly}
+      commands={commands.data}
+      archive={
+        browsing && mode === "conversation" ? (
+          <ArchiveBrowser
+            client={transport}
+            pane={pane.id}
+            identity={id}
+            id={identityKey(pane, snapshot.server)}
+            close={() => setBrowsing(false)}
+          />
+        ) : undefined
+      }
+      controls={
+        <>
+          {prompt.data && transport.respond && (
+            <PromptCard
+              key={prompt.data.id}
+              prompt={prompt.data}
+              disabled={readOnly || inputPending}
+              terminal={() => setMode("terminal")}
+              respond={async choice => {
+                if (lock.current || inputPending || readOnly) throw Error("InputPending");
+                lock.current = true;
+                try {
+                  await transport.respond!(pane.id, id, prompt.data!.id, choice);
+                  void prompt.refetch();
+                  void surface.refetch();
+                } finally {
+                  lock.current = false;
+                }
+              }}
+            />
+          )}
+          <details className="agent-tools control-panel">
+            <summary>Conversation tools</summary>
+            {!readOnly && <AgentActions client={transport} pane={pane} server={snapshot.server} />}
+            {transport.archive && (
+              <Button
+                onClick={() => {
+                  setBrowsing(true);
+                  setMode("conversation");
+                }}
+              >
+                Browse conversation history
+              </Button>
+            )}
+            <Playback client={transport} pane={pane.id} identity={id} />
+          </details>
+        </>
+      }
       error={
         disconnected || conversation.isError || surface.isError
           ? "Reconnecting. Check Tailscale and refresh if this pane changed."

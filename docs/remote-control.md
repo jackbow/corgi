@@ -1,7 +1,7 @@
 # Phone remote control
 
 Corgi remote is a phone app for reading existing Codex and Claude conversations,
-interacting with their terminals, and starting agents in existing workspaces. Both your computer
+interacting with their terminals, starting agents, and managing workspaces. Both your computer
 and phone must be connected to the same Tailscale network. Local Wi-Fi is not
 required: cellular plus Tailscale works.
 
@@ -27,7 +27,8 @@ required: cellular plus Tailscale works.
    the code with your computer, then type the matching code in the terminal to
    approve. Pairing stays open while the command runs, including while waiting
    for approval. Each approval or denial prints a fresh single-use QR and links
-   for another phone. Press Ctrl+C to close pairing. Approval is local only.
+   for another phone. Press Ctrl+C to close pairing. The first device needs Mac approval;
+   an enrolled controller can invite and approve subsequent devices in Settings.
 4. Bookmark the address without its pairing fragment. Tap a workspace heading to
    collapse its agents; agent counts and activity remain visible. Agent rows use
    status icons, a truncated last response, and status and activity details underneath.
@@ -35,16 +36,17 @@ required: cellular plus Tailscale works.
    Settings includes a Pure black toggle for OLED screens, enabled by default and saved on this phone.
    Open an agent. Conversation is the default; switch to **Terminal** for
    interactive prompts. **Send** pastes the message and presses Enter. Return
-   inserts a newline; **Paste without Enter** only pastes. Drafts stay in this tab,
-   separately for each pane and conversation. Terminal keys include Enter, arrows,
-   Escape, Tab, and Ctrl+C; prompts are never automatically approved.
+   inserts a newline; **Paste without Enter** only pastes. Drafts stay on this phone
+   for 48 hours, separately for each pane and conversation. **Sensitive input** is
+   masked and never saved. Terminal keys include Enter, arrows, modifiers and function
+   keys; prompts are never automatically approved.
 5. **New agent** starts Codex or Claude in an existing workspace using the Mac's
-   configured defaults. Send its first prompt afterward. If a launch is not
+   configured defaults or an existing saved launch profile. Send its first prompt afterward. If a launch is not
    confirmed, check the agent list before trying again.
 
 Use `corgi remote status` or `corgi remote devices` to see the service and paired
 phone IDs. `corgi remote revoke ID` immediately removes a phone's access.
-**Settings → Forget this phone** clears only the browser's local key; revoke it on the
+**Settings → Forget this phone** clears the browser's local key and drafts; revoke it on the
 computer to remove its enrollment. To disable remote access:
 
 ```sh
@@ -85,7 +87,9 @@ held in memory. The server persists public keys only, in a private, versioned
 live under `/tmp/corgi-UID/remote-<runtime>/`, with owner-only permissions.
 
 The selected conversation, terminal, and activity refresh every second while visible;
-the workspace list refreshes every two seconds. Updates reflect persisted transcript
+the workspace list refreshes every two seconds. An authenticated live subscription also
+invalidates changed topology; polling remains a reconnect fallback. Terminal refresh
+can be adjusted from 250 ms to five seconds in Settings. Updates reflect persisted transcript
 records, not token-by-token streaming. Output preserves scroll position unless
 already following the bottom. Returning from suspension reconnects. Messages
 are never automatically retried: if a send times out, check the pane before
@@ -104,6 +108,49 @@ refreshes this recent window without
 loading older history. It renders only rows near the viewport, preserving the
 reading position while messages remain in the window or change height.
 
+## Additional phone controls
+
+- **Conversation tools → Agent actions** renames an agent, starts a fresh conversation
+  while idle, or stops its pane. Clearing context and stopping require confirmation.
+- **Settings → Workspaces** opens an existing absolute directory on the Mac, renames
+  or reorders workspaces, and closes workspaces with confirmation. Closing stops their
+  panes, without deleting directories. Worktrees and file/Git browsing are not exposed.
+- Supported numbered prompts appear as question cards. Responses are checked against
+  the current pane, conversation and terminal surface, and consumed once before sending
+  keys. Unsupported checkbox, free-text and tabbed forms use Terminal. Uncertain responses
+  are never retried automatically.
+- **Browse conversation history** is optional. Scroll up to read earlier pages; there
+  is no Load earlier button. Search filters loaded messages; **Search older** scans backwards
+  until another matching page, cancellation, or the beginning. Requests read at most 4 MiB
+  with a 150 ms processing budget, preserving progress between requests. Cursors are opaque,
+  scoped to the server-resolved transcript and conversation, and expire after ten minutes.
+  The Mac retains four browsing sessions with eight replayable pages each; the browser
+  retains at most 1,000 entries in memory. Normal conversation opens still read only 20 entries.
+- Terminal history can show 100–10,000 lines, bounded to 512 KiB, with a text filter.
+  Desktop terminal dimensions remain unchanged. Command and skill suggestions insert
+  into the draft without sending; discovery returns names and descriptions only.
+- **Listen to latest response** generates bounded WAV audio using macOS speech, with code
+  blocks omitted. Playback uses the phone's audio controls. Temporary Mac files are removed;
+  audio and conversation content are not cached offline. Verify screen-off playback on an actual
+  phone. Wake lock is optional and subject to browser and battery policy.
+- Controllers can create one-use reader or controller invitations, compare approval codes,
+  and revoke devices in Settings. Readers cannot send input, launch/manage agents or
+  workspaces, or administer devices. Optional passkey verification protects sign-in and
+  locks the app when backgrounded. Keep access to the Mac CLI for revocation/re-enrollment
+  if a passkey is lost. Remote write receipts record action metadata only in a private,
+  bounded `devices.json.audit` file.
+- Settings shows the phone feature build and can refresh phone assets. Controllers can
+  explicitly download and apply signed updates to a managed Mac installation using
+  its existing updater, including compatible live handoffs. Updates needing a restart
+  remain downloaded until approved from an outside Mac terminal. Unmanaged builds cannot
+  update this way. The phone feature service remains separate: its build must still be
+  installed on the Mac; it does not switch to a stable release that lacks these features.
+
+Existing controller enrollments remain compatible. Saving a reader role or a passkey
+uses device-store version 2, which older remote binaries reject instead of silently
+granting controller access. This does not change the desktop daemon protocol or saved runtime.
+These features are independently implemented for Corgi; relay source/assets are not imported.
+
 Long messages are shortened independently. Unusually complex individual records
 that exceed the decoded-record budget are omitted with a notice. Neither blocks the rest of
 the conversation. Missing or malformed transcripts offer Terminal instead.
@@ -111,7 +158,7 @@ The terminal displays styled, selectable text at its existing column count, with
 horizontal scrolling and a separate recent plain-text history section.
 
 Headless agents, saved-session resumption, PRs, diffs, images, uploads, and
-creating/closing workspaces are outside this release. The computer must stay awake
+worktree management are outside this release. The computer must stay awake
 and connected to Tailscale. Its existing panes remain live while the phone is
 away.
 
@@ -179,5 +226,9 @@ Push keys and subscriptions are saved privately alongside the paired-device
 store (`devices.json.push`). Revoking or forgetting a phone disables its
 notifications; expired subscriptions are removed. The service worker handles
 push and notification clicks only, and does not cache authenticated content for
-offline use. A failed delivery is not replayed; check the Mac’s remote-service
-log if a test notification fails.
+offline use. Per-phone preferences control categories, settle delay, cooldown and snooze.
+Transient failures retry with bounded exponential backoff, across service restarts, for
+up to an hour and six attempts. Each phone has at most one queued alert per agent;
+newer status supersedes it. Revocation, expiry and disabled categories suppress pending
+deliveries. Stable notification tags replace duplicates after an uncertain push response.
+Check the Mac's remote-service log if a test notification fails.

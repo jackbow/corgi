@@ -1,4 +1,6 @@
 import { Connection } from "../rpc";
+import { randomBytes } from "node:crypto";
+import { stat } from "node:fs/promises";
 import { field, str } from "../json";
 import type { CommandInput } from "../protocol";
 import { Reader } from "./conversation";
@@ -7,6 +9,14 @@ import type { Conversation } from "./conversation_types";
 import type { Provider, Pane, Snapshot, Identity, Launch, Terminal } from "./types";
 export type { Pane, Snapshot, Identity, Launch, Terminal } from "./types";
 import { rank, type Target } from "../agent_order";
+import { terminalKeys, terminalCommand, type Management } from "./controls";
+import { prompt, responseKeys, type Prompt } from "./prompts";
+import * as profiles from "../agent_profiles";
+import type { Profile } from "./types";
+import { Archive } from "./archive";
+import { catalog, type Command as SlashCommand } from "./catalog";
+import { Updates } from "./updates";
+import type { UpdateState } from "./types";
 
 const rows = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 const number = (value: unknown): number => {
@@ -87,9 +97,17 @@ export function identity(value: unknown): Identity {
 }
 export function launch(value: unknown): Launch {
   const selected = provider(str(value, "provider"));
-  if (!selected || !value || Object.keys(value).some(k => !["server", "workspace", "provider"].includes(k)))
+  if (!selected || !value || Object.keys(value).some(k => !["server", "workspace", "provider", "profile"].includes(k)))
     throw Error("InvalidInput");
-  return { server: number(field(value, "server")), workspace: number(field(value, "workspace")), provider: selected };
+  const profile = field(value, "profile");
+  if (profile !== null && (typeof profile !== "string" || !/^[a-z0-9-]{1,64}$/.test(profile)))
+    throw Error("InvalidInput");
+  return {
+    server: number(field(value, "server")),
+    workspace: number(field(value, "workspace")),
+    provider: selected,
+    ...(profile ? { profile } : {}),
+  };
 }
 export interface Input {
   server: number;
@@ -99,7 +117,7 @@ export interface Input {
   key?: string;
   conversation?: string;
 }
-const keys = new Set(["enter", "escape", "up", "down", "left", "right", "ctrl+c", "tab"]);
+const keys = new Set(terminalKeys);
 export function input(value: unknown): Input {
   const server = number(field(value, "server")),
     binding = str(value, "binding");
@@ -121,17 +139,190 @@ export interface Backend {
   list(): Promise<Snapshot>;
   activity?(): Promise<Snapshot>;
   lastResponse?(pane: number, identity: Identity): Promise<string>;
-  read(pane: number, identity?: Identity): Promise<string>;
+  read(pane: number, identity?: Identity, lines?: number): Promise<string>;
   send(pane: number, input: Input): Promise<void>;
   terminal(pane: number, identity: Identity): Promise<Terminal>;
   conversation(pane: number, identity: Identity, cursor: string, direction: "before" | "after"): Promise<Conversation>;
   create(launch: Launch): Promise<{ pane: number } & Identity>;
+  manage?(action: Management): Promise<void>;
+  profiles?(): Promise<Profile[]>;
+  prompt?(pane: number, identity: Identity): Promise<Prompt | null>;
+  respond?(pane: number, identity: Identity, prompt: string, choice: number): Promise<void>;
+  watch?(signal: AbortSignal, changed: (snapshot?: Snapshot) => void): Promise<void>;
+  archive?(pane: number, identity: Identity, cursor: string): Promise<Conversation>;
+  commands?(pane: number, identity: Identity): Promise<SlashCommand[]>;
+  update?(server?: number): Promise<UpdateState>;
 }
 export class Daemon implements Backend {
   private reader = new Reader();
   private responseReader = new Reader();
   private previews = new Previews();
-  constructor(private socket: string) {}
+  private archiveReader = new Archive();
+  private responding = new Set<number>();
+  private prompts = new Map<number, { digest: string; fingerprint: string; consumed: boolean }>();
+  private updater: Updates;
+  constructor(private socket: string) {
+    this.updater = new Updates(
+      () =>
+        this.withConnection(async c => {
+          const h = await c.call("hello");
+          return { server: number(field(h, "server_pid")), executable: str(h, "executable") };
+        }),
+      socket,
+    );
+  }
+  update(server?: number) {
+    return server === undefined ? this.updater.status() : this.updater.start(server);
+  }
+  private observe(s: Snapshot, observed = Date.now()) {
+    for (const pane of this.prompts.keys()) {
+      const p = s.panes.find(p => p.id === pane);
+      if (!p || p.exited || (p.attention !== "needs_input" && p.state !== "blocked")) this.prompts.delete(pane);
+    }
+    return { ...s, observed };
+  }
+  async commands(pane: number, q: Identity) {
+    return this.withConnection(async c => {
+      const { raw, p } = await this.checked(c, pane, q),
+        record = raw.panes.find(p => p.id === pane);
+      if (!p.provider) return [];
+      const result = await catalog(p.provider, record?.agent.cwd || record?.cwd || "", str(record?.agent, "account"));
+      await this.checked(c, pane, q);
+      return result;
+    });
+  }
+  async archive(pane: number, q: Identity, cursor: string) {
+    return this.withConnection(async c => {
+      const { raw, p } = await this.checked(c, pane, q),
+        record = raw.panes.find(p => p.id === pane);
+      if (!p.provider) throw Error("Unsupported");
+      const result = await this.archiveReader.read(record?.agent.transcript ?? "", p.provider, q.conversation, cursor);
+      await this.checked(c, pane, q);
+      return result;
+    });
+  }
+  async profiles(): Promise<Profile[]> {
+    return profiles
+      .list()
+      .flatMap(p =>
+        p.provider === "codex" || p.provider === "claude" ? [{ id: p.id, name: p.name, provider: p.provider }] : [],
+      );
+  }
+  async watch(signal: AbortSignal, changed: (snapshot?: Snapshot) => void) {
+    const c = new Connection(this.socket);
+    const close = () => c.close();
+    signal.addEventListener("abort", close, { once: true });
+    try {
+      if (signal.aborted) return;
+      await c.call("hello");
+      c.onEvent(e => {
+        if (e.type === "session") changed(this.observe(snapshot(e)));
+      });
+      const observed = Date.now();
+      changed(this.observe(snapshot(await c.call("session.subscribe")), observed));
+      await new Promise<void>(resolve => {
+        c.socket.once("close", resolve);
+        if (c.socket.destroyed) resolve();
+      });
+    } finally {
+      signal.removeEventListener("abort", close);
+      c.close();
+    }
+  }
+  async prompt(pane: number, q: Identity) {
+    return this.withConnection(async c => {
+      const { p } = await this.checked(c, pane, q);
+      if (!p.provider || (p.attention !== "needs_input" && p.state !== "blocked")) {
+        this.prompts.delete(pane);
+        return null;
+      }
+      const result = await c.call("pane.surface", { pane });
+      await this.checked(c, pane, q);
+      const current = prompt(result.surface.lines, p.provider, q);
+      if (!current) {
+        this.prompts.delete(pane);
+        return null;
+      }
+      let issued = this.prompts.get(pane);
+      if (!issued || issued.digest !== current.id) {
+        issued = { digest: current.id, fingerprint: randomBytes(32).toString("base64url"), consumed: false };
+        this.prompts.delete(pane);
+        this.prompts.set(pane, issued);
+        while (this.prompts.size > 128) this.prompts.delete(this.prompts.keys().next().value!);
+      }
+      return { ...current, id: issued.fingerprint };
+    });
+  }
+  async respond(pane: number, q: Identity, fingerprint: string, choice: number) {
+    if (this.responding.has(pane)) throw Error("PromptChanged");
+    this.responding.add(pane);
+    try {
+      await this.withConnection(async c => {
+        const { p } = await this.checked(c, pane, q);
+        if (!p.provider || (p.attention !== "needs_input" && p.state !== "blocked")) throw Error("PromptChanged");
+        const result = await c.call("pane.surface", { pane });
+        const current = prompt(result.surface.lines, p.provider, q);
+        const issued = this.prompts.get(pane);
+        if (
+          !current ||
+          !issued ||
+          issued.fingerprint !== fingerprint ||
+          issued.digest !== current.id ||
+          issued.consumed
+        )
+          throw Error("PromptChanged");
+        const text = responseKeys(current, choice);
+        await this.checked(c, pane, q);
+        issued.consumed = true;
+        await c.call("session.command", { command: { "pane.keys": { target: pane, text } } });
+      });
+    } finally {
+      this.responding.delete(pane);
+    }
+  }
+  async manage(q: Management) {
+    return this.withConnection(async c => {
+      let command: CommandInput;
+      if ("pane" in q) {
+        const { p } = await this.checked(c, q.pane, q.identity);
+        switch (q.action) {
+          case "rename-agent":
+            command = { "agent.rename": { target: q.pane, name: q.name } };
+            break;
+          case "stop-agent":
+            command = { "pane.close": { target: q.pane } };
+            break;
+          case "clear-agent":
+            if (p.state !== "idle" || p.attention === "needs_input" || !p.provider) throw Error("AgentBusy");
+            command = {
+              "pane.send": { target: q.pane, text: p.provider === "codex" ? "/new" : "/clear", enter: true },
+            };
+            break;
+        }
+      } else {
+        const s = snapshot(await c.call("session.snapshot"));
+        if (s.server !== q.server || ("workspace" in q && !s.workspaces.some(w => w.id === q.workspace)))
+          throw Error("PaneChanged");
+        switch (q.action) {
+          case "create-workspace":
+            if (!(await stat(q.cwd).catch(() => null))?.isDirectory()) throw Error("InvalidInput");
+            command = { "workspace.create": { name: q.name, cwd: q.cwd } };
+            break;
+          case "rename-workspace":
+            command = { "workspace.edit": { target: q.workspace, name: q.name } };
+            break;
+          case "close-workspace":
+            command = { "workspace.close": { target: q.workspace, close_contents: true } };
+            break;
+          case "move-workspace":
+            if (!s.workspaces.some(w => w.id === q.before) || q.before === q.workspace) throw Error("InvalidInput");
+            command = { "workspace.move": { target: q.workspace, before: q.before } };
+            break;
+        }
+      }
+      await c.call("session.command", { command });
+    });
+  }
   private async withConnection<T>(fn: (connection: Connection) => Promise<T>): Promise<T> {
     const c = new Connection(this.socket),
       timer = setTimeout(() => c.close(), 5000);
@@ -144,8 +335,9 @@ export class Daemon implements Backend {
     }
   }
   async list() {
+    const observed = Date.now();
     const raw = await this.withConnection(c => c.call("session.snapshot")),
-      data = snapshot(raw);
+      data = this.observe(snapshot(raw), observed);
     const files = new Map(rows(field(raw, "panes")).map(p => [field(p, "id"), str(field(p, "agent"), "transcript")]));
     const values = this.previews.sync(
       data.server,
@@ -154,14 +346,17 @@ export class Daemon implements Backend {
     return { ...data, panes: data.panes.map(pane => ({ ...pane, lastResponse: values.get(pane.id) })) };
   }
   async activity() {
-    return this.withConnection(async c => snapshot(await c.call("session.snapshot")));
+    return this.withConnection(async c => this.observe(snapshot(await c.call("session.snapshot"))));
   }
-  async read(pane: number, q?: Identity) {
+  async read(pane: number, q?: Identity, lines = 300) {
     return this.withConnection(async c => {
       if (q) await this.checked(c, pane, q);
       const text =
-        (await c.call("session.command", { command: { "pane.read": { target: pane, lines: 300n, view: "history" } } }))
-          .result.text ?? "";
+        (
+          await c.call("session.command", {
+            command: { "pane.read": { target: pane, lines: BigInt(lines), view: "history" } },
+          })
+        ).result.text ?? "";
       if (q) await this.checked(c, pane, q);
       return text.slice(-512 * 1024);
     });
@@ -216,8 +411,12 @@ export class Daemon implements Backend {
     return this.withConnection(async c => {
       const s = snapshot(await c.call("session.snapshot"));
       if (s.server !== q.server || !s.workspaces.some(w => w.id === q.workspace)) throw Error("PaneChanged");
+      if (q.profile && !(await this.profiles()).some(p => p.id === q.profile && p.provider === q.provider))
+        throw Error("InvalidInput");
       const result = await c.call("session.command", {
-        command: { "agent.create": { workspace: q.workspace, provider: q.provider } },
+        command: q.profile
+          ? { "agent.profile.create": { workspace: q.workspace, id: q.profile } }
+          : { "agent.create": { workspace: q.workspace, provider: q.provider } },
       });
       const pane = result.result.pane;
       const next = snapshot(await c.call("session.snapshot")),
@@ -239,7 +438,7 @@ export class Daemon implements Backend {
       )
         throw Error("PaneChanged");
       const command: CommandInput = q.key
-        ? { "pane.keys": { target: pane, text: q.key } }
+        ? terminalCommand(pane, q.key)
         : { "pane.send": { target: pane, text: q.text!, enter: q.enter! } };
       await c.call("session.command", { command });
     });

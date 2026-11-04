@@ -1,6 +1,8 @@
 import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { deviceLock, unlock, type DeviceLock } from "./device_lock";
+export type Role = "controller" | "reader";
 
 export const pairingTTL = 60_000;
 export const approvalTTL = 120_000;
@@ -12,11 +14,15 @@ export interface Device {
   id: string;
   name: string;
   key: string;
+  role?: Role;
+  lock?: DeviceLock;
 }
 interface Pairing {
   id: string;
   digest: string;
   expires: number;
+  role: Role;
+  inviter?: string;
   claim?: { id: string; code: string; device: Device; expires: number; state: "waiting" | "approved" | "denied" };
 }
 function publicKey(key: string) {
@@ -50,7 +56,7 @@ export class Auth {
       !saved ||
       typeof saved !== "object" ||
       !("version" in saved) ||
-      saved.version !== 1 ||
+      (saved.version !== 1 && saved.version !== 2) ||
       !("devices" in saved) ||
       !Array.isArray(saved.devices)
     )
@@ -68,7 +74,10 @@ export class Auth {
       )
         throw Error("InvalidDevices");
       publicKey(d.key);
-      return { id: d.id, name: d.name, key: d.key };
+      const role = "role" in d ? d.role : "controller";
+      if (role !== "controller" && role !== "reader") throw Error("InvalidDevices");
+      const lock = "lock" in d && d.lock ? deviceLock(d.lock) : undefined;
+      return { id: d.id, name: d.name, key: d.key, role, ...(lock ? { lock } : {}) };
     });
     if (this.devices.length > 16 || new Set(this.devices.map(d => d.id)).size !== this.devices.length)
       throw Error("InvalidDevices");
@@ -78,7 +87,8 @@ export class Auth {
     mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
     const temporary = `${this.file}.${secret()}.tmp`;
     try {
-      writeFileSync(temporary, JSON.stringify({ version: 1, devices }) + "\n", { flag: "wx", mode: 0o600 });
+      const version = devices.some(d => d.role === "reader" || d.lock) ? 2 : 1;
+      writeFileSync(temporary, JSON.stringify({ version, devices }) + "\n", { flag: "wx", mode: 0o600 });
       renameSync(temporary, this.file);
     } finally {
       try {
@@ -90,10 +100,36 @@ export class Auth {
   list() {
     return this.devices.map(({ id, name }) => ({ id, name }));
   }
-  mint(now = Date.now()) {
+  details() {
+    return this.devices.map(d => ({ id: d.id, name: d.name, role: d.role ?? "controller", locked: !!d.lock }));
+  }
+  role(id: string): Role {
+    const device = this.devices.find(d => d.id === id);
+    if (!device) throw Error("Unauthorized");
+    return device.role ?? "controller";
+  }
+  lock(id: string, value: unknown) {
+    if (!this.devices.some(d => d.id === id)) throw Error("Unauthorized");
+    const lock = value === null ? undefined : deviceLock(value);
+    this.save(this.devices.map(d => (d.id === id ? { ...d, lock } : d)));
+    for (const [key, session] of this.sessions) if (session.device === id) this.sessions.delete(key);
+    for (const [key, challenge] of this.challenges) if (challenge.device === id) this.challenges.delete(key);
+  }
+  invite(inviter: string, role: Role) {
+    if (this.role(inviter) !== "controller") throw Error("Forbidden");
+    return this.mint(Date.now(), role, inviter);
+  }
+  invited(inviter: string) {
+    return this.pairing?.inviter === inviter ? this.pending() : null;
+  }
+  approveInvite(inviter: string, id: string, code: string, allow: boolean) {
+    if (this.role(inviter) !== "controller" || this.pairing?.inviter !== inviter) throw Error("Forbidden");
+    this.approve(id, code, allow);
+  }
+  mint(now = Date.now(), role: Role = "controller", inviter?: string) {
     const token = secret();
     const id = secret();
-    this.pairing = { id, digest: digest(token), expires: now + pairingTTL };
+    this.pairing = { id, digest: digest(token), expires: now + pairingTTL, role, inviter };
     return { id, url: `${this.origin}/#pair=${token}`, expires: now + pairingTTL };
   }
   renew(id: string, now = Date.now()) {
@@ -114,7 +150,7 @@ export class Auth {
     p.claim = {
       id: secret(),
       code: (randomBytes(4).readUInt32BE() % 1_000_000) + "",
-      device: { id: secret(), name: name.trim(), key },
+      device: { id: secret(), name: name.trim(), key, role: p.role },
       expires: now + approvalTTL,
       state: "waiting",
     };
@@ -153,9 +189,10 @@ export class Auth {
     if (pending.length >= 8) this.challenges.delete(pending[0][0]);
     const nonce = secret();
     this.challenges.set(nonce, { device, expires: now + 60_000 });
-    return { nonce };
+    const lock = this.devices.find(d => d.id === device)?.lock;
+    return { nonce, ...(lock ? { credential: lock.id } : {}) };
   }
-  login(nonce: string, signature: string, now = Date.now()) {
+  login(nonce: string, signature: string, now = Date.now(), assertion?: unknown) {
     const c = this.challenges.get(nonce);
     this.challenges.delete(nonce);
     const d = this.devices.find(d => d.id === c?.device);
@@ -163,6 +200,7 @@ export class Auth {
       !c ||
       now >= c.expires ||
       !d ||
+      (d.lock && !unlock(d.lock, assertion, this.origin, nonce)) ||
       !/^[A-Za-z0-9_-]{86}$/.test(signature) ||
       !verify(
         "sha256",
@@ -181,7 +219,7 @@ export class Auth {
   }
   authenticate(token: string, now = Date.now()) {
     const s = this.sessions.get(digest(token));
-    if (!s || now >= s.expires) throw Error("Unauthorized");
+    if (!s || now >= s.expires || !this.devices.some(d => d.id === s.device)) throw Error("Unauthorized");
     return s.device;
   }
   revoke(id: string) {
@@ -190,6 +228,7 @@ export class Auth {
     for (const [key, s] of this.sessions) if (s.device === id) this.sessions.delete(key);
     for (const [key, c] of this.challenges) if (c.device === id) this.challenges.delete(key);
     if (this.pairing?.claim?.device.id === id) this.pairing = null;
+    if (this.pairing?.inviter === id) this.pairing = null;
     for (const [claim, outcome] of this.outcomes) if (outcome.device === id) this.outcomes.delete(claim);
   }
 }

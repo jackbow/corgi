@@ -906,3 +906,142 @@ legend {
     animation: none !important;
   }
 }
+
+.control-panel {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.control-panel summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.control-panel form,
+.control-panel label,
+.workspace-control {
+  display: grid;
+  gap: 8px;
+  margin-block: 8px;
+}
+.control-panel input,
+.control-panel select,
+.archive-controls input,
+.extra-keys select,
+.history input,
+.history select {
+  min-height: 44px;
+  min-width: 0;
+  width: 100%;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 16px;
+}
+.control-panel .check-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+}
+.check-label input {
+  width: 20px;
+  min-height: 20px;
+}
+.device-row,
+.archive-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.device-row span,
+.archive-controls input {
+  flex: 1;
+}
+.prompt-card {
+  margin: 6px 14px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  max-height: 42dvh;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.prompt-card pre {
+  white-space: pre-wrap;
+  font: inherit;
+  overflow-wrap: anywhere;
+}
+.prompt-card .button {
+  text-align: left;
+  justify-content: flex-start;
+  white-space: normal;
+}
+.agent-tools[open] {
+  max-height: 35dvh;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.archive-browser {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.archive-controls,
+.archive-browser > p {
+  padding: 6px 14px;
+}
+.archive-browser > .content-wrap {
+  min-height: 0;
+  flex: 1;
+}
+.extra-keys {
+  padding: 4px 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.extra-keys select {
+  width: auto;
+  flex: 1;
+  font-size: 13px;
+}
+.history pre {
+  max-height: 35dvh;
+  overflow: auto;
+}
+.command-suggestions {
+  display: grid;
+  max-height: 24dvh;
+  overflow-y: auto;
+}
+.command-suggestions .button {
+  display: flex;
+  justify-content: flex-start;
+  gap: 10px;
+  text-align: left;
+}
+audio {
+  width: 100%;
+  margin-top: 8px;
+}
+.composer .sensitive-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px;
+  font-size: 16px;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  outline-offset: -2px;
+}
