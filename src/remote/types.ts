@@ -1,4 +1,8 @@
 export type Provider = "codex" | "claude";
+export interface LastResponse {
+  availability: "available" | "indexing" | "unavailable";
+  text: string;
+}
 export interface Pane {
   id: number;
   workspace: number;
@@ -12,6 +16,7 @@ export interface Pane {
   branch: string;
   order: number;
   attention: string;
+  lastResponse?: LastResponse;
 }
 export interface Snapshot {
   server: number;

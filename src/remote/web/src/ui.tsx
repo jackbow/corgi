@@ -185,6 +185,13 @@ export function Home({
                     <StatusIcon pane={p} />
                     <div className="row-body">
                       <div className="agent-name">{p.name}</div>
+                      <div className="response-preview truncate">
+                        {p.lastResponse?.availability === "available"
+                          ? p.lastResponse.text || "No response yet"
+                          : p.lastResponse?.availability === "indexing"
+                            ? "Loading last response…"
+                            : "Response unavailable"}
+                      </div>
                       <div className="metadata">
                         <ProviderIcon provider={p.provider} />
                         {p.branch && (
@@ -193,10 +200,6 @@ export function Home({
                             {p.branch}
                           </span>
                         )}
-                      </div>
-                      <div className="activity">
-                        <Status pane={p} />
-                        <span className="truncate">{p.activity}</span>
                       </div>
                     </div>
                     <ChevronRight size={16} className="row-chevron" />

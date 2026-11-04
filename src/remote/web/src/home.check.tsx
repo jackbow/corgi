@@ -115,3 +115,28 @@ it("collapses groups even when stored preferences are malformed or unavailable",
   await userEvent.click(screen.getByRole("button", { name: "Collapse corgi" }));
   expect(screen.getByRole("button", { name: "Expand corgi" })).toBeTruthy();
 });
+
+it("places the latest response on the second line with provider and branch below", () => {
+  const p = props(),
+    { rerender } = render(<Home {...p} />);
+  const row = screen.getByRole("button", { name: /Fix input overflow/ });
+  const body = row.querySelector(".row-body")!;
+  expect(body.children[0].textContent).toContain("Fix input overflow");
+  expect(body.children[1].textContent).toBe(p.data.panes[0].lastResponse!.text);
+  expect(body.children[1].classList.contains("truncate")).toBe(true);
+  expect(body.children[2].firstElementChild).toBe(within(row).getByRole("img", { name: "Codex" }));
+  expect(body.children[2].textContent).toContain("fix-input-overflow");
+  expect(screen.getByText("No response yet")).toBeTruthy();
+  expect(screen.getByText("Loading last response…")).toBeTruthy();
+  rerender(
+    <Home
+      {...p}
+      data={{
+        ...p.data,
+        panes: p.data.panes.map(pane => ({ ...pane, lastResponse: { availability: "unavailable", text: "" } })),
+      }}
+    />,
+  );
+  expect(within(row).getByText("Response unavailable")).toBeTruthy();
+  expect(within(row).queryByText(p.data.panes[0].lastResponse!.text)).toBeNull();
+});

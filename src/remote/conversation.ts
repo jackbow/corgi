@@ -15,6 +15,7 @@ interface Ref {
   name?: string;
   start: number;
   end: number;
+  preview?: string;
 }
 interface Node {
   parent: string;
@@ -167,7 +168,10 @@ const digest = (v: string | Buffer) => createHash("sha256").update(v).digest("he
 
 /** A disposable offset/ancestry index. Message bodies are cached only for recent pages. */
 export class Reader {
-  constructor(private scanBytes = SCAN_BYTES) {}
+  constructor(
+    private scanBytes = SCAN_BYTES,
+    private bodyLimit = 128,
+  ) {}
   private cache = new Map<string, Cached>();
   private pending = new Map<string, Promise<Conversation>>();
   private queues = new Map<string, Promise<unknown>>();
@@ -177,6 +181,18 @@ export class Reader {
     session: string,
     cursor = "",
     direction: "before" | "after" = "before",
+  ): Promise<Conversation> {
+    return this.request(file, provider, session, cursor, direction);
+  }
+  preview(file: string, provider: Provider, session: string): Promise<Conversation> {
+    return this.request(file, provider, session, "", "preview");
+  }
+  private request(
+    file: string,
+    provider: Provider,
+    session: string,
+    cursor: string,
+    direction: "before" | "after" | "preview",
   ): Promise<Conversation> {
     const key = JSON.stringify([file, provider, session, cursor, direction]);
     const pending = this.pending.get(key);
@@ -193,9 +209,10 @@ export class Reader {
     return result;
   }
   private remember(c: Cached, m: Message) {
+    if (!this.bodyLimit) return;
     c.bodies.delete(m.id);
     c.bodies.set(m.id, m);
-    while (c.bodies.size > 128) c.bodies.delete(c.bodies.keys().next().value!);
+    while (c.bodies.size > this.bodyLimit) c.bodies.delete(c.bodies.keys().next().value!);
   }
   private index(c: Cached, value: unknown, provider: Provider, session: string, end: number, truncated: boolean) {
     if (c.first) {
@@ -227,7 +244,14 @@ export class Reader {
     }
     const refs = messages.map(m => {
       this.remember(c, { ...m, ...(truncated ? { truncated: true } : {}) });
-      return { id: m.id, role: m.role, name: m.name, start: offset, end };
+      return {
+        id: m.id,
+        role: m.role,
+        name: m.name,
+        start: offset,
+        end,
+        ...(m.role === "assistant" ? { preview: m.text.replace(/\s+/g, " ").trim().slice(0, 320) } : {}),
+      };
     });
     if (provider === "codex") for (const ref of refs) c.items.set(ref.id, ref);
     else c.nodes.get(str(value, "uuid"))!.refs = refs;
@@ -257,7 +281,7 @@ export class Reader {
     provider: Provider,
     session: string,
     cursor: string,
-    direction: "before" | "after",
+    direction: "before" | "after" | "preview",
   ): Promise<Conversation> {
     if (!file || !session) return empty("unavailable");
     const handle = await open(file, "r").catch(() => null);
@@ -351,6 +375,25 @@ export class Reader {
         return { ...empty("indexing", c.version), progress: { read: c.offset, total: stat.size } };
       if (!c.valid) return empty("unavailable");
       this.order(c, provider);
+      if (direction === "preview") {
+        const final = await handle.stat();
+        if (final.size < stat.size || (final.size === stat.size && final.mtimeMs !== stat.mtimeMs)) {
+          this.cache.delete(key);
+          return empty("replaced", c.version);
+        }
+        const index = c.refs.findLastIndex(ref => ref.role === "assistant"),
+          last = c.refs[index];
+        if (!last) return empty("available", c.version);
+        let first = index;
+        while (first > 0 && c.refs[first - 1].start === last.start) first--;
+        const text = c.refs
+          .slice(first, index + 1)
+          .filter(ref => ref.role === "assistant")
+          .map(ref => ref.preview)
+          .join(" ")
+          .slice(0, 320);
+        return { ...empty("available", c.version), messages: [{ id: last.id, role: "assistant", text }] };
+      }
       let index = c.refs.length;
       if (cursor) {
         const split = cursor.indexOf(":");
