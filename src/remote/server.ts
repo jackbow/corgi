@@ -1,16 +1,13 @@
 import { chmodSync } from "node:fs";
 import { Auth } from "./auth";
-import { input, type Backend } from "./daemon";
+import { identity, input, launch, type Backend } from "./daemon";
 import { str } from "../json";
-import shell from "./web/index.html" with { type: "text" };
-import script from "./web/app.js" with { type: "text" };
-import style from "./web/app.css" with { type: "text" };
-import { colors } from "../palette";
+import { files } from "./web_assets";
 
 const headers = {
   "Cache-Control": "no-store",
   "Content-Security-Policy":
-    "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+    "default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
   "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
@@ -44,21 +41,32 @@ export class Remote {
     try {
       const url = new URL(request.url),
         path = url.pathname;
-      if (request.method === "GET" && ["/", "/app.js", "/app.css"].includes(path)) {
-        const css = Object.entries(colors)
-          .map(([key, rgb]) => `--${key.replaceAll("_", "-")}:rgb(${rgb.join(" ")});`)
-          .join("");
-        return new Response(path === "/" ? String(shell) : path === "/app.js" ? script : `:root{${css}}\n${style}`, {
-          headers: {
-            ...headers,
-            "Content-Type":
-              path === "/"
-                ? "text/html; charset=utf-8"
-                : path === "/app.js"
-                  ? "text/javascript; charset=utf-8"
-                  : "text/css; charset=utf-8",
-          },
-        });
+      if (request.method === "GET") {
+        const route = /^(\/|\/agents\/[1-9]\d{0,9}|\/new|\/settings)$/.test(path);
+        const asset = route ? files["/index.html"] : Object.hasOwn(files, path) ? files[path] : undefined;
+        // Compatibility aliases for previously opened pages.
+        const alias =
+          path === "/app.js"
+            ? Object.keys(files).find(p => p.endsWith(".js"))
+            : path === "/app.css"
+              ? Object.keys(files).find(p => p.endsWith(".css"))
+              : undefined;
+        const file = asset ?? (alias ? files[alias] : undefined);
+        if (file)
+          return new Response(Bun.file(file), {
+            headers: {
+              ...headers,
+              "Content-Type": file.endsWith(".woff2")
+                ? "font/woff2"
+                : route
+                  ? "text/html; charset=utf-8"
+                  : path.endsWith(".js")
+                    ? "text/javascript; charset=utf-8"
+                    : path.endsWith(".css")
+                      ? "text/css; charset=utf-8"
+                      : Bun.file(file).type,
+            },
+          });
       }
       if (!path.startsWith("/api/")) return json({ error: "NotFound" }, 404);
       const origin = request.headers.get("Origin");
@@ -84,10 +92,35 @@ export class Remote {
       const device = this.auth.authenticate(token);
       this.limit.take(device, 180);
       if (request.method === "GET" && path === "/api/session") return json(await this.backend.list());
-      const pane = /^\/api\/panes\/([1-9]\d{0,9})\/(output|input)$/.exec(path);
+      if (request.method === "POST" && path === "/api/agents")
+        return json(await this.backend.create(launch(await this.body(request))));
+      const pane = /^\/api\/panes\/([1-9]\d{0,9})\/(output|input|terminal|conversation)$/.exec(path);
+      const readIdentity = () => {
+        const server = url.searchParams.get("server");
+        if (!server || !/^\d+$/.test(server) || !url.searchParams.has("conversation")) throw Error("InvalidInput");
+        return identity({
+          server: Number(server),
+          binding: url.searchParams.get("binding"),
+          conversation: url.searchParams.get("conversation"),
+        });
+      };
       if (pane && Number(pane[1]) <= 0xffffffff) {
+        if (request.method === "GET" && (pane[2] === "terminal" || pane[2] === "conversation")) {
+          const q = readIdentity();
+          if (pane[2] === "terminal") return json(await this.backend.terminal(Number(pane[1]), q));
+          const cursor = url.searchParams.get("cursor") ?? "",
+            direction = url.searchParams.get("direction") ?? "before";
+          if (cursor.length > 512 || !["before", "after"].includes(direction)) throw Error("InvalidInput");
+          return json({
+            ...(await this.backend.conversation(Number(pane[1]), q, cursor, direction as "before" | "after")),
+            ...q,
+            pane: Number(pane[1]),
+          });
+        }
         if (pane[2] === "output" && request.method === "GET")
-          return json({ text: await this.backend.read(Number(pane[1])) });
+          return json({
+            text: await this.backend.read(Number(pane[1]), url.searchParams.has("server") ? readIdentity() : undefined),
+          });
         if (pane[2] === "input" && request.method === "POST") {
           await this.backend.send(Number(pane[1]), input(await this.body(request)));
           return json({ ok: true });

@@ -29,11 +29,34 @@ test("private HTTP socket pairs, authenticates, restricts commands, and revokes 
   const backend: Backend = {
     list: async () => ({
       server: 123,
-      workspaces: [{ id: 1, name: "Work" }],
+      workspaces: [{ id: 1, name: "Work", order: 0 }],
       panes: [
-        { id: 2, workspace: 1, name: "Codex", state: "working", activity: "Reading", binding: "4", exited: false },
+        {
+          id: 2,
+          workspace: 1,
+          name: "Codex",
+          state: "working",
+          activity: "Reading",
+          binding: "4",
+          exited: false,
+          provider: "codex",
+          conversation: "thread",
+          branch: "main",
+          order: 0,
+          attention: "none",
+        },
       ],
     }),
+    terminal: async (_pane, q) => ({ ...q, pane: 2, cols: 80, rows: 1, lines: ["hello"] }),
+    conversation: async () => ({
+      availability: "available",
+      version: "v",
+      messages: [],
+      before: null,
+      after: null,
+      more: false,
+    }),
+    create: async q => ({ pane: 3, server: q.server, binding: "5", conversation: "new" }),
     read: async () => "<script>untrusted terminal content</script>",
     send: async (pane, input) => {
       sent.push({ pane, input });
@@ -94,7 +117,34 @@ test("private HTTP socket pairs, authenticates, restricts commands, and revokes 
       (await request("/api/panes/2/input", { server: 123, binding: "4", key: "enter" }, token, "https://evil.test"))
         .status,
     ).toBe(403);
+    const query = "?server=123&binding=4&conversation=thread";
+    expect((await request("/agents/2")).status).toBe(200);
+    expect((await request("/new")).status).toBe(200);
+    expect((await request("/settings")).status).toBe(200);
+    expect((await request("/arbitrary-route")).status).toBe(404);
+    expect((await request("/api/panes/2/terminal" + query, undefined, token)).status).toBe(200);
+    expect((await (await request("/api/panes/2/conversation" + query, undefined, token)).json()).conversation).toBe(
+      "thread",
+    );
+    expect((await request("/api/panes/2/terminal", undefined, token)).status).toBe(400);
+    expect(
+      (await request("/api/panes/2/conversation" + query + "&cursor=" + "x".repeat(513), undefined, token)).status,
+    ).toBe(400);
+    expect((await request("/api/panes/2/conversation" + query + "&direction=unknown", undefined, token)).status).toBe(
+      400,
+    );
+    expect((await request("/api/agents", { server: 123, workspace: 1, provider: "claude" }, token)).status).toBe(200);
+    for (const body of [
+      { server: 123, workspace: 1, provider: "opencode" },
+      { server: 123, workspace: 1, provider: "codex", cwd: "/private" },
+      { server: 123, workspace: 1, provider: "codex", command: "rm" },
+      { server: 123, workspace: 1, provider: "codex", account: "other" },
+    ])
+      expect((await request("/api/agents", body, token)).status).toBe(400);
     remote.auth.revoke(device);
+    expect((await request("/api/panes/2/terminal" + query, undefined, token)).status).toBe(401);
+    expect((await request("/api/panes/2/conversation" + query, undefined, token)).status).toBe(401);
+    expect((await request("/api/agents", { server: 123, workspace: 1, provider: "codex" }, token)).status).toBe(401);
     expect((await request("/api/session", undefined, token)).status).toBe(401);
     expect((await request("/api/panes/2/input", { server: 123, binding: "4", key: "enter" }, token)).status).toBe(401);
     expect(sent).toHaveLength(1);

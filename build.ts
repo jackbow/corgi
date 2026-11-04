@@ -2,6 +2,7 @@ import { basename } from "node:path";
 import { mkdirSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import * as translations from "./scripts/translations";
+import * as remoteWeb from "./scripts/remote_web";
 const root = import.meta.dir;
 function option(name: string, fallback = ""): string {
   const args = process.argv.slice(2),
@@ -68,6 +69,7 @@ if (!process.argv.includes("--no-native")) {
   if (status) process.exit(status);
 }
 if (process.argv.includes("--native-only")) process.exit(0);
+const webAssets = await remoteWeb.build();
 mkdirSync(`${root}/dist`, { recursive: true });
 const suffix = platform === "darwin" ? "dylib" : "so";
 const files = [`lib/libcorgi_term.${suffix}`, `lib/libcorgi_system.${suffix}`, "bin/pty-exec", "bin/corgi-hook"];
@@ -91,7 +93,8 @@ const outfile = option(
 );
 const sourceHash = createHash("sha256");
 for (const path of [...new Bun.Glob("{src,assets}/**/*").scanSync({ cwd: root, onlyFiles: true })].sort())
-  sourceHash.update(path).update(new Uint8Array(await Bun.file(`${root}/${path}`).arrayBuffer()));
+  if (!path.startsWith("src/remote/web/node_modules/") && !path.startsWith("src/remote/web/dist/"))
+    sourceHash.update(path).update(new Uint8Array(await Bun.file(`${root}/${path}`).arrayBuffer()));
 const sourceSHA256 = sourceHash.digest("hex");
 // The same inputs keep their first build's time, so the binary and the daemon's build id stay put.
 const inputsSHA256 = createHash("sha256")
@@ -121,6 +124,7 @@ const result = await Bun.build({
       setup(build) {
         build.onLoad({ filter: /\/build_assets\.ts$/ }, () => ({ contents: assets, loader: "ts" }));
         build.onLoad({ filter: /\/build_config\.ts$/ }, () => ({ contents: configSource, loader: "ts" }));
+        build.onLoad({ filter: /\/remote\/web_assets\.ts$/ }, () => ({ contents: webAssets, loader: "ts" }));
       },
     },
   ],

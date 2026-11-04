@@ -2,6 +2,7 @@ import { mkdirSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import * as tooling from "./scripts/tooling";
 import * as translations from "./scripts/translations";
+import * as remoteWeb from "./scripts/remote_web";
 
 const root = import.meta.dir;
 const [compiler, bunTypes, nodeTypes] = await tooling.packages("typecheck", {
@@ -44,5 +45,5 @@ const check = Bun.spawn(
   ],
   { cwd: root, stdout: "inherit", stderr: "inherit" },
 );
-const codes = await Promise.all([translated, check.exited, tooling.prettier("check")]);
+const codes = await Promise.all([translated, check.exited, tooling.prettier("check"), remoteWeb.command("typecheck")]);
 process.exitCode = codes.find(code => code !== 0) ?? 0;

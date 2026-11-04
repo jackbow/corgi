@@ -55,7 +55,14 @@ export async function packages(tool: string, versions: Record<string, string>): 
   return found as string[];
 }
 
-const sources = ["*.ts", "{src,tests,evals,tools,scripts,site}/**/*.ts"];
+const sources = [
+  "*.ts",
+  "{src,tests,evals,tools,scripts,site}/**/*.ts",
+  "src/remote/web/src/**/*.tsx",
+  "src/remote/web/src/*.css",
+  "src/remote/web/{package,tsconfig}.json",
+  "src/remote/web/index.html",
+];
 
 let installing: Promise<void> | null = null;
 
