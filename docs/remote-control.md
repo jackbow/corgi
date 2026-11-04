@@ -29,7 +29,8 @@ required: cellular plus Tailscale works.
    for approval. Each approval or denial prints a fresh single-use QR and links
    for another phone. Press Ctrl+C to close pairing. Approval is local only.
 4. Bookmark the address without its pairing fragment. Tap a workspace heading to
-   collapse its agents; counts, activity, and provider icons remain visible.
+   collapse its agents; agent counts and activity remain visible. Agent rows use
+   status icons, with smaller provider icons alongside branch details.
    Collapsed groups are remembered in this tab, and search reveals matching agents.
    Open an agent. Conversation is the default; switch to **Terminal** for
    interactive prompts. **Send** pastes the message and presses Enter. Return

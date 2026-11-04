@@ -32,8 +32,8 @@ it("keeps workspace overview visible when collapsed and remembers the choice acr
   for (const text of ["3 agents", "1 needs input", "1 working", "1 ready"])
     expect(within(workspace).getByText(text)).toBeTruthy();
   const toggle = within(workspace).getByRole("button");
-  expect(within(toggle).getByRole("img", { name: "Claude" })).toBeTruthy();
-  expect(within(toggle).getByRole("img", { name: "Codex" })).toBeTruthy();
+  expect(within(toggle).queryByRole("img", { name: "Claude" })).toBeNull();
+  expect(within(toggle).queryByRole("img", { name: "Codex" })).toBeNull();
   const updated = {
     ...fixtures.snapshot,
     panes: fixtures.snapshot.panes.map(pane => (pane.id === 1 ? { ...pane, exited: true } : pane)),
@@ -77,10 +77,33 @@ it("uses accessible provider artwork instead of provider text in agent rows", as
     const icon = within(row).getByRole("img", { name: provider });
     expect(icon.querySelector("path")!.getAttribute("d")!.length).toBeGreaterThan(100);
     expect(icon.querySelector("path")!.getAttribute("fill")).toBe("currentColor");
-    expect(row.querySelector(".metadata")!.textContent).not.toContain(provider);
+    expect(icon.closest(".metadata")).toBeTruthy();
+    expect(icon.getAttribute("width")).toBe("12");
   }
   await userEvent.click(screen.getByRole("button", { name: /Tidy up empty states/ }));
   expect(p.open).toHaveBeenCalledWith(2);
+});
+
+it("leads each agent with its current status and keeps provider identity in metadata", () => {
+  const p = props(),
+    { rerender } = render(<Home {...p} />);
+  const working = screen.getByRole("button", { name: /Fix input overflow/ });
+  const waiting = screen.getByRole("button", { name: /Tidy up empty states/ });
+  const ready = screen.getByRole("button", { name: /Update icon size/ });
+  expect(working.firstElementChild).toBe(within(working).getByRole("img", { name: "Working" }));
+  expect(waiting.firstElementChild).toBe(within(waiting).getByRole("img", { name: "Needs input" }));
+  expect(ready.firstElementChild).toBe(within(ready).getByRole("img", { name: "Ready" }));
+  expect(within(working).getByRole("img", { name: "Codex" }).closest(".metadata")).toBeTruthy();
+  rerender(
+    <Home
+      {...p}
+      data={{
+        ...p.data,
+        panes: p.data.panes.map(pane => (pane.id === 1 ? { ...pane, exited: true, attention: "needs_input" } : pane)),
+      }}
+    />,
+  );
+  expect(working.firstElementChild).toBe(within(working).getByRole("img", { name: "Ended" }));
 });
 
 it("collapses groups even when stored preferences are malformed or unavailable", async () => {

@@ -17,8 +17,8 @@ export function ProviderIcon({ provider }: { provider: Pane["provider"] }) {
       role="img"
       aria-label={label}
       viewBox="0 0 24 24"
-      width="20"
-      height="20"
+      width="12"
+      height="12"
     >
       <title>{label}</title>
       <path d={paths[provider]} fill="currentColor" />

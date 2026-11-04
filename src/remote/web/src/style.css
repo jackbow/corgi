@@ -235,23 +235,6 @@ textarea::placeholder {
   gap: 8px 12px;
   margin-top: 10px;
 }
-.workspace-providers {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--muted);
-}
-.workspace-providers > span {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.workspace-providers .provider-icon {
-  width: 16px;
-  height: 16px;
-}
 .workspace-chevron {
   color: var(--muted);
   flex-shrink: 0;
@@ -280,15 +263,10 @@ textarea::placeholder {
 }
 .provider-icon {
   flex-shrink: 0;
+  color: var(--muted);
 }
-.provider-icon.claude {
-  color: var(--warm);
-}
-.provider-icon.codex {
-  color: var(--accent);
-}
-.agent-row > .provider-icon {
-  margin-top: 2px;
+.status-icon {
+  margin-top: 1px;
 }
 .row-body {
   min-width: 0;

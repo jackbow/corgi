@@ -8,6 +8,10 @@ import {
   Search,
   ChevronRight,
   ChevronDown,
+  CirclePlay,
+  CircleAlert,
+  CircleCheck,
+  CircleStop,
 } from "lucide-react";
 import type { Pane, Snapshot } from "./types";
 import { ProviderIcon } from "./provider_icon";
@@ -27,6 +31,7 @@ export function Back({ go }: { go: () => void }) {
 }
 type State = "waiting" | "working" | "ready" | "ended";
 const labels: Record<State, string> = { waiting: "Needs input", working: "Working", ready: "Ready", ended: "Ended" };
+const icons = { waiting: CircleAlert, working: CirclePlay, ready: CircleCheck, ended: CircleStop };
 function state(pane: Pane): State {
   if (pane.exited) return "ended";
   if (pane.attention === "needs_input" || pane.state === "blocked") return "waiting";
@@ -39,6 +44,11 @@ export function Status({ pane }: { pane: Pane }) {
       <span aria-hidden="true">{value === "waiting" ? "●" : value === "working" ? "▶" : "○"}</span> {labels[value]}
     </span>
   );
+}
+function StatusIcon({ pane }: { pane: Pane }) {
+  const value = state(pane),
+    Icon = icons[value];
+  return <Icon className={`status status-icon ${value}`} size={22} role="img" aria-label={labels[value]} />;
 }
 function Overview({ panes }: { panes: Pane[] }) {
   const counts = { waiting: 0, working: 0, ready: 0, ended: 0 };
@@ -166,32 +176,24 @@ export function Home({
                       <Overview panes={w.panes} />
                     </span>
                   </span>
-                  <span className="workspace-providers">
-                    {(["codex", "claude"] as const).map(provider => {
-                      const count = w.panes.filter(p => p.provider === provider).length;
-                      return count ? (
-                        <span key={provider}>
-                          <ProviderIcon provider={provider} />
-                          {count}
-                        </span>
-                      ) : null;
-                    })}
-                  </span>
                   <ChevronDown size={16} className={`workspace-chevron ${expanded ? "expanded" : ""}`} />
                 </button>
               </h2>
               <div id={contentId} hidden={!expanded} className="workspace-agents">
                 {w.panes.map(p => (
                   <button className="agent-row" key={p.id} onClick={() => open(p.id)}>
-                    <ProviderIcon provider={p.provider} />
+                    <StatusIcon pane={p} />
                     <div className="row-body">
                       <div className="agent-name">{p.name}</div>
-                      {p.branch && (
-                        <div className="metadata branch">
-                          <GitBranch size={12} />
-                          {p.branch}
-                        </div>
-                      )}
+                      <div className="metadata">
+                        <ProviderIcon provider={p.provider} />
+                        {p.branch && (
+                          <span className="branch">
+                            <GitBranch size={12} />
+                            {p.branch}
+                          </span>
+                        )}
+                      </div>
                       <div className="activity">
                         <Status pane={p} />
                         <span className="truncate">{p.activity}</span>
