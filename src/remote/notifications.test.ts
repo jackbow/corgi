@@ -35,15 +35,19 @@ const subscription = {
 test("agent alerts follow waiting transitions and completion receipts without unread or polling duplicates", () => {
   const tracker = new Changes();
   expect(tracker.update(snapshot({ attention: "finished", completion: "8" }))).toEqual([]);
-  expect(tracker.update(snapshot({ attention: "needs_input", completion: "8" }))[0].body).toBe("Agent needs input.");
+  expect(tracker.update(snapshot({ attention: "needs_input", completion: "8" }))[0]).toMatchObject({
+    title: "needs input",
+    body: "Agent",
+  });
   expect(tracker.update(snapshot({ attention: "needs_input", completion: "8" }))).toEqual([]);
-  expect(tracker.update(snapshot({ state: "idle", attention: "finished", completion: "9" }))[0].body).toBe(
-    "Agent finished.",
-  );
+  expect(tracker.update(snapshot({ state: "idle", attention: "finished", completion: "9" }))[0]).toMatchObject({
+    title: "finished",
+    body: "Agent",
+  });
   expect(tracker.update(snapshot({ state: "idle", attention: "none", completion: "9" }))).toEqual([]);
   expect(tracker.update(snapshot({ state: "idle", attention: "finished", completion: "9" }))).toEqual([]);
   expect(tracker.update(snapshot({ completion: "10", outcome: "interrupted" }))).toEqual([]);
-  expect(tracker.update(snapshot({ completion: "11", outcome: "failed" }))[0].body).toContain("error");
+  expect(tracker.update(snapshot({ completion: "11", outcome: "failed" }))[0].title).toBe("failed");
   expect(tracker.update(snapshot({ completion: "12", conversation: "new" }))).toEqual([]);
   expect(tracker.update(snapshot({ completion: "13", conversation: "new", binding: "2" }))).toEqual([]);
   expect(tracker.update(snapshot({ completion: "14" }, 2))).toEqual([]);
@@ -144,6 +148,56 @@ test("the Mac polls and delivers without browser requests, then stops monitoring
     expect(errors).toEqual([]);
   } finally {
     service.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("alerts fetch a fresh response only on a transition and put its truncated preview below the agent name", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-push-preview-"));
+  let state = snapshot(),
+    reads = 0,
+    unavailable = false;
+  const sent: Alert[] = [];
+  const service = new Notifications(
+    join(dir, "push.json"),
+    "https://mac.example.ts.net:8443",
+    () => [{ id: "phone" }],
+    async () => state,
+    async (_target, _key, _origin, value) => {
+      sent.push(value as Alert);
+      return 201;
+    },
+    async (pane, identity) => {
+      reads++;
+      expect(pane).toBe(1);
+      expect(identity).toEqual({ server: 1, binding: "1", conversation: "thread" });
+      if (unavailable) throw Error("Unavailable");
+      return "Latest\n response " + "😀".repeat(300);
+    },
+  );
+  try {
+    service.subscribe("phone", subscription);
+    await service.tick();
+    expect(reads).toBe(0);
+    state = snapshot({ name: "context panel migration", completion: "1", state: "idle" });
+    await service.tick();
+    expect(sent[0].title).toBe("finished");
+    const [name, response] = sent[0].body.split("\n");
+    expect(name).toBe("context panel migration");
+    expect(response).toStartWith("Latest response ");
+    expect(response).toEndWith("…");
+    expect(response.length).toBeLessThanOrEqual(240);
+    expect(response.endsWith("\uD83D…")).toBe(false);
+    expect(Object.keys(sent[0]).sort()).toEqual(["body", "tag", "title", "url"]);
+    await service.tick();
+    expect(reads).toBe(1);
+    expect(sent).toHaveLength(1);
+    unavailable = true;
+    state = snapshot({ name: "context panel migration", completion: "2", state: "idle" });
+    await service.tick();
+    expect(sent[1].body).toBe("context panel migration");
+    expect(sent[1].title).toBe("finished");
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

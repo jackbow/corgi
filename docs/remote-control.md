@@ -163,9 +163,11 @@ Notifications can be disabled in Corgi or in the device’s notification setting
 The Mac’s remote service watches for agents needing input and new completion
 receipts even while the phone app is closed. Existing statuses establish a
 baseline on startup; reopening Corgi or marking a reply unread does not resend old
-alerts. Alerts include the agent name and status, with a link back to the same
+alerts. Alerts show the status as their title, followed by the agent name and a
+truncated preview of the latest assistant response, with a link back to the same
 pane and conversation. Input prompts open Terminal; notifications never approve
-prompts. They do not include transcript content.
+prompts. If the transcript is unavailable, the response preview is omitted.
+iOS may also display its own app attribution, which the website cannot remove.
 
 The Mac must be awake, Corgi and remote control running, and both devices need
 internet access to the browser’s push service. Apple Web Push uses outbound

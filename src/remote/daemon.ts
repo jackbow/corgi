@@ -120,6 +120,7 @@ export function input(value: unknown): Input {
 export interface Backend {
   list(): Promise<Snapshot>;
   activity?(): Promise<Snapshot>;
+  lastResponse?(pane: number, identity: Identity): Promise<string>;
   read(pane: number, identity?: Identity): Promise<string>;
   send(pane: number, input: Input): Promise<void>;
   terminal(pane: number, identity: Identity): Promise<Terminal>;
@@ -128,6 +129,7 @@ export interface Backend {
 }
 export class Daemon implements Backend {
   private reader = new Reader();
+  private responseReader = new Reader();
   private previews = new Previews();
   constructor(private socket: string) {}
   private async withConnection<T>(fn: (connection: Connection) => Promise<T>): Promise<T> {
@@ -197,6 +199,17 @@ export class Daemon implements Backend {
         : { availability: "unavailable" as const, version: "", messages: [], before: null, after: null, more: false };
       await this.checked(c, pane, q);
       return result;
+    });
+  }
+  async lastResponse(pane: number, q: Identity): Promise<string> {
+    return this.withConnection(async c => {
+      const { raw, p } = await this.checked(c, pane, q),
+        record = raw.panes.find(p => p.id === pane);
+      const result = p.provider
+        ? await this.responseReader.preview(record?.agent.transcript ?? "", p.provider, q.conversation)
+        : null;
+      await this.checked(c, pane, q);
+      return result?.availability === "available" ? (result.messages[0]?.text ?? "") : "";
     });
   }
   async create(q: Launch): Promise<{ pane: number } & Identity> {

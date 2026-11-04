@@ -156,6 +156,8 @@ test("surface and conversation reads are bound before and after, and launches us
     pane.agent.session = "thread";
     expect((await daemon.terminal(2, q)).lines).toEqual(["\x1b[32mhello\x1b[0m"]);
     expect((await daemon.conversation(2, q, "", "before")).messages[0].text).toBe("Hello");
+    expect(await daemon.lastResponse(2, q)).toBe("Hello");
+    await expect(daemon.lastResponse(2, { ...q, conversation: "old" })).rejects.toThrow("PaneChanged");
     expect(await daemon.read(2, q)).toBe("history");
     await expect(daemon.conversation(2, { ...q, conversation: "old" }, "", "before")).rejects.toThrow("PaneChanged");
     await expect(daemon.terminal(2, { ...q, server: 99 })).rejects.toThrow("PaneChanged");
