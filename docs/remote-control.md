@@ -98,7 +98,7 @@ incrementally without a total file-size or record-count limit. The first read
 shows indexing progress; subsequent reads process only appended bytes. The index
 retains file offsets and Claude ancestry, with a small cache of recent message
 bodies. Reads scan at most 8 MiB in 256 KiB chunks per request and return the
-latest 10 messages. The phone refreshes this recent window without
+latest 20 messages, including tool activity. The phone refreshes this recent window without
 loading older history. It renders only rows near the viewport, preserving the
 reading position while messages remain in the window or change height.
 
