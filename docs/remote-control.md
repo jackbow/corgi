@@ -28,8 +28,10 @@ required: cellular plus Tailscale works.
    approve. Pairing stays open while the command runs, including while waiting
    for approval. Each approval or denial prints a fresh single-use QR and links
    for another phone. Press Ctrl+C to close pairing. Approval is local only.
-4. Bookmark the address without its pairing fragment. Search your workspace groups
-   and open an agent. Conversation is the default; switch to **Terminal** for
+4. Bookmark the address without its pairing fragment. Tap a workspace heading to
+   collapse its agents; counts, activity, and provider icons remain visible.
+   Collapsed groups are remembered in this tab, and search reveals matching agents.
+   Open an agent. Conversation is the default; switch to **Terminal** for
    interactive prompts. **Send** pastes the message and presses Enter. Return
    inserts a newline; **Paste without Enter** only pastes. Drafts stay in this tab,
    separately for each pane and conversation. Terminal keys include Enter, arrows,
