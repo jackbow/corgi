@@ -285,21 +285,6 @@ export function NewScreen() {
     </>
   );
 }
-function merge(previous: Conversation | undefined, next: Conversation, older = false): Conversation {
-  if (next.availability === "indexing" && previous?.availability === "available" && previous.version === next.version)
-    return { ...previous, progress: next.progress };
-  if (!previous || !previous.messages.length || previous.version !== next.version || next.availability !== "available")
-    return next;
-  const messages = new Map(
-    (older ? [...next.messages, ...previous.messages] : [...previous.messages, ...next.messages]).map(m => [m.id, m]),
-  );
-  return {
-    ...next,
-    messages: [...messages.values()],
-    before: older ? next.before : previous.before,
-    after: older ? previous.after : next.after,
-  };
-}
 export function AgentScreen() {
   const { pane: id } = useParams({ strict: false }),
     search = useSearch({ strict: false }) as { view?: "terminal" | "conversation" },
@@ -362,17 +347,12 @@ function AgentData({
     enabled: mode === "conversation" && !pane.exited,
     queryFn: async ({ signal }) => {
       const prior = cache.getQueryData<Conversation>(key);
-      let next = await transport.conversation(pane.id, id, prior?.after ?? "", "after", signal);
-      if (next.availability === "replaced") return transport.conversation(pane.id, id, "", "before", signal);
-      return merge(cache.getQueryData<Conversation>(key), next);
+      const next = await transport.conversation(pane.id, id, "", "before", signal);
+      if (next.availability === "indexing" && prior?.availability === "available" && prior.version === next.version)
+        return { ...prior, progress: next.progress };
+      return next;
     },
     refetchInterval: 1000,
-    retry: 1,
-  });
-  const older = useQuery({
-    queryKey: [...key, "older", conversation.data?.before],
-    enabled: false,
-    queryFn: ({ signal }) => transport.conversation(pane.id, id, conversation.data?.before ?? "", "before", signal),
     retry: 1,
   });
   const surface = useQuery({
@@ -426,16 +406,6 @@ function AgentData({
         void cache.invalidateQueries({ queryKey: key });
         void surface.refetch();
       }}
-      older={() => {
-        void older.refetch().then(result => {
-          if (result.data?.availability === "available")
-            cache.setQueryData<Conversation>(key, prior =>
-              prior?.version === result.data!.version ? merge(prior, result.data!, true) : prior,
-            );
-          else if (result.data?.availability === "replaced") void cache.invalidateQueries({ queryKey: key });
-        });
-      }}
-      olderPending={older.isFetching}
       terminalKey={key => {
         if (lock.current || inputPending) return;
         lock.current = true;

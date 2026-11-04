@@ -259,10 +259,10 @@ it("retains edits made after leaving and returning to a pane during a send", asy
   expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("submitted edited");
   expect(api.send).toHaveBeenCalledTimes(1);
 });
-it("replaces abandoned conversation history rather than merging it after a cursor reset", async () => {
+it("replaces the recent window when the active conversation branch changes", async () => {
   const api = client();
   let read = 0;
-  api.conversation = vi.fn<Client["conversation"]>(async (_p, _id, cursor) => {
+  api.conversation = vi.fn<Client["conversation"]>(async () => {
     read++;
     if (read === 1)
       return {
@@ -270,7 +270,6 @@ it("replaces abandoned conversation history rather than merging it after a curso
         messages: [{ id: "old", role: "assistant", text: "Abandoned branch" }],
         after: "fixture:old",
       };
-    if (cursor) return { ...fixtures.conversation, availability: "replaced", messages: [] };
     return {
       ...fixtures.conversation,
       messages: [{ id: "new", role: "assistant", text: "Active branch" }],
@@ -285,35 +284,48 @@ it("replaces abandoned conversation history rather than merging it after a curso
   await screen.findByText("Active branch");
   expect(screen.queryByText("Abandoned branch")).toBeNull();
 });
-it("keeps earlier messages when polling and appends amended stable IDs once", async () => {
+it("shows only the latest window, refreshes amendments, and offers no history loading", async () => {
   const api = client();
   let reads = 0;
-  api.conversation = vi.fn<Client["conversation"]>(async (_p, _id, _cursor, direction) => {
-    if (direction === "before")
-      return {
-        ...fixtures.conversation,
-        messages: [{ id: "earlier", role: "user", text: "Earlier prompt" }],
-        before: null,
-      };
+  const messages: Conversation["messages"] = Array.from({ length: 9 }, (_, i) => ({
+    id: String(i),
+    role: "user",
+    text: "Prompt " + i,
+  }));
+  api.conversation = vi.fn<Client["conversation"]>(async () => {
     reads++;
+    const current: Conversation["messages"][number] = {
+      id: "current",
+      role: "assistant",
+      text: reads === 1 ? "Initial" : "Amended",
+    };
     return {
       ...fixtures.conversation,
-      messages: [{ id: "current", role: "assistant", text: reads === 1 ? "Initial" : "Amended" }],
+      messages:
+        reads === 1
+          ? [...messages, current]
+          : [...messages.slice(1), current, { id: "new", role: "assistant", text: "Latest reply" }],
       before: "fixture:current",
       after: "fixture:current",
     };
   });
   const { queries } = app(api, "/agents/1");
   await screen.findByText("Initial");
-  await userEvent.click(screen.getByRole("button", { name: "Load earlier messages" }));
-  await screen.findByText("Earlier prompt");
+  expect(screen.queryByRole("button", { name: "Load earlier messages" })).toBeNull();
   await act(async () => {
     await queries.invalidateQueries({ queryKey: ["conversation"] });
   });
   await screen.findByText("Amended");
+  await screen.findByText("Latest reply");
   expect(screen.queryByText("Initial")).toBeNull();
   expect(screen.getAllByText("Amended")).toHaveLength(1);
-  expect(screen.getByText("Earlier prompt")).toBeTruthy();
+  const data = queries.getQueriesData<Conversation>({ queryKey: ["conversation"] })[0][1]!;
+  expect(data.messages).toHaveLength(10);
+  expect(data.messages[0].id).toBe("1");
+  for (const call of vi.mocked(api.conversation).mock.calls) {
+    expect(call[2]).toBe("");
+    expect(call[3]).toBe("before");
+  }
 });
 
 it("restores terminal attributes, indexed colors, and inverse colors", () => {

@@ -90,9 +90,10 @@ hidden reasoning, and provider metadata are omitted. Transcripts are indexed
 incrementally without a total file-size or record-count limit. The first read
 shows indexing progress; subsequent reads process only appended bytes. The index
 retains file offsets and Claude ancestry, with a small cache of recent message
-bodies. Reads scan at most 8 MiB in 256 KiB chunks per request and return 40 messages
-per page. The phone renders only rows near the viewport, preserving the reading
-position when history is loaded or messages change height.
+bodies. Reads scan at most 8 MiB in 256 KiB chunks per request and return the
+latest 10 messages. The phone refreshes this recent window without
+loading older history. It renders only rows near the viewport, preserving the
+reading position while messages remain in the window or change height.
 
 Long messages are shortened independently. Unusually complex individual records
 that exceed the decoded-record budget are omitted with a notice; uncached records

@@ -82,16 +82,20 @@ test("bounded pagination, incremental complete records, replacement and invalid 
   try {
     write([head, ...Array.from({ length: 95 }, (_, i) => item(`Message ${i}`, String(i)))]);
     const page = await reader.read(file, "codex", "thread");
-    expect(page.messages).toHaveLength(40);
-    expect(page.messages[0].text).toBe("Message 55");
+    expect(page.messages).toHaveLength(10);
+    expect(page.messages[0].text).toBe("Message 85");
     const earlier = await reader.read(file, "codex", "thread", page.before!);
-    expect(earlier.messages[0].text).toBe("Message 15");
+    expect(earlier.messages[0].text).toBe("Message 75");
     appendFileSync(file, JSON.stringify(item("Appended", "95")).slice(0, -1));
     expect((await reader.read(file, "codex", "thread", page.after!, "after")).messages.map(m => m.text)).toEqual([
       "Message 94",
     ]);
     appendFileSync(file, "}\n");
     expect((await reader.read(file, "codex", "thread", page.after!, "after")).messages.at(-1)!.text).toBe("Appended");
+    const latest = await reader.read(file, "codex", "thread");
+    expect(latest.messages).toHaveLength(10);
+    expect(latest.messages[0].text).toBe("Message 86");
+    expect(latest.messages.at(-1)!.text).toBe("Appended");
     renameSync(file, join(dir, "old"));
     write([head, item("Replacement", "r")]);
     expect((await reader.read(file, "codex", "thread", page.after!, "after")).availability).toBe("replaced");
@@ -182,10 +186,10 @@ test("indexes beyond old file/record caps in bounded steps and lazily pages old 
       page = await reader.read(file, "codex", "thread");
     }
     expect(page.availability).toBe("available");
-    expect(page.messages[0].id).toBe("message:59960");
+    expect(page.messages[0].id).toBe("message:59990");
     expect(page.messages.at(-1)!.id).toBe("message:59999");
     const old = await reader.read(file, "codex", "thread", `${page.version}:message:200`);
-    expect(old.messages[0].id).toBe("message:160");
+    expect(old.messages[0].id).toBe("message:190");
     expect(old.messages.at(-1)!.text).toBe(`199: ${"x".repeat(300)}`);
     appendFileSync(file, JSON.stringify(item("latest", "60000")) + "\n");
     const update = await reader.read(file, "codex", "thread", page.after!, "after");
