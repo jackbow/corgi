@@ -149,6 +149,21 @@ else if (args[0] === "serve") {
     );
     const html = await (await this.api(`/agents/${pane}`)).text();
     this.assertIn('id="root"', html);
+    this.assertIn('rel="manifest"', html);
+    const manifest = await this.api("/manifest.webmanifest");
+    this.assertEqual(manifest.status, 200);
+    this.assertIn("application/manifest+json", manifest.headers.get("Content-Type") ?? "");
+    this.assertEqual((await manifest.json()).display, "standalone");
+    const worker = await this.api("/sw.js");
+    this.assertIn("javascript", worker.headers.get("Content-Type") ?? "");
+    const workerSource = await worker.text();
+    this.assertIn('addEventListener("push"', workerSource);
+    this.assertNotIn('addEventListener("fetch"', workerSource);
+    this.assertEqual((await this.api("/apple-touch-icon.png")).status, 200);
+    this.assertEqual((await this.api("/api/push")).status, 401);
+    const notifications = await (await this.api("/api/push", undefined, token)).json();
+    this.assertEqual(notifications.enabled, false);
+    this.assertEqual(notifications.publicKey.length, 87);
     for (const match of html.matchAll(/(?:src|href)="(\/assets\/[^\"]+)"/g)) {
       const asset = await this.api(match[1]);
       this.assertEqual(asset.status, 200);

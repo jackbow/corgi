@@ -8,6 +8,8 @@ import { Daemon } from "./daemon";
 import { Remote, listen, redirect } from "./server";
 import * as tailscale from "./tailscale";
 import * as pairing from "./pair";
+import { Failure } from "../failure";
+import { getLogger } from "../log";
 
 export const help = `Corgi remote control (Tailscale only)
   corgi remote start       start background service and Tailscale HTTPS on port 8443
@@ -61,7 +63,8 @@ async function serve(socket: string, origin: string) {
   }
   let http: ReturnType<typeof listen> | undefined,
     local: ReturnType<typeof listen> | undefined,
-    gateway: ReturnType<typeof listen> | undefined;
+    gateway: ReturnType<typeof listen> | undefined,
+    remote: Remote | undefined;
   try {
     for (const path of [p.http, p.redirect, p.control])
       try {
@@ -69,8 +72,13 @@ async function serve(socket: string, origin: string) {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
-    const remote = new Remote(p.devices, origin, new Daemon(socket));
-    http = listen(p.http, request => remote.fetch(request));
+    const service = new Remote(p.devices, origin, new Daemon(socket));
+    remote = service;
+    const failures = new Failure();
+    service.notifications.start(error => {
+      if (failures.changed(error)) getLogger("remote").warn("Phone notification delivery unavailable");
+    });
+    http = listen(p.http, request => service.fetch(request));
     gateway = listen(p.redirect, async request => redirect(request, origin));
     local = listen(p.control, async request => {
       try {
@@ -81,23 +89,24 @@ async function serve(socket: string, origin: string) {
               origin,
               pid: process.pid,
               remote_protocol: pairing.remoteProtocol,
-              devices: remote.auth.list(),
+              devices: service.auth.list(),
             });
           case "pair":
-            return Response.json(remote.auth.mint());
+            return Response.json(service.auth.mint());
           case "pair.renew":
-            remote.auth.renew(str(body, "id"));
+            service.auth.renew(str(body, "id"));
             return Response.json({ ok: true });
           case "pair.close":
-            remote.auth.close(str(body, "id"));
+            service.auth.close(str(body, "id"));
             return Response.json({ ok: true });
           case "pending":
-            return Response.json({ pending: remote.auth.pending() });
+            return Response.json({ pending: service.auth.pending() });
           case "approve":
-            remote.auth.approve(str(body, "claim"), str(body, "code"), field(body, "allow") === true);
+            service.auth.approve(str(body, "claim"), str(body, "code"), field(body, "allow") === true);
             return Response.json({ ok: true });
           case "revoke":
-            remote.auth.revoke(str(body, "device"));
+            service.auth.revoke(str(body, "device"));
+            service.notifications.remove(str(body, "device"));
             return Response.json({ ok: true });
           case "stop":
             setTimeout(() => process.emit("SIGTERM"), 50);
@@ -121,6 +130,7 @@ async function serve(socket: string, origin: string) {
       process.on("SIGHUP", stop);
     });
   } finally {
+    remote?.notifications.stop();
     await http?.stop(true);
     await gateway?.stop(true);
     await local?.stop(true);

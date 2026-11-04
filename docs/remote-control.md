@@ -147,3 +147,31 @@ Desktop emulation does not establish iPhone behavior.
 
 The architecture follows Herdr's separate mobile service and explicit local
 pairing flow; this implementation does not copy its Rust server or web assets.
+
+### Phone notifications
+
+On iOS/iPadOS 16.4 or later, use Safari’s **Share → Add to Home Screen**, then
+open Corgi from that icon. Pair the Home Screen app if requested. In **Settings →
+Notifications**, tap **Enable notifications** and allow the system prompt. Use
+**Send test notification** to check delivery, including with the screen locked.
+Notifications can be disabled in Corgi or in the device’s notification settings.
+
+The Mac’s remote service watches for agents needing input and new completion
+receipts even while the phone app is closed. Existing statuses establish a
+baseline on startup; reopening Corgi or marking a reply unread does not resend old
+alerts. Alerts include the agent name and status, with a link back to the same
+pane and conversation. Input prompts open Terminal; notifications never approve
+prompts. They do not include transcript content.
+
+The Mac must be awake, Corgi and remote control running, and both devices need
+internet access to the browser’s push service. Apple Web Push uses outbound
+HTTPS; the Mac stays private behind Tailscale. Tailscale is needed to enroll and
+open conversations, but a received push contains everything needed to display
+its notification. Delivery is subject to iOS Focus and notification settings.
+
+Push keys and subscriptions are saved privately alongside the paired-device
+store (`devices.json.push`). Revoking or forgetting a phone disables its
+notifications; expired subscriptions are removed. The service worker handles
+push and notification clicks only, and does not cache authenticated content for
+offline use. A failed delivery is not replayed; check the Mac’s remote-service
+log if a test notification fails.

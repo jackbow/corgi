@@ -25,7 +25,10 @@ export function snapshot(value: unknown): Snapshot {
       .filter(p => field(p, "dormant") !== true)
       .map(p => {
         const agent = field(p, "agent"),
-          binding = field(p, "binding");
+          binding = field(p, "binding"),
+          observation = field(agent, "observation"),
+          completion = field(observation, "completed"),
+          outcome = str(observation, "outcome");
         if (typeof binding !== "bigint" && (typeof binding !== "number" || !Number.isSafeInteger(binding)))
           throw Error("InvalidSnapshot");
         return {
@@ -39,6 +42,11 @@ export function snapshot(value: unknown): Snapshot {
           provider: provider(str(agent, "provider")),
           conversation: str(agent, "session"),
           attention: str(agent, "attention"),
+          completion:
+            typeof completion === "bigint" || (typeof completion === "number" && Number.isSafeInteger(completion))
+              ? String(completion)
+              : undefined,
+          outcome: outcome === "completed" || outcome === "interrupted" || outcome === "failed" ? outcome : undefined,
           branch: branch(value, p),
           order: displayOrder(value, p),
         };
@@ -111,6 +119,7 @@ export function input(value: unknown): Input {
 }
 export interface Backend {
   list(): Promise<Snapshot>;
+  activity?(): Promise<Snapshot>;
   read(pane: number, identity?: Identity): Promise<string>;
   send(pane: number, input: Input): Promise<void>;
   terminal(pane: number, identity: Identity): Promise<Terminal>;
@@ -141,6 +150,9 @@ export class Daemon implements Backend {
       data.panes.map(pane => ({ pane, file: files.get(pane.id) ?? "" })),
     );
     return { ...data, panes: data.panes.map(pane => ({ ...pane, lastResponse: values.get(pane.id) })) };
+  }
+  async activity() {
+    return this.withConnection(async c => snapshot(await c.call("session.snapshot")));
   }
   async read(pane: number, q?: Identity) {
     return this.withConnection(async c => {

@@ -3,11 +3,12 @@ import { Auth } from "./auth";
 import { identity, input, launch, type Backend } from "./daemon";
 import { str } from "../json";
 import { files } from "./web_assets";
+import { Notifications } from "./notifications";
 
 const headers = {
   "Cache-Control": "no-store",
   "Content-Security-Policy":
-    "default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+    "default-src 'none'; script-src 'self'; worker-src 'self'; manifest-src 'self'; img-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
   "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
@@ -29,6 +30,7 @@ export class Limit {
 }
 export class Remote {
   readonly auth: Auth;
+  readonly notifications: Notifications;
   private limit = new Limit();
   constructor(
     file: string,
@@ -36,6 +38,12 @@ export class Remote {
     private backend: Backend,
   ) {
     this.auth = new Auth(file, origin);
+    this.notifications = new Notifications(
+      `${file}.push`,
+      origin,
+      () => this.auth.list(),
+      () => this.backend.activity?.() ?? this.backend.list(),
+    );
   }
   async fetch(request: Request): Promise<Response> {
     try {
@@ -47,9 +55,9 @@ export class Remote {
         // Compatibility aliases for previously opened pages.
         const alias =
           path === "/app.js"
-            ? Object.keys(files).find(p => p.endsWith(".js"))
+            ? Object.keys(files).find(p => p.startsWith("/assets/") && p.endsWith(".js"))
             : path === "/app.css"
-              ? Object.keys(files).find(p => p.endsWith(".css"))
+              ? Object.keys(files).find(p => p.startsWith("/assets/") && p.endsWith(".css"))
               : undefined;
         const file = asset ?? (alias ? files[alias] : undefined);
         if (file)
@@ -64,7 +72,9 @@ export class Remote {
                     ? "text/javascript; charset=utf-8"
                     : path.endsWith(".css")
                       ? "text/css; charset=utf-8"
-                      : Bun.file(file).type,
+                      : path.endsWith(".webmanifest")
+                        ? "application/manifest+json"
+                        : Bun.file(file).type,
             },
           });
       }
@@ -92,6 +102,18 @@ export class Remote {
       const device = this.auth.authenticate(token);
       this.limit.take(device, 180);
       if (request.method === "GET" && path === "/api/session") return json(await this.backend.list());
+      if (request.method === "GET" && path === "/api/push") return json(this.notifications.status(device));
+      if (request.method === "POST" && path === "/api/push") {
+        const body = await this.body(request);
+        if (body === null) this.notifications.remove(device);
+        else this.notifications.subscribe(device, body);
+        return json(this.notifications.status(device));
+      }
+      if (request.method === "POST" && path === "/api/push/test") {
+        this.limit.take(`push-test:${device}`, 5);
+        await this.notifications.test(device);
+        return json({ ok: true });
+      }
       if (request.method === "POST" && path === "/api/agents")
         return json(await this.backend.create(launch(await this.body(request))));
       const pane = /^\/api\/panes\/([1-9]\d{0,9})\/(output|input|terminal|conversation)$/.exec(path);
@@ -140,6 +162,10 @@ export class Remote {
           "PaneChanged",
           "InvalidSnapshot",
           "InvalidBody",
+          "InvalidSubscription",
+          "SubscriptionInUse",
+          "NotificationsDisabled",
+          "SubscriptionExpired",
         ].includes(name)
       )
         return json({ error: name }, 400);

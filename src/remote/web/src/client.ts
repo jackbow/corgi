@@ -70,7 +70,7 @@ async function login() {
   );
   token = (await request<{ token: string }>("/api/session", { nonce, signature }, undefined, false)).token;
 }
-async function authenticated<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+export async function authenticated<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   if (!token) {
     loginPending ??= login().finally(() => {
       loginPending = undefined;

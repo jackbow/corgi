@@ -740,6 +740,14 @@ pre {
   line-height: 1.6;
   font-size: 14px;
 }
+.notification-settings {
+  margin-top: 32px;
+}
+.notification-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .appearance-toggle {
   width: 100%;
   min-height: 64px;

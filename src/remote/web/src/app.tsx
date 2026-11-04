@@ -7,6 +7,7 @@ import { Back, Button, Empty, Home } from "./ui";
 import { claim, finishPair, stored, RequestError, type Client } from "./client";
 import type { Conversation, Pane, Snapshot } from "./types";
 import { pureBlack, setPureBlack } from "./appearance";
+import { NotificationSettings, disableNotifications } from "./notifications";
 
 export let transport: Client;
 export function configure(client: Client) {
@@ -159,7 +160,8 @@ export function Pairing() {
 }
 export function SettingsScreen() {
   const navigate = useNavigate(),
-    [black, setBlack] = useState(pureBlack);
+    [black, setBlack] = useState(pureBlack),
+    [forgetError, setForgetError] = useState("");
   return (
     <>
       <header className="header">
@@ -189,6 +191,7 @@ export function SettingsScreen() {
             <span />
           </span>
         </button>
+        <NotificationSettings />
         <h2>Connection</h2>
         <p>Connected through Tailscale</p>
         <p className="muted break">{location.origin}</p>
@@ -199,12 +202,24 @@ export function SettingsScreen() {
         </p>
         <Button
           onClick={async () => {
-            await stored(null);
-            location.replace("/");
+            try {
+              await disableNotifications();
+              await stored(null);
+              location.replace("/");
+            } catch {
+              setForgetError(
+                "Couldn’t disable notifications. Reconnect and try again, or revoke this phone on your Mac.",
+              );
+            }
           }}
         >
           Forget this phone
         </Button>
+        {forgetError && (
+          <p className="notice" role="alert">
+            {forgetError}
+          </p>
+        )}
       </main>
     </>
   );
@@ -311,12 +326,16 @@ export function NewScreen() {
 }
 export function AgentScreen() {
   const { pane: id } = useParams({ strict: false }),
-    search = useSearch({ strict: false }) as { view?: "terminal" | "conversation" },
+    search = useSearch({ strict: false }) as { view?: "terminal" | "conversation"; notification?: string },
     navigate = useNavigate(),
     query = useSnapshot(1000),
     p = query.data?.panes.find(p => p.id === Number(id));
   if (query.error instanceof RequestError && query.error.status === 401) return <Pairing />;
-  if (!p)
+  if (
+    !p ||
+    (search.notification &&
+      search.notification !== JSON.stringify([query.data?.server, p.id, p.binding, p.conversation]))
+  )
     return (
       <>
         <header className="header">
