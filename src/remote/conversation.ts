@@ -42,7 +42,7 @@ interface Cached {
   version: string;
 }
 const MAX_TEXT = 16 * 1024,
-  PAGE = 40;
+  PAGE = 10;
 const CHUNK = 256 * 1024,
   SCAN_BYTES = 8 * 1024 * 1024,
   PAGE_BYTES = 8 * 1024 * 1024;

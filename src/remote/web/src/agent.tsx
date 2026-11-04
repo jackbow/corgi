@@ -168,8 +168,6 @@ export function Agent({
   mode,
   setMode,
   error,
-  older,
-  olderPending,
   terminalKey,
   keyPending,
   keyStatus,
@@ -184,8 +182,6 @@ export function Agent({
   mode: "conversation" | "terminal";
   setMode: (mode: "conversation" | "terminal") => void;
   error?: string;
-  older?: () => void;
-  olderPending?: boolean;
   terminalKey: (key: string) => void;
   keyPending: boolean;
   keyStatus: string;
@@ -226,13 +222,7 @@ export function Agent({
           )}
           <Tabs.Content value="conversation" className="tab-panel">
             {data?.availability === "available" && data.messages.length && !pane.exited ? (
-              <Messages
-                key={`${key}:${data.version}`}
-                id={`${key}:${data.version}`}
-                data={data}
-                older={older}
-                pending={olderPending}
-              />
+              <Messages key={`${key}:${data.version}`} id={`${key}:${data.version}`} data={data} />
             ) : (
               <ScrollContent id={`${key}:conversation`} revision={data}>
                 {pane.exited ? (

@@ -84,17 +84,7 @@ function Row({
   );
 }
 /** Measured variable-height rows; only the viewport and a small overscan are mounted. */
-export function Messages({
-  id,
-  data,
-  older,
-  pending,
-}: {
-  id: string;
-  data: Conversation;
-  older?: () => void;
-  pending?: boolean;
-}) {
+export function Messages({ id, data }: { id: string; data: Conversation }) {
   const ref = useRef<HTMLDivElement>(null),
     heights = useRef(new Map<string, number>()),
     anchor = useRef<Anchor>(positions.get(id) ?? { id: "", delta: 0, follow: true });
@@ -158,11 +148,6 @@ export function Messages({
   }, [id]);
   return (
     <div className="content-wrap conversation-wrap">
-      {data.before && (
-        <Button className="older" onClick={older} disabled={pending}>
-          {pending ? "Reading earlier messages…" : "Load earlier messages"}
-        </Button>
-      )}
       {data.omitted && (
         <p className="notice">
           Some unusually complex records could not be previewed. Full contents are available on your Mac.
