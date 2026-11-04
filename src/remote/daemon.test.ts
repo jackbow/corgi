@@ -206,3 +206,18 @@ test("saved dormant panes and headless sessions are excluded from the phone proj
   });
   expect(s.panes).toEqual([]);
 });
+
+test("phone activity preserves completion receipts beyond number precision and normalizes outcomes", () => {
+  const raw = {
+    server_pid: 1,
+    workspaces: [],
+    panes: [
+      { id: 1, binding: 2n, workspace: 1, agent: { observation: { completed: 9007199254740993n, outcome: "failed" } } },
+    ],
+  };
+  expect(snapshot(raw).panes[0]).toMatchObject({ completion: "9007199254740993", outcome: "failed" });
+  expect(
+    snapshot({ ...raw, panes: [{ ...raw.panes[0], agent: { observation: { completed: {}, outcome: "invalid" } } }] })
+      .panes[0].completion,
+  ).toBeUndefined();
+});

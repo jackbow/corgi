@@ -7,8 +7,10 @@ const routes = [
     getParentRoute: () => root,
     path: "/agents/$pane",
     component: AgentScreen,
-    validateSearch: (value: Record<string, unknown>) => ({
+    validateSearch: (value: Record<string, unknown>): { view: "terminal" | "conversation"; notification?: string } => ({
       view: value.view === "terminal" ? ("terminal" as const) : ("conversation" as const),
+      notification:
+        typeof value.notification === "string" && value.notification.length <= 512 ? value.notification : undefined,
     }),
   }),
   createRoute({ getParentRoute: () => root, path: "/new", component: NewScreen }),

@@ -10,8 +10,10 @@ import * as fixtures from "./fixtures";
 import "@fontsource-variable/geist";
 import "@fontsource-variable/fira-code";
 import "./style.css";
+import { pushSupported, registerPushWorker } from "./notifications";
 
 applyAppearance(pureBlack());
+if (pushSupported()) void registerPushWorker().catch(() => {});
 const fixture = import.meta.env.DEV ? new URLSearchParams(location.search).get("fixture") : null;
 const preview: Client = {
   list: async () => {

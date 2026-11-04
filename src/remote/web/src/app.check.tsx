@@ -470,3 +470,18 @@ it("toggles pure black in Settings and remembers it across navigation", async ()
   expect(window.localStorage.getItem("corgi-pure-black")).toBe("on");
   expect(document.documentElement.hasAttribute("data-pure-black")).toBe(true);
 });
+
+it("opens matching notification links and rejects links to a reused pane", async () => {
+  const identity = JSON.stringify([42, 1, "11", "thread-1"]);
+  const { router } = app(client(), `/agents/1?view=terminal&notification=${encodeURIComponent(identity)}`);
+  await screen.findByText("Allow this command?");
+  await act(async () => {
+    await router.navigate({
+      to: "/agents/$pane",
+      params: { pane: "1" },
+      search: { view: "conversation", notification: JSON.stringify([42, 1, "old", "old"]) },
+    });
+  });
+  await screen.findByText("Agent no longer available");
+  expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
+});

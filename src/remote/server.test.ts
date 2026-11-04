@@ -80,10 +80,15 @@ test("private HTTP socket pairs, authenticates, restricts commands, and revokes 
     expect(statSync(socket).mode & 0o777).toBe(0o600);
     const page = await request("/");
     expect(page.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
-    expect(await page.text()).toContain("Connect your phone to Tailscale");
-    expect((await request("/app.js")).headers.get("Content-Type")).toContain("javascript");
+    const html = await page.text();
+    expect(html).toContain("Connect your phone to Tailscale");
+    const script = /src="([^"]+\.js)"/.exec(html)![1];
+    const app = await request("/app.js");
+    expect(app.headers.get("Content-Type")).toContain("javascript");
+    expect(await app.text()).toBe(await (await request(script)).text());
     expect(await (await request("/app.css")).text()).toContain("--text:rgb(");
     expect((await request("/api/session")).status).toBe(401);
+    expect((await request("/api/push")).status).toBe(401);
     const keys = generateKeyPairSync("ec", { namedCurve: "prime256v1" }),
       offer = remote.auth.mint();
     const body = {
@@ -103,6 +108,22 @@ test("private HTTP socket pairs, authenticates, restricts commands, and revokes 
       dsaEncoding: "ieee-p1363",
     }).toString("base64url");
     const { token } = await (await request("/api/session", { nonce, signature })).json();
+    const push = {
+      endpoint: "https://web.push.apple.com/token",
+      keys: {
+        p256dh: "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
+        auth: "BTBZMqHH6r4Tts7J_aSIgg",
+      },
+    };
+    const pushStatus = await (await request("/api/push", undefined, token)).json();
+    expect(pushStatus.enabled).toBe(false);
+    expect(pushStatus.publicKey).toHaveLength(87);
+    expect((await request("/api/push/test", {}, token)).status).toBe(400);
+    expect((await request("/api/push", push, token, "https://evil.test")).status).toBe(403);
+    expect((await request("/api/push", { ...push, endpoint: "https://127.0.0.1/push" }, token)).status).toBe(400);
+    expect((await (await request("/api/push", push, token)).json()).enabled).toBe(true);
+    expect((await (await request("/api/push", null, token)).json()).enabled).toBe(false);
+    await request("/api/push", push, token);
     expect((await (await request("/api/session", undefined, token)).json()).panes[0].id).toBe(2);
     expect((await (await request("/api/panes/2/output", undefined, token)).json()).text).toContain("<script>");
     expect(
@@ -142,6 +163,10 @@ test("private HTTP socket pairs, authenticates, restricts commands, and revokes 
     ])
       expect((await request("/api/agents", body, token)).status).toBe(400);
     remote.auth.revoke(device);
+    expect((await request("/api/push", push, token)).status).toBe(401);
+    expect((await request("/api/push/test", {}, token)).status).toBe(401);
+    await remote.notifications.tick();
+    expect(remote.notifications.status(device).enabled).toBe(false);
     expect((await request("/api/panes/2/terminal" + query, undefined, token)).status).toBe(401);
     expect((await request("/api/panes/2/conversation" + query, undefined, token)).status).toBe(401);
     expect((await request("/api/agents", { server: 123, workspace: 1, provider: "codex" }, token)).status).toBe(401);

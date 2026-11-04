@@ -17,7 +17,7 @@ export async function command(name: "build" | "typecheck" | "test") {
 export async function build(): Promise<string> {
   if (await command("build")) throw Error("Phone build failed");
   const files = [...new Bun.Glob("**/*").scanSync({ cwd: join(directory, "dist"), onlyFiles: true })]
-    .filter(path => /\.(html|js|css|woff2|txt)$/.test(path))
+    .filter(path => /\.(html|js|css|woff2|txt|webmanifest|svg|png)$/.test(path))
     .sort();
   return (
     files

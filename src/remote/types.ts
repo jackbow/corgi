@@ -1,3 +1,4 @@
+import type { Outcome } from "../observation";
 export type Provider = "codex" | "claude";
 export interface LastResponse {
   availability: "available" | "indexing" | "unavailable";
@@ -17,6 +18,8 @@ export interface Pane {
   order: number;
   attention: string;
   lastResponse?: LastResponse;
+  completion?: string;
+  outcome?: Outcome;
 }
 export interface Snapshot {
   server: number;
