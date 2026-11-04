@@ -66,25 +66,16 @@ it("reveals matching agents while searching and restores collapsed groups when c
   expect(screen.queryByText("No matching agents")).toBeNull();
 });
 
-it("uses accessible provider artwork instead of provider text in agent rows", async () => {
+it("omits provider icons and keeps agent navigation", async () => {
   const p = props();
   render(<Home {...p} />);
-  for (const [name, provider] of [
-    [/Fix input overflow/, "Codex"],
-    [/Tidy up empty states/, "Claude"],
-  ] as const) {
-    const row = screen.getByRole("button", { name });
-    const icon = within(row).getByRole("img", { name: provider });
-    expect(icon.querySelector("path")!.getAttribute("d")!.length).toBeGreaterThan(100);
-    expect(icon.querySelector("path")!.getAttribute("fill")).toBe("currentColor");
-    expect(icon.closest(".metadata")).toBeTruthy();
-    expect(icon.getAttribute("width")).toBe("12");
-  }
+  expect(screen.queryByRole("img", { name: "Claude" })).toBeNull();
+  expect(screen.queryByRole("img", { name: "Codex" })).toBeNull();
   await userEvent.click(screen.getByRole("button", { name: /Tidy up empty states/ }));
   expect(p.open).toHaveBeenCalledWith(2);
 });
 
-it("leads each agent with its current status and keeps provider identity in metadata", () => {
+it("leads each agent with its current status", () => {
   const p = props(),
     { rerender } = render(<Home {...p} />);
   const working = screen.getByRole("button", { name: /Fix input overflow/ });
@@ -93,7 +84,6 @@ it("leads each agent with its current status and keeps provider identity in meta
   expect(working.firstElementChild).toBe(within(working).getByRole("img", { name: "Working" }));
   expect(waiting.firstElementChild).toBe(within(waiting).getByRole("img", { name: "Needs input" }));
   expect(ready.firstElementChild).toBe(within(ready).getByRole("img", { name: "Ready" }));
-  expect(within(working).getByRole("img", { name: "Codex" }).closest(".metadata")).toBeTruthy();
   rerender(
     <Home
       {...p}
@@ -116,7 +106,7 @@ it("collapses groups even when stored preferences are malformed or unavailable",
   expect(screen.getByRole("button", { name: "Expand corgi" })).toBeTruthy();
 });
 
-it("places the latest response on the second line with provider and branch below", () => {
+it("keeps the latest response on the second line and restores status and activity below", () => {
   const p = props(),
     { rerender } = render(<Home {...p} />);
   const row = screen.getByRole("button", { name: /Fix input overflow/ });
@@ -124,8 +114,10 @@ it("places the latest response on the second line with provider and branch below
   expect(body.children[0].textContent).toContain("Fix input overflow");
   expect(body.children[1].textContent).toBe(p.data.panes[0].lastResponse!.text);
   expect(body.children[1].classList.contains("truncate")).toBe(true);
-  expect(body.children[2].firstElementChild).toBe(within(row).getByRole("img", { name: "Codex" }));
-  expect(body.children[2].textContent).toContain("fix-input-overflow");
+  expect(body.children[2].classList.contains("activity")).toBe(true);
+  expect(body.children[2].firstElementChild!.textContent).toContain("Working");
+  expect(body.children[2].textContent).toContain(p.data.panes[0].activity);
+  expect(within(row).queryByText("fix-input-overflow")).toBeNull();
   expect(screen.getByText("No response yet")).toBeTruthy();
   expect(screen.getByText("Loading last response…")).toBeTruthy();
   rerender(

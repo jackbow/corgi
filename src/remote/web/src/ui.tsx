@@ -1,7 +1,6 @@
 import { forwardRef, useEffect, useState, type ButtonHTMLAttributes } from "react";
 import {
   ChevronLeft,
-  GitBranch,
   TerminalSquare,
   Plus,
   Settings,
@@ -14,7 +13,6 @@ import {
   CircleStop,
 } from "lucide-react";
 import type { Pane, Snapshot } from "./types";
-import { ProviderIcon } from "./provider_icon";
 
 export const Button = forwardRef<
   HTMLButtonElement,
@@ -192,14 +190,9 @@ export function Home({
                             ? "Loading last response…"
                             : "Response unavailable"}
                       </div>
-                      <div className="metadata">
-                        <ProviderIcon provider={p.provider} />
-                        {p.branch && (
-                          <span className="branch">
-                            <GitBranch size={12} />
-                            {p.branch}
-                          </span>
-                        )}
+                      <div className="activity">
+                        <Status pane={p} />
+                        <span className="truncate">{p.activity}</span>
                       </div>
                     </div>
                     <ChevronRight size={16} className="row-chevron" />

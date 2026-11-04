@@ -261,10 +261,6 @@ textarea::placeholder {
 .agent-row:hover {
   background: var(--surface);
 }
-.provider-icon {
-  flex-shrink: 0;
-  color: var(--muted);
-}
 .status-icon {
   margin-top: 1px;
 }
@@ -292,16 +288,13 @@ textarea::placeholder {
   margin-top: 6px;
   min-width: 0;
 }
-.branch {
+.activity {
+  margin-top: 6px;
   display: flex;
-  gap: 4px;
+  gap: 8px;
   align-items: center;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.branch svg {
-  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 .response-preview {
   margin-top: 3px;
