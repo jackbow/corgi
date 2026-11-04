@@ -1,6 +1,16 @@
-import { forwardRef, useState, type ButtonHTMLAttributes } from "react";
-import { ChevronLeft, GitBranch, TerminalSquare, Plus, Settings, Search, ChevronRight } from "lucide-react";
+import { forwardRef, useEffect, useState, type ButtonHTMLAttributes } from "react";
+import {
+  ChevronLeft,
+  GitBranch,
+  TerminalSquare,
+  Plus,
+  Settings,
+  Search,
+  ChevronRight,
+  ChevronDown,
+} from "lucide-react";
 import type { Pane, Snapshot } from "./types";
+import { ProviderIcon } from "./provider_icon";
 
 export const Button = forwardRef<
   HTMLButtonElement,
@@ -15,14 +25,43 @@ export function Back({ go }: { go: () => void }) {
     </Button>
   );
 }
+type State = "waiting" | "working" | "ready" | "ended";
+const labels: Record<State, string> = { waiting: "Needs input", working: "Working", ready: "Ready", ended: "Ended" };
+function state(pane: Pane): State {
+  if (pane.exited) return "ended";
+  if (pane.attention === "needs_input" || pane.state === "blocked") return "waiting";
+  return pane.state === "working" ? "working" : "ready";
+}
 export function Status({ pane }: { pane: Pane }) {
-  const waiting = pane.attention === "needs_input" || pane.state === "blocked";
-  const label = pane.exited ? "Ended" : waiting ? "Needs input" : pane.state === "working" ? "Working" : "Ready";
+  const value = state(pane);
   return (
-    <span className={`status ${waiting ? "waiting" : pane.state === "working" ? "working" : ""}`}>
-      <span aria-hidden="true">{waiting ? "●" : pane.state === "working" ? "▶" : "○"}</span> {label}
+    <span className={`status ${value}`}>
+      <span aria-hidden="true">{value === "waiting" ? "●" : value === "working" ? "▶" : "○"}</span> {labels[value]}
     </span>
   );
+}
+function Overview({ panes }: { panes: Pane[] }) {
+  const counts = { waiting: 0, working: 0, ready: 0, ended: 0 };
+  for (const pane of panes) counts[state(pane)]++;
+  return (
+    <>
+      {(Object.keys(counts) as State[])
+        .filter(s => counts[s])
+        .map(s => (
+          <span className={`status ${s}`} key={s}>
+            {counts[s]} {labels[s].toLowerCase()}
+          </span>
+        ))}
+    </>
+  );
+}
+function rememberedCollapsed(): Set<number> {
+  try {
+    const value: unknown = JSON.parse(sessionStorage.getItem("corgi-collapsed-workspaces") ?? "[]");
+    return new Set(Array.isArray(value) ? value.filter((v): v is number => Number.isSafeInteger(v)) : []);
+  } catch {
+    return new Set();
+  }
 }
 export function Home({
   data,
@@ -35,7 +74,16 @@ export function Home({
   create: () => void;
   settings: () => void;
 }) {
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(""),
+    [collapsed, setCollapsed] = useState(rememberedCollapsed),
+    [searchCollapsed, setSearchCollapsed] = useState(new Set<number>());
+  useEffect(() => {
+    try {
+      sessionStorage.setItem("corgi-collapsed-workspaces", JSON.stringify([...collapsed]));
+    } catch {
+      /* Tab preferences are optional. */
+    }
+  }, [collapsed]);
   const groups = [...data.workspaces]
     .sort((a, b) => a.order - b.order)
     .map(w => ({
@@ -48,7 +96,8 @@ export function Home({
             `${w.name} ${p.name} ${p.branch} ${p.provider}`.toLowerCase().includes(search.toLowerCase()),
         )
         .sort((a, b) => a.order - b.order),
-    }));
+    }))
+    .filter(w => !search || w.panes.length || w.name.toLowerCase().includes(search.toLowerCase()));
   return (
     <>
       <header className="header">
@@ -72,51 +121,94 @@ export function Home({
             aria-label="Search agents"
             placeholder="Search agents or workspaces"
             value={search}
-            onChange={e => setSearch(e.target.value)}
+            onChange={e => {
+              setSearch(e.target.value);
+              setSearchCollapsed(new Set());
+            }}
           />
         </label>
         <div className="eyebrow">
           Your workspaces <span>{data.panes.filter(p => p.provider !== null).length} agents</span>
         </div>
-        {groups
-          .filter(w => !search || w.panes.length)
-          .map(w => (
-            <section className="workspace" key={w.id}>
+        <div className="home-overview" aria-label="Agent overview">
+          <Overview panes={data.panes.filter(p => p.provider !== null)} />
+        </div>
+        {groups.map(w => {
+          const expanded = !(search ? searchCollapsed : collapsed).has(w.id),
+            contentId = `workspace-agents-${w.id}`;
+          return (
+            <section className="workspace" key={w.id} aria-label={w.name}>
               <h2>
-                {w.name}
-                <span>{w.panes.length}</span>
+                <button
+                  className="workspace-toggle"
+                  aria-label={`${expanded ? "Collapse" : "Expand"} ${w.name}`}
+                  aria-expanded={expanded}
+                  aria-controls={contentId}
+                  aria-describedby={`workspace-overview-${w.id}`}
+                  onClick={() => {
+                    const toggle = (prior: Set<number>) => {
+                      const next = new Set(prior);
+                      if (next.has(w.id)) next.delete(w.id);
+                      else next.add(w.id);
+                      return next;
+                    };
+                    (search ? setSearchCollapsed : setCollapsed)(toggle);
+                  }}
+                >
+                  <span className="workspace-body">
+                    <span className="workspace-name" title={w.name}>
+                      {w.name}
+                    </span>
+                    <span className="workspace-overview" id={`workspace-overview-${w.id}`}>
+                      <span>
+                        {w.panes.length} {w.panes.length === 1 ? "agent" : "agents"}
+                      </span>
+                      <Overview panes={w.panes} />
+                    </span>
+                  </span>
+                  <span className="workspace-providers">
+                    {(["codex", "claude"] as const).map(provider => {
+                      const count = w.panes.filter(p => p.provider === provider).length;
+                      return count ? (
+                        <span key={provider}>
+                          <ProviderIcon provider={provider} />
+                          {count}
+                        </span>
+                      ) : null;
+                    })}
+                  </span>
+                  <ChevronDown size={16} className={`workspace-chevron ${expanded ? "expanded" : ""}`} />
+                </button>
               </h2>
-              {w.panes.map(p => (
-                <button className="agent-row" key={p.id} onClick={() => open(p.id)}>
-                  <TerminalSquare className="row-icon" size={19} />
-                  <div className="row-body">
-                    <div className="agent-name">{p.name}</div>
-                    <div className="metadata">
-                      <span>{p.provider === "claude" ? "Claude" : "Codex"}</span>
+              <div id={contentId} hidden={!expanded} className="workspace-agents">
+                {w.panes.map(p => (
+                  <button className="agent-row" key={p.id} onClick={() => open(p.id)}>
+                    <ProviderIcon provider={p.provider} />
+                    <div className="row-body">
+                      <div className="agent-name">{p.name}</div>
                       {p.branch && (
-                        <span className="branch">
+                        <div className="metadata branch">
                           <GitBranch size={12} />
                           {p.branch}
-                        </span>
+                        </div>
                       )}
+                      <div className="activity">
+                        <Status pane={p} />
+                        <span className="truncate">{p.activity}</span>
+                      </div>
                     </div>
-                    <div className="activity">
-                      <Status pane={p} />
-                      <span className="truncate">{p.activity}</span>
-                    </div>
-                  </div>
-                  <ChevronRight size={16} className="row-chevron" />
-                </button>
-              ))}
-              {!w.panes.length && <p className="muted empty-workspace">No agents in this workspace.</p>}
+                    <ChevronRight size={16} className="row-chevron" />
+                  </button>
+                ))}
+                {!w.panes.length && <p className="muted empty-workspace">No agents in this workspace.</p>}
+              </div>
             </section>
-          ))}
+          );
+        })}
         {!data.workspaces.length && (
           <Empty title="No workspaces" text="Open a workspace in Corgi on your Mac to get started." />
         )}
-        {search && groups.every(w => !w.panes.length) && (
-          <Empty title="No matching agents" text="Try another name or branch." />
-        )}
+        {search && !groups.length && <Empty title="No matching agents" text="Try another name or branch." />}
       </main>
       <footer className="home-footer">
         <Button variant="primary" onClick={create}>

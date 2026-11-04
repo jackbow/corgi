@@ -182,19 +182,86 @@ textarea::placeholder {
   font-weight: 400;
 }
 .workspace {
-  margin-top: 24px;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
 }
 .workspace h2 {
   font-size: 15px;
+}
+.workspace-toggle {
+  width: 100%;
+  min-height: 64px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 12px;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-bottom: 8px;
+  text-align: left;
 }
-.workspace h2 span {
+.workspace-toggle:focus-visible {
+  outline-offset: -3px;
+}
+.workspace-body {
+  min-width: 0;
+  flex: 1;
+}
+.workspace-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--strong);
+}
+.workspace-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-top: 6px;
   color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  font-weight: 400;
+}
+.workspace-overview .status {
+  font-size: inherit;
+}
+.home-overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 10px;
+}
+.workspace-providers {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
   font-weight: 400;
+  color: var(--muted);
+}
+.workspace-providers > span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.workspace-providers .provider-icon {
+  width: 16px;
+  height: 16px;
+}
+.workspace-chevron {
+  color: var(--muted);
+  flex-shrink: 0;
+  transform: rotate(-90deg);
+}
+.workspace-chevron.expanded {
+  transform: none;
+}
+.workspace-agents {
+  padding: 0 10px;
 }
 .agent-row {
   background: transparent;
@@ -203,17 +270,25 @@ textarea::placeholder {
   width: 100%;
   display: flex;
   text-align: left;
-  gap: 12px;
-  padding: 16px 0;
+  gap: 10px;
+  padding: 10px 4px;
+  min-height: 44px;
   align-items: flex-start;
 }
 .agent-row:hover {
   background: var(--surface);
 }
-.row-icon {
-  color: var(--faint);
+.provider-icon {
   flex-shrink: 0;
-  margin-top: 3px;
+}
+.provider-icon.claude {
+  color: var(--warm);
+}
+.provider-icon.codex {
+  color: var(--accent);
+}
+.agent-row > .provider-icon {
+  margin-top: 2px;
 }
 .row-body {
   min-width: 0;
@@ -222,7 +297,7 @@ textarea::placeholder {
 .agent-name {
   color: var(--strong);
   font-weight: 500;
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1.4;
   overflow-wrap: anywhere;
   display: -webkit-box;
@@ -251,7 +326,7 @@ textarea::placeholder {
   flex-shrink: 0;
 }
 .activity {
-  margin-top: 10px;
+  margin-top: 6px;
   display: flex;
   gap: 8px;
   align-items: center;
