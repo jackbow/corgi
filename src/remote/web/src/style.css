@@ -391,7 +391,7 @@ textarea::placeholder {
 }
 .agent-content {
   flex: 1;
-  padding: 8px 16px 24px;
+  padding: 6px 12px 12px;
   overflow-x: hidden;
   min-height: 0;
 }
@@ -407,29 +407,29 @@ textarea::placeholder {
   border-color: var(--line);
 }
 .message {
-  font-size: 16px;
-  line-height: 1.65;
-  margin: 0 0 24px;
+  font-size: 15px;
+  line-height: 1.5;
+  margin: 0 0 12px;
   overflow-wrap: anywhere;
 }
 .message-label {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
   display: block;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 .message.user {
-  padding: 12px 16px;
+  padding: 8px 10px;
   background: var(--surface);
   border-radius: 8px;
 }
 .message p + p,
 .message p + ul,
 .message p + ol {
-  margin-top: 12px;
+  margin-top: 8px;
 }
 .message ul,
 .message ol {
@@ -439,7 +439,7 @@ textarea::placeholder {
 .message h1,
 .message h2,
 .message h3 {
-  margin-block: 16px 8px;
+  margin-block: 10px 4px;
 }
 code,
 pre {
@@ -451,12 +451,12 @@ pre {
 }
 .message pre {
   background: var(--surface);
-  padding: 16px;
+  padding: 10px;
   border-radius: 8px;
   overflow: auto;
   max-width: 100%;
-  margin: 16px 0;
-  line-height: 1.7;
+  margin: 8px 0;
+  line-height: 1.5;
   white-space: pre;
 }
 .message pre code {
@@ -483,7 +483,7 @@ pre {
   max-width: 100%;
 }
 .tool {
-  margin: 0 0 20px;
+  margin: 0 0 4px;
   color: var(--muted);
   font-size: 13px;
 }
@@ -502,12 +502,12 @@ pre {
 .tool pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  padding: 12px;
+  padding: 8px;
   background: var(--surface);
   border-radius: 8px;
   max-height: 320px;
   overflow: auto;
-  line-height: 1.65;
+  line-height: 1.5;
 }
 .older {
   margin-bottom: 20px;
@@ -559,27 +559,31 @@ pre {
   padding: 8px;
 }
 .composer {
-  padding: 8px 12px 4px;
+  padding: 6px 8px 4px;
   flex-shrink: 0;
 }
 .composer form {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--surface);
-  padding: 8px;
+  padding: 4px;
 }
 .composer textarea {
   display: block;
   width: 100%;
+  min-width: 0;
   resize: none;
-  min-height: 48px;
+  min-height: 44px;
   max-height: min(22dvh, 140px);
   background: transparent;
   border: 0;
   color: var(--strong);
   font-size: 16px;
   line-height: 1.5;
-  padding: 4px;
+  padding: 10px 8px;
 }
 .composer-actions {
   display: flex;
@@ -591,6 +595,36 @@ pre {
   font-size: 12px;
   color: var(--muted);
   padding-inline: 4px;
+}
+.composer-actions > .button {
+  padding: 8px;
+}
+.composer-options {
+  position: relative;
+}
+.composer-options summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  list-style: none;
+  color: var(--muted);
+  border-radius: 8px;
+}
+.composer-options summary::-webkit-details-marker {
+  display: none;
+}
+.composer-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 1;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 4px 16px var(--bg);
 }
 .delivery {
   min-height: 20px;

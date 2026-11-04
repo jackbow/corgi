@@ -117,10 +117,32 @@ it("does not clear text edited during delivery and disables duplicate sends", as
   await userEvent.type(text, " changed");
   await act(async () => pending.resolve());
   expect((text as HTMLTextAreaElement).value).toBe("first changed");
+  await userEvent.click(screen.getByLabelText("Message options"));
   await userEvent.click(screen.getByRole("button", { name: "Paste without Enter" }));
   expect(send.mock.calls[1]).toEqual([
     { server: 42, binding: "11", conversation: "thread-1", text: "first changed", enter: false },
   ]);
+  expect(screen.getByLabelText("Message options").closest("details")!.open).toBe(false);
+});
+it("keeps the compact composer options out of the way and closes them without sending", async () => {
+  const send = vi.fn(async () => {});
+  render(<Composer pane={fixtures.snapshot.panes[0]} server={42} send={send} />);
+  const text = screen.getByRole("textbox") as HTMLTextAreaElement,
+    options = screen.getByLabelText("Message options"),
+    details = options.closest("details")!;
+  expect(text.getAttribute("rows")).toBe("1");
+  expect(details.open).toBe(false);
+  await userEvent.type(text, "draft\nnext line");
+  await userEvent.click(options);
+  expect(details.open).toBe(true);
+  await userEvent.keyboard("{Escape}");
+  expect(details.open).toBe(false);
+  expect(document.activeElement).toBe(options);
+  await userEvent.click(options);
+  await userEvent.click(text);
+  expect(details.open).toBe(false);
+  expect(text.value).toBe("draft\nnext line");
+  expect(send).not.toHaveBeenCalled();
 });
 it("navigates with deep links and discards delayed output when switching agents", async () => {
   const api = client(),
