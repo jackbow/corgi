@@ -37,12 +37,16 @@ function app(api: Client, path = "/") {
 }
 beforeEach(() => {
   sessionStorage.clear();
+  vi.stubGlobal("localStorage", sessionStorage);
+  document.documentElement.removeAttribute("data-pure-black");
   focusManager.setFocused(true);
 });
 afterEach(() => {
   cleanup();
+  document.documentElement.removeAttribute("data-pure-black");
   caches.splice(0).forEach(c => c.clear());
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   focusManager.setFocused(undefined);
 });
 function deferred<T>() {
@@ -444,4 +448,25 @@ it("keeps existing messages visible during incremental indexing and replaces a n
     await queries.invalidateQueries({ queryKey: ["conversation"] });
   });
   await screen.findByText("Replacement history");
+});
+
+it("toggles pure black in Settings and remembers it across navigation", async () => {
+  const { router } = app(client(), "/settings");
+  const toggle = await screen.findByRole("switch", { name: "Pure black" });
+  expect(toggle.getAttribute("aria-checked")).toBe("true");
+  await userEvent.click(toggle);
+  expect(toggle.getAttribute("aria-checked")).toBe("false");
+  expect(window.localStorage.getItem("corgi-pure-black")).toBe("off");
+  expect(document.documentElement.hasAttribute("data-pure-black")).toBe(false);
+  await act(async () => {
+    await router.navigate({ to: "/" });
+  });
+  await act(async () => {
+    await router.navigate({ to: "/settings" });
+  });
+  const restored = await screen.findByRole("switch", { name: "Pure black" });
+  expect(restored.getAttribute("aria-checked")).toBe("false");
+  await userEvent.click(restored);
+  expect(window.localStorage.getItem("corgi-pure-black")).toBe("on");
+  expect(document.documentElement.hasAttribute("data-pure-black")).toBe(true);
 });

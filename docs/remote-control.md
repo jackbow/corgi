@@ -32,6 +32,7 @@ required: cellular plus Tailscale works.
    collapse its agents; agent counts and activity remain visible. Agent rows use
    status icons, a truncated last response, and status and activity details underneath.
    Collapsed groups are remembered in this tab, and search reveals matching agents.
+   Settings includes a Pure black toggle for OLED screens, enabled by default and saved on this phone.
    Open an agent. Conversation is the default; switch to **Terminal** for
    interactive prompts. **Send** pastes the message and presses Enter. Return
    inserts a newline; **Paste without Enter** only pastes. Drafts stay in this tab,
