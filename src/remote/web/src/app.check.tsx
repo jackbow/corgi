@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, focusManager, onlineManager } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { configure } from "./app";
 import { phoneRouter } from "./router";
@@ -9,7 +9,7 @@ import { Agent, Composer, ScrollContent, useViewport } from "./agent";
 import { Home } from "./ui";
 import { spans } from "./terminal";
 import * as fixtures from "./fixtures";
-import type { Client } from "./client";
+import { RequestError, type Client } from "./client";
 import type { Conversation } from "./types";
 
 const caches: QueryClient[] = [];
@@ -40,6 +40,7 @@ beforeEach(() => {
   vi.stubGlobal("localStorage", sessionStorage);
   document.documentElement.removeAttribute("data-pure-black");
   focusManager.setFocused(true);
+  onlineManager.setOnline(true);
 });
 afterEach(() => {
   cleanup();
@@ -48,6 +49,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   focusManager.setFocused(undefined);
+  onlineManager.setOnline(true);
 });
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (reason: Error) => void;
@@ -407,6 +409,79 @@ it("returns revoked phones to enrollment without showing cached agent output", a
   });
   await screen.findByText("Pair this phone");
   expect(screen.queryByText("Assistant")).toBeNull();
+});
+
+it("keeps enrollment and its draft stable without retrying an unauthorized session", async () => {
+  const api = client();
+  vi.mocked(api.list).mockRejectedValue(new RequestError(401, "Pair this phone"));
+  app(api);
+  await screen.findByText("Pair this phone");
+  const name = screen.getByRole("textbox", { name: "Phone name" }),
+    link = screen.getByRole("textbox", { name: "Pairing link" });
+  await userEvent.clear(name);
+  await userEvent.type(name, "Home Screen");
+  await userEvent.type(link, `${location.origin}/#pair=${"a".repeat(43)}`);
+  await act(async () => {
+    focusManager.setFocused(false);
+    onlineManager.setOnline(false);
+    focusManager.setFocused(true);
+    onlineManager.setOnline(true);
+    await new Promise(resolve => setTimeout(resolve, 2200));
+  });
+  expect(api.list).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText("Connecting…")).toBeNull();
+  expect(screen.getByRole("textbox", { name: "Phone name" })).toBe(name);
+  expect((name as HTMLInputElement).value).toBe("Home Screen");
+  expect((link as HTMLInputElement).value).toContain("#pair=");
+});
+
+it("claims a pasted pairing link and keeps approval visible while the session is unauthorized", async () => {
+  const api = client(),
+    token = "a".repeat(43),
+    fetch = vi.fn(async (path: string, _init?: RequestInit) =>
+      Response.json(path === "/api/pair" ? { claim: "claim", code: "123456" } : { state: "pending" }),
+    );
+  vi.mocked(api.list).mockRejectedValue(new RequestError(401, "Pair this phone"));
+  vi.stubGlobal("fetch", fetch);
+  const { queries } = app(api);
+  await screen.findByText("Pair this phone");
+  await userEvent.type(screen.getByRole("textbox", { name: "Pairing link" }), `${location.origin}/#pair=${token}`);
+  await userEvent.click(screen.getByRole("button", { name: "Pair phone" }));
+  await screen.findByText("123456");
+  expect(JSON.parse(fetch.mock.calls.find(([path]) => path === "/api/pair")![1]!.body as string)).toMatchObject({
+    token,
+    name: "My phone",
+  });
+  await act(async () => {
+    await queries.invalidateQueries({ queryKey: ["session"] });
+  });
+  expect(screen.getByText("Waiting for approval…")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Pair phone" })).toBeNull();
+  vi.mocked(api.list).mockResolvedValue(fixtures.snapshot);
+  await act(async () => {
+    await queries.invalidateQueries({ queryKey: ["session"] });
+  });
+  await screen.findByRole("textbox", { name: "Search agents" });
+});
+
+it.each([
+  `https://other-mac.example/#pair=${"a".repeat(43)}`,
+  `${location.origin}/#pair=too-short`,
+  `${location.origin}/`,
+  "not a URL",
+])("rejects an invalid pairing link without claiming: %s", async link => {
+  const api = client(),
+    fetch = vi.fn();
+  vi.mocked(api.list).mockRejectedValue(new RequestError(401, "Pair this phone"));
+  vi.stubGlobal("fetch", fetch);
+  app(api);
+  await screen.findByText("Pair this phone");
+  await userEvent.type(screen.getByRole("textbox", { name: "Pairing link" }), link);
+  fireEvent.submit(screen.getByRole("button", { name: "Pair phone" }).closest("form")!);
+  await screen.findByRole("alert");
+  expect(fetch).not.toHaveBeenCalled();
+  expect((screen.getByRole("textbox", { name: "Pairing link" }) as HTMLInputElement).value).toBe(link);
+  expect((screen.getByRole("button", { name: "Pair phone" }) as HTMLButtonElement).disabled).toBe(false);
 });
 
 it("keeps existing messages visible during incremental indexing and replaces a new transcript cleanly", async () => {
