@@ -265,8 +265,8 @@ export function Agent({
                   <div className="empty">
                     <h2>{data.availability === "indexing" ? "Reading conversation…" : "Conversation unavailable"}</h2>
                     <p>
-                      {data.progress
-                        ? `Indexing history: ${Math.floor((100 * data.progress.read) / Math.max(1, data.progress.total))}%. You can use Terminal while it loads.`
+                      {data.availability === "indexing"
+                        ? "Reading recent messages on your Mac. You can use Terminal while it loads."
                         : "Read and interact with this agent in Terminal."}
                     </p>
                     <Button onClick={() => setMode("terminal")}>Open Terminal</Button>
