@@ -132,6 +132,11 @@ else if (args[0] === "serve") {
     const after = (await this.rpc({ op: "session.snapshot" })).panes.find((p: { id: number }) => p.id === pane);
     this.assertEqual([after.pid, after.cols, after.rows], [before.pid, before.cols, before.rows]);
     this.assertEqual(statSync(paths(this.path).http).mode & 0o777, 0o600);
+    const update = await this.api("/api/update", undefined, token);
+    this.assertEqual(update.status, 200);
+    const updateState = await update.json();
+    this.assertEqual(updateState.phase, "unsupported");
+    this.assertEqual(updateState.server, session.server);
     const css = await this.api("/app.css");
     this.assertIn("--text:rgb(", await css.text());
     const identity = `?server=${session.server}&binding=${target.binding}&conversation=${encodeURIComponent(target.conversation)}`;
