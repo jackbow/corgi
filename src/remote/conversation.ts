@@ -2,6 +2,7 @@ import { open } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { field, str } from "../json";
 import { Line } from "./transcript_line";
+import { Reads, Tail } from "./transcript_tail";
 
 import type { Provider } from "./types";
 import type { Message, Conversation } from "./conversation_types";
@@ -13,8 +14,6 @@ interface Ref {
   id: string;
   role: Message["role"];
   name?: string;
-  start: number;
-  end: number;
   preview?: string;
 }
 interface Node {
@@ -31,22 +30,24 @@ interface Cached {
   lineStart: number;
   line: Line;
   valid: boolean;
-  first: boolean;
+  header: { offset: number; line: Line } | null;
+  back: Tail | null;
+  boot: boolean;
+  previewOnly: boolean;
   nodes: Map<string, Node>;
   items: Map<string, Ref>;
   leaf: string;
   refs: Ref[];
-  indices: Map<string, number>;
+  missing: string;
   bodies: Map<string, Message>;
   changed: boolean;
   omitted: number;
+  exhausted: boolean;
   version: string;
 }
 const MAX_TEXT = 16 * 1024,
   PAGE = 20;
-const CHUNK = 256 * 1024,
-  SCAN_BYTES = 8 * 1024 * 1024,
-  PAGE_BYTES = 8 * 1024 * 1024;
+const SCAN_BYTES = 8 * 1024 * 1024;
 const rows = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 function content(v: unknown): string {
   if (typeof v === "string") return v;
@@ -166,25 +167,16 @@ const empty = (availability: Conversation["availability"], version = ""): Conver
 });
 const digest = (v: string | Buffer) => createHash("sha256").update(v).digest("hex").slice(0, 24);
 
-/** A disposable offset/ancestry index. Message bodies are cached only for recent pages. */
+/** A bounded recent window, seeded from the tail and then updated from appended records. */
 export class Reader {
-  constructor(
-    private scanBytes = SCAN_BYTES,
-    private bodyLimit = 128,
-  ) {}
+  constructor(private scanBytes = SCAN_BYTES) {}
   private cache = new Map<string, Cached>();
   private pending = new Map<string, Promise<Conversation>>();
   private queues = new Map<string, Promise<unknown>>();
-  read(
-    file: string,
-    provider: Provider,
-    session: string,
-    cursor = "",
-    direction: "before" | "after" = "before",
-  ): Promise<Conversation> {
+  read(file: string, provider: Provider, session: string, cursor = "", direction: "before" | "after" = "before") {
     return this.request(file, provider, session, cursor, direction);
   }
-  preview(file: string, provider: Provider, session: string): Promise<Conversation> {
+  preview(file: string, provider: Provider, session: string) {
     return this.request(file, provider, session, "", "preview");
   }
   private request(
@@ -193,7 +185,7 @@ export class Reader {
     session: string,
     cursor: string,
     direction: "before" | "after" | "preview",
-  ): Promise<Conversation> {
+  ) {
     const key = JSON.stringify([file, provider, session, cursor, direction]);
     const pending = this.pending.get(key);
     if (pending) return pending;
@@ -208,21 +200,22 @@ export class Reader {
     this.queues.set(file, result);
     return result;
   }
-  private remember(c: Cached, m: Message) {
-    if (!this.bodyLimit) return;
-    c.bodies.delete(m.id);
-    c.bodies.set(m.id, m);
-    while (c.bodies.size > this.bodyLimit) c.bodies.delete(c.bodies.keys().next().value!);
+  private enough(c: Cached) {
+    return c.refs.length >= (c.previewOnly ? 1 : PAGE);
   }
-  private index(c: Cached, value: unknown, provider: Provider, session: string, end: number, truncated: boolean) {
-    if (c.first) {
-      c.first = false;
-      if (provider === "codex")
-        c.valid = str(value, "type") === "session_meta" && str(field(value, "payload"), "id") === session;
-    }
-    if (provider === "codex" && !c.valid) return;
-    const offset = c.lineStart;
+  private index(
+    c: Cached,
+    value: unknown,
+    provider: Provider,
+    session: string,
+    offset: number,
+    truncated: boolean,
+    backwards = false,
+  ) {
     let messages: Message[];
+    const uuid = str(value, "uuid"),
+      parent = str(value, "parentUuid"),
+      main = ["user", "assistant"].includes(str(value, "type"));
     if (provider === "codex") {
       messages = codex(
         [
@@ -232,30 +225,59 @@ export class Reader {
         session,
       )!;
     } else {
-      if (str(value, "sessionId") !== session || field(value, "isSidechain") === true) return;
-      const uuid = str(value, "uuid");
-      if (!uuid) return;
+      if (str(value, "sessionId") !== session || field(value, "isSidechain") === true || !uuid) return;
+      if (backwards && (c.leaf ? uuid !== c.missing : !main)) return;
       messages = claude([{ value, offset }], session) ?? [];
-      c.nodes.set(uuid, { parent: str(value, "parentUuid"), refs: [] });
-      if (["user", "assistant"].includes(str(value, "type"))) {
-        c.leaf = uuid;
-        c.valid = true;
+      if (!backwards || !c.leaf) {
+        if (main) {
+          c.leaf = uuid;
+          c.valid = true;
+          c.exhausted = false;
+        }
       }
     }
-    const refs = messages.map(m => {
-      this.remember(c, { ...m, ...(truncated ? { truncated: true } : {}) });
-      return {
+    if (c.previewOnly) {
+      const assistant = messages.filter(m => m.role === "assistant");
+      messages = assistant.length
+        ? [
+            {
+              ...assistant.at(-1)!,
+              text: assistant
+                .map(m => m.text)
+                .join(" ")
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 320),
+            },
+          ]
+        : [];
+    }
+    const refs: Ref[] = [];
+    for (const m of messages.slice(-PAGE)) {
+      if (backwards && provider === "codex" && c.items.has(m.id)) continue;
+      if (!c.previewOnly) {
+        c.bodies.delete(m.id);
+        c.bodies.set(m.id, { ...m, ...(truncated ? { truncated: true } : {}) });
+      }
+      refs.push({
         id: m.id,
         role: m.role,
         name: m.name,
-        start: offset,
-        end,
         ...(m.role === "assistant" ? { preview: m.text.replace(/\s+/g, " ").trim().slice(0, 320) } : {}),
-      };
-    });
-    if (provider === "codex") for (const ref of refs) c.items.set(ref.id, ref);
-    else c.nodes.get(str(value, "uuid"))!.refs = refs;
+      });
+    }
+    if (provider === "codex") {
+      if (backwards) c.items = new Map([...refs.map(ref => [ref.id, ref] as const), ...c.items]);
+      else for (const ref of refs) c.items.set(ref.id, ref);
+    } else if (backwards && !refs.length && uuid !== c.leaf) {
+      // Empty ancestors need only connect their child to the next parent.
+      for (const node of c.nodes.values()) if (node.parent === uuid) node.parent = parent;
+    } else c.nodes.set(uuid, { parent, refs });
     c.changed = true;
+    this.order(c, provider);
+    if (provider === "codex") c.items = new Map(c.refs.map(ref => [ref.id, ref]));
+    const ids = new Set(c.refs.map(ref => ref.id));
+    for (const id of c.bodies.keys()) if (!ids.has(id)) c.bodies.delete(id);
   }
   private order(c: Cached, provider: Provider) {
     if (!c.changed) return;
@@ -263,18 +285,49 @@ export class Reader {
     else {
       const chain: Node[] = [],
         seen = new Set<string>();
-      let leaf = c.leaf;
-      while (leaf && !seen.has(leaf)) {
+      let leaf = c.leaf,
+        count = 0;
+      while (leaf && !seen.has(leaf) && count < (c.previewOnly ? 1 : PAGE)) {
+        const node = c.nodes.get(leaf);
+        if (!node) break;
+        seen.add(leaf);
+        chain.push(node);
+        count += node.refs.length;
+        leaf = node.parent;
+      }
+      c.missing = seen.has(leaf) ? "" : leaf;
+      c.refs = chain.reverse().flatMap(n => n.refs);
+    }
+    c.refs = c.refs.slice(-(c.previewOnly ? 1 : PAGE));
+    c.changed = false;
+  }
+  private compact(c: Cached, provider: Provider) {
+    this.order(c, provider);
+    if (provider === "codex") c.items = new Map(c.refs.map(ref => [ref.id, ref]));
+    else {
+      const nodes = new Map<string, Node>(),
+        seen = new Set<string>();
+      let leaf = c.leaf,
+        child: Node | undefined,
+        count = 0;
+      while (leaf && !seen.has(leaf) && count < (c.previewOnly ? 1 : PAGE)) {
         seen.add(leaf);
         const node = c.nodes.get(leaf);
         if (!node) break;
-        chain.push(node);
-        leaf = node.parent;
+        const next = { ...node, refs: node.refs.slice(-(c.previewOnly ? 1 : PAGE)) };
+        if (next.refs.length || !child) {
+          nodes.set(leaf, next);
+          child = next;
+          count += next.refs.length;
+        } else child.parent = next.parent;
+        leaf = next.parent;
       }
-      c.refs = chain.reverse().flatMap(n => n.refs);
+      c.nodes = nodes;
     }
-    c.indices = new Map(c.refs.map((ref, i) => [ref.id, i]));
-    c.changed = false;
+    const ids = new Set(c.refs.map(ref => ref.id));
+    for (const id of c.bodies.keys()) if (!ids.has(id)) c.bodies.delete(id);
+    c.changed = true;
+    this.order(c, provider);
   }
   private async load(
     file: string,
@@ -286,6 +339,7 @@ export class Reader {
     if (!file || !session) return empty("unavailable");
     const handle = await open(file, "r").catch(() => null);
     if (!handle) return empty("unavailable");
+    const key = JSON.stringify([file, provider, session]);
     try {
       const stat = await handle.stat();
       if (!stat.isFile()) return empty("unavailable");
@@ -293,7 +347,6 @@ export class Reader {
       await handle.read(prefixBuffer, 0, prefixBuffer.length, 0);
       const stamp = `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`,
         prefix = prefixBuffer.toString("hex");
-      const key = JSON.stringify([file, provider, session]);
       let c = this.cache.get(key);
       const tailBuffer = Buffer.alloc(Math.min(c?.offset ?? 0, 256));
       if (tailBuffer.length) await handle.read(tailBuffer, 0, tailBuffer.length, c!.offset - tailBuffer.length);
@@ -303,168 +356,156 @@ export class Reader {
         stat.size < c.size ||
         !prefix.startsWith(c.prefix) ||
         tailBuffer.toString("hex") !== c.tail ||
-        (stat.size === c.size && stat.mtimeMs !== c.mtime)
+        (stat.size === c.size && stat.mtimeMs !== c.mtime) ||
+        c.previewOnly !== (direction === "preview")
       ) {
         c = {
           stamp,
           prefix,
           tail: "",
-          size: 0,
+          size: stat.size,
           mtime: stat.mtimeMs,
           offset: 0,
           lineStart: 0,
           line: new Line(),
           valid: false,
-          first: true,
+          header: provider === "codex" ? { offset: 0, line: new Line() } : null,
+          back: new Tail(stat.size),
+          boot: true,
+          previewOnly: direction === "preview",
           nodes: new Map(),
           items: new Map(),
           leaf: "",
           refs: [],
-          indices: new Map(),
+          missing: "",
           bodies: new Map(),
           changed: false,
           omitted: 0,
+          exhausted: false,
           version: digest(stamp + prefix + stat.mtimeMs),
         };
       }
       this.cache.delete(key);
       this.cache.set(key, c);
       while (this.cache.size > 4) this.cache.delete(this.cache.keys().next().value!);
-      const bytes = Buffer.alloc(CHUNK),
-        deadline = performance.now() + 150;
-      let scanned = 0;
-      while (c.offset < stat.size && scanned < this.scanBytes && performance.now() < deadline) {
-        const { bytesRead } = await handle.read(
-          bytes,
-          0,
-          Math.min(CHUNK, stat.size - c.offset, this.scanBytes - scanned),
-          c.offset,
-        );
-        if (!bytesRead) break;
-        for (let i = 0; i < bytesRead; i++) {
+      const reads = new Reads(this.scanBytes);
+      let paused = false;
+      while (c.header) {
+        if (c.header.offset >= stat.size) {
+          paused = true;
+          break;
+        }
+        const bytes = await reads.read(handle, c.header.offset, Math.min(4096, stat.size - c.header.offset));
+        if (!bytes) {
+          paused = true;
+          break;
+        }
+        const newline = bytes.indexOf(10);
+        for (const byte of newline < 0 ? bytes : bytes.subarray(0, newline)) c.header.line.push(byte);
+        c.header.offset += newline < 0 ? bytes.length : newline + 1;
+        if (newline >= 0) {
+          const value = c.header.line.value();
+          c.valid = str(value, "type") === "session_meta" && str(field(value, "payload"), "id") === session;
+          c.header = null;
+          if (!c.valid) return empty("unavailable");
+        }
+      }
+      const backward = async () => {
+        const back = c!.back!;
+        while (!this.enough(c!)) {
+          const record = await back.next(handle, reads);
+          if (record === undefined) return false;
+          if (record === null) {
+            c!.exhausted = true;
+            break;
+          }
+          if (record.line.omitted) c!.omitted++;
+          else this.index(c!, record.value, provider, session, record.offset, record.line.truncated, true);
+        }
+        if (c!.boot) {
+          c!.offset = c!.lineStart = back.lastEnd;
+          c!.boot = false;
+        }
+        c!.back = null;
+        this.compact(c!, provider);
+        return true;
+      };
+      if (!paused && c.back) paused = !(await backward());
+      while (!paused && c.offset < stat.size) {
+        const bytes = await reads.read(handle, c.offset, stat.size - c.offset);
+        if (!bytes) {
+          paused = true;
+          break;
+        }
+        for (let i = 0; i < bytes.length; i++) {
           if (bytes[i] !== 10) c.line.push(bytes[i]);
           else {
             const end = c.offset + i + 1;
             if (c.line.omitted) c.omitted++;
-            else {
-              let value: unknown;
-              try {
-                value = c.line.value();
-              } catch {
-                this.cache.delete(key);
-                return empty("unavailable");
-              }
-              if (value !== null) this.index(c, value, provider, session, end, c.line.truncated);
-            }
+            else this.index(c, c.line.value(), provider, session, c.lineStart, c.line.truncated);
             c.line = new Line();
             c.lineStart = end;
           }
         }
-        c.offset += bytesRead;
-        scanned += bytesRead;
+        c.offset += bytes.length;
+        this.compact(c, provider);
       }
-      if (scanned) {
-        const tail = Buffer.alloc(Math.min(c.offset, 256));
-        await handle.read(tail, 0, tail.length, c.offset - tail.length);
-        c.tail = tail.toString("hex");
+      if (!paused && provider === "claude" && c.missing && !this.enough(c) && !c.exhausted) {
+        c.back = new Tail(c.lineStart);
+        paused = !(await backward());
       }
-      c.size = stat.size;
-      c.mtime = stat.mtimeMs;
-      c.prefix = prefix;
-      if (c.offset < stat.size)
-        return { ...empty("indexing", c.version), progress: { read: c.offset, total: stat.size } };
-      if (!c.valid) return empty("unavailable");
-      this.order(c, provider);
-      if (direction === "preview") {
-        const final = await handle.stat();
-        if (final.size < stat.size || (final.size === stat.size && final.mtimeMs !== stat.mtimeMs)) {
-          this.cache.delete(key);
-          return empty("replaced", c.version);
-        }
-        const index = c.refs.findLastIndex(ref => ref.role === "assistant"),
-          last = c.refs[index];
-        if (!last) return empty("available", c.version);
-        let first = index;
-        while (first > 0 && c.refs[first - 1].start === last.start) first--;
-        const text = c.refs
-          .slice(first, index + 1)
-          .filter(ref => ref.role === "assistant")
-          .map(ref => ref.preview)
-          .join(" ")
-          .slice(0, 320);
-        return { ...empty("available", c.version), messages: [{ id: last.id, role: "assistant", text }] };
-      }
-      let index = c.refs.length;
-      if (cursor) {
-        const split = cursor.indexOf(":");
-        if (cursor.slice(0, split) !== c.version) return empty("replaced", c.version);
-        index = c.indices.get(cursor.slice(split + 1)) ?? -1;
-        if (index < 0) return empty("replaced", c.version);
-      }
-      const from = cursor && direction === "after" ? index : Math.max(0, index - PAGE);
-      const to = cursor && direction === "after" ? Math.min(c.refs.length, from + PAGE) : index;
-      const refs = c.refs.slice(from, to),
-        messages: Message[] = [],
-        loaded = new Map<string, Message>();
-      let budget = PAGE_BYTES;
-      for (const ref of refs) {
-        let body = loaded.get(ref.id) ?? c.bodies.get(ref.id);
-        if (!body) {
-          const length = ref.end - ref.start;
-          if (length <= budget) {
-            budget -= length;
-            const line = new Line();
-            let offset = ref.start;
-            while (offset < ref.end) {
-              const { bytesRead } = await handle.read(bytes, 0, Math.min(CHUNK, ref.end - offset), offset);
-              if (!bytesRead) return empty("replaced", c.version);
-              for (let i = 0; i < bytesRead; i++) if (bytes[i] !== 10) line.push(bytes[i]);
-              offset += bytesRead;
-            }
-            const value = line.value();
-            const normalized =
-              provider === "codex"
-                ? codex(
-                    [
-                      { value: { type: "session_meta", payload: { id: session } }, offset: 0 },
-                      { value, offset: ref.start },
-                    ],
-                    session,
-                  )
-                : claude([{ value, offset: ref.start }], session);
-            for (const m of normalized ?? []) {
-              const preview = { ...m, ...(line.truncated ? { truncated: true } : {}) };
-              loaded.set(m.id, preview);
-              this.remember(c, preview);
-            }
-            body = loaded.get(ref.id);
-          }
-        }
-        messages.push(
-          body ?? {
-            id: ref.id,
-            role: ref.role,
-            name: ref.name,
-            text: "This record is too large to preview. Read its full contents on your Mac.",
-            truncated: true,
-          },
-        );
-      }
-      // Detect replacement or rewriting while the page bodies were being read.
       const final = await handle.stat();
       if (final.size < stat.size || (final.size === stat.size && final.mtimeMs !== stat.mtimeMs)) {
         this.cache.delete(key);
         return empty("replaced", c.version);
       }
+      const tail = Buffer.alloc(Math.min(c.offset, 256));
+      if (tail.length) await handle.read(tail, 0, tail.length, c.offset - tail.length);
+      c.tail = tail.toString("hex");
+      c.size = stat.size;
+      c.mtime = stat.mtimeMs;
+      c.prefix = prefix;
+      if (paused)
+        return {
+          ...empty("indexing", c.version),
+          progress: { read: c.back ? stat.size - c.back.position : c.offset, total: stat.size },
+        };
+      if (!c.valid) return empty("unavailable");
+      if (direction === "preview") {
+        const last = c.refs.at(-1);
+        return {
+          ...empty("available", c.version),
+          messages: last ? [{ id: last.id, role: "assistant", text: last.preview ?? "" }] : [],
+        };
+      }
+      let index = c.refs.length;
+      if (cursor) {
+        const split = cursor.indexOf(":");
+        index = c.refs.findIndex(ref => ref.id === cursor.slice(split + 1));
+        if (cursor.slice(0, split) !== c.version || index < 0) return empty("replaced", c.version);
+      }
+      const refs = cursor && direction === "after" ? c.refs.slice(index) : c.refs.slice(0, index);
       return {
         availability: "available",
         version: c.version,
-        messages,
-        before: from > 0 && refs.length ? `${c.version}:${refs[0].id}` : null,
+        messages: refs.map(
+          ref =>
+            c.bodies.get(ref.id) ?? {
+              id: ref.id,
+              role: ref.role,
+              name: ref.name,
+              text: "This record is too large to preview. Read its full contents on your Mac.",
+              truncated: true,
+            },
+        ),
+        before: null,
         after: refs.length ? `${c.version}:${refs.at(-1)!.id}` : cursor || null,
-        more: to < c.refs.length,
+        more: false,
         ...(c.omitted ? { omitted: c.omitted } : {}),
       };
+    } catch {
+      this.cache.delete(key);
+      return empty("unavailable");
     } finally {
       await handle.close();
     }

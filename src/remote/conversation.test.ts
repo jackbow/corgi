@@ -1,9 +1,26 @@
-import { expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, appendFileSync, renameSync, rmSync } from "node:fs";
+import { expect, test, spyOn } from "bun:test";
+import { mkdtempSync, writeFileSync, appendFileSync, renameSync, rmSync, statSync } from "node:fs";
+import * as fs from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Reader, codex, claude } from "./conversation";
 import type { Conversation } from "./conversation_types";
+const open = fs.open;
+function trackReads() {
+  const ranges: { offset: number; bytes: number }[] = [];
+  const opened = spyOn(fs, "open").mockImplementation(async (path, flags, mode) => {
+    const file = await open(path, flags, mode),
+      read = file.read.bind(file);
+    const tracked = async (buffer: Buffer, offset: number, length: number, position: number) => {
+      const result = await read(buffer, offset, length, position);
+      ranges.push({ offset: position, bytes: result.bytesRead });
+      return result;
+    };
+    spyOn(file, "read").mockImplementation(tracked as typeof file.read);
+    return file;
+  });
+  return { ranges, [Symbol.dispose]: () => opened.mockRestore() };
+}
 async function ready(reader: Reader, ...args: Parameters<Reader["read"]>) {
   let page: Conversation;
   do {
@@ -74,7 +91,7 @@ test("Claude follows the current ancestry, filters other sessions/sidechains and
   expect(result.map(m => m.text)).toEqual(["Hi", "Current", '{"file":"a"}', "output"]);
   expect(JSON.stringify(result)).not.toMatch(/hidden|Abandoned|Wrong|Side/);
 });
-test("bounded pagination, incremental complete records, replacement and invalid cursors", async () => {
+test("recent windows, incremental complete records, replacement and invalid cursors", async () => {
   const dir = mkdtempSync(join(tmpdir(), "corgi-transcripts-")),
     file = join(dir, "thread.jsonl"),
     reader = new Reader();
@@ -84,8 +101,8 @@ test("bounded pagination, incremental complete records, replacement and invalid 
     const page = await reader.read(file, "codex", "thread");
     expect(page.messages).toHaveLength(20);
     expect(page.messages[0].text).toBe("Message 75");
-    const earlier = await reader.read(file, "codex", "thread", page.before!);
-    expect(earlier.messages[0].text).toBe("Message 55");
+    expect(page.before).toBeNull();
+    expect((await reader.read(file, "codex", "thread", `${page.version}:message:1`)).availability).toBe("replaced");
     appendFileSync(file, JSON.stringify(item("Appended", "95")).slice(0, -1));
     expect((await reader.read(file, "codex", "thread", page.after!, "after")).messages.map(m => m.text)).toEqual([
       "Message 94",
@@ -162,7 +179,7 @@ test("provider context and system reminders do not become user messages", () => 
   ).toBe("Hello");
 });
 
-test("indexes beyond old file/record caps in bounded steps and lazily pages old bodies", async () => {
+test("cold reads fetch only the tail of a large transcript and warm reads fetch only appended bytes", async () => {
   const dir = mkdtempSync(join(tmpdir(), "corgi-large-")),
     file = join(dir, "thread.jsonl"),
     reader = new Reader(1024 * 1024);
@@ -176,26 +193,24 @@ test("indexes beyond old file/record caps in bounded steps and lazily pages old 
         ).join("\n") + "\n",
       );
     }
-    let page = await reader.read(file, "codex", "thread"),
-      offset = 0;
-    expect(page.availability).toBe("indexing");
-    while (page.availability === "indexing") {
-      expect(page.progress!.read).toBeGreaterThan(offset);
-      expect(page.progress!.read - offset).toBeLessThanOrEqual(1024 * 1024);
-      offset = page.progress!.read;
-      page = await reader.read(file, "codex", "thread");
-    }
+    using reads = trackReads();
+    const page = await reader.read(file, "codex", "thread");
     expect(page.availability).toBe("available");
     expect(page.messages).toHaveLength(20);
     expect(page.messages[0].id).toBe("message:59980");
     expect(page.messages.at(-1)!.id).toBe("message:59999");
-    const old = await reader.read(file, "codex", "thread", `${page.version}:message:200`);
-    expect(old.messages[0].id).toBe("message:180");
-    expect(old.messages.at(-1)!.text).toBe(`199: ${"x".repeat(300)}`);
+    expect(reads.ranges.reduce((sum, r) => sum + r.bytes, 0)).toBeLessThan(1024 * 1024);
+    const size = statSync(file).size;
+    expect(reads.ranges.every(r => r.offset < 4096 || r.offset >= size - 256 * 1024)).toBe(true);
+    reads.ranges.length = 0;
     appendFileSync(file, JSON.stringify(item("latest", "60000")) + "\n");
     const update = await reader.read(file, "codex", "thread", page.after!, "after");
     expect(update.messages.map(m => m.id)).toEqual(["message:59999", "message:60000"]);
     expect(update.version).toBe(page.version);
+    expect(reads.ranges.reduce((sum, r) => sum + r.bytes, 0)).toBeLessThan(2048);
+    reads.ranges.length = 0;
+    expect((await reader.read(file, "codex", "thread")).messages).toHaveLength(20);
+    expect(reads.ranges.reduce((sum, r) => sum + r.bytes, 0)).toBeLessThanOrEqual(768);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -271,7 +286,7 @@ test("an unusually complex record is omitted explicitly without rejecting the co
   }
 });
 
-test("uncached giant records cannot exceed a page read budget or block adjacent messages", async () => {
+test("giant old records do not need to be read to show recent messages", async () => {
   const dir = mkdtempSync(join(tmpdir(), "corgi-page-budget-")),
     file = join(dir, "thread.jsonl"),
     reader = new Reader();
@@ -284,13 +299,12 @@ test("uncached giant records cannot exceed a page read budget or block adjacent 
       file,
       Array.from({ length: 200 }, (_, i) => JSON.stringify(item(`Message ${i}`, String(i)))).join("\n") + "\n",
     );
-    const recent = await ready(reader, file, "codex", "thread");
-    const page = await reader.read(file, "codex", "thread", `${recent.version}:message:1`);
+    using reads = trackReads();
+    const page = await reader.read(file, "codex", "thread");
     expect(page.availability).toBe("available");
-    expect(page.messages[0].id).toBe("message:giant");
-    expect(page.messages[0].truncated).toBe(true);
-    expect(page.messages[0].text).toContain("too large to preview");
-    expect(page.messages[1].text).toBe("Message 0");
+    expect(page.messages[0].text).toBe("Message 180");
+    expect(page.messages).toHaveLength(20);
+    expect(reads.ranges.reduce((sum, r) => sum + r.bytes, 0)).toBeLessThan(512 * 1024);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -299,7 +313,7 @@ test("uncached giant records cannot exceed a page read budget or block adjacent 
 test("overview previews retain the last assistant response beyond tools and update incrementally", async () => {
   const dir = mkdtempSync(join(tmpdir(), "corgi-preview-")),
     file = join(dir, "thread.jsonl"),
-    reader = new Reader(256, 0);
+    reader = new Reader(256);
   const write = (records: unknown[]) => writeFileSync(file, records.map(v => JSON.stringify(v)).join("\n") + "\n");
   const preview = async () => {
     let result: Conversation;
@@ -363,6 +377,88 @@ test("Claude previews follow active parents and join text blocks without hidden 
     );
     const result = await new Reader().preview(file, "claude", "s");
     expect(result.messages.map(m => m.text)).toEqual(["First Second"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Claude tail reads stay bounded and recover a branch whose parent is outside the cached window", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-claude-tail-")),
+    file = join(dir, "s.jsonl"),
+    reader = new Reader();
+  try {
+    writeFileSync(
+      file,
+      Array.from({ length: 3000 }, (_, i) =>
+        JSON.stringify(record(String(i), i ? String(i - 1) : null, `Reply ${i} ${"x".repeat(300)}`)),
+      ).join("\n") + "\n",
+    );
+    using reads = trackReads();
+    const page = await reader.read(file, "claude", "s");
+    expect(page.availability).toBe("available");
+    expect(page.messages).toHaveLength(20);
+    expect(page.messages[0].id).toBe("2980:0");
+    expect(reads.ranges.reduce((sum, r) => sum + r.bytes, 0)).toBeLessThan(512 * 1024);
+    appendFileSync(file, JSON.stringify(record("branch", "0", "New branch")) + "\n");
+    const branch = await ready(reader, file, "claude", "s");
+    expect(branch.messages.map(m => m.id)).toEqual(["0:0", "branch:0"]);
+    expect(branch.messages.at(-1)!.text).toBe("New branch");
+    reads.ranges.length = 0;
+    expect((await reader.read(file, "claude", "s")).messages).toEqual(branch.messages);
+    expect(reads.ranges.reduce((sum, r) => sum + r.bytes, 0)).toBeLessThanOrEqual(768);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("tail deduplication keeps the latest amendment and ignores malformed history outside the window", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-tail-dedup-")),
+    file = join(dir, "s.jsonl");
+  try {
+    writeFileSync(
+      file,
+      JSON.stringify(head) +
+        "\n{broken old history}\n" +
+        Array.from({ length: 25 }, (_, i) => JSON.stringify(item(`Reply ${i}`, String(i)))).join("\n") +
+        "\n" +
+        JSON.stringify(item("Amended", "24")) +
+        "\n",
+    );
+    const page = await new Reader().read(file, "codex", "thread");
+    expect(page.availability).toBe("available");
+    expect(page.messages).toHaveLength(20);
+    expect(page.messages[0].id).toBe("message:5");
+    expect(page.messages.at(-1)!.text).toBe("Amended");
+    expect(page.messages.filter(m => m.id === "message:24")).toHaveLength(1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a giant recent record resumes within the read budget without blocking adjacent messages", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-tail-giant-")),
+    file = join(dir, "s.jsonl"),
+    reader = new Reader(1024 * 1024);
+  try {
+    writeFileSync(
+      file,
+      [head, item("Before", "before"), item("x".repeat(9 * 1024 * 1024), "giant"), item("After", "after")]
+        .map(v => JSON.stringify(v))
+        .join("\n") + "\n",
+    );
+    using reads = trackReads();
+    let page: Conversation;
+    let requests = 0;
+    do {
+      reads.ranges.length = 0;
+      page = await reader.read(file, "codex", "thread");
+      expect(reads.ranges.reduce((sum, r) => sum + r.bytes, 0)).toBeLessThanOrEqual(1024 * 1024 + 768);
+      expect(++requests).toBeLessThan(50);
+    } while (page.availability === "indexing");
+    expect(requests).toBeGreaterThan(1);
+    expect(page.messages.map(m => m.id)).toEqual(["message:before", "message:giant", "message:after"]);
+    expect(page.messages[1].truncated).toBe(true);
+    expect(page.messages[1].text).toHaveLength(16384);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

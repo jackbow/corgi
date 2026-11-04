@@ -10,7 +10,7 @@ interface Job {
   value: LastResponse;
   version: string;
 }
-/** Overview reads never wait for transcript indexing or retain full message bodies. */
+/** Overview reads never wait for transcript reads or retain full message bodies. */
 export class Previews {
   private jobs = new Map<string, Job>();
   private running = false;
@@ -28,7 +28,7 @@ export class Previews {
       let job = this.jobs.get(key);
       if (!job) {
         job = {
-          reader: new Reader(8 * 1024 * 1024, 0),
+          reader: new Reader(),
           file,
           provider: pane.provider,
           session: pane.conversation,

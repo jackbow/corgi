@@ -517,7 +517,7 @@ it("keeps existing messages visible during incremental indexing and replaces a n
   await act(async () => {
     await queries.invalidateQueries({ queryKey: ["conversation"] });
   });
-  await screen.findByText(/Indexing history: 20%/);
+  await screen.findByText(/Reading recent messages on your Mac/);
   expect(screen.queryByText("Existing history")).toBeNull();
   await act(async () => {
     await queries.invalidateQueries({ queryKey: ["conversation"] });

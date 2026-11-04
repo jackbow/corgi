@@ -93,18 +93,19 @@ sending again. Input is rejected when the daemon or pane identity changes.
 The phone does not resize the desktop terminal or steal desktop focus.
 
 Conversation reads use the pane's current provider identity. System instructions,
-hidden reasoning, and provider metadata are omitted. Transcripts are indexed
-incrementally without a total file-size or record-count limit. The first read
-shows indexing progress; subsequent reads process only appended bytes. The index
-retains file offsets and Claude ancestry, with a small cache of recent message
-bodies. Reads scan at most 8 MiB in 256 KiB chunks per request and return the
-latest 20 messages, including tool activity. The phone refreshes this recent window without
+hidden reasoning, and provider metadata are omitted. Cold reads start at the end
+of the transcript and stop after finding the latest 20 entries, including tool
+activity. Codex's header is checked for conversation identity; Claude reads follow
+the active parent chain, scanning further back only when needed. The Mac caches
+this bounded window and subsequent reads process appended bytes. Each request
+reads at most 8 MiB in 256 KiB chunks, plus small file identity checks; unusually
+large records or distant Claude parents can take multiple requests. The phone
+refreshes this recent window without
 loading older history. It renders only rows near the viewport, preserving the
 reading position while messages remain in the window or change height.
 
 Long messages are shortened independently. Unusually complex individual records
-that exceed the decoded-record budget are omitted with a notice; uncached records
-that exceed the page read budget show a placeholder. Neither blocks the rest of
+that exceed the decoded-record budget are omitted with a notice. Neither blocks the rest of
 the conversation. Missing or malformed transcripts offer Terminal instead.
 The terminal displays styled, selectable text at its existing column count, with
 horizontal scrolling and a separate recent plain-text history section.
@@ -127,7 +128,7 @@ The React/Vite package is isolated in `src/remote/web/`. `bun build.ts` installs
 locked dependencies if needed, builds it, and embeds the explicit asset manifest
 (including local Geist and Fira Code fonts). Production needs no Vite process or
 frontend source directory. `bun typecheck.ts` includes frontend types; `bun format.ts`
-includes frontend sources and styles. There is no service worker or offline cache.
+includes frontend sources and styles. The push service worker does not cache authenticated content.
 
 For a fixture-only preview, run `bun install --frozen-lockfile` and `bun run dev`
 inside `src/remote/web/`, then open `http://127.0.0.1:5173/?fixture=home`.
