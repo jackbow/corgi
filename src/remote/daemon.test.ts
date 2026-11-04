@@ -143,6 +143,17 @@ test("surface and conversation reads are bound before and after, and launches us
   try {
     const daemon = new Daemon(socket),
       q = { server: 42, binding: "3", conversation: "thread" };
+    let listing = await daemon.list();
+    expect(listing.panes[0].lastResponse?.availability).toBe("indexing");
+    for (let i = 0; i < 100 && listing.panes[0].lastResponse?.availability !== "available"; i++) {
+      await Bun.sleep(10);
+      listing = await daemon.list();
+    }
+    expect(listing.panes[0].lastResponse).toEqual({ availability: "available", text: "Hello" });
+    expect(JSON.stringify(listing)).not.toContain(transcript);
+    pane.agent.session = "different";
+    expect((await daemon.list()).panes[0].lastResponse?.text).toBe("");
+    pane.agent.session = "thread";
     expect((await daemon.terminal(2, q)).lines).toEqual(["\x1b[32mhello\x1b[0m"]);
     expect((await daemon.conversation(2, q, "", "before")).messages[0].text).toBe("Hello");
     expect(await daemon.read(2, q)).toBe("history");

@@ -279,7 +279,7 @@ textarea::placeholder {
   line-height: 1.4;
   overflow-wrap: anywhere;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -303,13 +303,10 @@ textarea::placeholder {
 .branch svg {
   flex-shrink: 0;
 }
-.activity {
-  margin-top: 6px;
-  display: flex;
-  gap: 8px;
-  align-items: center;
+.response-preview {
+  margin-top: 3px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 .status {
   font-size: 12px;

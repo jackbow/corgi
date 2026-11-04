@@ -294,3 +294,75 @@ test("uncached giant records cannot exceed a page read budget or block adjacent 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("overview previews retain the last assistant response beyond tools and update incrementally", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-preview-")),
+    file = join(dir, "thread.jsonl"),
+    reader = new Reader(256, 0);
+  const write = (records: unknown[]) => writeFileSync(file, records.map(v => JSON.stringify(v)).join("\n") + "\n");
+  const preview = async () => {
+    let result: Conversation;
+    do {
+      result = await reader.preview(file, "codex", "thread");
+    } while (result.availability === "indexing");
+    return result;
+  };
+  try {
+    write([
+      head,
+      item("Last\n reply " + "x".repeat(500), "reply"),
+      ...Array.from({ length: 150 }, (_, i) => ({
+        type: "response_item",
+        payload: { type: "function_call_output", call_id: String(i), output: "tool" },
+      })),
+    ]);
+    const result = await preview();
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0].text).toBe(("Last reply " + "x".repeat(500)).slice(0, 320));
+    appendFileSync(file, JSON.stringify(item("New reply", "new")));
+    expect((await preview()).messages[0].text).toBe(result.messages[0].text);
+    appendFileSync(file, "\n");
+    expect((await preview()).messages[0].text).toBe("New reply");
+    appendFileSync(file, JSON.stringify(item("Amended reply", "new")) + "\n");
+    expect((await preview()).messages[0].text).toBe("Amended reply");
+    renameSync(file, join(dir, "old"));
+    write([head]);
+    expect((await preview()).messages).toEqual([]);
+    expect((await reader.preview(file, "codex", "other")).availability).toBe("unavailable");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Claude previews follow active parents and join text blocks without hidden content", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-preview-")),
+    file = join(dir, "claude.jsonl");
+  try {
+    writeFileSync(
+      file,
+      [
+        record("u", null, "Hi", "user"),
+        record("old", "u", "Abandoned"),
+        {
+          ...record("current", "u", ""),
+          message: {
+            content: [
+              { type: "text", text: "First" },
+              { type: "thinking", thinking: "secret" },
+              { type: "text", text: "Second" },
+            ],
+          },
+        },
+        { ...record("tool", "current", ""), message: { content: [{ type: "tool_use", name: "Read", input: {} }] } },
+        { ...record("side", "tool", "Side"), isSidechain: true },
+        record("foreign", "tool", "Wrong", "assistant", "other"),
+      ]
+        .map(v => JSON.stringify(v))
+        .join("\n") + "\n",
+    );
+    const result = await new Reader().preview(file, "claude", "s");
+    expect(result.messages.map(m => m.text)).toEqual(["First Second"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -2,6 +2,7 @@ import { Connection } from "../rpc";
 import { field, str } from "../json";
 import type { CommandInput } from "../protocol";
 import { Reader } from "./conversation";
+import { Previews } from "./previews";
 import type { Conversation } from "./conversation_types";
 import type { Provider, Pane, Snapshot, Identity, Launch, Terminal } from "./types";
 export type { Pane, Snapshot, Identity, Launch, Terminal } from "./types";
@@ -118,6 +119,7 @@ export interface Backend {
 }
 export class Daemon implements Backend {
   private reader = new Reader();
+  private previews = new Previews();
   constructor(private socket: string) {}
   private async withConnection<T>(fn: (connection: Connection) => Promise<T>): Promise<T> {
     const c = new Connection(this.socket),
@@ -131,7 +133,14 @@ export class Daemon implements Backend {
     }
   }
   async list() {
-    return this.withConnection(async c => snapshot(await c.call("session.snapshot")));
+    const raw = await this.withConnection(c => c.call("session.snapshot")),
+      data = snapshot(raw);
+    const files = new Map(rows(field(raw, "panes")).map(p => [field(p, "id"), str(field(p, "agent"), "transcript")]));
+    const values = this.previews.sync(
+      data.server,
+      data.panes.map(pane => ({ pane, file: files.get(pane.id) ?? "" })),
+    );
+    return { ...data, panes: data.panes.map(pane => ({ ...pane, lastResponse: values.get(pane.id) })) };
   }
   async read(pane: number, q?: Identity) {
     return this.withConnection(async c => {
