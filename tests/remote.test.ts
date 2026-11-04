@@ -199,6 +199,77 @@ else if (args[0] === "serve") {
       400,
     );
     this.assertEqual((await this.api("/api/rpc", { op: "shutdown" }, token)).status, 404);
+    this.assertEqual((await (await this.api("/api/me", undefined, token)).json()).role, "controller");
+    this.assertEqual(
+      (
+        await this.api(
+          "/api/manage",
+          { action: "create-workspace", server: session.server, name: "Phone workspace", cwd: this.temp.name },
+          token,
+        )
+      ).status,
+      200,
+    );
+    const managed = await (await this.api("/api/session", undefined, token)).json();
+    const workspace = managed.workspaces.find(
+      (w: { id: number }) => !session.workspaces.some((old: { id: number }) => old.id === w.id),
+    ).id;
+    this.assertEqual(
+      (
+        await this.api(
+          "/api/manage",
+          { action: "rename-workspace", server: session.server, workspace, name: "Renamed from phone" },
+          token,
+        )
+      ).status,
+      200,
+    );
+    this.assertEqual(
+      (await this.api("/api/manage", { action: "move-workspace", server: session.server, workspace, before: 1 }, token))
+        .status,
+      200,
+    );
+    this.assertEqual(
+      (
+        await this.api(
+          "/api/manage",
+          { action: "close-workspace", server: session.server, workspace, confirm: true },
+          token,
+        )
+      ).status,
+      200,
+    );
+    const invite = await (await this.api("/api/devices/invite", { role: "reader" }, token)).json(),
+      readerKeys = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    const readerClaim = await (
+      await this.api("/api/pair", {
+        token: new URL(invite.url).hash.slice(6),
+        name: "Reader phone",
+        key: readerKeys.publicKey.export({ format: "der", type: "spki" }).toString("base64url"),
+      })
+    ).json();
+    this.assertEqual((await this.api("/api/devices/approve", { ...readerClaim, allow: true }, token)).status, 200);
+    const reader = (await (await this.api("/api/pair/status", { claim: readerClaim.claim })).json()).device;
+    const readerLogin = async () => {
+      const { nonce } = await (await this.api("/api/challenge", { device: reader })).json();
+      const signature = sign("sha256", Buffer.from(signed(origin, nonce)), {
+        key: readerKeys.privateKey,
+        dsaEncoding: "ieee-p1363",
+      }).toString("base64url");
+      return (await (await this.api("/api/session", { nonce, signature })).json()).token;
+    };
+    let readerToken = await readerLogin();
+    this.assertEqual((await this.api("/api/session", undefined, readerToken)).status, 200);
+    this.assertEqual(
+      (
+        await this.api(
+          `/api/panes/${pane}/input`,
+          { server: session.server, binding: target.binding, key: "enter" },
+          readerToken,
+        )
+      ).status,
+      403,
+    );
     await this.remote("stop");
     await this.wait_stopped();
     const config = JSON.parse(readFileSync(this.env.CORGI_FAKE_TS_STATE!, "utf8"));
@@ -207,6 +278,12 @@ else if (args[0] === "serve") {
     this.assertEqual((await this.api("/api/session", undefined, token)).status, 401);
     token = await login();
     this.assertEqual((await this.api("/api/session", undefined, token)).status, 200);
+    readerToken = await readerLogin();
+    this.assertEqual((await (await this.api("/api/me", undefined, readerToken)).json()).role, "reader");
+    this.assertEqual(
+      (await this.api("/api/agents", { server: session.server, workspace: 1, provider: "codex" }, readerToken)).status,
+      403,
+    );
     await this.remote("revoke", device);
     this.assertEqual((await this.api("/api/session", undefined, token)).status, 401);
   }

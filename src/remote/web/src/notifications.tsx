@@ -2,20 +2,24 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { authenticated, RequestError } from "./client";
 import { Button } from "./ui";
+import type { Preferences } from "../../types";
 
 export interface PushStatus {
   publicKey: string;
   enabled: boolean;
+  preferences?: Preferences;
 }
 export interface PushAPI {
   status(): Promise<PushStatus>;
   save(subscription: PushSubscriptionJSON | null): Promise<PushStatus>;
   test(): Promise<unknown>;
+  configure?(preferences: Preferences): Promise<PushStatus>;
 }
 const api: PushAPI = {
   status: () => authenticated("/api/push"),
   save: value => authenticated("/api/push", value),
   test: () => authenticated("/api/push/test", {}),
+  configure: value => authenticated("/api/push/preferences", value),
 };
 export const pushSupported = () =>
   window.isSecureContext && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
@@ -137,6 +141,14 @@ export function NotificationSettings({ service = api }: { service?: PushAPI }) {
               </Button>
             )}
           </div>
+          {query.data?.preferences && service.configure && (
+            <PreferencesForm
+              key={JSON.stringify(query.data.preferences)}
+              value={query.data.preferences}
+              pending={pending}
+              save={value => void run(() => service.configure!(value), "Notification preferences saved.")}
+            />
+          )}
         </>
       )}
       {message && (
@@ -145,5 +157,72 @@ export function NotificationSettings({ service = api }: { service?: PushAPI }) {
         </p>
       )}
     </section>
+  );
+}
+function PreferencesForm({
+  value,
+  pending,
+  save,
+}: {
+  value: Preferences;
+  pending: boolean;
+  save: (value: Preferences) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  return (
+    <form
+      className="control-panel"
+      onSubmit={e => {
+        e.preventDefault();
+        save(draft);
+      }}
+    >
+      {(
+        [
+          ["input", "Needs input"],
+          ["finished", "Finished"],
+          ["failed", "Failed"],
+        ] as const
+      ).map(([key, label]) => (
+        <label className="check-label" key={key}>
+          <input type="checkbox" checked={draft[key]} onChange={e => setDraft({ ...draft, [key]: e.target.checked })} />
+          {label}
+        </label>
+      ))}
+      <label>
+        Settle delay
+        <select value={draft.settle} onChange={e => setDraft({ ...draft, settle: Number(e.target.value) })}>
+          {[0, 2, 5, 10, 30].map(n => (
+            <option key={n} value={n}>
+              {n === 0 ? "Immediately" : `${n} seconds`}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Per-agent cooldown
+        <select value={draft.cooldown} onChange={e => setDraft({ ...draft, cooldown: Number(e.target.value) })}>
+          {[0, 30, 60, 300, 900, 3600].map(n => (
+            <option key={n} value={n}>
+              {n === 0 ? "Every change" : n < 60 ? `${n} seconds` : `${n / 60} minutes`}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="muted">
+        {draft.snoozeUntil > Date.now()
+          ? `Snoozed until ${new Date(draft.snoozeUntil).toLocaleTimeString()}`
+          : "Notifications are not snoozed."}
+      </p>
+      <div className="notification-actions">
+        <Button type="button" disabled={pending} onClick={() => save({ ...draft, snoozeUntil: Date.now() + 3600_000 })}>
+          Snooze 1 hour
+        </Button>
+        <Button type="button" disabled={pending} onClick={() => save({ ...draft, snoozeUntil: 0 })}>
+          Resume alerts
+        </Button>
+        <Button disabled={pending}>Save preferences</Button>
+      </div>
+    </form>
   );
 }

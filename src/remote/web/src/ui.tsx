@@ -76,11 +76,13 @@ export function Home({
   open,
   create,
   settings,
+  readOnly = false,
 }: {
   data: Snapshot;
   open: (id: number) => void;
   create: () => void;
   settings: () => void;
+  readOnly?: boolean;
 }) {
   const [search, setSearch] = useState(""),
     [collapsed, setCollapsed] = useState(rememberedCollapsed),
@@ -117,9 +119,11 @@ export function Home({
           <Button variant="ghost" aria-label="Settings" onClick={settings}>
             <Settings size={20} />
           </Button>
-          <Button variant="ghost" aria-label="New agent" onClick={create}>
-            <Plus size={22} />
-          </Button>
+          {!readOnly && (
+            <Button variant="ghost" aria-label="New agent" onClick={create}>
+              <Plus size={22} />
+            </Button>
+          )}
         </div>
       </header>
       <main className="home scroll" data-scroll-restoration-id="home">
@@ -209,11 +213,13 @@ export function Home({
         {search && !groups.length && <Empty title="No matching agents" text="Try another name or branch." />}
       </main>
       <footer className="home-footer">
-        <Button variant="primary" onClick={create}>
-          <Plus size={18} />
-          New agent
-        </Button>
-        <span className="muted">Connected to your Mac</span>
+        {!readOnly && (
+          <Button variant="primary" onClick={create}>
+            <Plus size={18} />
+            New agent
+          </Button>
+        )}
+        <span className="muted">{readOnly ? "Read only · Connected to your Mac" : "Connected to your Mac"}</span>
       </footer>
     </>
   );

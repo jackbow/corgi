@@ -102,7 +102,7 @@ test("challenges are single use, reject a different phone key, and sessions expi
 test("invalid device stores fail closed", () => {
   const f = fixture();
   try {
-    writeFileSync(f.file, '{"version":2,"devices":[]}');
+    writeFileSync(f.file, '{"version":3,"devices":[]}');
     expect(() => new Auth(f.file, origin)).toThrow("InvalidDevices");
     writeFileSync(f.file, "broken json");
     expect(() => new Auth(f.file, origin)).toThrow();

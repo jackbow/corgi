@@ -84,7 +84,7 @@ function Row({
   );
 }
 /** Measured variable-height rows; only the viewport and a small overscan are mounted. */
-export function Messages({ id, data }: { id: string; data: Conversation }) {
+export function Messages({ id, data, earlier }: { id: string; data: Conversation; earlier?: () => void }) {
   const ref = useRef<HTMLDivElement>(null),
     heights = useRef(new Map<string, number>()),
     anchor = useRef<Anchor>(positions.get(id) ?? { id: "", delta: 0, follow: true });
@@ -171,6 +171,7 @@ export function Messages({ id, data }: { id: string; data: Conversation }) {
           anchor.current = { id: data.messages[index]?.id ?? "", delta: el.scrollTop - offsets[index], follow: next };
           setFollow(next);
           setViewport({ top: el.scrollTop, height: el.clientHeight || 600 });
+          if (el.scrollTop < 80 && !next) earlier?.();
         }}
       >
         <div className="messages" style={{ paddingTop: offsets[from], paddingBottom: total - offsets[to] }}>

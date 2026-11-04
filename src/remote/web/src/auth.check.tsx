@@ -97,3 +97,40 @@ it("keeps pairing keys in the existing origin store and can forget them", async 
   await stored(null);
   expect(await stored()).toBeUndefined();
 });
+it("requires an explicit unlock gesture and never loops biometric prompts during reconnect", async () => {
+  const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  vi.stubGlobal("indexedDB", storage({ device: "locked-phone", keys }));
+  const get = vi.fn(async () => ({
+    response: {
+      clientDataJSON: new Uint8Array([1]).buffer,
+      authenticatorData: new Uint8Array([2]).buffer,
+      signature: new Uint8Array([3]).buffer,
+    },
+  }));
+  vi.stubGlobal("navigator", { credentials: { get } });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string, init: RequestInit) => {
+      if (path === "/api/challenge") return Response.json({ nonce: "bm9uY2U", credential: "Y3JlZGVudGlhbA" });
+      if (path === "/api/session" && init.method === "POST") {
+        expect(JSON.parse(init.body as string).assertion).toEqual({
+          clientDataJSON: "AQ",
+          authenticatorData: "Ag",
+          signature: "Aw",
+        });
+        return Response.json({ token: "verified-session" });
+      }
+      return Response.json({ server: 42, workspaces: [], panes: [] });
+    }),
+  );
+  const { client, unlockPhone, forgetToken } = await import("./client");
+  await expect(client.list(new AbortController().signal)).rejects.toMatchObject({ status: 423 });
+  expect(get).not.toHaveBeenCalled();
+  await unlockPhone();
+  expect(get).toHaveBeenCalledTimes(1);
+  await client.list(new AbortController().signal);
+  expect(get).toHaveBeenCalledTimes(1);
+  forgetToken();
+  await expect(client.list(new AbortController().signal)).rejects.toMatchObject({ status: 423 });
+  expect(get).toHaveBeenCalledTimes(1);
+});
