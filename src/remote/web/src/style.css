@@ -984,11 +984,6 @@ legend {
   justify-content: flex-start;
   white-space: normal;
 }
-.agent-tools[open] {
-  max-height: 35dvh;
-  overflow-y: auto;
-  flex-shrink: 0;
-}
 .archive-browser {
   display: flex;
   flex-direction: column;

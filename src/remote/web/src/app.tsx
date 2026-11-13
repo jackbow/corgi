@@ -10,10 +10,9 @@ import { pureBlack, setPureBlack } from "./appearance";
 import { NotificationSettings, disableNotifications } from "./notifications";
 import { useLive } from "./live";
 import { DeviceSettings, UnlockScreen } from "./devices";
-import { AgentActions, WorkspaceControls } from "./management";
-import { Playback, terminalInterval } from "./playback";
+import { WorkspaceControls } from "./management";
+import { terminalInterval } from "./playback";
 import { PromptCard } from "./prompt";
-import { ArchiveBrowser } from "./archive";
 import { forgetDrafts } from "./drafts";
 
 export let transport: Client;
@@ -500,7 +499,6 @@ function AgentData({
     lock = useRef(false);
   const me = useMe(),
     readOnly = !!transport.me && me.data?.role !== "controller",
-    [browsing, setBrowsing] = useState(false),
     [historyLines, setHistoryLines] = useState(300);
   const prompt = useQuery({
     queryKey: ["prompt", ...key.slice(1)],
@@ -597,17 +595,6 @@ function AgentData({
       keyStatus={keyStatus}
       readOnly={readOnly}
       commands={commands.data}
-      archive={
-        browsing && mode === "conversation" ? (
-          <ArchiveBrowser
-            client={transport}
-            pane={pane.id}
-            identity={id}
-            id={identityKey(pane, snapshot.server)}
-            close={() => setBrowsing(false)}
-          />
-        ) : undefined
-      }
       controls={
         <>
           {prompt.data && transport.respond && (
@@ -629,21 +616,6 @@ function AgentData({
               }}
             />
           )}
-          <details className="agent-tools control-panel">
-            <summary>Conversation tools</summary>
-            {!readOnly && <AgentActions client={transport} pane={pane} server={snapshot.server} />}
-            {transport.archive && (
-              <Button
-                onClick={() => {
-                  setBrowsing(true);
-                  setMode("conversation");
-                }}
-              >
-                Browse conversation history
-              </Button>
-            )}
-            <Playback client={transport} pane={pane.id} identity={id} />
-          </details>
         </>
       }
       error={
