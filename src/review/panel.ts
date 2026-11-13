@@ -121,6 +121,7 @@ const keyGroups = (): KeyGroup[] => [
       ["Show / hide tests", "t"],
       ["Fullscreen", "cmd+shift+enter"],
       [i18n.t`Wrap`, "w"],
+      [i18n.t`Unified / split diff`, "S"],
       [i18n.t`Pin review`, "p"],
       ["Open repo / folder", "r"],
     ],
@@ -213,6 +214,7 @@ class Review {
   raise = false;
   shift = 0;
   wrap = true;
+  split = false;
   /** Opened folds per file, by anchor. */
   opened = new Map<string, Set<number>>();
   /** Explicit file folding choices on "All files", overriding the defaults. */
@@ -1282,6 +1284,23 @@ export class Panel {
     const move = (delta: number, extend = r.visual) => {
       if (!extend) r.anchor = null;
       r.free = false;
+      if (r.split) {
+        const slots = flow
+          .flatMap(s =>
+            s.d && s.units.length
+              ? diff.splitUnits(s.d, s.units).map(pair => ({ path: s.change.path, ...pair }))
+              : [{ path: s.change.path, old: 0, new: 0 }],
+          )
+          .filter(slot => r.anchor === null || slot.path === r.path);
+        const at = slots.findIndex(slot => slot.path === r.path && (slot.old === r.cur || slot.new === r.cur)),
+          next = slots[Math.min(Math.max(at + delta, 0), slots.length - 1)];
+        if (next) {
+          const side = slots[at]?.old === r.cur && slots[at]?.new !== r.cur ? "old" : "new";
+          r.path = next.path;
+          r.cur = next[side] ?? next.new ?? next.old!;
+        }
+        return;
+      }
       if (!r.all) {
         r.cur = Math.min(Math.max(r.cur + delta, 0), Math.max(0, units.length - 1));
         return;
@@ -1435,6 +1454,9 @@ export class Panel {
         r.wrap = !r.wrap;
         r.shift = 0;
         break;
+      case "S":
+        this.toggleSplit(r);
+        break;
       case "t":
         this.toggleTests(r);
         break;
@@ -1545,6 +1567,11 @@ export class Panel {
     const opened = new Set(r.opened.get(path) ?? []);
     opened.add(diff.foldAnchor(d, unit));
     r.opened.set(path, opened);
+  }
+  private toggleSplit(r: Review): void {
+    r.split = !r.split;
+    r.free = false;
+    r.landmark = null;
   }
   private startCompose(r: Review, d: diff.FileDiff, units: diff.Unit[], path: string, rev: notes.Rev): void {
     if (units.length === 0) return;
@@ -2494,9 +2521,17 @@ export class Panel {
     if (sections.length === 0) return;
     const gutter = Math.max(3, ...sections.map(s => s.d?.gutter() ?? 0)),
       code_x = gutter + 2,
-      code_w = Math.max(10, c.w - code_x - 1),
+      column_w = r.split ? Math.floor((c.w - 1) / 2) : c.w,
+      code_w = Math.max(1, column_w - code_x - 1),
       box_x = code_x,
       box_w = c.w - box_x - 1;
+    const column = (x: number, width: number) => {
+      const child = new Canvas(c.x + x, c.y, width, c.h);
+      child.cells = c.cells.map(row => row.slice(x, x + width));
+      return child;
+    };
+    const left = r.split ? column(0, column_w) : c,
+      right = r.split ? column(column_w + 1, c.w - column_w - 1) : c;
     const rev = revOf(now.source);
     const wrapText = (s: string, width: number) => (s ? wrap(s, width) : [""]);
     // The note being written, in the lines its box shows, and where its caret is.
@@ -2507,7 +2542,7 @@ export class Panel {
     type Item =
       | { kind: "head"; s: Section; h: number }
       | { kind: "notice"; s: Section; h: number }
-      | { kind: "unit"; s: Section; d: diff.FileDiff; unit: diff.Unit; at: number; h: number }
+      | { kind: "unit"; s: Section; d: diff.FileDiff; unit: diff.Unit; at: number; pair: diff.SplitUnit; h: number }
       | { kind: "note"; s: Section; note: notes.Note; h: number }
       | { kind: "compose"; s: Section; h: number };
     const items: Item[] = [],
@@ -2541,32 +2576,45 @@ export class Panel {
         for (let line = n.start; line <= n.end; line++) lines.add(`${n.side}:${line}`);
       }
       noted.set(path, lines);
-      s.units.forEach((unit, at) => {
+      const pairs = r.split ? diff.splitUnits(d, s.units) : s.units.map((_, at) => ({ old: at, new: at }));
+      for (const pair of pairs) {
+        const indices = [...new Set([pair.old, pair.new].filter((at): at is number => at !== null))],
+          at = indices[0],
+          unit = s.units[at];
         items.push({
           kind: "unit",
           s,
           d,
           unit,
           at,
-          h: unit.kind === "fold" || !r.wrap ? 1 : sourceLines(d.text(d.rows[unit.row]), code_w, wrap_cap).length,
+          pair,
+          h: Math.max(
+            ...indices.map(index => {
+              const u = s.units[index];
+              return u.kind === "fold" || !r.wrap ? 1 : sourceLines(d.text(d.rows[u.row]), code_w, wrap_cap).length;
+            }),
+          ),
         });
-        if (unit.kind !== "row") return;
-        const row = d.rows[unit.row];
-        for (const side of ["new", "old"] as const) {
-          const line = notes.lineOn(row, side);
-          if (line === 0) continue;
-          for (const n of after.get(`${side}:${line}`) ?? [])
-            items.push({ kind: "note", s, note: n, h: 2 + wrapText(n.text, box_w - 4).length });
-          if (
-            r.compose &&
-            !r.compose.file &&
-            r.compose.path === path &&
-            r.compose.side === side &&
-            r.compose.end === line
-          )
-            items.push({ kind: "compose", s, h: 2 + composed.length });
+        for (const index of indices) {
+          const unit = s.units[index];
+          if (unit.kind !== "row") continue;
+          const row = d.rows[unit.row];
+          for (const side of ["new", "old"] as const) {
+            const line = notes.lineOn(row, side);
+            if (line === 0) continue;
+            for (const n of after.get(`${side}:${line}`) ?? [])
+              items.push({ kind: "note", s, note: n, h: 2 + wrapText(n.text, box_w - 4).length });
+            if (
+              r.compose &&
+              !r.compose.file &&
+              r.compose.path === path &&
+              r.compose.side === side &&
+              r.compose.end === line
+            )
+              items.push({ kind: "compose", s, h: 2 + composed.length });
+          }
         }
-      });
+      }
     }
     const ys: number[] = [];
     let total = 0;
@@ -2580,7 +2628,9 @@ export class Panel {
     const cur_item = items.findIndex(
       it =>
         it.s.change.path === r.path &&
-        (it.kind === "notice" || (it.kind === "head" && it.s.collapsed) || (it.kind === "unit" && it.at === r.cur)),
+        (it.kind === "notice" ||
+          (it.kind === "head" && it.s.collapsed) ||
+          (it.kind === "unit" && (it.pair.old === r.cur || it.pair.new === r.cur))),
     );
     let top = r.top;
     // Files above the top that changed size since the last draw don't move it.
@@ -2675,7 +2725,39 @@ export class Panel {
           });
           continue;
         }
-        const in_sel = sel !== null && path === sel_path && item.at >= sel[0] && item.at <= sel[1];
+        const selected = (at: number) => sel !== null && path === sel_path && at >= sel[0] && at <= sel[1];
+        if (r.split) {
+          const vy = Math.max(y0, dy),
+            vh = Math.min(y0 + item.h, dy + dh) - vy;
+          for (const side of ["old", "new"] as const) {
+            const at = item.pair[side];
+            if (at === null) continue;
+            const unit = s.units[at];
+            if (unit.kind !== "row") continue;
+            const canvas = side === "old" ? left : right;
+            this.drawRow(
+              canvas,
+              r,
+              d,
+              path,
+              unit.row,
+              y0,
+              dy,
+              dy + dh,
+              gutter,
+              code_x,
+              code_w,
+              path === r.path && at === r.cur && focused && r.part === "diff",
+              selected(at),
+              noted.get(path) ?? new Set(),
+              { old: s.file!.old, new: s.file!.new },
+              side,
+            );
+            if (vh > 0) c.hit(side === "old" ? 0 : column_w + 1, vy, canvas.w, vh, { unit: at, path, wheel: "diff" });
+          }
+          for (let y = vy; y < vy + vh; y++) c.put(column_w, y, "│", colors.line);
+          continue;
+        }
         this.drawRow(
           c,
           r,
@@ -2689,7 +2771,7 @@ export class Panel {
           code_x,
           code_w,
           cursor,
-          in_sel,
+          selected(item.at),
           noted.get(path) ?? new Set(),
           { old: s.file!.old, new: s.file!.new },
         );
@@ -2855,20 +2937,21 @@ export class Panel {
     selected: boolean,
     noted: Set<string>,
     hl: { old: syntax.Highlighter; new: syntax.Highlighter },
+    column?: "old" | "new",
   ): void {
     const colors = palette.colors,
       row = d.rows[index],
       text = d.text(row),
       add = row.kind === "insertion",
       del = row.kind === "deletion",
-      side = del ? "old" : "new",
+      side = column ?? (del ? "old" : "new"),
       bg = cursor ? tint.cursor : selected ? tint.selected : add ? tint.add : del ? tint.del : null,
-      spans = del ? hl.old.spans(row.old_at) : hl.new.spans(row.new_at),
+      spans = side === "old" ? hl.old.spans(row.old_at) : hl.new.spans(row.new_at),
       em = cursor || selected ? null : d.emphasis(index),
       em_bg = add ? tint.add_em : tint.del_em,
       found = r.find?.by_row.get(`${path}\0${index}`) ?? null,
       lines = sourceLines(text, code_w, r.wrap ? wrap_cap : 1, r.wrap ? 0 : sourceOffset(text, r.shift)),
-      number = diff.FileDiff.number(row),
+      number = column === "old" ? row.old_no : diff.FileDiff.number(row),
       commented = noted.has(`${side}:${number}`);
     const inside = (ranges: diff.Ranges | null, at: number) =>
       ranges !== null && ranges.some(([s, e]) => at >= s && at < e);
@@ -3110,11 +3193,17 @@ export class Panel {
       () => (this.pending = this.send(r, false)),
     ];
     const close: [string, string] = ["q", i18n.t`close`];
+    const view: [string, string, () => void] = [
+      "S",
+      r.split ? i18n.t`unified` : i18n.t`split`,
+      () => this.toggleSplit(r),
+    ];
     if (r.part === "tree" && !r.tree_hidden)
       return hints(
         [
           ["j/k", i18n.t`file`],
           ["enter", i18n.t`open`],
+          view,
           [
             "C",
             "file note",
@@ -3131,18 +3220,22 @@ export class Panel {
     const d = now?.file?.loaded.kind === "diff" ? now.file.loaded.diff : null;
     const units = d && r.path ? this.units(r, d, r.path) : [];
     if (now && r.path && this.isCollapsed(r, now, r.path))
-      return hints([["enter", i18n.t`unfold`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]], close);
+      return hints([view, ["enter", i18n.t`unfold`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]], close);
     if (now?.change?.generated && !r.loaded.has(now.change.path))
-      return hints([["enter", i18n.t`load the diff`], ["f", i18n.t`next file`], send, ["?", i18n.t`keys`]], close);
+      return hints(
+        [view, ["enter", i18n.t`load the diff`], ["f", i18n.t`next file`], send, ["?", i18n.t`keys`]],
+        close,
+      );
     if (units[r.cur]?.kind === "fold")
-      return hints([["→", i18n.t`expand`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]], close);
+      return hints([view, ["→", i18n.t`expand`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]], close);
     if (d && now && this.noteAt(r, d, units, now))
       return hints(
-        [["e", i18n.t`edit`], ["d", i18n.t`delete`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]],
+        [view, ["e", i18n.t`edit`], ["d", i18n.t`delete`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]],
         close,
       );
     hints(
       [
+        view,
         ["v", i18n.t`select`],
         ["c", i18n.t`comment`],
         ["]/[", i18n.t`hunk`],

@@ -24,6 +24,56 @@ test("a new file starts its numbering at one", () => {
   expect(d.old).toEqual([]);
 });
 
+test("split rows align replacements and leave unmatched sides empty", () => {
+  for (const [lines, expected] of [
+    [
+      [" a", "-b", "-c", "+B", " d"],
+      [
+        [0, 0],
+        [1, 3],
+        [2, null],
+        [4, 4],
+      ],
+    ],
+    [
+      ["-a", "+A", "+B", " c"],
+      [
+        [0, 1],
+        [null, 2],
+        [3, 3],
+      ],
+    ],
+    [
+      ["+a", "+b"],
+      [
+        [null, 0],
+        [null, 1],
+      ],
+    ],
+    [
+      ["-a", "-b"],
+      [
+        [0, null],
+        [1, null],
+      ],
+    ],
+  ] as const) {
+    const d = diff.parse(patch([...lines])) as diff.FileDiff;
+    expect(diff.splitUnits(d, d.units).map(pair => [pair.old, pair.new])).toEqual(expected.map(pair => [...pair]));
+  }
+});
+
+test("split alignment retains folds and expanded context", () => {
+  const d = diff.parse(patch([...Array.from({ length: 10 }, (_, i) => ` ${i}`), "-a", "+b"])) as diff.FileDiff;
+  const pairs = diff.splitUnits(d, d.units);
+  expect(d.units[pairs[0].old!].kind).toBe("fold");
+  expect(pairs[0]).toEqual({ old: 0, new: 0 });
+  expect(pairs.at(-1)).toEqual({ old: 4, new: 5 });
+  const expanded = diff.shown(d, new Set([diff.foldAnchor(d, d.units[0])]));
+  expect(diff.splitUnits(d, expanded)).toHaveLength(11);
+  expect(diff.splitUnits(d, [])).toEqual([]);
+});
+
 test("git's binary notice and missing newline markers", () => {
   expect(diff.parse("diff --git a/x.png b/x.png\nBinary files a/x.png and b/x.png differ\n")).toBe("binary");
   const d = diff.parse(patch(["-a", "\\ No newline at end of file", "+a", "+b"], "@@ -1 +1,2 @@")) as diff.FileDiff;
