@@ -544,6 +544,39 @@ test("last tab follows keyboard, mouse and tab menu selection, including shell t
   }
 });
 
+test("Ctrl+Tab walks visual tab order rather than focus history, including after reorder", async () => {
+  const s = controller(),
+    snapshot = folders("/a", "/b", "/c");
+  snapshot.workspaces[0].model = {
+    nodes: [{ pane: 1 }, { pane: 2 }, { pane: 3 }],
+    tabs: [1, 2, 3].map((id, root) => ({ id, root, title: "" })),
+    revision: 0,
+  };
+  snapshot.workspaces.splice(1);
+  for (const pane of snapshot.panes) pane.workspace = 1;
+  s.receiveSnapshot(snapshot);
+  s.input_state.attached = true;
+  try {
+    s.focusPane(3);
+    s.focusPane(1);
+    for (const id of [2, 3, 1]) {
+      await s.input(bytes("\x1b[9;5u"));
+      expect(s.focused().id).toBe(id);
+    }
+    await s.input(bytes("\x1b[9;6u"));
+    expect(s.focused().id).toBe(3);
+    snapshot.workspaces[0].model.tabs.reverse();
+    snapshot.workspaces[0].model.revision++;
+    s.receiveSnapshot(snapshot);
+    for (const id of [2, 1, 3]) {
+      await s.input(bytes("\x1b[9;5u"));
+      expect(s.focused().id).toBe(id);
+    }
+  } finally {
+    viewer.close(s);
+  }
+});
+
 test("last workspace records pane jumps and notices closed or missing history", async () => {
   const s = controller(),
     snapshot = folders("/a", "/b", "/c");

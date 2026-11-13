@@ -89,8 +89,19 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
   const request = protocol.command(cmd);
   switch (request.op) {
     case "agent.move": {
-      const ws = r.getWorkspace(request.payload.workspace);
-      ws.agent_order.move(r.agentTargets(ws), request.payload.target, request.payload.before ?? null);
+      const ws = r.getWorkspace(request.payload.workspace),
+        target = request.payload.target;
+      ws.agent_order.move(r.agentTargets(ws), target, request.payload.before ?? null);
+      if ("pane" in target) {
+        const tab = ws.model.tabForPane(target.pane)!,
+          at = ws.agent_order.items.findIndex(t => "pane" in t && t.pane === target.pane),
+          next = ws.agent_order.items.slice(at + 1).find(t => "pane" in t && ws.model.tabForPane(t.pane) !== tab);
+        const model = clone(ws.model);
+        model.moveTab(model.tabs[tab].id, next && "pane" in next ? model.tabForPane(next.pane)! : model.count);
+        model.revision = BigInt.asUintN(64, model.revision + 1n);
+        ws.model = model;
+      }
+      r.syncAgentOrder(ws);
       break;
     }
     case "agent.pin": {
@@ -540,6 +551,7 @@ function arrangeInner(r: Runtime, request: Arrangement): Result {
       if (source !== destination) {
         dst.revision = BigInt.asUintN(64, dst.revision + 1n);
         destination.model = dst;
+        r.syncAgentOrder(destination);
       }
       if (placement.kind === "new_tab") r.workspaces.next_pane_id++;
       break;
@@ -547,6 +559,7 @@ function arrangeInner(r: Runtime, request: Arrangement): Result {
   }
   src.revision = BigInt.asUintN(64, src.revision + 1n);
   source.model = src;
+  r.syncAgentOrder(source);
   r.changed();
   return location(r, representative);
 }
