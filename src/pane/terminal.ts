@@ -7,7 +7,7 @@ import * as launch_command from "../launch/command";
 import { Provider, adapter } from "../providers";
 import * as surface from "./surface";
 import type { Link } from "./hyperlinks";
-import { toBuffer, type Pointer } from "bun:ffi";
+import { toArrayBuffer, type Pointer } from "bun:ffi";
 import type { PickResult, PickUnit, Wire } from "../protocol";
 export type Title = { text: string; pid: number; revision: bigint };
 let readiness: ReadyLoop | null = null;
@@ -74,7 +74,7 @@ export class Terminal extends EventEmitter {
       length = Number(title_info[0]),
       pid = Number(BigInt.asIntN(64, title_info[1])),
       revision = title_info[2];
-    return { text: address ? toBuffer(address, 0, length).toString() : "", pid, revision };
+    return { text: address ? Buffer.from(toArrayBuffer(address, 0, length)).toString() : "", pid, revision };
   }
   get title_pid(): number {
     this.titleAddress();
@@ -86,7 +86,7 @@ export class Terminal extends EventEmitter {
   }
   get title(): string {
     const address = this.titleAddress();
-    return address ? toBuffer(address, 0, Number(title_info[0])).toString() : "";
+    return address ? Buffer.from(toArrayBuffer(address, 0, Number(title_info[0]))).toString() : "";
   }
   /** Copy title bytes before any further terminal mutation can invalidate them. */
   private titleAddress() {
@@ -317,7 +317,8 @@ export class Terminal extends EventEmitter {
     const length = Number(bytes_length[0]);
     try {
       if (length > 64 * 1024 * 1024) throw Error("NativeMessageTooLarge");
-      const bytes = length ? toBuffer(address, 0, length) : Buffer.alloc(0);
+      // Avoid toBuffer's broken finalizer on Bun 1.3.9.
+      const bytes = length ? Buffer.from(toArrayBuffer(address, 0, length)) : Buffer.alloc(0);
       return read(bytes);
     } finally {
       n.terminal_bytes_free(address, length);

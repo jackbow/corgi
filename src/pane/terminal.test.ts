@@ -37,6 +37,27 @@ test("title observations contain one current identity and retain prior revisions
     t.destroy();
   }
 });
+
+test("native byte reads survive garbage collection after the terminal is destroyed", () => {
+  for (let i = 0; i < 5; i++) {
+    const t = Terminal.create(12, 2);
+    let title: string, observed: string, live: string, snapshot: Buffer;
+    try {
+      t.feed("\x1b]2;title\x07kept");
+      title = t.title;
+      observed = t.titleInfo().text;
+      live = t.liveText();
+      snapshot = t.snapshot();
+    } finally {
+      t.destroy();
+    }
+    Bun.gc(true);
+    expect(title).toBe("title");
+    expect(observed).toBe("title");
+    expect(live).toContain("kept");
+    expect(snapshot.toString()).toContain("kept");
+  }
+});
 test("user input and terminal replies share an ordered bounded queue", () => {
   const t = Terminal.create(20, 4);
   try {
