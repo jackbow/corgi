@@ -265,7 +265,6 @@ export function Agent({
   keyStatus,
   readOnly = false,
   controls,
-  archive,
   commands,
   historyLines = 300,
   setHistoryLines,
@@ -285,7 +284,6 @@ export function Agent({
   keyStatus: string;
   readOnly?: boolean;
   controls?: ReactNode;
-  archive?: ReactNode;
   commands?: Command[];
   historyLines?: number;
   setHistoryLines?: (value: number) => void;
@@ -313,14 +311,13 @@ export function Agent({
             <Tabs.Trigger value="conversation">Conversation</Tabs.Trigger>
             <Tabs.Trigger value="terminal">Terminal</Tabs.Trigger>
           </Tabs.List>
-          <div className="activity-strip">
-            <span className="truncate">{pane.activity || "Waiting for the next instruction"}</span>
-            {needsInput && mode !== "terminal" && (
+          {needsInput && mode !== "terminal" && (
+            <div className="activity-strip">
               <Button variant="ghost" onClick={() => setMode("terminal")}>
                 Needs input → Terminal
               </Button>
-            )}
-          </div>
+            </div>
+          )}
           {error && (
             <p className="notice" role="status">
               {error}
@@ -328,36 +325,35 @@ export function Agent({
           )}
           {controls}
           <Tabs.Content value="conversation" className="tab-panel">
-            {archive ??
-              (data?.availability === "available" && data.messages.length && !pane.exited ? (
-                <Messages key={`${key}:${data.version}`} id={`${key}:${data.version}`} data={data} />
-              ) : (
-                <ScrollContent id={`${key}:conversation`} revision={data}>
-                  {pane.exited ? (
-                    <Empty title="This agent has ended" text="Return to your workspaces to choose another agent." />
-                  ) : !data && error ? (
-                    <div className="empty">
-                      <h2>Conversation unavailable</h2>
-                      <p>Reconnect or try the terminal view.</p>
-                      <Button onClick={() => setMode("terminal")}>Open Terminal</Button>
-                    </div>
-                  ) : !data ? (
-                    <Empty title="Reading conversation…" text="Checking the current transcript on your Mac." />
-                  ) : data.availability !== "available" ? (
-                    <div className="empty">
-                      <h2>{data.availability === "indexing" ? "Reading conversation…" : "Conversation unavailable"}</h2>
-                      <p>
-                        {data.availability === "indexing"
-                          ? "Reading recent messages on your Mac. You can use Terminal while it loads."
-                          : "Read and interact with this agent in Terminal."}
-                      </p>
-                      <Button onClick={() => setMode("terminal")}>Open Terminal</Button>
-                    </div>
-                  ) : (
-                    <Empty title="No messages yet" text="Send the first instruction below." />
-                  )}
-                </ScrollContent>
-              ))}
+            {data?.availability === "available" && data.messages.length && !pane.exited ? (
+              <Messages key={`${key}:${data.version}`} id={`${key}:${data.version}`} data={data} />
+            ) : (
+              <ScrollContent id={`${key}:conversation`} revision={data}>
+                {pane.exited ? (
+                  <Empty title="This agent has ended" text="Return to your workspaces to choose another agent." />
+                ) : !data && error ? (
+                  <div className="empty">
+                    <h2>Conversation unavailable</h2>
+                    <p>Reconnect or try the terminal view.</p>
+                    <Button onClick={() => setMode("terminal")}>Open Terminal</Button>
+                  </div>
+                ) : !data ? (
+                  <Empty title="Reading conversation…" text="Checking the current transcript on your Mac." />
+                ) : data.availability !== "available" ? (
+                  <div className="empty">
+                    <h2>{data.availability === "indexing" ? "Reading conversation…" : "Conversation unavailable"}</h2>
+                    <p>
+                      {data.availability === "indexing"
+                        ? "Reading recent messages on your Mac. You can use Terminal while it loads."
+                        : "Read and interact with this agent in Terminal."}
+                    </p>
+                    <Button onClick={() => setMode("terminal")}>Open Terminal</Button>
+                  </div>
+                ) : (
+                  <Empty title="No messages yet" text="Send the first instruction below." />
+                )}
+              </ScrollContent>
+            )}
           </Tabs.Content>
           <Tabs.Content value="terminal" className="tab-panel">
             <ScrollContent id={`${key}:terminal`} revision={surface}>

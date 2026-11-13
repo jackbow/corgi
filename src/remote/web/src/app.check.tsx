@@ -83,6 +83,24 @@ it("searches workspaces without reordering rows on activity changes", async () =
   await userEvent.click(screen.getByRole("button", { name: /Tidy up empty states/ }));
   expect(open).toHaveBeenCalledWith(2);
 });
+it("keeps conversation and terminal reading without the conversation tools section", async () => {
+  const api = client();
+  api.manage = vi.fn();
+  api.archive = vi.fn();
+  api.speech = vi.fn();
+  const { router } = app(api, "/agents/1");
+  await screen.findByText("Assistant");
+  expect(screen.queryByText("Conversation tools")).toBeNull();
+  expect(screen.queryByText(fixtures.snapshot.panes[0].activity)).toBeNull();
+  expect(screen.queryByText("Agent actions")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Browse conversation history" })).toBeNull();
+  expect(screen.queryByText("Listen to latest response")).toBeNull();
+  await userEvent.click(screen.getByRole("tab", { name: "Terminal" }));
+  await screen.findByLabelText("Terminal surface");
+  expect(router.state.location.search.view).toBe("terminal");
+  expect(api.archive).not.toHaveBeenCalled();
+  expect(api.speech).not.toHaveBeenCalled();
+});
 it("keeps per-conversation drafts, sends Enter explicitly, and never retries uncertain sends", async () => {
   const send = vi.fn(async () => {}),
     pane = fixtures.snapshot.panes[0];
