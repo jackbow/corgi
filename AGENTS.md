@@ -2,6 +2,12 @@
 
 See [HACKING.md](HACKING.md) for development workflows and architecture.
 
+## Local functionality changes
+
+For every functional change relative to `main`, update
+[corgi-changes.md](corgi-changes.md) in the same commit. Include additions,
+behavior changes, and bug fixes; keep existing entries accurate.
+
 ## Commands
 
 - **Build:** `bun build.ts` (`--no-native` skips the Zig native layer when
