@@ -1000,6 +1000,7 @@ export class Runtime {
       for (const key of ws.star_bindings.keys()) if (!seen.has(key)) ws.star_bindings.delete(key);
       for (const key of ws.agent_slots) if (!seen.has(key)) ws.agent_slots.delete(key);
       for (const key of ws.restored) if (!seen.has(key)) ws.restored.delete(key);
+      changed = this.syncAgentOrder(ws) || changed;
     }
     return changed;
   }
@@ -1061,6 +1062,18 @@ export class Runtime {
     for (const targets of tabs) out.push(...targets);
     for (const s of this.sessions) if (s.workspace_id === ws.id) out.push({ headless: s.id });
     return out;
+  }
+  /** Pane rows follow tabs; headless rows retain their manually chosen slots. */
+  syncAgentOrder(ws: Workspace): boolean {
+    const live = this.agentTargets(ws),
+      panes = live.filter(t => "pane" in t),
+      ordered = ws.agent_order.without(live, { pane: 0 }).items;
+    let i = 0;
+    const next = ordered.map(t => ("pane" in t ? panes[i++] : t));
+    if (next.length === ws.agent_order.len && next.every((t, at) => agentKey(t) === agentKey(ws.agent_order.items[at])))
+      return false;
+    ws.agent_order.items = next;
+    return true;
   }
   async renameAgent(id: number, wanted: string | null) {
     const p = this.pane(id);

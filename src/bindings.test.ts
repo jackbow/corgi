@@ -11,6 +11,12 @@ test("no preset binds a key twice", () => {
     }
   }
 });
+test("Ctrl+Tab and Ctrl+Shift+Tab follow numbered tabs in every preset", () => {
+  for (const preset of ["corgi", "tmux", "herdr", "cmux"] as Preset[]) {
+    expect(chord(preset, false, { codepoint: 9, mods: { ctrl: true } })).toEqual({ name: "next" });
+    expect(chord(preset, false, { codepoint: 9, mods: { ctrl: true, shift: true } })).toEqual({ name: "prev" });
+  }
+});
 test("presets preserve first shortcuts and held chords", () => {
   expect(find("corgi", { name: "new" })?.key).toBe(99);
   expect(lookup("corgi", true, 118)).toEqual({ name: "split", value: "right" });

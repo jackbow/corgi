@@ -25,6 +25,61 @@ function pane(r: Runtime, w: Workspace, split: number | null = null) {
   return id;
 }
 const topology = (r: Runtime) => stringify(r.workspaces.items.map(w => w.model));
+test("sidebar and tab moves share an order, with the latest move winning", async () => {
+  const { r, home, away } = setup();
+  try {
+    const [a, b, c] = [pane(r, home), pane(r, home), pane(r, home)],
+      outside = pane(r, away),
+      order = () => snapshot(r).workspaces[0].agent_order,
+      targets = (...ids: number[]) => ids.map(pane => ({ pane }));
+    for (const id of [a, b, c]) r.pane(id)!.agent().provider = "claude";
+    // Legacy independent sidebar ordering yields to the current numbered tabs.
+    home.agent_order.items = targets(c, b, a);
+    expect(order()).toEqual(targets(a, b, c));
+    const revision = home.model.revision;
+    await execute(r, ctx, { "agent.move": { workspace: home.id, target: { pane: c }, before: { pane: a } } });
+    expect(home.model.tabs.map(t => home.model.firstPane(t.root))).toEqual([c, a, b]);
+    expect(home.model.revision).toBeGreaterThan(revision);
+    expect(order()).toEqual(targets(c, a, b));
+    await execute(r, ctx, { "tab.move": { target: location(r, b).tab, destination: { before: location(r, c).tab } } });
+    expect(order()).toEqual(targets(b, c, a));
+    await execute(r, ctx, { "agent.move": { workspace: home.id, target: { pane: b }, before: null } });
+    expect(order()).toEqual(targets(c, a, b));
+    r.pane(a)!.agent().state = "working";
+    r.pane(c)!.agent().state = "blocked";
+    expect(order()).toEqual(targets(c, a, b));
+    expect(away.model.firstPane(away.model.tabs[0].root)).toBe(outside);
+    const before = topology(r);
+    await expect(
+      execute(r, ctx, { "agent.move": { workspace: home.id, target: { pane: a }, before: { pane: outside } } }),
+    ).rejects.toThrow("InvalidDestination");
+    expect(topology(r)).toBe(before);
+    expect(order()).toEqual(targets(c, a, b));
+  } finally {
+    r.destroy();
+  }
+});
+test("sidebar moves keep split tabs together and workspace moves refresh both orders", async () => {
+  const { r, home, away } = setup();
+  try {
+    const a = pane(r, home),
+      b = pane(r, home),
+      split = pane(r, home, a),
+      outside = pane(r, away);
+    snapshot(r);
+    await execute(r, ctx, { "agent.move": { workspace: home.id, target: { pane: split }, before: null } });
+    expect(home.agent_order.slice()).toEqual([{ pane: b }, { pane: a }, { pane: split }]);
+    expect(home.model.count).toBe(2);
+    expect(home.model.tabForPane(a)).toBe(home.model.tabForPane(split));
+    await execute(r, ctx, {
+      "tab.move": { target: location(r, a).tab, destination: { before: location(r, outside).tab } },
+    });
+    expect(home.agent_order.slice()).toEqual([{ pane: b }]);
+    expect(away.agent_order.slice()).toEqual([{ pane: a }, { pane: split }, { pane: outside }]);
+  } finally {
+    r.destroy();
+  }
+});
 test("moving launcher rows atomically persists order and visibility only in the selected workspace", async () => {
   const { r, home, away } = setup();
   try {

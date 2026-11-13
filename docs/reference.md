@@ -43,8 +43,11 @@ Click a tab, pane or sidebar agent to focus it. Drag split dividers to resize.
 Right-click tabs, panes and agents for their actions; hold Shift when an
 application captures the mouse. Drag workspace rows to reorder them.
 
-The agent list defaults to manual order, as dragged. New agents go on top,
-or first in their existing linked worktree group. Choose Sort: By activity
+The agent list defaults to manual order, matching the numbered tabs. Dragging
+a tab or a sidebar agent updates both orders; the last move wins. Split panes
+stay together in their tab. **Ctrl+Tab** and **Ctrl+Shift+Tab** cycle forward
+and backward through the numbered tabs, wrapping at either end.
+Choose Sort: By activity
 in the "agents: … ▾" menu to group agents by what they are doing: working
 (including those waiting on you, in warm, and paused ones), ready to read,
 idle and done. A new agent stays dimmed in working through startup and idle,
@@ -55,7 +58,7 @@ done starts folded. Right-click an agent and choose **Star** or **Unstar**
 (`s` while the menu is open). Starred agents stay in the top **★ starred**
 section as their activity changes. Dragging only reorders agents within
 their section; it never stars or unstars them. Stars and order are shared
-and saved with the workspace; they don't move panes. Stars follow conversations
+and saved with the workspace; stars and activity sorting don't move tabs. Stars follow conversations
 when closed and resumed in that workspace, and show beside their titles in
 its new-tab history.
 Sort: Manual in the "agents: … ▾" menu keeps the dragged order and marks starred
