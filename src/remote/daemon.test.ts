@@ -80,6 +80,18 @@ test("phone projection omits transcripts, commands, accounts, and unrelated daem
   expect(s.panes[0].name).toBe("Agent");
 });
 
+test("only blocked tool requests are projected as permission prompts", () => {
+  const project = (state: string, tool_active: boolean) =>
+    snapshot({
+      server_pid: 1,
+      workspaces: [],
+      panes: [{ id: 1, workspace: 1, binding: 1, agent: { state, tool_active } }],
+    }).panes[0].permission;
+  expect(project("blocked", true)).toBe(true);
+  expect(project("working", true)).toBe(false);
+  expect(project("blocked", false)).toBe(false);
+});
+
 test("surface and conversation reads are bound before and after, and launches use only daemon defaults", async () => {
   const dir = mkdtempSync(join(tmpdir(), "corgi-phone-api-")),
     socket = join(dir, "daemon.sock"),

@@ -63,6 +63,16 @@ test("notification links bind the pane and conversation and route input prompts 
   expect(url.searchParams.get("view")).toBe("terminal");
   expect(url.searchParams.get("notification")).toBe(JSON.stringify([1, 1, "1", "thread"]));
 });
+
+test("confirmed permission requests alert even when desktop attention is already read", () => {
+  const changes = new Changes();
+  changes.update(snapshot());
+  const blocked = snapshot({ state: "blocked", permission: true, attention: "none" });
+  expect(changes.update(blocked)[0]).toMatchObject({ title: "needs permission", body: "Agent" });
+  expect(changes.update(blocked)).toEqual([]);
+  changes.update(snapshot());
+  expect(changes.update(blocked)).toHaveLength(1);
+});
 test("subscriptions persist privately, isolate devices, prune expiry/revocation, and never retry failed sends", async () => {
   const dir = mkdtempSync(join(tmpdir(), "corgi-push-")),
     file = join(dir, "push.json");

@@ -53,6 +53,7 @@ export const specs: Record<string, string> = {
   "prev-agent": "void",
   "last-agent": "void",
   attention: "void",
+  "open-notification": "[]const u8",
   "new-agent": "void",
   "star-agent": "usize",
   "star-session": "usize",

@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, copyFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import * as translations from "./scripts/translations";
 import * as remoteWeb from "./scripts/remote_web";
@@ -67,12 +67,53 @@ if (!process.argv.includes("--no-native")) {
   // Zig has already said why.
   const status = await native.exited;
   if (status) process.exit(status);
+  if (platform === "darwin") {
+    const bundle = `${nativeRoot}/bin/Corgi Notifications.app/Contents`;
+    mkdirSync(`${bundle}/MacOS`, { recursive: true });
+    mkdirSync(`${bundle}/Resources`, { recursive: true });
+    copyFileSync(`${root}/native/notify.icns`, `${bundle}/Resources/corgi.icns`);
+    copyFileSync(`${root}/native/notify.plist`, `${bundle}/Info.plist`);
+    const compile = Bun.spawn(
+      [
+        "xcrun",
+        "clang",
+        "-O2",
+        "-fobjc-arc",
+        "-arch",
+        arch === "arm64" ? "arm64" : "x86_64",
+        "-mmacosx-version-min=13.0",
+        ...(sysroot ? ["-isysroot", sysroot] : []),
+        "-framework",
+        "AppKit",
+        "-framework",
+        "UserNotifications",
+        "-framework",
+        "CoreServices",
+        `${root}/native/notify.m`,
+        "-o",
+        `${bundle}/MacOS/corgi-notify`,
+      ],
+      { stdout: "inherit", stderr: "inherit" },
+    );
+    if (await compile.exited) throw Error("Notification helper build failed");
+    const sign = Bun.spawn(["codesign", "--force", "--sign", "-", `${nativeRoot}/bin/Corgi Notifications.app`], {
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    if (await sign.exited) throw Error("Notification helper signing failed");
+  }
 }
 if (process.argv.includes("--native-only")) process.exit(0);
 const webAssets = await remoteWeb.build();
 mkdirSync(`${root}/dist`, { recursive: true });
 const suffix = platform === "darwin" ? "dylib" : "so";
 const files = [`lib/libcorgi_term.${suffix}`, `lib/libcorgi_system.${suffix}`, "bin/pty-exec", "bin/corgi-hook"];
+if (platform === "darwin")
+  files.push(
+    ...["Info.plist", "MacOS/corgi-notify", "Resources/corgi.icns", "_CodeSignature/CodeResources"].map(
+      file => `bin/Corgi Notifications.app/Contents/${file}`,
+    ),
+  );
 const hash = createHash("sha256");
 for (const file of files) hash.update(new Uint8Array(await Bun.file(`${nativeRoot}/${file}`).arrayBuffer()));
 const imports = files

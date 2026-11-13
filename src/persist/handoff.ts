@@ -14,6 +14,7 @@ import { Worker as UsageWorker } from "../usage/worker";
 import * as build_id from "../build_id";
 import * as setup from "../inference/setup";
 import * as breadcrumbs from "../breadcrumbs";
+import * as notificationTarget from "../notification_target";
 
 export const terminal_abi = 0xa826bd22ebcdbe60n;
 export const update_abi = `1-${terminal_abi.toString(16)}`;
@@ -90,6 +91,7 @@ export function captureManifest(server: Server, requester: Client, request_id: n
     bell_seq: server.bell_seq,
     last_bell: server.last_bell,
     last_bell_kind: server.last_bell_kind,
+    last_bell_target: server.last_bell_target,
   };
 }
 export function restoreMetadata(server: Server, value: unknown): void {
@@ -104,6 +106,9 @@ export function restoreMetadata(server: Server, value: unknown): void {
   ] as const)
     if (saved[key] !== undefined) Object.assign(server, { [key]: saved[key] });
   if (saved.bell_seq !== undefined) server.bell_seq = BigInt(saved.bell_seq);
+  server.last_bell_target = saved.last_bell_target
+    ? notificationTarget.parse(json.stringify(saved.last_bell_target))
+    : null;
 }
 async function line(control: AsyncFD, limit = 1024): Promise<string> {
   const bytes = Buffer.alloc(limit);

@@ -11,6 +11,9 @@ export interface Alert {
   tag: string;
   url: string;
 }
+function inputAlert(alert: Alert) {
+  return alert.title === "needs input" || alert.title === "needs permission";
+}
 interface AgentAlert extends Alert {
   pane: number;
   identity: Identity;
@@ -85,7 +88,13 @@ export class Changes {
       if (!waiting && !finished) continue;
       const search = new URLSearchParams({ view: waiting ? "terminal" : "conversation", notification: identity });
       alerts.push({
-        title: waiting ? "needs input" : pane.outcome === "failed" ? "failed" : "finished",
+        title: waiting
+          ? pane.permission
+            ? "needs permission"
+            : "needs input"
+          : pane.outcome === "failed"
+            ? "failed"
+            : "finished",
         body: preview(pane.name, 100),
         tag: `corgi-${snapshot.server}-${pane.id}-${pane.binding}`,
         url: `/agents/${pane.id}?${search}`,
@@ -314,7 +323,7 @@ export class Notifications {
       if (p.settle > 0) {
         const pane = current.get(delivery.alert.tag),
           waiting = pane?.attention === "needs_input" || pane?.state === "blocked";
-        if (!pane || (delivery.alert.title === "needs input" ? !waiting : pane.state === "working")) {
+        if (!pane || (inputAlert(delivery.alert) ? !waiting : pane.state === "working")) {
           this.queue = this.queue.filter(q => q !== delivery);
           continue;
         }
@@ -335,7 +344,7 @@ export class Notifications {
     if (failed) throw Error("PushDeliveryFailed");
   }
   private allowed(p: Preferences, alert: Alert) {
-    return alert.title === "needs input" ? p.input : alert.title === "failed" ? p.failed : p.finished;
+    return inputAlert(alert) ? p.input : alert.title === "failed" ? p.failed : p.finished;
   }
   start(onError: (error: unknown) => void) {
     if (this.running) return;

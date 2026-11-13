@@ -18,6 +18,7 @@ export interface Pane {
   order: number;
   attention: string;
   lastResponse?: LastResponse;
+  permission?: boolean;
   completion?: string;
   outcome?: Outcome;
 }

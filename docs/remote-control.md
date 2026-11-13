@@ -110,8 +110,6 @@ reading position while messages remain in the window or change height.
 
 ## Additional phone controls
 
-- **Conversation tools → Agent actions** renames an agent, starts a fresh conversation
-  while idle, or stops its pane. Clearing context and stopping require confirmation.
 - **Settings → Workspaces** opens an existing absolute directory on the Mac, renames
   or reorders workspaces, and closes workspaces with confirmation. Closing stops their
   panes, without deleting directories. Worktrees and file/Git browsing are not exposed.
@@ -119,20 +117,9 @@ reading position while messages remain in the window or change height.
   the current pane, conversation and terminal surface, and consumed once before sending
   keys. Unsupported checkbox, free-text and tabbed forms use Terminal. Uncertain responses
   are never retried automatically.
-- **Browse conversation history** is optional. Scroll up to read earlier pages; there
-  is no Load earlier button. Search filters loaded messages; **Search older** scans backwards
-  until another matching page, cancellation, or the beginning. Requests read at most 4 MiB
-  with a 150 ms processing budget, preserving progress between requests. Cursors are opaque,
-  scoped to the server-resolved transcript and conversation, and expire after ten minutes.
-  The Mac retains four browsing sessions with eight replayable pages each; the browser
-  retains at most 1,000 entries in memory. Normal conversation opens still read only 20 entries.
 - Terminal history can show 100–10,000 lines, bounded to 512 KiB, with a text filter.
   Desktop terminal dimensions remain unchanged. Command and skill suggestions insert
   into the draft without sending; discovery returns names and descriptions only.
-- **Listen to latest response** generates bounded WAV audio using macOS speech, with code
-  blocks omitted. Playback uses the phone's audio controls. Temporary Mac files are removed;
-  audio and conversation content are not cached offline. Verify screen-off playback on an actual
-  phone. Wake lock is optional and subject to browser and battery policy.
 - Controllers can create one-use reader or controller invitations, compare approval codes,
   and revoke devices in Settings. Readers cannot send input, launch/manage agents or
   workspaces, or administer devices. Optional passkey verification protects sign-in and
@@ -214,7 +201,24 @@ alerts. Alerts show the status as their title, followed by the agent name and a
 truncated preview of the latest assistant response, with a link back to the same
 pane and conversation. Input prompts open Terminal; notifications never approve
 prompts. If the transcript is unavailable, the response preview is omitted.
+Confirmed tool permission prompts show **needs permission** and use the input
+notification preference. Codex automatic reviews do not alert unless a prompt
+is visible in its terminal.
 iOS may also display its own app attribution, which the website cannot remove.
+
+On macOS, desktop viewers use Corgi’s native notifier for both completion and
+permission/input alerts, with the conversation title, latest response preview,
+and click-to-conversation behavior. Allow **Corgi** in macOS notification settings;
+Focus may silence banners. Alerts retain their conversation identity through
+daemon reloads, so reused panes cannot redirect an old alert.
+
+Without a local desktop viewer, the daemon sends permission/input alerts through
+`terminal-notifier` (`brew install terminal-notifier`). This fallback avoids
+duplicate banners while a desktop viewer is attached. Clicks require a viewer
+to be open and reject panes that have switched conversations. Ghostty, iTerm2,
+Terminal, WezTerm and Kitty support fallback app activation.
+Set `CORGI_NOTIFICATIONS=off` when starting Corgi to disable Mac banners
+independently of sounds and phone push.
 
 The Mac must be awake, Corgi and remote control running, and both devices need
 internet access to the browser’s push service. Apple Web Push uses outbound

@@ -97,6 +97,24 @@ test("foreground detection shares its title read with local reattachment", () =>
   expect(terminal.titleReads).toBe(1);
 });
 
+test("Codex permission review starts at zero and waits for a visible prompt", () => {
+  const { server, pane, terminal, registry } = fixture();
+  const actor = registry.get("codex", id);
+  pane.attachment.select(actor);
+  const event = codex.adapter.hook({ hook_event_name: "PermissionRequest", session_id: id, tool_name: "Bash" });
+  actor.state.observeHook("codex", event, 1n, false, 1);
+  expect(actor.state.permission_review).toBe(0);
+  terminal.feed("Working (esc to interrupt)");
+  detectPane(server, pane, { provider: "codex", pid: 42 });
+  expect(actor.state.state).toBe("working");
+  terminal.feed("\x1b[2J\x1b[HEnter to confirm · Esc to cancel");
+  detectPane(server, pane, { provider: "codex", pid: 42 });
+  expect(actor.state.state).toBe("working");
+  detectPane(server, pane, { provider: "codex", pid: 42 });
+  expect(actor.state).toMatchObject({ state: "blocked", attention: "needs_input" });
+  expect(server.bell_target).toEqual({ conversation: actor.id });
+});
+
 test("a bridge claim runs the existing screen watcher without a local agent or conversation", () => {
   const { server, pane, terminal, registry } = fixture();
   pane.launch = new Launch({ provider: "codex" });

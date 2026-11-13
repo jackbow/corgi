@@ -51,6 +51,7 @@ export interface Opened {
   workspace: number;
   focus: number | null;
 }
+export type AttentionTarget = { conversation: number } | { pane: number; binding: bigint } | { headless: number };
 export interface View<Session = unknown, Resources = unknown> {
   type: "view";
   viewer_protocol: number;
@@ -61,6 +62,7 @@ export interface View<Session = unknown, Resources = unknown> {
   surfaces: SurfaceView[];
   bell_seq: bigint;
   bell_kind: "none" | "finished" | "needs_input";
+  bell_target?: AttentionTarget | null;
   controls: Control[];
   viewer: number;
   /** Always false; retained for older viewers. Detach uses an action control. */
