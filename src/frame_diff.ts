@@ -63,7 +63,7 @@ export class Differ {
               frame.panes.length,
               frame.cursor?.x ?? 0,
               frame.cursor?.y ?? 0,
-              frame.cursor !== null,
+              Number(frame.cursor !== null),
               retained ? 1 : 0,
             ),
           );

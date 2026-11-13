@@ -26,8 +26,9 @@ const term = dlopen(`${nativeRoot}/lib/libcorgi_term.${suffix}`, {
   frame_diff_invalidate: { args: ["ptr"], returns: "void" },
   frame_diff_free: { args: ["ptr"], returns: "void" },
   frame_diff_diff: { args: ["ptr", "ptr", "usize"], returns: FFIType.i64_fast },
+  // Bun 1.3.9 mispacks small stack arguments on macOS ARM64; use pointer-sized scalars past argument eight.
   frame_diff_compose: {
-    args: ["ptr", "ptr", "usize", "ptr", "ptr", "usize", "u16", "u16", "bool", "u8"],
+    args: ["ptr", "ptr", "usize", "ptr", "ptr", "usize", "u16", "u16", "usize", "usize"],
     returns: FFIType.i64_fast,
   },
   frame_diff_stats: { args: ["ptr", "ptr"], returns: "void" },
@@ -35,7 +36,7 @@ const term = dlopen(`${nativeRoot}/lib/libcorgi_term.${suffix}`, {
   unicode_widths: { args: ["ptr", "usize"], returns: "void" },
   viewer_take: { args: ["ptr", "usize"], returns: FFIType.i64_fast },
   viewer_receive_frame: {
-    args: ["ptr", "ptr", "usize", "u16", "u16", "u32", "u32", "u32", "u32", "bool", "ptr", "usize"],
+    args: ["ptr", "ptr", "usize", "u16", "u16", "u32", "u32", "u32", "usize", "usize", "ptr", "usize"],
     returns: "i32",
   },
   viewer_update_render: { args: ["ptr"], returns: "i32" },

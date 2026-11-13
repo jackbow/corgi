@@ -71,7 +71,7 @@ export function receiveFrame(handle: Pointer | bigint, view: View, changed?: Uin
       modes.kitty,
       event,
       format,
-      changed === undefined,
+      Number(changed === undefined),
       ptr(changed?.length ? changed : spare_row),
       changed?.length ?? 0,
     );
