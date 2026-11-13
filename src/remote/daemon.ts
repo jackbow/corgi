@@ -52,6 +52,7 @@ export function snapshot(value: unknown): Snapshot {
           provider: provider(str(agent, "provider")),
           conversation: str(agent, "session"),
           attention: str(agent, "attention"),
+          permission: str(agent, "state") === "blocked" && field(agent, "tool_active") === true,
           completion:
             typeof completion === "bigint" || (typeof completion === "number" && Number.isSafeInteger(completion))
               ? String(completion)

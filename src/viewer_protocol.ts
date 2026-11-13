@@ -170,6 +170,7 @@ export async function sync(s: Server, cl: Client, q: Sync, reply = new Reply(cl)
       surfaces: q.surfaces ? frames(s, cl) : [],
       bell_seq: s.bell_seq,
       bell_kind: s.last_bell_kind,
+      bell_target: s.last_bell_target,
       controls: cl.controls,
       viewer: cl.viewer_id,
       detach: false,

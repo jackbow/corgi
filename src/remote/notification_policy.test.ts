@@ -95,7 +95,7 @@ test("categories, snooze, cooldown and settle delay control per-device delivery"
     now += 3000;
     await push.tick();
     expect(sent).toBe(0);
-    state = { ...state, state: "blocked", attention: "needs_input" };
+    state = { ...state, state: "blocked", permission: true, attention: "needs_input" };
     await push.tick();
     expect(sent).toBe(0);
     state = { ...state, state: "working", attention: "none" };
@@ -121,6 +121,38 @@ test("categories, snooze, cooldown and settle delay control per-device delivery"
     expect(push.status("phone").preferences.snoozeUntil).toBeGreaterThan(now);
     for (const value of [{ cooldown: -1 }, { settle: 31 }, { input: "yes" }, { unknown: true }])
       expect(() => preferences(value)).toThrow("InvalidInput");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("permission requests use the input preference rather than the completion preference", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-push-permission-"));
+  let state = { ...pane },
+    sent = 0;
+  const push = new Notifications(
+    join(dir, "push.json"),
+    "https://mac.example.ts.net",
+    () => [{ id: "phone" }],
+    async () => ({ server: 1, workspaces: [], panes: [state] }),
+    async () => {
+      sent++;
+      return 201;
+    },
+  );
+  try {
+    push.subscribe("phone", subscription);
+    push.configure("phone", { ...defaults, input: false });
+    await push.tick();
+    state = { ...state, state: "blocked", permission: true };
+    await push.tick();
+    expect(sent).toBe(0);
+    state = { ...pane };
+    await push.tick();
+    push.configure("phone", { ...defaults, finished: false });
+    state = { ...state, state: "blocked", permission: true };
+    await push.tick();
+    expect(sent).toBe(1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

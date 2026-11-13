@@ -63,7 +63,7 @@ test("help names every action on lines of at most 80 columns", () => {
       .slice("Actions:".length)
       .split(/[ ,.\n]+/)
       .filter(Boolean),
-  ).toEqual(Object.keys(specs).filter(name => name !== "relaunch"));
+  ).toEqual(Object.keys(specs).filter(name => !["relaunch", "open-notification"].includes(name)));
 });
 test("open inside a pane quietly sends its viewer the folder's real path", async () => {
   const previous = process.env.CORGI_PANE;

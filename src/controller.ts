@@ -62,6 +62,7 @@ import * as agentLauncher from "./agent_launcher";
 import { Menu as LauncherMenu, Row, keyAgent, type Row as LauncherRow } from "./agent_launcher";
 import * as agentManager from "./agent_manager";
 import * as agentModels from "./agent_models";
+import * as notificationTarget from "./notification_target";
 import * as agentProfiles from "./agent_profiles";
 import * as launcherOrder from "./launch/order";
 import * as accounts from "./accounts";
@@ -85,7 +86,7 @@ import { key as agentKey, section, type Section, type Target as OrderTarget } fr
 import * as worktrees from "./worktrees";
 import * as worktreeRemoval from "./worktree_removal";
 import * as rpc from "./rpc";
-import type { CommandInput, PickResult, PickUnit } from "./protocol";
+import type { CommandInput, PickResult, PickUnit, AttentionTarget } from "./protocol";
 import * as launcherWorktree from "./launcher_worktree";
 import * as preferences from "./preferences";
 import { Preferences } from "./preferences";
@@ -470,6 +471,7 @@ export class Controller {
   private review_bytes: number[] = [];
   /** Wakes the viewer's loop when something changes without input, such as git answering. */
   wake: () => void = () => {};
+  notify: ((kind: string, target: AttentionTarget | null) => void) | null = null;
   /** The agent and worktree menus' diff line for each checkout, read ahead of them. */
   review_summaries = new summaries.Summaries();
   /** Each pane's turn as last seen, so one starting or ending marks its checkout. */
@@ -2160,6 +2162,15 @@ export class Controller {
   async perform(act: Action): Promise<void> {
     this.message = "";
     switch (act.name) {
+      case "open-notification": {
+        const target = notificationTarget.parse(String(act.value)),
+          selected = target && notificationTarget.resolve(target, this.runtime);
+        if (selected) {
+          this.closeMenu();
+          this.selectAgent(selected);
+        }
+        break;
+      }
       case "worktrees": {
         const id = Number(act.value) || this.current().id;
         if (this.runtime.workspaces.index(id) === null) break;

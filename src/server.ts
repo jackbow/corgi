@@ -1,3 +1,4 @@
+import * as desktopNotifications from "./permission_notifications";
 import * as launcherConfig from "./launcher_config";
 import * as agentModels from "./agent_models";
 import { Quit as ModelQuit } from "./subprocess";
@@ -45,8 +46,10 @@ export class Server {
   default_folder_pending = true;
   bell_seq = 0n;
   last_bell_kind: protocol.View["bell_kind"] = "none";
+  last_bell_target: protocol.AttentionTarget | null = null;
   bell = false;
   bell_kind: protocol.View["bell_kind"] = "none";
+  bell_target: protocol.AttentionTarget | null = null;
   last_bell = 0;
   resource_readings = true;
   dirty = true;
@@ -62,6 +65,7 @@ export class Server {
   private stopped = false;
   private subscribedRevision = -1n;
   private watched = new WeakSet<object>();
+  private notifications = new desktopNotifications.Requests();
   private frozen = false;
   private savedDurable = 0n;
   private durableAt = 0;
@@ -106,10 +110,13 @@ export class Server {
       this.dirty = true;
     }
   }
-  attention(ding: boolean, state: string): void {
+  attention(ding: boolean, state: string, target: protocol.AttentionTarget | null = null): void {
     if (!ding) return;
     this.bell = true;
-    if (this.bell_kind !== "needs_input") this.bell_kind = state === "blocked" ? "needs_input" : "finished";
+    if (this.bell_kind !== "needs_input") {
+      this.bell_kind = state === "blocked" ? "needs_input" : "finished";
+      this.bell_target = target;
+    }
   }
   private flushBell(now: number): void {
     if (this.bell && this.bell_kind === "finished") {
@@ -120,13 +127,16 @@ export class Server {
       if (!unread) {
         this.bell = false;
         this.bell_kind = "none";
+        this.bell_target = null;
       }
     }
     if (this.bell && now - this.last_bell > 1500) {
       this.bell_seq++;
       this.last_bell_kind = this.bell_kind;
+      this.last_bell_target = this.bell_target;
       this.bell = false;
       this.bell_kind = "none";
+      this.bell_target = null;
       this.last_bell = now;
       this.dirty = true;
     }
@@ -450,6 +460,29 @@ export class Server {
     else tracked = this.runtime.resources.stop() || tracked;
     telemetry.end("daemon.trackers.schedule", trackers_started);
     if (tracked) this.runtime.refreshed();
+    this.notifications.update(
+      this.runtime.panes
+        .filter(p => !p.terminal.exited)
+        .map(p => {
+          const agent = p.agent();
+          return {
+            id: agent.sessionId()
+              ? `${agent.provider}:${agent.sessionId()}`
+              : `pane:${p.id}:${p.attachment.generation}:${agent.provider}`,
+            name: agent.displayName() || `Pane ${p.id}`,
+            waiting: agent.state === "blocked",
+            permission: agent.tool_active,
+            target: {
+              socket: this.socket,
+              server: process.pid,
+              pane: p.id,
+              binding: String(p.attachment.generation),
+              conversation: agent.sessionId(),
+            },
+          };
+        }),
+      !viewers.some(c => json.field(c.terminal, "ssh") !== true),
+    );
     this.flushBell(now);
     const launcher_started = telemetry.begin();
     launch.sample(this);

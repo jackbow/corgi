@@ -30,7 +30,7 @@ export const executable = build_id.executablePath(
 );
 export const actionNames = (() => {
   const lines = ["Actions:"];
-  for (const name of Object.keys(actionSpecs).filter(name => name !== "relaunch")) {
+  for (const name of Object.keys(actionSpecs).filter(name => !["relaunch", "open-notification"].includes(name))) {
     if (Buffer.byteLength(lines.at(-1)!) + name.length + 2 > 80) lines.push("  " + name + ",");
     else lines[lines.length - 1] += " " + name + ",";
   }
@@ -252,6 +252,12 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
     return;
   }
   switch (command) {
+    case "__notification-open": {
+      if (args.length !== 2) throw Error("Usage");
+      const notification = await import("./notification_focus");
+      await notification.open(notification.decode(args[1]));
+      return;
+    }
     case "--version":
       process.stdout.write(`corgi ${config.releaseVersion} (${config.releaseCommit})\n`);
       return;

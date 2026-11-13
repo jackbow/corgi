@@ -15,6 +15,11 @@ import * as composition from "./composition";
 import * as framePacing from "./frame_pacing";
 import { Openers } from "./url_opener";
 import * as sound from "./sound";
+import { Notifications } from "./desktop_notifications";
+import * as notificationContent from "./notification_content";
+import * as notificationTarget from "./notification_target";
+import * as json from "./json";
+import { testBuild } from "./build_assets";
 import { sshViewer } from "./trackers/ports";
 import * as palette from "./palette";
 import * as hostBackground from "./host_background";
@@ -199,7 +204,13 @@ export async function sync(view: Controller, bell: { seq: bigint }, play_sound: 
       if (seq !== bell.seq) {
         bell.seq = seq;
         view.last_bell_kind = reply.bell_kind ?? "none";
-        if (play_sound && !view.muted) sound.play(view.last_bell_kind);
+        if (play_sound && !view.muted) {
+          sound.play(view.last_bell_kind);
+          view.notify?.(
+            view.last_bell_kind,
+            reply.bell_target ? notificationTarget.parse(json.stringify(reply.bell_target)) : null,
+          );
+        }
       }
     }
     return view.input_state.attached;
@@ -289,6 +300,23 @@ export async function run(
   folder: string | null = null,
 ): Promise<string | null> {
   const view = new Controller(connection);
+  const notifications = new Notifications(
+    target => {
+      void view.perform({ name: "open-notification", value: json.stringify(target) }).then(() => view.wake());
+    },
+    testBuild ? process.env.CORGI_TEST_NOTIFY_HELPER : undefined,
+  );
+  view.notify = (kind, target) => {
+    const selected = target && notificationTarget.resolve(target, view.runtime),
+      agent =
+        selected &&
+        ("pane" in selected
+          ? view.runtime.panes.find(p => p.id === selected.pane)?.agent
+          : view.runtime.sessions.find(s => s.id === selected.headless)?.agent);
+    void notificationContent
+      .content(agent || undefined)
+      .then(({ title, body }) => notifications.show(kind, target, title, body));
+  };
   try {
     const bell = { seq: await openMode(view, folder ?? process.cwd(), probe.theme, start_onboarding) };
     if (folder !== null)
@@ -514,6 +542,7 @@ export async function run(
       }
     }
   } finally {
+    notifications.close();
     close(view);
   }
 }
