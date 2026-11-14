@@ -1,11 +1,37 @@
 import { test, expect } from "bun:test";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import * as rpc_http from "./rpc_http";
 import { createServer } from "node:net";
-import { version, parse, managed, release, abi, platform, check, save, type Release } from "./updates";
+import {
+  version,
+  parse,
+  managed,
+  release,
+  abi,
+  platform,
+  check,
+  save,
+  prune,
+  pluginOf,
+  forget,
+  type Release,
+} from "./updates";
 import { releaseVersion } from "./build_config";
+import { flock } from "./native_bridge";
 const keys = () => generateKeyPairSync("ed25519");
 const key = (k: ReturnType<typeof keys>) =>
   Buffer.from(k.publicKey.export({ type: "spki", format: "der" }))
@@ -104,6 +130,145 @@ test("only an installed release with a feed is managed", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+/** An installation with `versions` installed and `pointers` (current, previous, staged) recorded. */
+function installation(versions: string[], pointers: Record<string, string>): string {
+  const root = mkdtempSync(join(tmpdir(), "corgi-prune-"));
+  for (const v of versions) {
+    mkdirSync(join(root, "releases", v), { recursive: true });
+    writeFileSync(join(root, "releases", v, "corgi"), "");
+  }
+  for (const [name, v] of Object.entries(pointers)) writeFileSync(join(root, name), v);
+  return root;
+}
+const releases = (root: string) => readdirSync(join(root, "releases")).sort();
+test("an installation keeps its current release and the previous one", () => {
+  const root = installation(["1.0.0", "1.0.1", "1.0.2", "1.0.3"], { current: "1.0.3", previous: "1.0.2" });
+  try {
+    mkdirSync(join(root, "releases", "notes"));
+    prune(root);
+    expect(releases(root)).toEqual(["1.0.2", "1.0.3", "notes"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("pointers machine setup wrote with a newline still name their releases", () => {
+  const root = installation(["1.0.0", "1.0.1", "1.0.2"], { current: "1.0.2\n", previous: "1.0.1\n" });
+  try {
+    prune(root);
+    expect(releases(root)).toEqual(["1.0.1", "1.0.2"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("releases newer than the current one stay", () => {
+  // 1.0.3 waits to apply and 1.0.4 is still downloading.
+  const root = installation(["1.0.0", "1.0.1", "1.0.2", "1.0.3", "1.0.4"], {
+    current: "1.0.2",
+    previous: "1.0.1",
+    staged: "1.0.3",
+  });
+  try {
+    prune(root);
+    expect(releases(root)).toEqual(["1.0.1", "1.0.2", "1.0.3", "1.0.4"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("a finished download removes the update it replaces", () => {
+  const root = installation(["1.0.0", "1.0.1", "1.0.2", "1.0.3"], { current: "1.0.0", staged: "1.0.3" });
+  try {
+    mkdirSync(join(root, "releases", "notes"));
+    prune(root, true);
+    expect(releases(root)).toEqual(["1.0.0", "1.0.3", "notes"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("a rollback keeps the release it left", () => {
+  const root = installation(["1.0.0", "1.0.1", "1.0.2"], { current: "1.0.1", previous: "1.0.2" });
+  try {
+    prune(root);
+    expect(releases(root)).toEqual(["1.0.1", "1.0.2"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("a release a runtime still runs stays until it stops", () => {
+  const root = installation(["1.0.0", "1.0.1", "1.0.2"], { current: "1.0.2", previous: "1.0.1" }),
+    fd = openSync(join(root, "releases/1.0.0/runtime-1.lock"), "a");
+  try {
+    expect(flock(fd)).toBe(true);
+    prune(root);
+    expect(releases(root)).toEqual(["1.0.0", "1.0.1", "1.0.2"]);
+    flock(fd, false);
+    prune(root);
+    expect(releases(root)).toEqual(["1.0.1", "1.0.2"]);
+  } finally {
+    closeSync(fd);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("cleanup waits for runtime lock registration to finish", () => {
+  const root = installation(["1.0.0", "1.0.1", "1.0.2"], { current: "1.0.2", previous: "1.0.1" }),
+    guard = openSync(join(root, "releases.lock"), "a");
+  try {
+    expect(flock(guard)).toBe(true);
+    prune(root);
+    expect(releases(root)).toEqual(["1.0.0", "1.0.1", "1.0.2"]);
+    flock(guard, false);
+    prune(root);
+    expect(releases(root)).toEqual(["1.0.1", "1.0.2"]);
+  } finally {
+    closeSync(guard);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("an installation remembers the Omarchy plugin that installed it", () => {
+  const root = mkdtempSync(join(tmpdir(), "corgi-plugin-"));
+  try {
+    expect(pluginOf(root)).toBeNull();
+    writeFileSync(join(root, "plugin"), "/home/u/.config/omarchy/plugins/corgi.computer\n");
+    expect(pluginOf(root)).toBe("/home/u/.config/omarchy/plugins/corgi.computer");
+    writeFileSync(join(root, "plugin"), "plugins/corgi.computer\n");
+    expect(pluginOf(root)).toBeNull();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("forgetting an installation removes only the launcher that ran it", () => {
+  const home = mkdtempSync(join(tmpdir(), "corgi-forget-")),
+    original = process.env.HOME,
+    root = join(home, "plugins", "corgi.computer", "app"),
+    launcher = join(home, ".local", "bin", "corgi"),
+    script = (at: string) => `#!/bin/sh\nroot='${at}'\nexec "$root/releases/$v/corgi" "$@"\n`;
+  try {
+    process.env.HOME = home;
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(launcher, script("/elsewhere"));
+    forget(root);
+    expect(existsSync(launcher)).toBe(true);
+    writeFileSync(launcher, script(root));
+    forget(root);
+    expect(existsSync(launcher)).toBe(false);
+    const custom = join(home, "custom launcher ");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "launcher"), custom);
+    writeFileSync(launcher, script("/elsewhere"));
+    writeFileSync(custom, script(root));
+    forget(root);
+    expect(existsSync(custom)).toBe(false);
+    expect(existsSync(launcher)).toBe(true);
+    const alias = join(home, "install-alias");
+    symlinkSync(root, alias, "dir");
+    writeFileSync(custom, script(realpathSync(root)));
+    forget(alias);
+    expect(existsSync(custom)).toBe(false);
+    expect(existsSync(launcher)).toBe(true);
+  } finally {
+    process.env.HOME = original;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
 test("only test builds take their release from the path and environment", () => {
   const original = process.env.CORGI_TEST_UPDATE_KEY;
   try {
@@ -123,7 +288,8 @@ test("a release only passes the pre-update check with a result, or without the c
       writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o700 });
       return path;
     },
-    run = (target: string, limit_ms?: number) => check(join(dir, "none.sock"), target, null, limit_ms);
+    run = (target: string, limit_ms?: number) =>
+      check(new rpc_http.Client(join(dir, "none.sock")), target, null, limit_ms);
   try {
     expect(await run(script("passes", `echo '{"ok":true}'`))).toBeNull();
     expect(await run(script("legacy-error", "echo 'corgi: UnknownCommand' >&2; exit 1"))).toBeNull();
@@ -145,23 +311,22 @@ test("a release only passes the pre-update check with a result, or without the c
   }
 });
 
-test("an older runtime saves its session for the update check", async () => {
+test("a runtime from another release saves its session in the protocol it speaks", async () => {
   const dir = mkdtempSync(join(tmpdir(), "corgi-save-")),
     socket = join(dir, "corgi.sock"),
     asked: any[] = [];
-  // A runtime before protocol 4 ignores request ids and answers untagged.
-  const server = createServer(peer =>
-    peer.on("data", chunk => {
-      asked.push(JSON.parse(chunk.toString()));
-      peer.write(JSON.stringify({ ok: true, path: join(dir, "recovery") }) + "\n");
-    }),
-  );
-  await new Promise<void>(resolve => server.listen(socket, resolve));
+  const server = Bun.serve({
+    unix: socket,
+    async fetch(request) {
+      asked.push(await request.json());
+      return Response.json({ ok: true, path: join(dir, "recovery") });
+    },
+  });
   try {
-    await save(socket, { protocol: 3 });
+    await save(new rpc_http.Client(socket), { protocol: 3 });
     expect(asked).toEqual([{ op: "recovery.save", protocol: 3 }]);
   } finally {
-    await new Promise(resolve => server.close(resolve));
+    await server.stop(true);
     rmSync(dir, { recursive: true, force: true });
   }
 });

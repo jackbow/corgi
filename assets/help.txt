@@ -11,7 +11,7 @@ corgi — a small Ghostty-powered agent terminal
   corgi update --check|--download-only
   corgi update auto on|off      control automatic updates
   corgi start                   start detached runtime
-  corgi action NAME [VALUE]     run a viewer action, named below
+  corgi action NAME [VALUE] [--viewer ID]  run a viewer action, named below
   corgi agent claude|codex ...   optional discovered-binary launcher
   corgi hooks claude|codex       print hook configuration
   corgi integration COMMAND     status, install, uninstall hooks
@@ -23,6 +23,8 @@ corgi — a small Ghostty-powered agent terminal
   corgi headless send PROVIDER SESSION JSON   prompt, answer or interrupt
   corgi headless events PROVIDER SESSION [SEQ]   journal + pending requests
   corgi headless stop PROVIDER SESSION        stop headless session
+  corgi watch --json            print agent states as JSON lines as they change
+  corgi usage --json            print each account's limits and spend as JSON
   corgi rpc JSON                local JSON control protocol
   corgi reload [ABSOLUTE_EXE]    replace daemon, preserve live processes
   corgi checkpoint               save recovery context now
@@ -30,7 +32,8 @@ corgi — a small Ghostty-powered agent terminal
   corgi bugreport [--full]      details for a bug report, and a link to file it
   corgi licenses                Corgi's license and the software it includes
   corgi help [COMMAND ...]      show help for a command or group
-  corgi --help                  list all commands (also -h)
+  corgi help --all              list every command
+  corgi --help                  list common commands (also -h)
   corgi --version               print the version and commit
 
 Keys: Ctrl+B opens a clickable command menu; `corgi keys` lists every shortcut.

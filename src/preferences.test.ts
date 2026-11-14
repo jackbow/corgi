@@ -98,6 +98,7 @@ test("preferences round trip and fall back to defaults", async () => {
     p.sidebar_split = 9;
     p.review_tree_rows = 14;
     p.agent_scroll = { workspace: 2, offset: 7 };
+    p.workspace_order = [JSON.stringify(["work", 2]), JSON.stringify(["local", 1])];
     await write(file, p);
     await updateFile(file, { agents: "all" });
     expect(await read(file)).toMatchObject({
@@ -106,6 +107,7 @@ test("preferences round trip and fall back to defaults", async () => {
       sidebar_split: 9,
       review_tree_rows: 14,
       agent_scroll: { workspace: 2, offset: 7 },
+      workspace_order: p.workspace_order,
     });
     await writeFile(file, '{"resources":{"enabled":false,"io":false,"alerts":true}}');
     expect((await read(file)).resources).toEqual({ enabled: false });
@@ -189,6 +191,32 @@ test("corgi intensity migrates the old toggle without losing unrelated preferenc
       migrated.agents = "all";
       expect(read(file)).toEqual(migrated);
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the prompt's last pick round trips, and one this build can't read falls back alone", async () => {
+  const root = await mkdtemp(join(tmpdir(), "corgi-prompt-model-"));
+  const file = join(root, "viewer.json");
+  try {
+    const pick = {
+      provider: "claude" as const,
+      account: "/a",
+      model: "claude-haiku-4-5",
+      name: "Haiku 4.5",
+      effort: null,
+    };
+    updateFile(file, { prompt_model: pick, sidebar_width: 40 });
+    expect(read(file).prompt_model).toEqual(pick);
+    await writeFile(file, JSON.stringify({ prompt_model: { ...pick, effort: "high" } }));
+    expect(read(file).prompt_model).toEqual({ ...pick, effort: "high" });
+    await writeFile(file, JSON.stringify({ prompt_model: { ...pick, effort: "galaxy" } }));
+    expect(read(file).prompt_model).toEqual(pick);
+    await writeFile(file, JSON.stringify({ prompt_model: { ...pick, provider: "future" }, sidebar_width: 40 }));
+    expect(read(file)).toMatchObject({ prompt_model: undefined, sidebar_width: 40 });
+    await writeFile(file, JSON.stringify({ prompt_model: "opus" }));
+    expect(read(file).prompt_model).toBeUndefined();
   } finally {
     await rm(root, { recursive: true, force: true });
   }

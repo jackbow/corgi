@@ -8,6 +8,7 @@ import * as i18n from "./i18n";
 //! its card; settings shows it beside its section list.
 import * as palette from "./palette";
 import { Style, keycap } from "./palette";
+import * as corgiAnimation from "./corgi_animation";
 import { type Provider, adapter } from "./providers";
 import { Rect } from "./layout";
 import { Dialog, View as DialogView, writeField } from "./name_dialog";
@@ -47,6 +48,8 @@ export type Agent = {
   /** Who signed in, or why that's unknown. */
   who: string;
   signed_out: boolean;
+  /** Whether the installed executable is available to add, regardless of sign-in. */
+  available?: boolean;
   shown: boolean;
   /** It shows in the current workspace's launcher, once it's in the launcher. */
   here: boolean;
@@ -66,6 +69,7 @@ export type Removed = { provider: Provider; account: string; name: string };
 /** What the host has to list. */
 export type Model = {
   agents: Agent[];
+  discovering?: string;
   /** The saved commands' slots; an empty one lists nothing. */
   commands: CommandEntry[];
   /** The current workspace's name, which the Show column's toggles apply to. */
@@ -83,7 +87,11 @@ export type Model = {
   /** A name for an account, from who signed in to it. */
   suggest(agent: Agent): string;
   options(agent: Agent): Options;
+  ready?(): boolean;
   order?: Row[];
+  /** Whether Find agents is looking; null when the daemon can't look, so
+   * there's no button. */
+  finding?: boolean | null;
 };
 /** What a key or click asks the host to do. */
 export type Action =
@@ -102,7 +110,8 @@ export type Action =
   | { kind: "remove_command"; index: number }
   | { kind: "add"; provider: Provider }
   | { kind: "restore"; provider: Provider; account: string }
-  | { kind: "save" };
+  | { kind: "save" }
+  | { kind: "find" };
 
 /** A row: the list's accounts and commands, then Add agent's strip, open on
  * the focused agent's accounts, listed or not, and what can be added. */
@@ -132,7 +141,7 @@ const addable = (item: Item) =>
   item.kind === "removed" ||
   item.kind === "add" ||
   item.kind === "custom" ||
-  (item.kind === "found" && !item.agent.shown);
+  (item.kind === "found" && !item.agent.shown && item.agent.available !== false);
 function itemKey(item: Item): string {
   switch (item.kind) {
     case "agent":
@@ -430,7 +439,7 @@ export class View {
     const q = this.query.name();
     const found: Item[] = [
       ...model.agents
-        .filter(a => a.shown && matches(q, `${a.label} ${a.who}`))
+        .filter(a => a.shown && a.available !== false && matches(q, `${a.label} ${a.who}`))
         .map(agent => ({ kind: "agent" as const, agent })),
       ...model.commands.flatMap((c, index): Item[] =>
         c.command.length > 0 && matches(q, `${c.label()} ${c.text()}`) ? [{ kind: "command", index }] : [],
@@ -667,6 +676,7 @@ export class View {
   private act(item: Item, model: Model, now = milliTimestamp()): Action | null {
     switch (item.kind) {
       case "agent": {
+        if (!this.ready(model)) return null;
         this.transition.start(1, now);
         this.agent_form.open(item.agent, model.options(item.agent), model.suggest(item.agent));
         this.page = "agent";
@@ -687,6 +697,7 @@ export class View {
         return null;
       }
       case "found": {
+        if (item.agent.available === false) return null;
         if (!item.agent.shown) return { kind: "show", agent: item.agent };
         // A listed one's row is up the list, where the search may hide it.
         const row: Item = { kind: "agent", agent: item.agent };
@@ -729,7 +740,7 @@ export class View {
       this.form.name_customized = true;
       return;
     }
-    if (item.kind !== "agent") return;
+    if (item.kind !== "agent" || !this.ready(model)) return;
     const names = new Set(model.agents.map(a => a.name || adapter(a.provider).label)),
       base = item.agent.name || adapter(item.agent.provider).label;
     let name = copyName(base),
@@ -741,7 +752,13 @@ export class View {
     this.transition.start(1, milliTimestamp());
     this.page = "agent";
   }
-  private models(agent: Agent, model: Model, editing = false): Action {
+  private ready(model: Model): boolean {
+    if (model.ready?.() !== false) return true;
+    this.fail(i18n.t`Reading…`);
+    return false;
+  }
+  private models(agent: Agent, model: Model, editing = false): Action | null {
+    if (!editing && !this.ready(model)) return null;
     const options = editing ? this.agent_form.options() : model.options(agent);
     const view = new agentModels.Picker(options.model || "", options.effort);
     this.picker = { agent, view, editing };
@@ -917,6 +934,7 @@ export class View {
       return null;
     }
     if (this.focus === "list" && byte === 109 && item?.kind === "agent") return this.models(item.agent, model);
+    if (this.focus === "list" && byte === 102 && model.finding === false) return { kind: "find" };
     switch (byte) {
       case 47:
         if (this.focus === "list" || !this.query.len) {
@@ -1056,6 +1074,8 @@ export class View {
     }
     const row = this.rows(b, model).find(r => r.y === y);
     if (y === b.y + b.h - 3) {
+      const find = this.findButton(b, model, 0);
+      if (find && x >= find.x && x < find.x + find.width) return model.finding === false ? { kind: "find" } : null;
       const button = this.buttons(b, model).find(button => x >= button.x && x < button.x + displayWidth(button.label));
       const item = this.selected(model);
       switch (button?.kind) {
@@ -1097,6 +1117,14 @@ export class View {
     return again ? this.act(row.item, model) : null;
   }
 
+  /** Find agents stays at the action row's right edge while its glyph spins. */
+  private findButton(b: Rect, model: Model, now: number): { x: number; width: number; label: string } | null {
+    if (model.finding === null || model.finding === undefined) return null;
+    const label = ` ${model.finding ? corgiAnimation.spinner(false, now) : "↻"} ${i18n.t`Find agents`} `,
+      width = 3 + displayWidth(label),
+      x = b.x + b.w - 3 - width;
+    return x >= b.x + 3 ? { x, width, label } : null;
+  }
   /** Where the title's Esc hint starts, as the launcher's Manage button sits. */
   private static closeX = (b: Rect) =>
     b.x + b.w - 8 - Math.max(displayWidth(i18n.t` back `), displayWidth(i18n.t` close `));
@@ -1244,13 +1272,13 @@ export class View {
     const reserved = this.removable(item, model)
       ? displayWidth(i18n.t` hold ⌫ `) + displayWidth(i18n.t` remove`) + 1
       : 0;
+    const find = this.findButton(b, model, 0),
+      right = find ? find.x - 2 : b.x + b.w - 2;
     let x = b.x + 3;
     return labels.flatMap(([kind, label]) => {
       const at = x;
       x += displayWidth(label) + 1;
-      return x + reserved <= b.x + b.w - 2
-        ? [{ kind: kind as "edit" | "clone" | "toggle" | "up" | "down", label, x: at }]
-        : [];
+      return x + reserved <= right ? [{ kind: kind as "edit" | "clone" | "toggle" | "up" | "down", label, x: at }] : [];
     });
   }
   private pickerBounds(b: Rect, model: Model): Rect {
@@ -1273,11 +1301,12 @@ export class View {
     if (this.tileAt(b, model, x, y) !== null) return "pointer";
     const row = this.rows(b, model).find(row => row.y === y);
     if (row) return itemRow(row.item) && !this.query.len && x < View.columns(b).key ? "grab" : "pointer";
-    if (
-      y === b.y + b.h - 3 &&
-      this.buttons(b, model).some(button => x >= button.x && x < button.x + displayWidth(button.label))
-    )
-      return "pointer";
+    if (y === b.y + b.h - 3) {
+      const find = this.findButton(b, model, 0);
+      if (model.finding === false && find && x >= find.x && x < find.x + find.width) return "pointer";
+      if (this.buttons(b, model).some(button => x >= button.x && x < button.x + displayWidth(button.label)))
+        return "pointer";
+    }
     return "default";
   }
   pointer(b: Rect, x: number, y: number, button: number, release: boolean, model: Model): Action | null {
@@ -1547,7 +1576,18 @@ export class View {
         case "found": {
           const a = item.agent;
           writeEllipsis(w, title(a), columns.who - columns.name - 2);
-          View.writeFound(w, b, usage, y, a.who, model.folder(a.provider, a.account), a.shown, on, a.signed_out);
+          View.writeFound(
+            w,
+            b,
+            usage,
+            y,
+            a.who,
+            model.folder(a.provider, a.account),
+            a.shown,
+            on,
+            a.signed_out,
+            a.available,
+          );
           break;
         }
         case "removed": {
@@ -1599,7 +1639,9 @@ export class View {
         } else writeTint(w, frame, rowGlide.tint(glide.ms));
       }
     }
-    const buttons = this.buttons(b, model);
+    const find = this.findButton(b, model, now),
+      right = find ? find.x - 2 : b.x + b.w - 2,
+      buttons = this.buttons(b, model);
     for (const button of buttons) w.write(at(button.x, b.y + b.h - 3) + keycap + button.label);
     const last = buttons.at(-1),
       remove_x = last ? last.x + displayWidth(last.label) + 2 : b.x + 3;
@@ -1609,7 +1651,7 @@ export class View {
       !this.removal &&
       chosen &&
       this.removable(chosen, model) &&
-      remove_x + displayWidth(removeKey) + displayWidth(removeLabel) <= b.x + b.w - 2
+      remove_x + displayWidth(removeKey) + displayWidth(removeLabel) <= right
     )
       w.write(at(remove_x, b.y + b.h - 3) + keycap + removeKey + faint + removeLabel);
     if (this.error) {
@@ -1618,10 +1660,18 @@ export class View {
     } else if (this.removal) {
       const r = this.removal;
       w.write(at(b.x + 3, b.y + b.h - 3) + new Style({ fg: "strong", bg: "surface" }).sgr());
-      writeEllipsis(w, `${r.phase === "held" ? i18n.t`Hold ⌫ to remove` : i18n.t`Removing`} ${r.label}`, sat(b.w, 6));
+      writeEllipsis(
+        w,
+        `${r.phase === "held" ? i18n.t`Hold ⌫ to remove` : i18n.t`Removing`} ${r.label}`,
+        sat(right, b.x + 3),
+      );
       w.write(at(b.x + 3, b.y + b.h - 2) + new Style({ fg: "muted", bg: "surface" }).sgr());
       writeEllipsis(w, `${r.note}${r.phase === "held" ? i18n.t` · release to cancel` : ""}`, sat(b.w, 6));
+    } else if (model.discovering) {
+      w.write(at(b.x + 3, b.y + b.h - 2) + faint);
+      writeEllipsis(w, model.discovering, sat(b.w, 6));
     } else if (focused && this.buttons(b, model).length === 0) View.footer(w, b, this.hints(chosen, model));
+    if (find) w.write(at(find.x, b.y + b.h - 3) + keycap + " f " + faint + find.label);
     return caret;
   }
   /** An Add agent account's columns: who signed in, its folder, and
@@ -1636,6 +1686,7 @@ export class View {
     listed: boolean,
     on: boolean,
     warm = false,
+    available = true,
   ): void {
     const at = (x: number) => `\x1b[${y + 1};${x + 1}H`,
       columns = View.columns(b),
@@ -1651,7 +1702,11 @@ export class View {
       w.write(shortPath(cleanControls(folder), columns.key - usage - 2));
     }
     w.write(at(columns.model) + dim);
-    writeEllipsis(w, listed ? i18n.t`In the list` : i18n.t`Removed`, b.x + b.w - columns.model - 3);
+    writeEllipsis(
+      w,
+      !available ? "—" : listed ? i18n.t`In the list` : i18n.t`Add to the list`,
+      b.x + b.w - columns.model - 3,
+    );
   }
   /** Add agent's strip: each agent's mark and name, the focused one lit
    * while the strip is selected and strong while its list is. */
@@ -1759,9 +1814,10 @@ export class View {
           ["←→", i18n.t`agents`],
         ];
       case "found":
+        if (item.agent.available === false) return [["←→", i18n.t`agents`]];
       case "removed":
         return [
-          ["↵", item.kind === "found" && item.agent.shown ? i18n.t`go to its row` : i18n.t`add back to the list`],
+          ["↵", item.kind === "found" && item.agent.shown ? i18n.t`go to its row` : i18n.t`add to the list`],
           ["←→", i18n.t`agents`],
         ];
       case "command":

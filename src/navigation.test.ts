@@ -100,6 +100,19 @@ test("last workspace ignores reselecting and reordering, and rejects a closed ta
   expect(state.lastWorkspace(store)).toBeNull();
 });
 
+test("last workspace passes over archived ones to the live workspace before them", () => {
+  const store = world(),
+    state = new navigation.State(),
+    archive = (id: number) => (store.items.find(ws => ws.id === id)!.archived = true);
+  state.switchWorkspace(store, 2);
+  archive(1);
+  expect(state.lastWorkspace(store)).toBeNull();
+  // Leaving archived 1 for 3 keeps 2 as the one to go back to.
+  state.switchWorkspace(store, 1);
+  state.switchWorkspace(store, 3);
+  expect(state.lastWorkspace(store)).toBe(2);
+});
+
 test("initial focus and a reused workspace slot start without tab history", () => {
   const store = world(),
     state = new navigation.State();
@@ -113,4 +126,31 @@ test("initial focus and a reused workspace slot start without tab history", () =
   expect(state.lastTab(store)).toBeNull();
   expect(state.tabs(store).tab().focus).toBe(31);
   expect(state.command(store, { name: "prev" }, new layout.Rect()).focus).toBe(33);
+});
+
+test("with every workspace closed, the current one is none until another opens", () => {
+  const runtime = new mirror.Runtime(),
+    conn = transport(async () => {
+      throw Error("UnexpectedRequest");
+    }),
+    state = new navigation.State();
+  runtime.receive(conn, { workspaces: [] });
+  const store = runtime.workspaces;
+  expect(state.current(store)).toBe(store.none);
+  expect([state.index(store), state.tabs(store).count, state.lastWorkspace(store)]).toEqual([0, 0, null]);
+  expect(() => state.command(store, { name: "next" }, new layout.Rect(0, 0, 80, 24))).toThrow("NoPane");
+  runtime.receive(conn, { workspaces: [{ id: 4, model: { nodes: [], tabs: [], revision: 0 } }] });
+  expect(state.current(runtime.workspaces).id).toBe(4);
+});
+
+test("fallback skips archived workspaces until one is explicitly selected", () => {
+  const store = world(),
+    state = new navigation.State();
+  store.items[0].archived = true;
+  expect(state.current(store).id).toBe(2);
+  store.items.splice(1);
+  expect(state.current(store)).toBe(store.none);
+  expect(state.tabs(store).count).toBe(0);
+  state.switchWorkspace(store, 1);
+  expect(state.current(store).id).toBe(1);
 });

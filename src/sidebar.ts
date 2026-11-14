@@ -1,5 +1,6 @@
 //! The sidebar: workspaces above, agents below. Mirrors sidebar.zig.
 import * as i18n from "./i18n";
+import type { Quality } from "./connection_stats";
 import * as palette from "./palette";
 import { Provider, adapter } from "./providers";
 import { Style, colors, fg, bg, fgRgb, bgRgb, mix, underline } from "./palette";
@@ -10,16 +11,22 @@ import * as gitTooltip from "./git_tooltip";
 import * as dropdown from "./dropdown";
 import * as worktrees from "./worktrees";
 import * as rowGlide from "./row_glide";
+import type { Summary as ArchiveSummary } from "./archive_summary";
+import type { Brand } from "./process_name";
+import * as tabIcons from "./tab_icons";
 import type { Cell } from "./fork_hero";
 import { url as portUrl } from "./trackers/ports";
 import { cpuText, memoryText } from "./trackers/resources";
 import { View as ContextView } from "./usage/context_window";
 import { rank, type Target as OrderTarget } from "./agent_order";
 import type { Section as SectionKind } from "./agent_order";
+import { writeField, View as NameView, type Dialog } from "./name_dialog";
+import { sameRenameTarget, type RenameTarget } from "./inline_rename";
 import { Rect } from "./layout";
 import {
   Writer,
   displayWidth,
+  clipped,
   writeClipped,
   writeEllipsis,
   ellipsis,
@@ -81,15 +88,29 @@ export let panel: string,
   nap_fg: string,
   /** The agent row under the pointer, halfway from the panel to `selected`. */
   hover_rgb: palette.Rgb,
-  hover_bg: string;
+  hover_bg: string,
+  /** Gold a quarter of the way into the panel: the starred heading's rules,
+   * count and chevron, and the edge beside starred rows. */
+  star_trim: string,
+  star_underline: string;
 let selected_bg: string,
   button: string,
   button_glyph: string,
   button_warm: string,
   ghost_underline: string,
-  outline: string;
+  machine_header: string,
+  machine_header_hover: string,
+  outline: string,
+  /** The inline rename field's fill, as the agent search's, so it stands out
+   * on a selected row too, and its hint. */
+  rename_field: string,
+  rename_hint: string;
 palette.derived(() => {
   selected_bg = bg("selected");
+  rename_field = new Style({ fg: "text", bg: "surface" }).sgr();
+  rename_hint = new Style({ fg: "muted", bg: "surface" }).sgr();
+  machine_header = new Style({ fg: "text", bg: "surface", bold: true }).sgr();
+  machine_header_hover = new Style({ fg: "strong", bg: "selected", bold: true }).sgr();
   panel = new Style({ fg: "muted", bg: "bg" }).sgr();
   outline = new Style({ bg: "bg" }).sgr() + fgRgb(palette.outline);
   button = new Style({ fg: "strong", bg: "surface", bold: true }).sgr();
@@ -107,6 +128,8 @@ palette.derived(() => {
   nap_fg = fgRgb(mix(colors.faint, colors.bg, 50));
   hover_rgb = mix(colors.bg, colors.selected, 50);
   hover_bg = bgRgb(hover_rgb);
+  star_trim = fgRgb(mix(colors.gold, colors.bg, 25));
+  star_underline = "\x1b[4m" + palette.underlineRgb(mix(colors.gold, colors.bg, 55));
 });
 
 export type State = "initializing" | "idle" | "working" | "blocked" | "done" | string;
@@ -185,6 +208,8 @@ export interface Group {
   gap?: boolean;
   /** A subhead names a branch, under ⌥, rather than a workspace. */
   branch?: boolean;
+  /** The machine it's on, while rows name their machines. */
+  machine?: string;
 }
 export interface Subagents {
   running: number;
@@ -221,6 +246,8 @@ export interface Entry {
   compacting_since: number;
   /** Idle until its background shells or a wakeup it scheduled wake it. */
   paused: boolean;
+  /** When Corgi starts its failed turn again, in ms; 0 when it won't. */
+  retry_at: number;
   unread: boolean;
   activity: string;
   group: Group;
@@ -254,6 +281,7 @@ export function entry(fields: Partial<Entry> & { target: Target }): Entry {
     compacting: false,
     compacting_since: 0,
     paused: false,
+    retry_at: 0,
     unread: false,
     activity: "",
     group: { agents: 0, working: 0, attention: 0, folded: false, current: false },
@@ -274,29 +302,109 @@ export function orderTarget(e: Entry): OrderTarget | null {
 export function lessThan(order: OrderTarget[], left: Entry, right: Entry): boolean {
   return rank(order, orderTarget(left)!) < rank(order, orderTarget(right)!);
 }
+/** An agent row's name: its own, or else its provider's. */
+export function rowTitle(e: Pick<Entry, "name" | "provider">): string {
+  return e.name.length > 0 ? directoryLabel(e.name, null, 160) : e.provider ? adapter(e.provider).name : "";
+}
+/** The line under an agent's name: what it's doing, or why it isn't. With
+ * `now_ms` null, a retry leaves out its countdown. */
+export function rowDetail(e: Entry, now_ms: number | null = Date.now()): string {
+  const compacting = e.state === "working" && e.compacting,
+    waiting = e.state === "working" && e.subagents.waiting && !compacting;
+  if (retrying(e)) {
+    if (now_ms === null || e.retry_at <= now_ms) return i18n.t`Retrying…`;
+    const wait = elapsed(e.retry_at - now_ms + 999);
+    return i18n.t`Retrying in ${wait}`;
+  }
+  if (compacting) return i18n.t`Compacting…`;
+  if (waiting) return i18n.t`Waiting on agents`;
+  switch (e.state) {
+    case "working":
+      return e.activity;
+    case "blocked":
+      return i18n.t`Needs input`;
+    case "initializing":
+      return i18n.t`Starting session`;
+    case "done":
+      return i18n.t`Session ended`;
+    default:
+      return "";
+  }
+}
+/** The corgi on an agent row's second line, at the sidebar's corgi
+ * `intensity`, in a row with `room` columns for it. */
+export function corgiMode(e: Entry, intensity: number, room = Infinity): corgiAnimation.Mode {
+  const compacting = e.state === "working" && e.compacting,
+    waiting = e.state === "working" && e.subagents.waiting && !compacting;
+  // Narrow rows keep the text; the pile beside it still moves.
+  if (compacting && room >= corgiAnimation.herdWidth()) return "herding";
+  if (intensity === 0) return "content";
+  if (e.state === "working" && !compacting && !waiting && !retrying(e) && e.activity.length === 0) return "awake";
+  return e.state === "idle" ? "asleep" : "content";
+}
+/** The glyph before an agent row's second line; `corgi watch --json` reports it. */
+export function activityKind(e: Entry, intensity: number): corgiAnimation.Activity {
+  const compacting = e.state === "working" && e.compacting;
+  if ((e.state === "working" && e.subagents.waiting && !compacting) || retrying(e)) return "waiting";
+  if (e.tool_active && (e.state === "working" || e.state === "blocked")) return "tool";
+  if (e.state === "working") return compacting ? "compacting" : "thinking";
+  return e.state === "idle" && intensity === 0 ? "napping" : "none";
+}
+/** At work, held until Corgi starts its failed turn again. */
+function retrying(e: Pick<Entry, "state"> & Partial<Pick<Entry, "retry_at">>): boolean {
+  return e.state === "working" && (e.retry_at ?? 0) > 0;
+}
+/** What an agent row's glyph says; `corgi watch --json` reports it too. */
+export type Status =
+  "done" | "needs_input" | "retrying" | "working" | "paused" | "ready" | "starting" | "idle" | "other";
+export function status(e: Pick<Entry, "state" | "attention" | "paused"> & Partial<Pick<Entry, "retry_at">>): Status {
+  if (e.state === "done") return "done";
+  if (e.state === "blocked" || e.attention === "needs_input") return "needs_input";
+  if (retrying(e)) return "retrying";
+  if (e.state === "working") return "working";
+  if (e.state === "idle" && e.paused) return "paused";
+  if (e.attention === "finished") return "ready";
+  if (e.state === "initializing") return "starting";
+  if (e.state === "idle") return "idle";
+  return "other";
+}
 // The style guide's status glyphs; finished attention is the unseen-idle
 // state, and its name turns bold. Corgi also retains ended headless
 // sessions. A `selected` row takes muted where the guide says faint.
-export function indicator(e: Entry, selected: boolean): { icon: string; color: string; unread: boolean } {
-  const quiet = selected ? fg("muted") : fg("faint");
-  if (e.state === "done") return { icon: "○", color: quiet, unread: false };
-  if (e.state === "blocked" || e.attention === "needs_input")
-    return { icon: "●", color: "\x1b[1m" + fg("warm"), unread: false };
-  if (e.state === "working") return { icon: "▶", color: "\x1b[1m" + fg("accent"), unread: false };
-  if (e.state === "idle" && e.paused) {
-    if (e.attention === "finished") return { icon: "‖", color: "\x1b[1m" + fg("accent"), unread: true };
-    return { icon: "‖", color: fg("muted"), unread: false };
+export function indicator(
+  e: Pick<Entry, "state" | "attention" | "paused"> & Partial<Pick<Entry, "retry_at">>,
+  selected: boolean,
+): { icon: string; color: string; unread: boolean } {
+  const quiet = selected ? fg("muted") : fg("faint"),
+    strong = "\x1b[1m" + fg("accent");
+  switch (status(e)) {
+    case "done":
+      return { icon: "○", color: quiet, unread: false };
+    case "needs_input":
+      return { icon: "●", color: "\x1b[1m" + fg("warm"), unread: false };
+    case "retrying":
+      return { icon: "‖", color: "\x1b[1m" + fg("warm"), unread: false };
+    case "working":
+      return { icon: "▶", color: strong, unread: false };
+    case "paused":
+      return e.attention === "finished"
+        ? { icon: "‖", color: strong, unread: true }
+        : { icon: "‖", color: fg("muted"), unread: false };
+    case "ready":
+      return { icon: "●", color: strong, unread: true };
+    case "starting":
+      return { icon: "◌", color: fg("muted"), unread: false };
+    case "idle":
+      return { icon: "○", color: fg("muted"), unread: false };
+    case "other":
+      return { icon: "·", color: quiet, unread: false };
   }
-  if (e.attention === "finished") return { icon: "●", color: "\x1b[1m" + fg("accent"), unread: true };
-  if (e.state === "initializing") return { icon: "◌", color: fg("muted"), unread: false };
-  if (e.state === "idle") return { icon: "○", color: fg("muted"), unread: false };
-  return { icon: "·", color: quiet, unread: false };
 }
 /** Each activity section's header: the glyph its rows would show, and its name. */
 export const sections: Record<SectionKind, { glyph: string; token: palette.Token; label: string }> = {
   starred: {
     glyph: "★",
-    token: "strong",
+    token: "gold",
     get label() {
       return i18n.t`starred`;
     },
@@ -420,7 +528,21 @@ export interface PortsSnapshot {
 function portEndpoints(ports: PortsSnapshot, id: number): Endpoint[] {
   return (ports?.workspaces ?? []).find(w => w.id === id)?.endpoints ?? [];
 }
+export interface ConnectionStatus {
+  diagnostic?: boolean;
+  label: string;
+  seconds: number | null;
+  color: palette.Token;
+}
 export interface WorkspaceEntry {
+  archived: boolean;
+  collapsed: boolean;
+  machine: string;
+  link_quality: Quality | null;
+  unavailable: string;
+  connecting: boolean;
+  connection_status: ConnectionStatus | null;
+  external: boolean;
   resources: Work;
   ports: PortsSnapshot;
   remote_links: boolean;
@@ -439,10 +561,19 @@ export interface WorkspaceEntry {
   attention: number;
   stats: Stats;
 }
+export type ArchivedWorkspace = Pick<WorkspaceEntry, "id" | "name" | "active"> & { summary?: ArchiveSummary | null };
 export function workspaceEntry(
   fields: Partial<WorkspaceEntry> & { id: number; name: string; cwd: string; active: boolean },
 ): WorkspaceEntry {
   return {
+    archived: false,
+    collapsed: false,
+    machine: "",
+    link_quality: null,
+    unavailable: "",
+    connecting: false,
+    connection_status: null,
+    external: false,
     resources: work({ id: 0 }),
     ports: { workspaces: [] },
     remote_links: false,
@@ -498,8 +629,21 @@ export type Hit =
   /** A badge counting agents scrolled out of sight, and the scroll that shows the nearest. */
   | { tag: "active"; offset: number }
   | { tag: "workspace_new" }
+  | { tag: "archives" }
+  | { tag: "archived_workspace"; workspace: number }
+  | { tag: "workspace_scope" }
   | { tag: "workspace"; workspace: number };
 const hit = <T extends Hit["tag"]>(tag: T): Hit => ({ tag }) as Hit;
+/** A row renamed in place: its field drawn over the name, the notice from
+ * its last try, and the name the row falls back to while the text is empty. */
+export type RenameState = { target: RenameTarget; field: Dialog; message: string | null; fallback: string };
+/** Where a row's rename field sits, in screen columns, and the line its message takes. */
+export interface FieldRect {
+  x: number;
+  y: number;
+  width: number;
+  message_y: number;
+}
 
 /** Render the prospective order without changing shared state or the stable
  * row geometry used by the captured gesture's hit testing. */
@@ -523,10 +667,15 @@ export class View {
   search: Search | null = null;
   /** Header scope: "all" or the workspace whose agents are listed. */
   scope_label = "";
+  /** The current shortcut for the New agent picker, including its prefix. */
+  new_shortcut: string | null = null;
+  workspace_scope = "";
   corgi_badge: corgiBadge.Mode = "none";
   supports_kitty_graphics = false;
   /** The host's cell in pixels, for images placed by the pixel. */
   cell: Cell | null = null;
+  archive_marks: ((brand: Brand, col: number, row: number) => void) | null = null;
+  signal_marks: ((quality: Quality, col: number, row: number) => boolean) | null = null;
   cols = 0;
   rows = 0;
   width = 0;
@@ -542,7 +691,14 @@ export class View {
   hovered: number | null = null;
   dragged_workspace: number | null = null;
   workspace_count = 0;
+  workspace_machines: string[] = [];
+  workspace_collapsed: boolean[] = [];
+  machine_hover: number | null = null;
   workspace_offset = 0;
+  archived_count = 0;
+  archived_expanded = false;
+  archived_offset = 0;
+  archived_focused = false;
   resources: { enabled: boolean } = { enabled: true };
   /** Whether the host has GPUs: rows keep a GPU reading's place, used or not. */
   gpus = false;
@@ -562,6 +718,8 @@ export class View {
   inner = false;
   /** Columns the review panel takes at the right edge. */
   panel = 0;
+  /** The row being renamed in place, if any. */
+  rename: RenameState | null = null;
 
   clone(): View {
     return Object.assign(Object.create(View.prototype), this) as View;
@@ -598,6 +756,32 @@ export class View {
     if (this.framed()) return this.lists().splitHandle(x - lists_x, y);
     return this.width > 0 && x < this.width - 1 && y === this.middle() - 1;
   }
+  workspaceHeader(index: number, offset = this.workspace_offset): boolean {
+    return (
+      !!this.workspace_machines[index] &&
+      (index === offset || this.workspace_machines[index] !== this.workspace_machines[index - 1])
+    );
+  }
+  /** Name row, after any machine header; all workspace hit regions share this geometry. */
+  workspaceY(index: number): number {
+    let y = 2;
+    for (let i = this.workspace_offset; i <= index; i++) {
+      if (this.workspaceHeader(i)) y++;
+      if (i === index) return y;
+      y += this.workspace_collapsed[i] ? 0 : this.workspaceRows();
+    }
+    return y;
+  }
+  workspaceAt(y: number, row: number): number | null {
+    if (y >= this.workspaceEnd()) return null;
+    for (
+      let i = this.workspace_offset;
+      i < Math.min(this.workspace_count, this.workspace_offset + this.workspaceCapacity());
+      i++
+    )
+      if (!this.workspace_collapsed[i] && y === this.workspaceY(i) + row) return i;
+    return null;
+  }
   /** Name and status rows, plus the resource row unless readings are off. */
   workspaceRows(): number {
     return this.resources.enabled ? 3 : 2;
@@ -617,25 +801,70 @@ export class View {
   }
   /** The rule row below the workspace list. */
   workspaceEnd(): number {
-    return sat(this.middle(), 1);
+    return this.archivedHeader() ?? sat(this.middle(), 1);
+  }
+  archivedCapacity(): number {
+    if (!this.archived_count || !this.archived_expanded) return 0;
+    const room = sat(this.middle(), 3);
+    return Math.min(this.archived_count, Math.floor(room / 3), Math.max(1, Math.floor(room / 6)));
+  }
+  archivedHeader(): number | null {
+    return this.archived_count && this.drawer !== "agents"
+      ? Math.max(1, this.middle() - 2 - this.archivedCapacity() * 3)
+      : null;
+  }
+  withArchives(count: number, expanded: boolean, offset: number, focused = false): View {
+    const result = this.clone();
+    result.archived_count = count;
+    result.archived_expanded = expanded;
+    result.archived_offset = Math.min(offset, sat(count, result.archivedCapacity()));
+    result.archived_focused = focused;
+    return result;
   }
   /** Name and status rows end above the rule; only a trailing resource row
    * may give way to it. */
-  workspaceCapacity(): number {
-    return Math.max(1, Math.floor((sat(this.workspaceEnd(), 2) + (this.workspaceRows() - 2)) / this.workspaceRows()));
+  workspaceCapacity(offset = this.workspace_offset): number {
+    if (this.workspace_machines.some(Boolean)) {
+      let n = 0,
+        y = 2;
+      for (let i = offset; i < this.workspace_count; i++) {
+        if (this.workspaceHeader(i, offset)) y++;
+        if (this.workspace_collapsed[i] ? y > this.workspaceEnd() : y + 1 >= this.workspaceEnd()) break;
+        n++;
+        y += this.workspace_collapsed[i] ? 0 : this.workspaceRows();
+      }
+      return n;
+    }
+    return Math.max(
+      this.archived_count ? 0 : 1,
+      Math.floor((sat(this.workspaceEnd(), 2) + (this.workspaceRows() - 2)) / this.workspaceRows()),
+    );
+  }
+  workspaceMaxOffset(): number {
+    if (!this.workspace_machines.some(Boolean)) return sat(this.workspace_count, this.workspaceCapacity());
+    let offset = sat(this.workspace_count, 1);
+    while (offset > 0 && this.workspace_count - offset + 1 <= this.workspaceCapacity(offset - 1)) offset--;
+    return offset;
+  }
+  workspaceReveal(index: number): number {
+    let offset = Math.min(this.workspace_offset, index);
+    while (offset < index && index >= offset + this.workspaceCapacity(offset)) offset++;
+    return Math.min(offset, this.workspaceMaxOffset());
   }
   /** The workspace list's scrollbar thumb, like the agent list's. */
   workspaceThumb(): { start: number; len: number } | null {
     const track = sat(this.workspaceEnd(), 2);
-    const last = sat(this.workspace_count, this.workspaceCapacity());
+    const last = this.workspaceMaxOffset();
     if (last === 0 || track < 2) return null;
     const len = clamp(Math.floor((track * this.workspaceCapacity()) / this.workspace_count), 1, track - 1);
     return { start: Math.round(((track - len) * this.workspace_offset) / last), len };
   }
-  withWorkspaces(count: number, offset: number): View {
+  withWorkspaces(count: number, offset: number, machines: string[] = [], collapsed: boolean[] = []): View {
     const result = this.clone();
     result.workspace_count = count;
-    result.workspace_offset = Math.min(offset, sat(count, this.workspaceCapacity()));
+    result.workspace_machines = machines;
+    result.workspace_collapsed = collapsed;
+    result.workspace_offset = Math.max(0, Math.min(offset, result.workspaceMaxOffset()));
     return result;
   }
   static widthFor(cols: number, open: boolean, rows = 13, searching = false): number {
@@ -922,6 +1151,93 @@ export class View {
     result.panel = width;
     return result;
   }
+  withRename(state: RenameState | null): View {
+    const result = this.clone();
+    result.rename = state;
+    return result;
+  }
+  /** The rename open on `target`'s row, or null. */
+  private renaming(target: RenameTarget): RenameState | null {
+    return this.rename !== null && sameRenameTarget(this.rename.target, target) ? this.rename : null;
+  }
+  /** The name columns of `target`'s row, as `hit` finds it, and the line
+   * below it for a message, or the one above when the row is the last
+   * visible line of its list. Null while the row is not on screen. */
+  fieldRect(target: RenameTarget, workspaces: WorkspaceEntry[]): FieldRect | null {
+    if (this.framed()) {
+      const rect = this.lists().fieldRect(target, workspaces);
+      return rect && { ...rect, x: rect.x + lists_x };
+    }
+    const v = this;
+    if (v.width === 0) return null;
+    if ("workspace" in target) {
+      if (v.drawer === "agents") return null;
+      const index = workspaces.findIndex(ws => ws.id === target.workspace);
+      if (index < v.workspace_offset || index < 0 || v.workspace_collapsed[index]) return null;
+      const y = v.workspaceY(index);
+      if (y >= v.workspaceEnd()) return null;
+      return { x: 1, y, width: sat(linkRange(v, workspaces[index], workspaces).start, 2), message_y: y + 1 };
+    }
+    if (v.drawer === "workspaces") return null;
+    const index = v.entries.findIndex(e => "pane" in e.target && e.target.pane === target.agent);
+    if (index < 0 || index < v.offset) return null;
+    const end = v.drawEnd(v.badge("below"));
+    const y = v.middle() + 2 + v.pinned(v.offset).length + v.rowsBefore(index) - v.rowsBefore(v.offset);
+    if (y >= end) return null;
+    return { x: 4, y, width: v.nameRoom(v.entries[index]), message_y: y + 1 < end ? y + 1 : y - 1 };
+  }
+  /** Whether `x`, `y` lands on `target`'s name as its row draws it, rather
+   * than elsewhere on the row. */
+  onName(target: RenameTarget, workspaces: WorkspaceEntry[], x: number, y: number): boolean {
+    const rect = this.fieldRect(target, workspaces);
+    if (rect === null || y !== rect.y || x < rect.x) return false;
+    let width = 0;
+    if ("workspace" in target) {
+      const ws = workspaces.find(ws => ws.id === target.workspace);
+      if (ws) width = displayWidth(workspaceName(ws)) + (ws.archived ? displayWidth(archivedSuffix()) : 0);
+    } else {
+      const e = this.entries.find(e => "pane" in e.target && e.target.pane === target.agent);
+      if (e) width = displayWidth(agentName(e));
+    }
+    return x < rect.x + Math.min(width, rect.width);
+  }
+  /** The columns an agent row's name has, before its context figure and notes. */
+  nameRoom(e: Entry): number {
+    return sat(this.width - 6, nameRight(e, contextFigure(e, false, colors.bg)));
+  }
+  /** Shows the terminal caret in the rename field, as `searchCursor` does
+   * for the search; nothing while no renamed row is on screen. */
+  renameCursor(w: Writer, workspaces: WorkspaceEntry[]): void {
+    const state = this.rename;
+    if (state === null) return;
+    const rect = this.fieldRect(state.target, workspaces);
+    if (rect === null) return;
+    const column = writeField(new Writer(), state.field, NameView.scroll(state.field, rect.width), rect.width, "");
+    w.write(`\x1b[0m${w.cup(rect.y + 1, rect.x + column + 1)}\x1b[?25h`);
+  }
+  /** The rename field over `width` columns of the name line from `x`: its
+   * text scrolled so the caret shows, or the fallback name, muted, while
+   * the text is empty. */
+  private drawField(w: Writer, state: RenameState, x: number, y: number, width: number): void {
+    const field = state.field;
+    w.write(`${w.cup(y + 1, x + 1)}${rename_field}`);
+    w.splat(" ", width);
+    w.write(w.cup(y + 1, x + 1));
+    if (field.len > 0) writeField(w, field, NameView.scroll(field, width), width, rename_field);
+    else if (state.fallback.length > 0) {
+      w.write(rename_hint);
+      writeEllipsis(w, directoryLabel(state.fallback, null, 160), width);
+    }
+  }
+  /** A rename's notice on line `y` over `fill`, in the error style and
+   * clipped to the sidebar; it takes the line. */
+  private drawMessage(w: Writer, message: string, y: number, fill: string): void {
+    if (y < 0 || y >= this.rows) return;
+    w.write(`${w.cup(y + 1, 2)}\x1b[0m${fill}`);
+    w.splat(" ", this.width - 2);
+    w.write(`${w.cup(y + 1, 2)}${fg("hot")}`);
+    writeEllipsis(w, message, this.width - 3);
+  }
   area(): Rect {
     return View.paneArea(this.cols, this.rows, this.width, this.panel, this.drawer);
   }
@@ -934,8 +1250,10 @@ export class View {
     if (v.width === 0) return v.cols >= 64 && x < 3 && y === 0 ? hit("toggle") : hit("none");
     if (x >= v.width - 1 || y >= v.rows) return hit("none");
     if (y === 0 && v.drawer !== "agents") {
-      if (x >= v.width - 5) return hit("toggle");
-      if (x >= v.width - 11 && x < v.width - 6) return hit("workspace_new");
+      if (v.workspaceScope()?.contains(x, y)) return hit("workspace_scope");
+      if (x >= v.width - (v.workspace_scope ? 2 : 5)) return hit("toggle");
+      if (v.workspace_scope ? x >= v.width - 8 && x < v.width - 3 : x >= v.width - 11 && x < v.width - 6)
+        return hit("workspace_new");
     }
     if (
       y === v.middle() &&
@@ -954,12 +1272,22 @@ export class View {
         return { tag: "active", offset: b.offset };
     }
     if (y < v.middle()) {
+      const header = v.archivedHeader();
+      if (header !== null) {
+        if (y === header) return hit("archives");
+        const row = y - header - 1;
+        if (row >= 0 && row < v.archivedCapacity() * 3)
+          return { tag: "archived_workspace", workspace: v.archived_offset + Math.floor(row / 3) };
+      }
       if (y < 2 || y >= v.workspaceEnd()) return hit("none");
-      const slot = Math.floor((y - 2) / v.workspaceRows());
-      const index = slot + v.workspace_offset;
-      return index < v.workspace_count && slot < v.workspaceCapacity()
-        ? { tag: "workspace", workspace: index }
-        : hit("none");
+      for (
+        let index = v.workspace_offset;
+        index < Math.min(v.workspace_count, v.workspace_offset + v.workspaceCapacity());
+        index++
+      )
+        if (!v.workspace_collapsed[index] && y >= v.workspaceY(index) && y < v.workspaceY(index) + v.workspaceRows())
+          return { tag: "workspace", workspace: index };
+      return hit("none");
     }
     const end = v.drawEnd(below);
     if (y < v.middle() + 2 || y >= end) return hit("none");
@@ -1024,8 +1352,9 @@ export class View {
     let top = 2;
     const end = Math.min(v.workspace_count, v.workspace_offset + v.workspaceCapacity());
     for (let i = v.workspace_offset; i < end; i++) {
+      top = v.workspaceY(i);
       if (y < top + Math.floor((v.workspaceRows() + 1) / 2)) return { index: i, y: top - 1 };
-      top += v.workspaceRows();
+      top += v.workspace_collapsed[i] ? 0 : v.workspaceRows();
     }
     return { index: end, y: top - 1 };
   }
@@ -1052,22 +1381,34 @@ export class View {
   }
   unreadHit(ws: WorkspaceEntry, x: number, y: number): boolean {
     if (this.framed()) return this.lists().unreadHit(ws, x - lists_x, y);
-    if (ws.unread === 0 || y < 3 || (y - 2) % this.workspaceRows() !== 1) return false;
+    if (ws.unread === 0 || this.workspaceAt(y, 1) === null) return false;
     const range = this.unreadRange(ws);
     return x >= range.start && x < range.end;
   }
-  draw(w: Writer, entries: Entry[], workspaces: WorkspaceEntry[]): void {
-    return this.drawAt(w, entries, workspaces, Date.now());
+  draw(w: Writer, entries: Entry[], workspaces: WorkspaceEntry[], archived: ArchivedWorkspace[] = []): void {
+    return this.drawAt(w, entries, workspaces, Date.now(), archived);
   }
-  drawAt(w: Writer, entries: Entry[], workspaces: WorkspaceEntry[], now_ms: number): void {
+  drawAt(
+    w: Writer,
+    entries: Entry[],
+    workspaces: WorkspaceEntry[],
+    now_ms: number,
+    archived: ArchivedWorkspace[] = [],
+  ): void {
     corgiAnimation.beginFrame();
     try {
-      this.drawFrame(w, entries, workspaces, now_ms);
+      this.drawFrame(w, entries, workspaces, now_ms, archived);
     } finally {
       corgiAnimation.endFrame();
     }
   }
-  private drawFrame(w: Writer, entries: Entry[], workspaces: WorkspaceEntry[], now_ms: number): void {
+  private drawFrame(
+    w: Writer,
+    entries: Entry[],
+    workspaces: WorkspaceEntry[],
+    now_ms: number,
+    archived: ArchivedWorkspace[],
+  ): void {
     const v = this;
     if (v.width === 0) {
       if (v.cols >= 64) w.write(`${w.cup(1, 1)}\x1b[1m` + fg("strong") + " > \x1b[0m");
@@ -1075,7 +1416,7 @@ export class View {
     }
     if (v.framed()) {
       for (let row = 0; row < v.rows; row++) w.write(`${w.cup(row + 1, 1)}${panel}` + " ".repeat(lists_x));
-      w.withColumns(lists_x, () => v.lists().drawFrame(w, entries, workspaces, now_ms));
+      w.withColumns(lists_x, () => v.lists().drawFrame(w, entries, workspaces, now_ms, archived));
       v.drawBox(w);
       w.withColumns(lists_x, () => v.lists().drawBadges(w));
       return;
@@ -1104,12 +1445,15 @@ export class View {
       const label = newAgentLabel(v.width);
       w.write(w.cup(v.middle() + 1, v.width - displayWidth(label) - 1) + button + label + panel);
       // The focused agent list shows where `/` opens its search.
-      if (v.focus === "agents") {
+      if (v.focus === "agents" && entries.length > 0) {
         v.line(w, v.middle() + 1, "/", new Style({ fg: "strong", bg: "bg", bold: true }).sgr());
         w.write(new Style({ fg: "faint", bg: "bg" }).sgr() + " " + i18n.t`search`);
       }
     }
-    if (v.drawer !== "agents") v.drawWorkspaces(w, workspaces);
+    if (v.drawer !== "agents") {
+      v.drawWorkspaces(w, workspaces, now_ms);
+      v.drawArchives(w, archived);
+    }
     if (v.drawer === "workspaces") {
       w.write("\x1b[0m");
       return;
@@ -1124,7 +1468,7 @@ export class View {
         left = Math.floor((run - grip.length) / 2);
       w.write(w.cup(v.middle(), 2) + (boxed ? outline : panel + fg("line")) + stroke.repeat(left));
       if (grip) w.write(boxed ? grip : fg("faint") + grip + fg("line"));
-      w.write(stroke.repeat(run - left - grip.length) + (boxed ? "┤" : "┥"));
+      w.write(stroke.repeat(run - left - grip.length) + (!boxed ? "┥" : v.focus === "agents" ? "┐" : "┘"));
     }
     v.drawAgents(w, entries, now_ms);
   }
@@ -1142,7 +1486,7 @@ export class View {
       // The rule already runs to the border from the lists' first column.
       const end = y === rule ? 1 + lists_x : v.width - 1;
       w.write(w.cup(y + 1, 2) + "─".repeat(sat(end, 1)));
-      if (y !== rule) w.write(y === v.rows - 1 ? "┘" : y > 0 ? "┤" : "┐");
+      if (y !== rule) w.write(y === box.top ? "┐" : "┘");
     }
     w.write("\x1b[0m");
   }
@@ -1151,22 +1495,91 @@ export class View {
   private thumbStyle(section: Section): string {
     return this.focus === section ? outline : panel + fg("faint");
   }
+  /** The title row again over a sidebar drawn dimmed, its border included,
+   * with `[ + ]` lit as the call to action while `create` is. */
+  drawTitleRow(w: Writer, create: boolean): void {
+    if (!this.framed() || this.drawer === "agents") return;
+    w.write(`${w.cup(1, 1)}${panel}`);
+    w.splat(" ", this.width - 1);
+    w.write(fg("line") + "│");
+    w.withColumns(lists_x, () => this.lists().drawTitle(w, create));
+    w.write("\x1b[0m");
+  }
+  /** The corgi, the title, and its buttons. */
   /** The title row and the workspace list above the agents. */
-  private drawWorkspaces(w: Writer, workspaces: WorkspaceEntry[]): void {
+  workspaceScope(): Rect | null {
+    if (this.framed()) {
+      const box = this.lists().workspaceScope();
+      return box ? new Rect(box.x + lists_x, box.y, box.w, box.h) : null;
+    }
+    if (!this.workspace_scope || !this.width || this.drawer === "agents") return null;
+    const start = this.corgi_badge === "none" ? 1 : 5;
+    const room = Math.max(0, this.width - 9 - start);
+    const width = Math.min(Math.max(0, room - 2), 10, displayWidth(this.workspace_scope) + 2);
+    const title = Math.min(10, room - width - 1);
+    return width >= 3 ? new Rect(start + title + 1, 0, width, 1) : null;
+  }
+  private drawTitle(w: Writer, create = false): void {
     const v = this;
-    w.write(`${w.cup(1, v.width - 4)}${panel} < `);
-    if (v.corgi_badge !== "none") {
+    const scope = v.workspaceScope();
+    w.write(`${w.cup(1, v.width - (scope ? 1 : 4))}${panel}` + (scope ? "<" : " < "));
+    if (scope) {
+      if (v.corgi_badge === "mark") w.write(`${w.cup(1, 3)}${panel}\x1b[1m${fg("muted")}${corgiBadge.mark}`);
+      const start = v.corgi_badge === "none" ? 1 : 5;
+      w.write(`${w.cup(1, start + 1)}\x1b[1m` + fg("strong"));
+      writeEllipsis(w, i18n.t`workspaces`, sat(scope.x - start, 1));
+      w.write(`${w.cup(1, scope.x + 1)}\x1b[22m` + fg("muted"));
+      writeEllipsis(w, v.workspace_scope, sat(scope.w, 2));
+      w.write(" ▾");
+    } else if (v.corgi_badge !== "none") {
       w.write(`${w.cup(1, 3)}${panel}\x1b[1m${fg("muted")}${corgiBadge.mark}`);
       w.write(`${w.cup(1, 6)}\x1b[1m` + fg("strong"));
       writeEllipsis(w, i18n.t`workspaces`, sat(v.width, 17));
     } else v.line(w, 0, i18n.t`workspaces`, "\x1b[1m" + fg("strong"));
-    w.write(w.cup(1, v.width - 10) + button + `[ + ]${panel}`);
+    w.write(w.cup(1, v.width - (scope ? 7 : 10)) + (create ? palette.call_to_action : button) + `[ + ]${panel}`);
+  }
+  /** The title row and the workspace list above the agents. */
+  private drawWorkspaces(w: Writer, workspaces: WorkspaceEntry[], now_ms: number): void {
+    const v = this;
+    v.drawTitle(w);
     const shown = workspaces.slice(
       v.workspace_offset,
       Math.min(workspaces.length, v.workspace_offset + v.workspaceCapacity()),
     );
     shown.forEach((ws, index) => {
-      const y = 2 + index * v.workspaceRows();
+      const absolute = index + v.workspace_offset;
+      const y = v.workspaceY(absolute);
+      if (v.workspaceHeader(absolute)) {
+        const hovered = v.machine_hover === y - 1;
+        w.write(w.cup(y, 1) + (hovered ? machine_header_hover : machine_header));
+        w.splat(" ", sat(v.width, 1));
+        w.write(`${w.cup(y, 2)}${fg("muted")}${ws.collapsed ? "▸" : "▾"}  ${fg(hovered ? "strong" : "text")}`);
+        const quality = ws.link_quality;
+        const status = ws.connection_status;
+        const timer = !status || status.seconds === null ? "" : ` ${status.seconds}s`;
+        const status_room = sat(v.width, 12);
+        const label = status ? ellipsis(status.label, sat(status_room, displayWidth(timer))) + timer : "";
+        const status_width = displayWidth(label);
+        writeEllipsis(
+          w,
+          v.workspace_machines[absolute],
+          sat(v.width, status ? status_width + 8 : quality === null ? 6 : 12),
+        );
+        if (status) {
+          w.write(w.cup(y, v.width - status_width - 1) + fg(status.color) + label);
+        } else if (quality !== null) {
+          w.write(w.cup(y, v.width - 5));
+          if (v.signal_marks?.(quality, w.column + v.width - 6, y - 1)) w.splat(" ", 4);
+          else {
+            const color = quality >= 3 ? "accent" : "warm";
+            for (const [i, bar] of [..."▂▄▆█"].entries()) w.write(fg(i < quality ? color : "line") + bar);
+          }
+        }
+        w.write(panel);
+      }
+      if (ws.collapsed) return;
+      const out = w;
+      if (ws.unavailable) w = new Writer(out.column);
       const ghost = v.dragged_workspace === v.workspace_offset + index;
       const tinted = ws.active || ghost;
       const style = tinted ? active_name : panel;
@@ -1177,9 +1590,21 @@ export class View {
       w.splat(" ", v.width - 1);
       const badge = gitLabel(ws, false);
       const badge_width = displayWidth(badge);
-      w.write(`${w.cup(y + 1, 2)}${style}`);
       const link = linkRange(v, ws, workspaces);
-      writeClipped(w, directoryLabel(ws.name, null, 4097), sat(link.start, 2));
+      const rename = v.renaming({ workspace: ws.id });
+      const name = workspaceName(ws);
+      const name_room = sat(link.start, 2);
+      w.write(`${w.cup(y + 1, 2)}${style}`);
+      if (rename !== null) {
+        v.drawField(w, rename, 1, y, name_room);
+        w.write(style);
+      } else {
+        if (ws.archived) {
+          const suffix = archivedSuffix();
+          writeEllipsis(w, name, sat(name_room, displayWidth(suffix)));
+          writeClipped(w, suffix, name_room);
+        } else writeClipped(w, name, name_room);
+      }
       if (link.end > link.start) {
         w.write(w.cup(y + 1, link.start + 1));
         drawPorts(w, ws, link.end - link.start, false);
@@ -1227,9 +1652,9 @@ export class View {
         statusPart(w, unread, "\x1b[1m" + fg("accent"), unread_room);
       }
       const worktree_label = worktreeLabel(ws);
-      if (worktree_label)
+      if (worktree_label) {
         w.write(`${w.cup(y + 2, v.width - 1 - displayWidth(worktree_label))}${meta}${rule}${worktree_label}`);
-      else if (ws.stats.tools > 0) w.write(`${w.cup(y + 2, v.width - 1 - metadata_width)}${meta}${rule}${metadata}`);
+      } else if (ws.stats.tools > 0) w.write(`${w.cup(y + 2, v.width - 1 - metadata_width)}${meta}${rule}${metadata}`);
       if (tinted) for (const row of [y + 1, y + 2]) w.write(`${w.cup(row, 1)}${bar}`);
       w.write(panel);
       if (v.workspaceRows() === 3 && y + 2 < v.workspaceEnd()) {
@@ -1244,20 +1669,115 @@ export class View {
         w.write(panel);
         if (tinted) w.write(`${w.cup(y + 3, 1)}${bar}${panel}`);
       }
+      if (rename !== null && rename.message !== null)
+        v.drawMessage(w, rename.message, y + 1, tinted ? selected_bg : bg("bg"));
+      if (ws.unavailable) {
+        writeExit(out, w.buffered(), 0.5);
+        w = out;
+        if (ws.connecting) {
+          // Keep the cached card dim; let the workspace name glimmer at full brightness.
+          w.write(`${w.cup(y + 1, 2)}`);
+          writeExit(w, style, 0.5);
+          if (!ws.archived) writeConnectionGlimmer(w, clipped(name, name_room), now_ms);
+          w.write(panel);
+        }
+      }
     });
     const ws_thumb = v.workspaceThumb();
     if (ws_thumb)
       for (let row = ws_thumb.start; row < ws_thumb.start + ws_thumb.len; row++)
         w.write(w.cup(3 + row, v.width) + v.thumbStyle("workspaces") + "┃");
   }
+  private drawArchives(w: Writer, archived: ArchivedWorkspace[]): void {
+    const header = this.archivedHeader();
+    if (header === null) return;
+    const row = (y: number, label: string, active: boolean, bold = false, rule = "") => {
+      const style = new Style({ fg: active ? "strong" : "muted", bg: active ? "selected" : "surface", bold }).sgr();
+      w.write(w.cup(y + 1, 1) + style);
+      w.splat(" ", this.width - 1);
+      w.write(w.cup(y + 1, 2));
+      if (rule) {
+        w.write(rule);
+        w.splat(" ", sat(this.width, 3));
+        w.write(w.cup(y + 1, 2));
+      }
+      writeEllipsis(w, label, sat(this.width, 3));
+      w.write(panel);
+    };
+    const count = this.archived_count;
+    row(header, (this.archived_expanded ? "▾ " : "▸ ") + i18n.t`${count} archived`, this.archived_focused);
+    const capacity = this.archivedCapacity();
+    const visible = archived.slice(this.archived_offset, this.archived_offset + capacity);
+    visible.forEach((ws, i) => {
+      const y = header + i * 3 + 1;
+      const rule = i + 1 < visible.length ? rule_underline : "";
+      row(y, directoryLabel(ws.name, null, 4097), ws.active, true);
+      const s = ws.summary;
+      row(y + 1, s ? "" : i18n.t`Agent states unavailable`, ws.active);
+      if (s) {
+        const count = s.agents;
+        let x = 1;
+        const part = (value: string, token: palette.Token) => {
+          w.write(w.cup(y + 2, x + 1) + new Style({ fg: token, bg: ws.active ? "selected" : "surface" }).sgr());
+          writeEllipsis(w, value, sat(this.width - 2, x));
+          x += displayWidth(value);
+        };
+        part(i18n.t`${count} agents`, "muted");
+        if (s.running) part(` ${compactCount(s.running)}▶`, "accent");
+        if (s.waiting) part(` ${compactCount(s.waiting)}●`, "warm");
+        if (s.unread) part(` ${compactCount(s.unread)}●`, "accent");
+        if (s.idle) part(` ${compactCount(s.idle)}○`, "muted");
+        if (s.unknown) part(` ${compactCount(s.unknown)}?`, "muted");
+      }
+      row(
+        y + 2,
+        s ? (s.programs.length ? "" : i18n.t`No processes`) : i18n.t`Process counts unavailable`,
+        ws.active,
+        false,
+        rule,
+      );
+      let x = 1;
+      for (const p of s?.programs ?? []) {
+        const room = this.width - 2 - x;
+        if (room <= 0) break;
+        const prefix = `${x > 1 ? " " : ""}${compactCount(p.count)}× `;
+        const icon = p.brand && this.archive_marks ? tabIcons.cols : 0;
+        const name = p.name.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+        w.write(w.cup(y + 3, x + 1) + new Style({ fg: "muted", bg: ws.active ? "selected" : "surface" }).sgr() + rule);
+        writeEllipsis(w, prefix + " ".repeat(icon) + name, room);
+        if (p.brand && icon && displayWidth(prefix) + icon < room)
+          this.archive_marks!(p.brand, w.column + x + displayWidth(prefix), y + 2);
+        x += displayWidth(prefix) + icon + displayWidth(name);
+      }
+      w.write(panel);
+    });
+    const track = capacity * 3;
+    if (capacity > 0 && count > capacity) {
+      const len = Math.max(1, Math.floor((track * capacity) / count));
+      const start = Math.round(((track - len) * this.archived_offset) / (count - capacity));
+      for (let i = start; i < start + len; i++)
+        w.write(w.cup(header + 2 + i, this.width) + this.thumbStyle("workspaces") + "┃");
+    }
+  }
   /** The agent list below its header. */
   private drawAgents(w: Writer, entries: Entry[], now_ms: number): void {
     const v = this;
     if (entries.length === 0) {
-      v.line(w, v.middle() + 2, v.search !== null ? i18n.t`No matching agents` : i18n.t`No agents yet`, panel);
-      if (v.search === null) {
-        v.line(w, v.middle() + 4, i18n.t`Launch inside a pane:`, panel);
-        commands(v.width - 3).forEach((text, i) => v.line(w, v.middle() + 5 + i, text, panel));
+      if (v.search !== null) v.line(w, v.middle() + 2, i18n.t`No matching agents`, panel);
+      else {
+        const label = newAgentLabel(v.width),
+          arrow = v.width - displayWidth(label) + Math.floor((displayWidth(label) - 5) / 2),
+          cap = v.new_shortcut === null ? "" : ` ${v.new_shortcut} `,
+          beside = v.drawer === null && displayWidth(cap) + 2 <= arrow;
+        if (v.drawer === null) w.write(w.cup(v.middle() + 4, arrow) + panel + fg("muted") + "↑" + panel);
+        if (cap) {
+          const row = v.middle() + (beside ? 3 : 4);
+          if (row < v.rows) {
+            w.write(w.cup(row + 1, beside ? Math.max(2, arrow - displayWidth(cap) - 1) : 2) + palette.keycap);
+            writeEllipsis(w, cap, v.width - 3);
+            w.write(panel);
+          }
+        }
       }
     }
     const grouped = entries.some(e => isGroup(e.target));
@@ -1292,7 +1812,7 @@ export class View {
     let glide = "";
     const end = v.drawEnd(v.badge("below"));
     const visible = entries.slice(v.offset, Math.min(entries.length, v.offset + v.shown(end)));
-    const sleepers: bigint[] = [];
+    const sleepers: string[] = [];
     for (const e of visible) {
       if (!isAgent(e.target) || e.state !== "idle" || e.exit !== null) continue;
       sleepers.push(animationKey(e));
@@ -1386,15 +1906,6 @@ export class View {
         w.write(w.cup(v.middle() + 3 + row, v.width) + v.thumbStyle("agents") + "┃");
     w.write("\x1b[0m");
   }
-  /** The small glyph beside an agent's detail line: a wait clock, an active
-   * tool, the working spinner, or a napping "z" once idle. */
-  static activityGlyph(e: Entry, waiting: boolean, napping: boolean, spinner: string): string {
-    if (waiting) return "◷";
-    if (e.tool_active && (e.state === "working" || e.state === "blocked")) return "🔧";
-    if (e.state === "working") return spinner;
-    if (napping) return "ᶻ";
-    return "";
-  }
   drawAgent(
     w: Writer,
     e: Entry,
@@ -1439,11 +1950,20 @@ export class View {
     // Kitty-graphics hosts get it; elsewhere the style could degrade to a
     // solid underline, so those terminals get no separator at all.
     const dotted = grouped && !last_in_group && v.supports_kitty_graphics;
-    const line = ghost ? ghost_underline : dotted ? dotted_underline : divider ? rule_underline : "";
+    // A starred row outside a group's rail takes a gold edge and divider.
+    const gilded = e.starred && !grouped;
+    const line = ghost
+      ? ghost_underline
+      : dotted
+        ? dotted_underline
+        : divider
+          ? gilded
+            ? star_underline
+            : rule_underline
+          : "";
     // Dotted lines start under the name, leaving the guide and activity clear.
     const underline_x = dotted ? 5 : 2;
     const compacting = e.state === "working" && e.compacting;
-    const waiting = e.state === "working" && e.subagents.waiting && !compacting;
     // Without sleeping corgis, a dim Z marks an idle agent; unseen ones are
     // brighter. Selected rows take muted, as faint is too dim on them.
     const napping = e.state === "idle" && v.corgi_intensity === 0;
@@ -1452,22 +1972,24 @@ export class View {
       : napping && e.attention !== "finished"
         ? "\x1b[22m" + nap_fg
         : "\x1b[22m" + fg("faint");
-    const name = e.name.length > 0 ? directoryLabel(e.name, null, 160) : e.provider ? adapter(e.provider).name : "";
     const figure = contextFigure(e, compacting, background);
     const figure_width = figure ? displayWidth(figure.text) : 0;
-    const count = e.notes;
-    const notes = count > 0 ? (count === 1 ? i18n.t`${count} note` : i18n.t`${count} notes`) : "";
-    const right = figure_width + (figure_width > 0 ? 1 : 0) + (notes.length > 0 ? displayWidth(notes) + 1 : 0);
-    w.write(
-      `${w.cup(y + 1, x + 5)}${
-        waits
-          ? "\x1b[1m" + fg("warm")
-          : dot.unread || (grouped && e.focused)
-            ? "\x1b[1m" + fg("strong")
-            : "\x1b[22m" + fg("text")
-      }`,
-    );
-    writeEllipsis(w, (e.starred && e.section !== "starred" ? "★ " : "") + name, sat(room, right));
+    const notes = noteLabel(e);
+    const right = nameRight(e, figure);
+    const rename = "pane" in e.target ? v.renaming({ agent: e.target.pane }) : null;
+    const name_style = waits
+      ? "\x1b[1m" + fg("warm")
+      : dot.unread || (grouped && e.focused)
+        ? "\x1b[1m" + fg("strong")
+        : "\x1b[22m" + fg("text");
+    // Outside the starred section, a star before the name marks it, in gold.
+    const star = rename === null && e.starred && e.section !== "starred" && sat(room, right) > 3;
+    w.write(`${w.cup(y + 1, x + 5)}${star ? "\x1b[1m" + fg("gold") + "★ " : ""}${name_style}`);
+    if (rename !== null) {
+      v.drawField(w, rename, x + 4, y, sat(room, right));
+      w.write(row_bg);
+    } else if (star) writeEllipsis(w, rowTitle(e), sat(room, right + 2));
+    else writeEllipsis(w, agentName(e), sat(room, right));
     w.write("\x1b[22m");
     // Unsent review notes wait for the user, so they take warm.
     if (notes.length > 0 && room > right + 4)
@@ -1477,35 +1999,15 @@ export class View {
       w.write(fgRgb(figure.color));
       w.write(figure.text);
     }
-    const detail = compacting
-      ? i18n.t`Compacting…`
-      : waiting
-        ? i18n.t`Waiting on agents`
-        : e.state === "working"
-          ? e.activity
-          : e.state === "blocked"
-            ? i18n.t`Needs input`
-            : e.state === "initializing"
-              ? i18n.t`Starting session`
-              : e.state === "done"
-                ? i18n.t`Session ended`
-                : "";
+    const detail = rowDetail(e, now_ms);
     const badge = subagentBadge(e.subagents, e.children);
     const badge_width = displayWidth(badge);
     const detail_room = sat(room, badge_width + (badge_width > 0 ? 1 : 0));
     const animation_key = animationKey(e);
-    const fallback = e.state === "working" && !compacting && !waiting && e.activity.length === 0;
-    // Narrow rows keep the text; the pile beside it still moves.
-    const herding = compacting && detail_room >= corgiAnimation.herdWidth();
-    const mode: corgiAnimation.Mode = herding
-      ? "herding"
-      : fallback && v.corgi_intensity > 0
-        ? "awake"
-        : e.state === "idle" && v.corgi_intensity > 0
-          ? "asleep"
-          : "content";
+    const mode = corgiMode(e, v.corgi_intensity, detail_room);
+    const herding = mode === "herding";
     const detail_text = detail.length === 0 ? "" : directoryLabel(detail, null, 512);
-    const activity = View.activityGlyph(e, waiting, napping, corgiAnimation.spinner(compacting, now_ms));
+    const activity = corgiAnimation.activityGlyph(activityKind(e, v.corgi_intensity), now_ms);
     // Underline the existing second row, including its padding, without
     // consuming another terminal row or changing the entry hit area.
     w.write(`${w.cup(y + 2, x + underline_x)}${line}`);
@@ -1565,8 +2067,12 @@ export class View {
     }
     w.write("\x1b[24;59m");
     // Without the group rail, the focused agent takes the active workspace's bar.
-    const bar = ghost ? ghost_bar : e.focused && !grouped ? active_bar : "";
+    const bar = ghost ? ghost_bar : e.focused && !grouped ? active_bar : gilded ? row_bg + star_trim + "▏" : "";
     if (bar.length > 0) for (let row = 0; row < 2; row++) w.write(`${w.cup(y + row + 1, x + 1)}${bar}\x1b[0m`);
+    if (rename !== null && rename.message !== null) {
+      const below = y + 1 < v.drawEnd(v.badge("below"));
+      v.drawMessage(w, rename.message, below ? y + 1 : y - 1, below ? row_bg : bg("bg"));
+    }
   }
   /** A workspace or worktree group's header. A worktree's under a workspace
    * branches off the workspace's rail with `lead`; a ghost's leaves that
@@ -1595,12 +2101,20 @@ export class View {
       w.write(w.cup(y + 1, name_x + 1) + fg("faint") + "⌥");
       name_x += 2;
     }
-    // Name, then a rule that leaves one space on each side.
+    // Name and its machine's, then a rule that leaves one space on each side.
     const text = directoryLabel(e.name, null, 160);
-    const name_room = sat(status_x, name_x + 3);
+    const room = sat(status_x, name_x + 3);
+    // The machine's name takes at most half the room, as on workspace rows.
+    const machine_room = Math.floor(room / 2);
+    const machine = g.machine && machine_room > 4 ? `  ${ellipsis(g.machine, machine_room - 2)}` : "";
+    const name_room = room - displayWidth(machine);
     w.write(`${w.cup(y + 1, name_x + 1)}${g.current ? "\x1b[1m" + fg("strong") : "\x1b[1m" + fg("text")}`);
     writeEllipsis(w, text, name_room);
-    const name_end = name_x + Math.min(displayWidth(text), name_room);
+    let name_end = name_x + Math.min(displayWidth(text), name_room);
+    if (machine) {
+      w.write("\x1b[22m" + fg("muted") + machine);
+      name_end += displayWidth(machine);
+    }
     if (status_x > name_end + 2) {
       // A heavy, bright rule so each header stands out from its agents; a
       // worktree inside a workspace takes a thin one.
@@ -1609,28 +2123,30 @@ export class View {
     }
     w.write("\x1b[22;24;59m");
   }
-  /** An activity section's header, its glyph, name and count centered
-   * between two rules: " ━━━━━ ▶ working 3 ━━━━━ ▾". */
+  /** An activity section's header: its chevron over the status glyphs of
+   * its rows, then its glyph, name and count centered between two rules:
+   * " ▾ ━━━━━ ▶ working 3 ━━━━━". Starred's is gold. */
   drawSection(w: Writer, e: Entry, kind: SectionKind, y: number, stuck: boolean): void {
     const v = this;
     const look = sections[kind];
+    const gold = kind === "starred";
     const row_bg = e.focused ? selected_bg : bg("bg");
     w.write(`${w.cup(y + 1, 1)}\x1b[0m${row_bg}${stuck ? rule_underline : ""}`);
     w.splat(" ", v.width - 1);
-    // The rules run from column 1 to just before the caret, a space apart from the middle.
-    const caret_x = sat(v.width, 2),
-      room = sat(caret_x, 2),
+    w.write(`${w.cup(y + 1, 2)}${gold ? star_trim : fg("faint")}${e.group.folded ? "▸" : "▾"}`);
+    // The rules run from past the chevron to the last column, a space apart from the middle.
+    const room = sat(v.width, 4),
       count = compactCount(e.group.agents),
       label_room = sat(room, displayWidth(count) + 8),
       label = Math.min(displayWidth(look.label), label_room),
       middle = 2 + label + 1 + displayWidth(count),
       left = Math.floor(sat(room, middle + 2) / 2),
-      right = sat(room, middle + 2) - left;
-    w.write(`${w.cup(y + 1, 2)}\x1b[22m${fg("line")}${"━".repeat(left)} `);
-    w.write(`\x1b[1m${fg(look.token)}${look.glyph} ${e.focused ? fg("strong") : fg("text")}`);
+      right = sat(room, middle + 2) - left,
+      rule = gold ? star_trim : fg("line");
+    w.write(`${w.cup(y + 1, 4)}\x1b[22m${rule}${"━".repeat(left)} `);
+    w.write(`\x1b[1m${fg(look.token)}${look.glyph} ${gold ? fg("gold") : e.focused ? fg("strong") : fg("text")}`);
     writeEllipsis(w, look.label, label_room);
-    w.write(`\x1b[22m ${fg("muted")}${count} ${fg("line")}${"━".repeat(right)}`);
-    w.write(`${w.cup(y + 1, caret_x + 1)}${fg("faint")}${e.group.folded ? "▸" : "▾"}`);
+    w.write(`\x1b[22m ${gold ? star_trim : fg("muted")}${count} ${rule}${"━".repeat(right)}`);
     w.write("\x1b[22;24;59m");
   }
   /** A worktree's rows in a section, or a workspace's in "all": " ⌥  release ┄┄┄┄". */
@@ -1639,6 +2155,8 @@ export class View {
     const row_bg = e.focused ? selected_bg : bg("bg");
     w.write(`${w.cup(y + 1, 1)}\x1b[0m${row_bg}${stuck ? rule_underline : ""}`);
     w.splat(" ", v.width - 1);
+    // Among starred rows it keeps their gold edge.
+    if (isSubhead(e.target) && e.target.section === "starred") w.write(`${w.cup(y + 1, 1)}${star_trim}▏`);
     if (e.group.branch) w.write(`${w.cup(y + 1, 2)}${fg("faint")}⌥`);
     w.write(`${w.cup(y + 1, 5)}${e.focused ? fg("muted") : fg("faint")}`);
     const room = sat(v.width, 8);
@@ -1705,19 +2223,6 @@ export class View {
   }
 }
 const mod = (a: number, b: number) => ((a % b) + b) % b;
-/** Each provider's command, joined by "or" in lines up to `width` wide. */
-function commands(width: number): string[] {
-  const lines: string[] = [];
-  for (const p of Provider.all) {
-    const name = adapter(p).command,
-      last = lines.length - 1;
-    const conjunction = i18n.t`or  ${name}`;
-    if (last >= 0 && displayWidth(`${lines[last]}  ${conjunction}`) <= width) lines[last] += `  ${conjunction}`;
-    else lines.push(last >= 0 ? conjunction : name);
-  }
-  return lines;
-}
-
 /** Context colors for the row figure and the card's meter: muted, warm from
  * 70% of the way to compaction, hot from 85%, faded into the background while
  * the agent compacts. */
@@ -1742,10 +2247,30 @@ function contextFigure(
   const text = `${percent < 999n ? percent : 999n}%`;
   return { text, color: contextColor(band, compacting, background) };
 }
-export function animationKey(e: Entry): bigint {
-  if ("pane" in e.target) return BigInt(e.target.pane) * 17n;
-  if ("headless" in e.target) return (BigInt(e.target.headless) + 0x100000000n) * 17n;
-  if ("asleep" in e.target) return BigInt(Bun.hash.wyhash(e.target.asleep, 0n)) + (1n << 64n);
+/** A workspace row's name, safe to print. */
+function workspaceName(ws: WorkspaceEntry): string {
+  return directoryLabel(ws.name, null, 4097);
+}
+const archivedSuffix = () => i18n.t` (archived)`;
+/** An agent row's name line: its title, starred outside the starred section. */
+function agentName(e: Entry): string {
+  return (e.starred && e.section !== "starred" ? "★ " : "") + rowTitle(e);
+}
+/** Unsent review notes on the name line, as "2 notes". */
+function noteLabel(e: Entry): string {
+  const count = e.notes;
+  return count > 0 ? (count === 1 ? i18n.t`${count} note` : i18n.t`${count} notes`) : "";
+}
+/** The columns the context figure and the notes take at the name line's right. */
+function nameRight(e: Entry, figure: { text: string } | null): number {
+  const figure_width = figure ? displayWidth(figure.text) : 0;
+  const notes = noteLabel(e);
+  return figure_width + (figure_width > 0 ? 1 : 0) + (notes.length > 0 ? displayWidth(notes) + 1 : 0);
+}
+export function animationKey(e: Entry): string {
+  if ("pane" in e.target) return `pane:${e.target.pane}`;
+  if ("headless" in e.target) return `headless:${e.target.headless}`;
+  if ("asleep" in e.target) return `asleep:${e.target.asleep}`;
   throw Error("unreachable");
 }
 function subagentBadge(status: Subagents, children: number): string {
@@ -1757,23 +2282,30 @@ function subagentBadge(status: Subagents, children: number): string {
   return "";
 }
 
+/** Each visible machine group has its own hover target, including repeated groups. */
+export function machineHeaderAt(v: View, x: number, y: number): { machine: string; rect: Rect } | null {
+  if (v.framed()) {
+    const header = machineHeaderAt(v.lists(), x - lists_x, y);
+    if (header) header.rect.x += lists_x;
+    return header;
+  }
+  if (!v.width || x < 1 || x >= v.width - 1 || y >= v.workspaceEnd()) return null;
+  for (let i = v.workspace_offset; i < v.workspace_offset + v.workspaceCapacity(); i++)
+    if (v.workspaceHeader(i) && y === v.workspaceY(i) - 1)
+      return { machine: v.workspace_machines[i], rect: new Rect(1, y, v.width - 2, 1) };
+  return null;
+}
+
 /** Resource hover stays on the third workspace row. Clicks and drags on that
  * row select the workspace, just like its title and status rows. */
 export function resourceAt(v: View, workspaces: WorkspaceEntry[], x: number, y: number): WorkspaceEntry | null {
   if (v.framed()) return resourceAt(v.lists(), workspaces, x - lists_x, y);
-  if (
-    v.workspaceRows() < 3 ||
-    v.width === 0 ||
-    x < 1 ||
-    x >= v.width - 2 ||
-    y < 4 ||
-    y >= v.workspaceEnd() ||
-    (y - 2) % 3 !== 2
-  )
+  if (v.workspaceRows() < 3 || v.width === 0 || x < 1 || x >= v.width - 2 || y < 4 || y >= v.workspaceEnd())
     return null;
-  const i = Math.floor((y - 2) / 3);
-  if (i >= v.workspaceCapacity() || i + v.workspace_offset >= workspaces.length) return null;
-  const ws = workspaces[i + v.workspace_offset];
+  const i = v.workspaceAt(y, 2);
+  if (i === null || i >= workspaces.length) return null;
+  const ws = workspaces[i];
+  if (ws.unavailable) return null;
   if (!resourceCardFits(v)) return null;
   for (let reading = 0; reading < 3; reading++) if (shownReading(v.resources, ws.resources, reading)) return ws;
   return null;
@@ -1782,7 +2314,7 @@ function resourceCardFits(v: View): boolean {
   return resourceTooltip.geometry(v.cols, v.rows, v.sidebarWidth(), 0) !== null;
 }
 /** Whether the row shows CPU (0), memory (1) or GPU (2), the last only while
- * the workspace uses one; on a host with GPUs its place stays either way.
+ * the workspace uses one; its place stays reserved on every host.
  * Disk I/O is only in the hover card. */
 function shownReading(prefs: { enabled: boolean }, work: Work, reading: number): boolean {
   const available =
@@ -1801,13 +2333,12 @@ export function drawResources(w: Writer, work: Work, v: View, hovered: boolean, 
   const normal = hover ? "\x1b[22m" + fg("text") : tinted ? "\x1b[22m" + fg("muted") : "\x1b[22m" + fg("faint");
   if (hover) w.write(selected_bg);
   const readings_width = width - (details ? 2 : 0);
-  const values = [cpuText(work.cpu), memoryText(work.memory)];
+  const values = [cpuText(work.cpu), memoryText(work.memory), v.gpus ? cpuText(work.gpu) : ""];
   const names = [
     ["CPU", "C"],
     [i18n.t`Memory`, i18n.t`Mem`, "M"],
     ["GPU", "G"],
   ];
-  if (v.gpus) values.push(cpuText(work.gpu));
   const rooms = values.map(
     (_, i) => Math.floor((readings_width * (i + 1)) / values.length) - Math.floor((readings_width * i) / values.length),
   );
@@ -1821,8 +2352,7 @@ export function drawResources(w: Writer, work: Work, v: View, hovered: boolean, 
     );
   });
   // Three readings shorten together rather than mixing "C" and "GPU".
-  if (values.length === 3 && labels.some((label, i) => label === names[i].at(-1)))
-    labels.forEach((_, i) => (labels[i] = names[i].at(-1)!));
+  if (labels.some((label, i) => label === names[i].at(-1))) labels.forEach((_, i) => (labels[i] = names[i].at(-1)!));
   values.forEach((value, i) => {
     const last = i === values.length - 1;
     const room = rooms[i];
@@ -2061,6 +2591,18 @@ export function writePortLabel(w: Writer, label: string, width: number, naming: 
   const start = prefixWidth + 3;
   if (width > start) writeClipped(w, label.slice(prefix.length + 3), width - start);
 }
+function writeConnectionGlimmer(w: Writer, label: string, now_ms: number): void {
+  const phase = mod(Math.floor(now_ms / 80) * 80, 2000) / 2000;
+  const center = -4 + (displayWidth(label) + 8) * phase;
+  const dim = mix(colors.muted, colors.bg, 50);
+  let col = 0;
+  for (const ch of label) {
+    const width = codepointWidth(ch.codePointAt(0)!);
+    const glow = Math.max(0, 1 - Math.abs(col + width / 2 - center) / 4);
+    w.write(fgRgb(mix(dim, colors.strong, Math.round(glow * 100))) + ch);
+    col += width;
+  }
+}
 function statusMetadataWidth(ws: WorkspaceEntry): number {
   return displayWidth(worktreeLabel(ws)) || displayWidth(compactCount(ws.stats.tools)) + 1;
 }
@@ -2071,16 +2613,18 @@ export function worktreeLabel(ws: WorkspaceEntry): string {
 export function worktreeBadge(v: View, workspaces: WorkspaceEntry[], id: number): Rect | null {
   const index = workspaces.findIndex(ws => ws.id === id),
     slot = index - v.workspace_offset;
-  if (v.width === 0 || index < 0 || slot < 0 || slot >= v.workspaceCapacity()) return null;
+  if (v.width === 0 || index < 0 || slot < 0 || slot >= v.workspaceCapacity() || workspaces[index].collapsed)
+    return null;
   const width = displayWidth(worktreeLabel(workspaces[index]));
-  return width ? new Rect(v.width - 2 - width, 3 + slot * v.workspaceRows(), width, 1) : null;
+  return width ? new Rect(v.width - 2 - width, v.workspaceY(index) + 1, width, 1) : null;
 }
 export function worktreeAt(v: View, workspaces: WorkspaceEntry[], x: number, y: number): WorkspaceEntry | null {
   if (v.framed()) return worktreeAt(v.lists(), workspaces, x - lists_x, y);
-  if (v.width === 0 || y < 3 || (y - 3) % v.workspaceRows() !== 0) return null;
+  if (v.width === 0 || v.workspaceAt(y, 1) === null) return null;
   const hit = v.hit(x, y);
   if (hit.tag !== "workspace") return null;
   const ws = workspaces[hit.workspace];
+  if (ws?.external || ws?.unavailable) return null;
   const width = ws ? displayWidth(worktreeLabel(ws)) : 0;
   return width && x >= v.width - 2 - width && x < v.width - 2 ? ws : null;
 }
@@ -2117,11 +2661,11 @@ export function urlCount(ws: WorkspaceEntry): number {
 }
 export function portWorkspace(v: View, workspaces: WorkspaceEntry[], x: number, y: number): WorkspaceEntry | null {
   if (v.framed()) return portWorkspace(v.lists(), workspaces, x - lists_x, y);
-  if (v.width === 0 || x < 1 || y < 2 || y >= v.workspaceEnd() || (y - 2) % v.workspaceRows() !== 0) return null;
-  const offset = Math.floor((y - 2) / v.workspaceRows());
-  const index = v.workspace_offset + offset;
-  if (offset >= v.workspaceCapacity() || index >= workspaces.length) return null;
+  if (v.width === 0 || x < 1) return null;
+  const index = v.workspaceAt(y, 0);
+  if (index === null || index >= workspaces.length) return null;
   const ws = workspaces[index];
+  if (ws.unavailable) return null;
   const link = linkRange(v, ws, workspaces);
   if (x < link.start || x >= link.end) return null;
   return ws;
@@ -2339,10 +2883,11 @@ export function gitActionWorkspace(
   y: number,
 ): WorkspaceEntry | null {
   if (v.framed()) return gitActionWorkspace(v.lists(), workspaces, expanded, x - lists_x, y);
-  if (v.width === 0 || y < 2 || (y - 2) % v.workspaceRows() !== 0) return null;
+  if (v.width === 0 || v.workspaceAt(y, 0) === null) return null;
   const found = v.hit(x, y);
   if (found.tag !== "workspace" || found.workspace >= workspaces.length) return null;
   const ws = workspaces[found.workspace];
+  if (ws.unavailable) return null;
   const size = displayWidth(gitLabel(ws, expanded === ws.id));
   const end = v.width - 2;
   return size > 0 && x >= sat(end, size) && x < end ? ws : null;
@@ -2355,7 +2900,7 @@ export function drawGitAction(w: Writer, v: View, workspaces: WorkspaceEntry[], 
   );
   for (let i = 0; i < shown.length; i++) {
     const ws = shown[i];
-    if (ws.id !== id) continue;
+    if (ws.id !== id || ws.collapsed) continue;
     const label = gitLabel(ws, true);
     if (label.length === 0) return;
     const style =
@@ -2365,7 +2910,7 @@ export function drawGitAction(w: Writer, v: View, workspaces: WorkspaceEntry[], 
           ? new Style({ fg: "hot", bg: "selected", bold: true }).sgr()
           : new Style({ fg: "accent", bg: "selected", bold: true }).sgr();
     w.write(
-      `\x1b]8;;\x1b\\${w.cup(3 + i * v.workspaceRows(), v.width - 1 - displayWidth(label))}${style}${label}\x1b[0m`,
+      `\x1b]8;;\x1b\\${w.cup(v.workspaceY(i + v.workspace_offset) + 1, v.width - 1 - displayWidth(label))}${style}${label}\x1b[0m`,
     );
     return;
   }
@@ -2556,4 +3101,18 @@ export function relativeTime(timestamp: number, now: number): string {
             : { seconds: 365 * 86400, name: "year" };
   const n = Math.floor(seconds / unit.seconds);
   return `${timestamp > now ? "in " : ""}${n} ${unit.name}${n === 1 ? "" : "s"}${timestamp > now ? "" : " ago"}`;
+}
+
+/** The diagnostic badge shares the header's clipping and placement. */
+export function machineDiagnosticAt(v: View, rows: WorkspaceEntry[], x: number, y: number): boolean {
+  if (v.framed()) return machineDiagnosticAt(v.lists(), rows, x - lists_x, y);
+  if (!machineHeaderAt(v, x, y)) return false;
+  for (let i = v.workspace_offset; i < v.workspace_offset + v.workspaceCapacity(); i++) {
+    const status = rows[i]?.connection_status;
+    if (!status?.diagnostic || y !== v.workspaceY(i) - 1) continue;
+    const timer = status.seconds === null ? "" : ` ${status.seconds}s`;
+    const label = ellipsis(status.label, sat(sat(v.width, 12), displayWidth(timer))) + timer;
+    return x >= v.width - displayWidth(label) - 2 && x < v.width - 2;
+  }
+  return false;
 }

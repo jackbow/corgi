@@ -111,7 +111,7 @@ class SmokeInput extends Runtime {
       command: "sleep 30",
     });
     await this.attach();
-    let screen = await this.frame_with("No agents yet");
+    let screen = await this.frame_with("Ctrl+T");
     this.assertTrue(screen[0].startsWith("  workspaces"));
     const transcript = join(this.temp.name, "sidebar.jsonl");
     writeFileSync(transcript, JSON.stringify({ type: "session_meta", payload: { id: session } }) + "\n");
@@ -191,13 +191,13 @@ class SmokeInput extends Runtime {
       "idle",
     );
     await this.command("pane.close", { target: one });
-    screen = await this.frame_with("No agents yet");
+    screen = await this.frame_with("Ctrl+T");
     this.assertNotIn("Renamed", screen.map(r => r.slice(0, 27)).join("\n"));
     await this.click(25, 1);
     screen = await this.frame_with(" > ");
     this.assertTrue(screen[0].startsWith(" > "));
     await this.click(2, 1);
-    await this.frame_with("No agents yet");
+    await this.frame_with("Ctrl+T");
   }
   async test_sidebar_scrolling_and_clicks_keep_stable_pane_targets() {
     const panes: number[] = [];
@@ -227,7 +227,7 @@ class SmokeInput extends Runtime {
     await this.attach();
     let screen = await this.scrollbar_with("┃┃┃┃┃││││││");
     this.assertNotIn(
-      "Agent-0",
+      "Agent-11",
       screen
         .slice(12, 23)
         .map(r => r.slice(0, 27))
@@ -241,18 +241,18 @@ class SmokeInput extends Runtime {
     screen = screen_text((await this.client!.advance(0.3)).data, 80, 24);
     await this.click_text(
       screen.map((r, i) => (i < 12 ? "" : r.slice(0, 27))),
-      "Agent-3",
+      "Agent-8",
     );
-    await this.until(async () => (await this.panes()).find((p: any) => p.focused).id === panes[3]);
+    await this.until(async () => (await this.panes()).find((p: any) => p.focused).id === panes[8]);
     await this.rpc({ op: "action", name: "move-tab", value: "left" });
     await this.command("pane.close", { target: panes[0] });
     await this.scrollbar_with("││││┃┃┃┃┃┃│");
     screen = screen_text((await this.client!.advance(0.3)).data, 80, 24);
     await this.click_text(
       screen.map((r, i) => (i < 12 ? "" : r.slice(0, 27))),
-      "Agent-3",
+      "Agent-8",
     );
-    await this.until(async () => (await this.panes()).find((p: any) => p.focused).id === panes[3]);
+    await this.until(async () => (await this.panes()).find((p: any) => p.focused).id === panes[8]);
     await this.write({ op: "size", cols: 30, rows: 8 });
     screen = await this.frame_with("▐+▌", 30, 8);
     this.assertNotIn("agents", screen[0]);
@@ -332,7 +332,7 @@ class SmokeInput extends Runtime {
       seq: 1,
       event: { hook_event_name: "SessionStart", session_id: "launched" },
     });
-    const screen = await this.scrollbar_with("┃┃┃┃┃┃┃┃│││");
+    const screen = await this.scrollbar_with("│││┃┃┃┃┃┃┃┃");
     this.assertIn(
       "Launched",
       screen
@@ -341,8 +341,6 @@ class SmokeInput extends Runtime {
         .join("\n"),
     );
     await this.command("pane.close", { target: pane });
-    await this.scrollbar_with("┃┃┃┃┃┃┃┃┃││");
-    await this.input("\x1b[<65;5;15M".repeat(2));
     await this.scrollbar_with("││┃┃┃┃┃┃┃┃┃");
     const open = (await this.session()).panes.map((p: any) => p.id);
     await this.rpc({ op: "action", name: "undo-close" });
@@ -442,7 +440,7 @@ class SmokeInput extends Runtime {
     await this.agent_frame("codex", "○", "", PALETTE.muted);
     await this.until(async () => (await this.rpc({ op: "headless.list" })).sessions[0].exited);
     await this.rpc({ op: "headless.stop", provider: "codex", session: ident });
-    await this.frame_with("No agents yet");
+    await this.frame_with("Ctrl+T");
   }
   async test_headless_tool_activity_tracks_overlapping_calls_and_clears_on_turn_end() {
     await this.attach();
@@ -481,7 +479,7 @@ class SmokeInput extends Runtime {
       await count(0);
       await this.agent_frame(provider, "○", "", PALETTE.faint);
       await this.rpc({ op: "headless.stop", provider, session: ident });
-      await this.frame_with("No agents yet");
+      await this.frame_with("Ctrl+T");
     }
   }
 }

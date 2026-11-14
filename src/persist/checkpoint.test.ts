@@ -19,7 +19,8 @@ import * as links from "../trackers/link_labels";
 import * as worktrees from "../worktrees";
 import { parseInventory } from "../trackers/worktrees";
 import { snapshot } from "../session";
-import { Tokens } from "../usage/live";
+import { Tokens, View } from "../usage/live";
+import * as common from "../providers/common";
 import * as checklist from "../activity/checklist";
 const fixtures = resolve(import.meta.dir, "../fixtures");
 const fresh = () => {
@@ -308,6 +309,23 @@ test("an account's YOLO and Show survive checkpoints and default for old ones", 
     expect(() => validateCheckpoint({ ...state, account_yolo: [3] })).toThrow();
   }
 });
+
+test("explicit launcher additions survive reload and cold recovery and default to discovery for old state", async () => {
+  for (const live of [true, false]) {
+    using original = fresh();
+    original.launcher_added = ["pi", "omp", "claude:/accounts/work"];
+    const state = roundtrip(cp.capture(original, live));
+    validateCheckpoint(state);
+    using restored = new Runtime();
+    await restore(restored, state, live);
+    expect(restored.launcher_added).toEqual(original.launcher_added);
+    delete state.launcher_added;
+    using old = new Runtime();
+    await restore(old, state, live);
+    expect(old.launcher_added).toEqual([]);
+    expect(() => validateCheckpoint({ ...state, launcher_added: [3] })).toThrow();
+  }
+});
 test("a conversation's headless count and tracking start survive handoffs, not cold restores", async () => {
   for (const live of [true, false]) {
     using original = fresh();
@@ -330,6 +348,39 @@ test("a conversation's headless count and tracking start survive handoffs, not c
     expect(usage.tokens).toEqual(new Tokens({ input: 150n, cached_input: 60n, output: 15n }));
     expect(usage.partial).toBe(false);
     expect(usage.recent_tokens).toBe(165n);
+  }
+});
+test("a conversation's activity timeline and usage survive handoffs, not cold restores", async () => {
+  for (const live of [true, false]) {
+    using original = fresh();
+    const actor = original.conversations.get("claude", "timeline");
+    show(original, actor);
+    const usage = (input: bigint) => new View({ known: true, tokens: new Tokens({ input, output: input / 10n }) });
+    actor.live_usage = usage(100n);
+    actor.activity_timeline.checkpoint("turn", new common.Text("Reading files"), actor.live_usage, 1000);
+    actor.live_usage = usage(300n);
+    actor.activity_timeline.checkpoint("turn", new common.Text("Writing tests"), actor.live_usage, 2000);
+    actor.live_usage = usage(450n);
+    const state = roundtrip(cp.capture(original, live));
+    validateCheckpoint(state);
+    expect("activity_timeline" in state.conversations[0]).toBe(live);
+    expect("live_usage" in state.conversations[0]).toBe(live);
+    using next = new Runtime();
+    await restore(next, state, live);
+    const restored = next.conversations.byId(actor.id)!;
+    if (!live) {
+      expect(restored.activity_timeline.len).toBe(0);
+      continue;
+    }
+    expect(restored.activity_timeline).toEqual(actor.activity_timeline);
+    expect(restored.live_usage).toEqual(actor.live_usage);
+    // The open phase goes on counting from what the last daemon saw.
+    expect(restored.activity_timeline.pending(restored.usageView(0)).tokens.input).toBe(150n);
+    state.conversations[0].activity_timeline.points = Array(17).fill(
+      state.conversations[0].activity_timeline.points[0],
+    );
+    using crowded = new Runtime();
+    await expect(restore(crowded, state, live)).rejects.toThrow("InvalidCheckpoint");
   }
 });
 test("a workspace's hidden launcher rows survive checkpoints and default for old ones", async () => {
@@ -459,6 +510,15 @@ test("each workspace keeps its last agent, and one that has none follows the lat
     }
   } finally {
     r.destroy();
+  }
+});
+test("live and cold recovery keep every workspace closed", async () => {
+  using r = fresh();
+  r.closeWorkspace(1, true);
+  for (const live of [true, false]) {
+    using next = new Runtime();
+    await restore(next, cp.capture(r, live), live);
+    expect([next.workspaces.items, next.workspaces.next_id]).toEqual([[], 2]);
   }
 });
 test("each workspace keeps the pane a viewer last used in it", async () => {
@@ -899,3 +959,39 @@ test.each([false, true])(
     expect(restored.conversations.find("codex", "plan")!.checklist).toEqual(actor.checklist);
   },
 );
+test("the Corgi prompt's sessions survive a handoff but never a cold recovery", async () => {
+  const { Session } = await import("../headless");
+  const client = {
+    ready: true,
+    send() {},
+    take: () => [],
+    async wait() {},
+    close() {},
+    save: () => ({ state: null, handles: [] }),
+  };
+  using original = fresh();
+  const prompt = new Session(1, "codex", "/tmp", client),
+    agent = new Session(2, "codex", "/tmp", client);
+  prompt.corgi = true;
+  agent.markExited();
+  for (const s of [prompt, agent]) s.workspace_id = original.workspaces.items[0].id;
+  original.sessions.push(prompt, agent);
+  original.next_session = 3;
+  const cold = cp.capture(original, false);
+  validateCheckpoint(roundtrip(cold));
+  expect(cold.sessions.map((s: any) => [s.id, s.corgi])).toEqual([
+    [1, true],
+    [2, false],
+  ]);
+  using handed = new Runtime();
+  await restore(handed, cp.capture(original, true), true);
+  expect(handed.sessions.map(s => [s.id, s.corgi])).toEqual([
+    [1, true],
+    [2, false],
+  ]);
+  using recovered = new Runtime();
+  await restore(recovered, cold, false);
+  expect(recovered.sessions.map(s => s.id)).toEqual([2]);
+  // The prompt's session, still running when saved, opens no recovered pane.
+  expect(recovered.panes).toEqual([]);
+});

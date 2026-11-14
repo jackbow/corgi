@@ -27,6 +27,7 @@ test("menu keys pick the rows each menu shows", () => {
   expect(pane.itemFor(c("c"))).toBe("clear-name");
   expect(pane.itemFor(c("-"))).toBeNull();
   expect(pane.itemFor(c("s"))).toBeNull();
+  expect(pane.itemFor(c("h"))).toBeNull();
   const swap = new TabMenu({ tab: 1, anchor_x: 0, pane: true, source: 2 });
   expect(swap.itemFor(c("s"))).toBe("swap");
   const agent = new TabMenu({ tab: 1, anchor_x: 0, agent: true });
@@ -37,6 +38,7 @@ test("menu keys pick the rows each menu shows", () => {
   expect(agent.itemFor(c("s"))).toBe("star");
   expect(agent.itemFor(c("x"))).toBe("close");
   expect(agent.itemFor(c("n"))).toBeNull();
+  expect(agent.itemFor(c("h"))).toBeNull();
   expect(agent.itemFor(c("m"))).toBe("move");
 });
 
@@ -228,4 +230,24 @@ test("a detail shows placeholder bars until it arrives, then fades in over them"
   menu.setDetail("review", [["No changes", "faint"]], 5000);
   expect(drawn(5000)).toContain(palette.fgRgb(selected) + "N");
   expect(drawn(5000)).not.toContain(bar);
+});
+
+test("a workspace's menu shows its folder under Change folder, shortened rather than widening the menu", () => {
+  const menu = new TabMenu({ tab: 1, anchor_x: 0, workspace: true });
+  expect(menu.entries().map(entry => entry.label)).toEqual(["Rename", "Change folder", "Archive workspace", "Close"]);
+  expect(menu.itemFor(c("f"))).toBe("change-folder");
+  expect(menu.entries().map(entry => entry.rule)).toEqual([false, false, false, true]);
+  menu.setDetail("change-folder", [["/private/var/folders/07/mt7yltxj1gz0pdpmw4nnz9pc0000gn/T/project", "faint"]]);
+  expect(menu.bounds(120, 24).width).toBe(50);
+  const w = new Writer(),
+    terminal = new Terminal(120, 24);
+  try {
+    menu.draw(w, 120, 24);
+    terminal.feed(w.buffered());
+    const rows = terminal.text().split("\n"),
+      at = rows.findIndex(row => row.includes("Change folder"));
+    expect(rows[at + 1]).toContain("/private/var/…/T/project");
+  } finally {
+    terminal.destroy();
+  }
 });

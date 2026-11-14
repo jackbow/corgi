@@ -1,8 +1,10 @@
 /** Opt-in live Herdr -> Corgi handoff. Uses only disposable runtime paths. */
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { EXE, JsonSocket, registerCase, run, shellJoin, sleep, TestCase, tempDir, versioned } from "./support";
+import { EXE, registerCase, run, shellJoin, sleep, TestCase, tempDir, versioned } from "./support";
 import { Scope } from "../scripts/process_scope";
+import * as herdr from "../src/import/herdr";
+import * as rpc from "../src/rpc";
 
 const cliValue = (flag: string) => {
   const index = process.argv.indexOf(flag);
@@ -97,29 +99,20 @@ class HerdrHandoff extends TestCase {
     this.processes.push(proc);
     return proc;
   }
-  async exchange(path: string, message: any) {
-    if (!path.startsWith(this.root + "/")) throw new Error("socket outside handoff fixture");
-    const socket = await JsonSocket.connect(path);
+  async corgi(message: any) {
+    if (!this.corgiSocket.startsWith(this.root + "/")) throw new Error("socket outside handoff fixture");
+    const connection = new rpc.Connection(this.corgiSocket, { timeout_ms: 3000 });
     try {
-      const response = await socket.request(message);
-      this.assertNotIn("error", response, response);
+      const response: any = await connection.rawRequest(versioned(message));
       this.assertNotIn("err", response, response);
       return response;
     } finally {
-      socket.close();
+      connection.close();
     }
   }
-  corgi(message: any) {
-    return this.exchange(this.corgiSocket, versioned(message));
-  }
-  async herdr(method: string, params: any = {}) {
-    return (
-      await this.exchange(this.herdrSocket, {
-        id: "migration-test",
-        method,
-        params,
-      })
-    ).result;
+  herdr(method: string, params: any = {}) {
+    if (!this.herdrSocket.startsWith(this.root + "/")) throw new Error("socket outside handoff fixture");
+    return herdr.rpc(this.herdrSocket, method, params);
   }
   async command(operation: string, params: any = {}) {
     return (
@@ -296,23 +289,15 @@ for await (const chunk of Bun.stdin.stream()) { for (const line of new TextDecod
     this.assertEqual((await this.corgi({ op: "session.snapshot" })).panes.length, 5);
   }
 
-  async test_onboarding_keeps_a_starter_renamed_before_the_import() {
-    await this.corgi({ op: "viewer.open", onboarding: true, cwd: this.root });
-    const starter = (await this.corgi({ op: "session.snapshot" })).workspaces[0].id;
-    await this.command("workspace.edit", { target: starter, name: "Work" });
-    await this.sourceShell();
-    this.assertEqual((await this.handoff(1)).phase, "complete");
-    const names = (await this.corgi({ op: "session.snapshot" })).workspaces.map((w: any) => w.name);
-    this.assertEqual(names, ["Work", "Migrated website"]);
-  }
-
   async test_rejected_handoff_rolls_back_and_can_retry() {
     await this.corgi({
       op: "viewer.open",
       onboarding: true,
       cwd: this.root,
     });
-    this.assertEqual((await this.corgi({ op: "session.snapshot" })).panes, []);
+    // Onboarding starts with no workspace for the import to sit beside.
+    const opened = await this.corgi({ op: "session.snapshot" });
+    this.assertEqual([opened.workspaces, opened.panes], [[], []]);
     const [pane] = await this.sourceShell();
     await this.sourceInput(pane, "handoff_token=rollback-survived");
     const pid = await this.sourcePid(pane);

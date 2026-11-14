@@ -152,7 +152,7 @@ test("atomic writes reject an unsafe parent directory", () => {
     parent = join(root, "public");
   try {
     mkdirSync(parent, { mode: 0o755 });
-    expect(() => atomicWrite(join(parent, "saved"), "state")).toThrow("UnsafeSocketDirectory");
+    expect(() => atomicWrite(join(parent, "saved"), "state")).toThrow("UnsafeDirectory");
     expect(readdirSync(parent)).toEqual([]);
   } finally {
     rmSync(root, { recursive: true, force: true });

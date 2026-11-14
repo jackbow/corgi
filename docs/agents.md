@@ -6,6 +6,21 @@ the user interface. This page covers the contracts behind it.
 
 [OpenCode](opencode.md) describes the v2 adapter and its remaining parity gaps.
 
+## Executable discovery
+
+Corgi asks `mise which` for each agent in the workspace directory before
+searching PATH and the provider's usual install locations. Explicit
+`CORGI_<PROVIDER>_BIN` overrides take precedence. Mise shims are dispatchers,
+not installed agents: a missing or inactive tool's shim never makes its
+launcher row visible and is never executed during discovery.
+
+Compatibility checks first read the resolved package's `package.json`, or
+the version recorded by mise (`mise which COMMAND --version`, which does
+not run COMMAND). Only standalone executables without that metadata need
+the bounded `--version` probe. A failed probe hides the row and is retried
+on the next discovery refresh. Both `opencode` and `opencode2` are searched;
+OpenCode v1 remains unsupported.
+
 ## Conversation ownership
 
 The daemon owns one [conversation actor](../src/conversations.ts) per provider
@@ -26,7 +41,8 @@ Headless approvals retain their original conversation and transport ownership.
 `corgi headless start PROVIDER PROMPT` sends the first prompt and waits for
 the provider's session ID. Later `send`, `events` and `stop` commands take
 `PROVIDER SESSION`; Corgi does not return another numeric session ID.
-Startup stays asynchronous and its pending reply survives live handoff.
+Startup stays asynchronous; a live reload waits until a pending start has
+its session ID, since the reply goes back on the starter's connection.
 The numeric transport handles in snapshots and saved state are internal
 bookkeeping for viewer selection and ordering. See [CONTEXT.md](../CONTEXT.md).
 
@@ -73,6 +89,9 @@ adapter member that touches the settings folder takes the account (hooks,
 launcher previews, history, the observer, rename and attach), and core keeps
 one of each per account it needs.
 
+An adapter's optional `accounts.service` names its own subscription. Usage reports
+prefer that provider when several agents share the same subscription login.
+
 A folder Corgi makes links the default's setup, as the adapter's
 `accounts.shared` lists, and keeps its own login and conversations. Corgi
 edits a linked settings file in place, and reads a history folder two
@@ -95,6 +114,12 @@ it `Input`, a prompt, an answer to a request or an interrupt, and takes back
 JSON never leaves the adapter. A summary is a prompt and the last message
 before its turn ends. `save` keeps what a checkpoint or handoff needs, and a
 handoff passes the client's `handles` to the next daemon.
+
+A prompt sent while a turn runs steers it. Codex takes it with `turn/steer`,
+holding one that comes before a new turn has an ID, and starts the next turn
+with one its turn refuses; Pi and omp take it as a steer, OpenCode 2 with
+steer delivery, and Claude from its input stream. An interrupt that comes
+before Codex's turn has an ID stops the turn once it has one.
 
 A provider's `index.ts` must not statically import a module that imports
 `./providers` while loading (discovery, inference, usage, launch). Those load
@@ -189,6 +214,19 @@ leave the active list.
 
 The OMP hook's optional display-name field does not change runtime or saved-state
 versions. Reload Corgi and restart OMP to load the updated managed extension.
+
+Pi has no subagents of its own; plugins add them as Pi sessions, in Pi's process
+or in processes it starts. Corgi's Pi extension reports each such session with
+the same `SubagentStart` and `SubagentStop` hooks as OMP's: every copy of the
+extension reports the session it is loaded into, and wrappers on each copy of
+Pi's SDK find in-process sessions that load no extensions. A session counts when
+its header names a known session, when it starts while the pane's turn runs, or
+when the pane's Pi started its process; the pane's own sessions never do. A Pi
+process started while one subagent runs alone, with the pane's turn over, nests
+under that subagent. Children need no plugin-specific code. A plugin that
+encodes a child's agent type in its session name gets one rule in
+[subagents.txt](../src/providers/pi/subagents.txt) to label it.
+`./go.ts --sandbox pi_subagents` runs Pi with a stand-in model and plugin.
 
 Three measurements have different lifetimes:
 
@@ -395,7 +433,8 @@ OAuth credentials alone do not verify sign-in or remaining quota.
 Extension-defined subagent relationships are not exposed through a standard
 interface, so Corgi does not invent them.
 
-Headless prompts received while busy are follow-ups. Stop waits for prompt
+Headless prompts received while busy steer the run, as Enter does in Pi's
+own interface. Stop waits for prompt
 acceptance, clears the queue, then aborts. Dialog answers use `message` for
 text or a selected option; confirmation uses `allow`. Timed-out dialogs
 are removed. Inference disables discovered extensions, context, skills and

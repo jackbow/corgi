@@ -39,7 +39,7 @@ Codex では、初回のみ `/hooks` でフックを信頼する操作が必要�
 | ---------------------------------- | :---------: | :---: | :-: | :------: | :------: |
 | 状態：▶ 作業中 ● 確認待ち ● 完了   |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | アクティビティの要約               |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
-| サブエージェント                   |      ✓      |   ✓   |     |    ✓     |    ✓     |
+| サブエージェント                   |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | コンテキスト、トークン、レート制限 |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | 名前の変更とフォーク               |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | クラッシュや再起動後の復元         |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
@@ -54,11 +54,11 @@ Codex では、初回のみ `/hooks` でフックを信頼する操作が必要�
 corgi list
 corgi tab new --workspace 1 --command 'bun run dev'
 corgi pane split current --right --command codex
-corgi pane send 3 'run the tests' --enter
+corgi message 3 'run the tests'
 corgi pane read 3 --lines 50
 ```
 
-`corgi --help` でコマンド一覧を、`corgi --skill` でエージェント向けの操作手順を表示できます。
+`corgi --help` でよく使うコマンドを、`corgi help --all` で全コマンドを、`corgi --skill` でエージェント向けの操作手順を表示できます。
 
 ## アンインストール
 
@@ -88,7 +88,7 @@ Corgi をビルドして起動します。次回以降は、ペインを維持�
   [pi-tui](https://github.com/earendil-works/pi/tree/main/packages/tui) ライブラリを使用しています。
 - [Bun](https://bun.sh)：Corgi の TypeScript ランタイムです。
 
-提案やフィードバックを寄せてくださった初期のテスターの皆さんにも感謝します。
+Corgi は、初期テスターとコントリビューターの皆さんの支えなしには生まれませんでした。
 [Max Bittker](https://x.com/MaxBittker)、
 [Aaron Blakeman](https://github.com/ablakeman)、
 [Kai Johnson](https://github.com/sirkaiserkai)、

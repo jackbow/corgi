@@ -16,6 +16,8 @@ import {
 import { randomUUID } from "node:crypto";
 import { supportedPreset, type Preset, type Prefix } from "./keymap";
 import * as palette from "./palette";
+import { Provider } from "./providers";
+import * as effort from "./providers/effort";
 import type { Scope, Sort } from "./sidebar";
 import * as worktreeFolder from "./worktree_folder";
 import * as keybindings from "./keybindings";
@@ -30,6 +32,14 @@ import * as locale from "./locale";
 export type Resources = { enabled: boolean };
 /** Where an agent list was scrolled: workspace `workspace`'s own list, or the "All" list when null. */
 export type AgentScroll = { workspace: number | null; offset: number };
+/** The model the Corgi prompt last picked, as `model_picker.Choice`. */
+export type PromptModel = {
+  provider: Provider;
+  account: string;
+  model: string;
+  name: string;
+  effort: effort.Effort | null;
+};
 export class Preferences {
   /** The agent scope persists across viewer restarts. */
   agents: Scope = "workspace";
@@ -42,6 +52,8 @@ export class Preferences {
   sidebar_split: number | null = null;
   /** The last viewer's agent list scroll seeds new viewers that show the same list. */
   agent_scroll: AgentScroll | null = null;
+  /** Machine-qualified workspace order in the combined sidebar. */
+  workspace_order: string[] = [];
   preset: Preset = "corgi";
   prefix: Prefix = "ctrl_b";
   /** Action overrides; omitted actions inherit the selected preset. */
@@ -61,6 +73,9 @@ export class Preferences {
   review_width = 80;
   /** Rows the review panel's file list takes at most, as last dragged. */
   review_tree_rows = 9;
+  /** The Corgi prompt's last pick; "auto", like unset, follows the strong
+   * model of the agent run most. */
+  prompt_model: PromptModel | "auto" | undefined = undefined;
 
   agentSort(): Sort {
     return this.agent_sort ?? "manual";
@@ -233,12 +248,23 @@ export function readExisting(file: string): Preferences | null {
       if ("enabled" in resources && typeof resources.enabled !== "boolean") return null;
       v.resources = { enabled: resources.enabled ?? true };
     }
+    // A pick this build can't read, such as a provider it doesn't know, falls back alone.
+    if ("prompt_model" in d) v.prompt_model = promptModel(d.prompt_model) ?? undefined;
     if ("agent_scroll" in d && d.agent_scroll !== null) {
       const scroll = d.agent_scroll;
       if (!scroll || typeof scroll !== "object" || Array.isArray(scroll)) return null;
       if (scroll.workspace !== null && !(Number.isInteger(scroll.workspace) && scroll.workspace > 0)) return null;
       if (!Number.isInteger(scroll.offset) || scroll.offset < 0) return null;
       v.agent_scroll = { workspace: scroll.workspace, offset: scroll.offset };
+    }
+    if ("workspace_order" in d) {
+      if (
+        !Array.isArray(d.workspace_order) ||
+        d.workspace_order.length > 10000 ||
+        d.workspace_order.some((key: unknown) => typeof key !== "string")
+      )
+        return null;
+      v.workspace_order = [...new Set<string>(d.workspace_order)];
     }
     v.sidebar_width = Math.max(v.sidebar_width, 20);
     v.preset = supportedPreset(v.preset);
@@ -248,6 +274,14 @@ export function readExisting(file: string): Preferences | null {
   } catch {
     return null;
   }
+}
+function promptModel(value: any): PromptModel | "auto" | null {
+  if (value === "auto") return "auto";
+  if (!value || typeof value !== "object") return null;
+  const provider = Provider.parse(value.provider),
+    { account, model, name } = value;
+  if (!provider || typeof account !== "string" || typeof model !== "string" || typeof name !== "string") return null;
+  return { provider, account, model, name, effort: effort.parse(value.effort) };
 }
 export function write(file: string, value: Preferences): void {
   locked(file, () => atomicWrite(file, value));

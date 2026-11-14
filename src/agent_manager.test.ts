@@ -400,15 +400,15 @@ test("Add agent opens an agent's accounts once it's selected, adds back removed 
   expect(opened).toBe(closed + 5);
   ({ lines } = screen(v, m));
   expect(lines[strip]).toMatch(/│›  †  Codex/);
-  expect(lines[strip + 1]).toMatch(/│  \+ Claude Code +me@example.com +Removed +│/);
+  expect(lines[strip + 1]).toMatch(/│  \+ Claude Code +me@example.com +Add to the list +│/);
   expect(lines[strip + 2]).toMatch(/│  ✓ work +me@acme.com +In the list +│/);
-  expect(lines[strip + 4]).toMatch(/│  \+ old +\/o\/old +Removed +│/);
+  expect(lines[strip + 4]).toMatch(/│  \+ old +\/o\/old +Add to the list +│/);
   expect(lines[strip + 5]).toContain("+ New Claude Code account");
   expect(lines[b(v, m).h - 2]).toMatch(/↓ +accounts +←→ +agents/);
   // Enter goes into its list, on the first row that adds something.
   expect(v.key(13, m)).toBeNull();
   expect(v.at).toBe("found:claude:");
-  expect(screen(v, m).lines[b(v, m).h - 2]).toMatch(/↵ +add back to the list +←→ +agents/);
+  expect(screen(v, m).lines[b(v, m).h - 2]).toMatch(/↵ +add to the list +←→ +agents/);
   expect(v.key(13, m)).toEqual({ kind: "show", agent: m.agents[1] });
   // A listed account's row goes to its row above, where the list closes and keeps its room.
   v.sequence("\x1b[B", m);
@@ -920,7 +920,7 @@ test("narrow translated action rows keep the remove instruction before reorder b
     for (const language of i18n.locales) {
       i18n.setLanguage(language);
       for (const width of [64, 80]) {
-        const m = model(),
+        const m = { ...model(), finding: false },
           v = new agentManager.View();
         v.open(agentManager.agentKey("claude", "/a/2"));
         const b = new Rect(0, 0, width, v.height(m)),
@@ -932,6 +932,7 @@ test("narrow translated action rows keep the remove instruction before reorder b
           const line = terminal.text().split("\n")[b.h - 3];
           expect(line).toContain(i18n.t` hold ⌫ ` + i18n.t` remove`);
           expect(line).toContain(i18n.t` e Edit `);
+          expect(line).toContain(i18n.t`Find agents`);
           expect(line.endsWith("│")).toBe(true);
         } finally {
           terminal.destroy();
@@ -941,4 +942,31 @@ test("narrow translated action rows keep the remove instruction before reorder b
   } finally {
     i18n.setLanguage(previous);
   }
+});
+test.each([64, 82, 120, 160])("Find agents stays at the action row's right edge at width %i", width => {
+  const m = { ...model(), finding: false as boolean | null },
+    v = new agentManager.View();
+  v.open(agentManager.agentKey("claude", ""));
+  const idle = screen(v, m, 0, width),
+    y = idle.b.h - 3,
+    row = idle.lines[y],
+    x = row.indexOf("Find agents");
+  expect(row).toContain(" f  ↻ Find agents ");
+  expect(row).toContain(" e Edit ");
+  expect(row.slice(x + "Find agents".length, idle.b.w)).toBe("   │");
+  expect(idle.lines[0]).not.toContain("Find agents");
+  // `f` and a click both ask.
+  expect(v.key(102, m)).toEqual({ kind: "find" });
+  expect(v.click(idle.b, x, y, m)).toEqual({ kind: "find" });
+  expect(v.pointerShape(idle.b, m, x, y)).toBe("pointer");
+  // While it looks, neither does, and the button keeps its place.
+  const looking = { ...m, finding: true },
+    spinning = screen(v, looking, 0, width).lines[y];
+  expect(spinning.indexOf("Find agents")).toBe(x);
+  expect(spinning).not.toContain("↻");
+  expect(v.key(102, looking)).toBeNull();
+  expect(v.click(idle.b, x, y, looking)).toBeNull();
+  expect(v.pointerShape(idle.b, looking, x, y)).toBe("default");
+  // A daemon that can't look leaves no button.
+  expect(screen(v, { ...m, finding: null }, 0, width).lines[y]).not.toContain("Find agents");
 });

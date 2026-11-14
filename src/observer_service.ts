@@ -1,9 +1,10 @@
+import * as startup from "./startup_service";
 import * as telemetry from "./telemetry";
 import { Worker as TranscriptWorker } from "./transcript";
 import { Worker as UsageWorker } from "./usage/worker";
 import { Worker as SummaryWorker } from "./activity/worker";
 import { Provider, adapter } from "./providers";
-import { Path, type Presence } from "./agents";
+import { Path } from "./agents";
 import { ResumeHint } from "./resume_hint";
 import { Counts } from "./usage/tokens";
 import * as setup from "./inference/setup";
@@ -19,7 +20,11 @@ import type { Request, AttentionTarget } from "./protocol";
 import { Model } from "./providers/model";
 import * as accounts from "./accounts";
 import * as integration from "./integration";
+import * as os from "./os";
+import * as agentRetry from "./agent_retry";
 import type { Title } from "./pane/terminal";
+import type { Actor } from "./conversations";
+import { HeldHooks, type Held } from "./held_hooks";
 
 type Workers = {
   transcripts: TranscriptWorker;
@@ -29,6 +34,8 @@ type Workers = {
   watchers: Map<string, Watcher>;
   usage: UsageWorker;
   summaries: SummaryWorker;
+  /** Hooks about conversations no pane shows yet. */
+  held: HeldHooks;
   detected: number;
   settling: number;
 };
@@ -51,6 +58,7 @@ export function start(server: Server) {
         setup.initial(setup.load(setup.path(server.socket))),
         setup.loadUses(setup.path(server.socket)),
       ),
+    held: new HeldHooks(),
     detected: 0,
     settling: 0,
   };
@@ -125,6 +133,13 @@ function changed(server: Server) {
   server.dirty = true;
   server.runtime.changed();
 }
+/** Starting a staged archive command restores ordinary hibernation and cold recovery. */
+function running(server: Server, pane: Pane) {
+  if (!pane.manual_resume || pane.dormant || pane.terminal.initial_input !== null) return;
+  pane.manual_resume = false;
+  pane.manual_command = null;
+  changed(server);
+}
 function attention(server: Server, ding: boolean, state: string, target: AttentionTarget) {
   server.attention(ding, state, target);
 }
@@ -163,7 +178,8 @@ export function snapshotActor(server: Server, provider: Provider, snapshot: Snap
     return null;
   }
   const actor = runtime.conversations.get(provider, snapshot.session);
-  pane.attachment.select(actor);
+  // The snapshot, applied next, speaks for the hooks sent before it was read.
+  show(server, pane, actor, snapshot.lifecycle ? BigInt(snapshot.observed_at) : 0n);
   if (!actor.workspace || !runtime.workspaces.get(actor.workspace))
     actor.workspace = runtime.workspaces.owner(pane.id)?.id ?? actor.workspace;
   return actor;
@@ -208,7 +224,7 @@ export function reattachFromTitle(server: Server, pane: Pane, provider: Provider
   const prefix = adapter(provider).titleSession?.(title.text);
   const actor = prefix && titleActor(server.runtime, provider, prefix);
   if (!actor) return;
-  pane.attachment.select(actor);
+  show(server, pane, actor);
   if (!actor.workspace || !server.runtime.workspaces.get(actor.workspace))
     actor.workspace = server.runtime.workspaces.owner(pane.id)?.id ?? actor.workspace;
 }
@@ -259,6 +275,8 @@ function detect(server: Server, pane: Pane, observedJob?: detection.Job | null) 
     title = claim || job ? pane.terminal.titleInfo() : null;
   if (!claim) pane.resume_hint.observe(pane.agent());
   if (job) {
+    running(server, pane);
+    found(server, job.provider, job.pid);
     if ((previous && previous !== job.pid) || (pane.attachment.actor && pane.agent().provider !== job.provider))
       pane.releaseDetection();
     // An agent someone typed into the pane's shell comes back as they typed it.
@@ -267,11 +285,13 @@ function detect(server: Server, pane: Pane, observedJob?: detection.Job | null) 
     // A saved command's own variables may be spelled past reading; its agent's say.
     if (job.pid !== previous && pane.launch?.command)
       pane.running_account = Launch.observed(job.provider, job.pid).account() || null;
-    // An agent in an account Corgi hadn't seen gets its hooks from the next start on.
-    const account = job.pid !== previous ? pane.account() : "";
-    if (account && !accounts.forgotten(account)) {
-      accounts.remember(job.provider, account);
-      void integration.prepare(job.provider, account);
+    // An agent in an account Corgi hadn't seen, or that wasn't there when
+    // Corgi started, gets its hooks and setup from the next start on.
+    if (job.pid !== previous) {
+      const account = pane.account();
+      if (account && !accounts.forgotten(account)) accounts.remember(job.provider, account);
+      if (!account || !accounts.forgotten(account))
+        void integration.prepare(job.provider, account, false, os.processCwd(job.pid) ?? process.cwd());
     }
     const shown = adapter(job.provider);
     if (shown.titleSession) {
@@ -342,48 +362,132 @@ function showing(runtime: Runtime, provider: Provider, session: string) {
   const actor = runtime.conversations.find(provider, session);
   return (actor && runtime.panes.find(pane => !pane.terminal.exited && pane.attachment.actor === actor)?.id) ?? null;
 }
+/** Recheck installs even when mise hands off without changing the PID. */
+function found(server: Server, provider: Provider, pid: number) {
+  void import("./launch_service").then(l => l.agentRan(server, provider, pid)).catch(() => {});
+}
 export function hook(server: Server, query: Request<"hook">) {
+  found(server, query.provider, query.pid);
   const workers = start(server),
     runtime = server.runtime;
   const event = adapter(query.provider).hook(query.event);
   if (!event) return;
   const now = clock.microTimestamp(),
-    seq = query.seq ?? BigInt(now);
-  const child = event.independent_child;
-  const known = runtime.conversations.find(query.provider, event.session),
-    presence: Presence =
-      known && runtime.attachments(known) > 0 ? "attached" : query.background ? "detached" : "attaching";
-  let actor;
-  if (query.background) actor = known;
-  else {
-    const from = runtime.pane(query.pane);
-    if (from?.detection.claim) return;
-    const route = watcher(workers, query.provider, from?.account() ?? "").route(event, query.pane, session =>
-        showing(runtime, query.provider, session),
-      ),
-      pane = route && runtime.pane(route.pane);
-    if (!pane) throw Error("NoPane");
-    if (pane.detection.claim) return;
-    detectPane(server, pane);
-    if (!child && seq <= pane.attachment.hook_seq) return;
-    actor = runtime.conversations.routeHook(pane.attachment, query.provider, event, route.binds);
-    if (!actor) return;
-    if (!child) pane.attachment.hook_seq = seq;
-    if (event.kind === "session_start") runtime.rememberAgent(pane.id, query.provider);
-    if (!actor.workspace || !runtime.workspaces.get(actor.workspace))
-      actor.workspace = runtime.workspaces.owner(pane.id)?.id ?? 0;
+    known = runtime.conversations.find(query.provider, event.session),
+    held: Held = {
+      provider: query.provider,
+      pid: query.pid,
+      event,
+      seq: query.seq ?? BigInt(now),
+      at: now,
+      presence: known && runtime.attachments(known) > 0 ? "attached" : query.background ? "detached" : "attaching",
+    };
+  if (query.background) {
+    if (known) apply(server, known, held, now);
+    return;
   }
-  if (!actor) return;
-  if (query.pid > 0) actor.pid = query.pid;
+  const from = runtime.pane(query.pane);
+  if (from?.detection.claim) return;
+  const route = watcher(workers, query.provider, from?.account() ?? "").route(event, query.pane, session =>
+      showing(runtime, query.provider, session),
+    ),
+    pane = route && runtime.pane(route.pane);
+  if (!pane) {
+    workers.held.add(held);
+    throw Error("NoPane");
+  }
+  if (pane.detection.claim) return;
+  detectPane(server, pane);
+  if (!event.independent_child && held.seq <= pane.attachment.hook_seq) return;
+  const actor = routed(runtime, pane, held, route.binds);
+  // A pane learns its conversation from its title, which can trail the first hooks.
+  if (actor) apply(server, actor, held, now);
+  else workers.held.add(held);
+}
+/** The conversation `pane` shows that `held` is about, which takes it as the pane's latest hook. */
+function routed(runtime: Runtime, pane: Pane, held: Held, binds: boolean) {
+  const actor = runtime.conversations.routeHook(pane.attachment, held.provider, held.event, binds);
+  if (!actor) return null;
+  if (!held.event.independent_child) pane.attachment.hook_seq = held.seq;
+  if (held.event.kind === "session_start") runtime.rememberAgent(pane.id, held.provider);
+  if (!actor.workspace || !runtime.workspaces.get(actor.workspace))
+    actor.workspace = runtime.workspaces.owner(pane.id)?.id ?? 0;
+  return actor;
+}
+function apply(server: Server, actor: Actor, held: Held, now: number) {
+  const runtime = server.runtime,
+    workers = start(server);
+  if (held.pid > 0) actor.pid = held.pid;
   attention(
     server,
-    runtime.conversations.observeHook(actor, event, seq, actorWatched(server, actor.id), now, presence),
+    runtime.conversations.observeHook(actor, held.event, held.seq, actorWatched(server, actor.id), now, held.presence),
     actor.state.state,
     { conversation: actor.id },
   );
   workers.summaries.reconcile(runtime.conversations.items, runtime.panes);
-  if (event.initial_request) workers.summaries.names.offer(actor, event.initial_request);
+  if (held.event.initial_request) workers.summaries.names.offer(actor, held.event.initial_request);
   changed(server);
+}
+/** Applies what usage counting found to its conversations and their workspaces. */
+function applyUsage(server: Server, workers: Workers) {
+  const runtime = server.runtime;
+  for (const result of workers.usage.take()) {
+    telemetry.count("agent.usage.results");
+    const actor = runtime.conversations.byId(result.actor);
+    if (!actor) continue;
+    if (result.checklist) actor.observeChecklist(result.checklist);
+    if (!actor.model_from_hook && result.model.id.len) actor.model = result.model;
+    if (!actor.headless_usage) actor.live_usage = result.live;
+    actor.context = result.context;
+    runtime.conversations.compaction_points.learn(result.context.model.id.text(), result.context.auto_compaction);
+    const continuation = adapter(actor.provider()).transcript?.continuation;
+    if (result.continued.len && continuation && result.continued.text() !== actor.state.sessionId()) {
+      const next = runtime.conversations.get(actor.provider(), result.continued.text());
+      next.workspace ||= actor.workspace;
+      if (!next.state.last_seq) {
+        next.state.state = actor.state.state === "done" ? "idle" : actor.state.state;
+        next.state.cwd = actor.state.cwd;
+        next.state.transcript = Path.initTruncated(continuation(actor.state.transcriptPath(), result.continued.text()));
+      }
+      let followed = false;
+      for (const pane of runtime.panes)
+        if (pane.attachment.actor === actor) {
+          pane.attachment.select(next);
+          followed = true;
+        }
+      if (followed) {
+        actor.state.state = "done";
+        actor.state.tool_active = false;
+        actor.state.paused = false;
+      }
+    }
+    actor.observeTranscriptTurn(result.spoke_at);
+    actor.observeTaskEnds(result.ended);
+    if (result.progress) actor.observeTools(result.progress);
+    const now = clock.microTimestamp();
+    if (result.fallback(actor.state, now)) {
+      if (adapter(actor.provider()).caps.native_activity) actor.checkpointActivity(false, now);
+      else workers.summaries.submit(actor, result.progress!.commentary, result.progress, runtime.panes);
+    } else if (result.progress) workers.summaries.tools(actor.id, actor.state, result.progress);
+    if (!actor.headless_usage && !workspaceWatched(server, result.workspace))
+      runtime.workspaces.get(result.workspace)?.away.record(result.since, result.delta);
+    changed(server);
+  }
+}
+/** Shows `actor` in `pane`, caught up on the hooks it sent before the pane
+ * showed it; what the pane already saw speaks for those sent by `covered`. */
+function show(server: Server, pane: Pane, actor: Actor, covered = 0n) {
+  pane.attachment.select(actor);
+  // A turn the screen already saw finish is the one those hooks would report again.
+  const finished = actor.state.screenFinished() ? BigInt(Math.trunc(actor.state.changed_at)) : 0n;
+  if (finished > covered) covered = finished;
+  const now = clock.microTimestamp();
+  for (const held of start(server).held.take(actor.provider(), actor.state.sessionId(), now)) {
+    if (held.seq <= covered) continue;
+    if (!held.event.independent_child && held.seq <= pane.attachment.hook_seq) continue;
+    const target = routed(server.runtime, pane, held, false);
+    if (target) apply(server, target, held, now);
+  }
 }
 export async function tick(server: Server) {
   const workers = start(server),
@@ -402,6 +506,8 @@ export async function tick(server: Server) {
     for (const pane of panes) {
       const front = fronts.get(pane.terminal.fd);
       detectPane(server, pane, front && front.job);
+      startup.observe(runtime, pane, front);
+      if (front?.program?.name) running(server, pane);
       if (front !== undefined && pane.observeFront(front)) {
         server.dirty = true;
         runtime.refreshed();
@@ -410,16 +516,24 @@ export async function tick(server: Server) {
     }
     for (const actor of runtime.conversations.items) actor.checkPause();
     observeAccounts(workers, runtime);
-    for (const { provider, observer } of workers.observers.values()) {
+    for (const { provider, account, observer } of workers.observers.values()) {
       observer.reconcile(runtime);
       for (const request of observer.takeMissed()) missed(server, provider, request);
       for (const snapshot of observer.take()) {
         telemetry.count("agent.provider.results");
         const actor = snapshotActor(server, provider, snapshot);
         if (!actor) continue;
+        const retry_at = agentRetry.observe(
+          runtime,
+          provider,
+          account,
+          snapshot,
+          clock.milliTimestamp(),
+          Date.now() / 1000,
+        );
         attention(
           server,
-          actor.observeSnapshot(snapshot, actorWatched(server, actor.id), clock.microTimestamp()),
+          actor.observeSnapshot(snapshot, actorWatched(server, actor.id), clock.microTimestamp(), retry_at > 0),
           actor.state.state,
           { conversation: actor.id },
         );
@@ -478,54 +592,12 @@ export async function tick(server: Server) {
     for (const result of workers.summaries.takeLinks())
       if (result && runtime.link_labels.apply(result, now)) changed(server);
     workers.usage.reconcile(runtime);
-    for (const result of workers.usage.take()) {
-      telemetry.count("agent.usage.results");
-      const actor = runtime.conversations.byId(result.actor);
-      if (!actor) continue;
-      if (result.checklist) actor.observeChecklist(result.checklist);
-      if (!actor.model_from_hook && result.model.id.len) actor.model = result.model;
-      if (!actor.headless_usage) actor.live_usage = result.live;
-      actor.context = result.context;
-      runtime.conversations.compaction_points.learn(result.context.model.id.text(), result.context.auto_compaction);
-      const continuation = adapter(actor.provider()).transcript?.continuation;
-      if (result.continued.len && continuation && result.continued.text() !== actor.state.sessionId()) {
-        const next = runtime.conversations.get(actor.provider(), result.continued.text());
-        next.workspace ||= actor.workspace;
-        if (!next.state.last_seq) {
-          next.state.state = actor.state.state === "done" ? "idle" : actor.state.state;
-          next.state.cwd = actor.state.cwd;
-          next.state.transcript = Path.initTruncated(
-            continuation(actor.state.transcriptPath(), result.continued.text()),
-          );
-        }
-        let followed = false;
-        for (const pane of runtime.panes)
-          if (pane.attachment.actor === actor) {
-            pane.attachment.select(next);
-            followed = true;
-          }
-        if (followed) {
-          actor.state.state = "done";
-          actor.state.tool_active = false;
-          actor.state.paused = false;
-        }
-      }
-      actor.observeTranscriptTurn(result.spoke_at);
-      actor.observeTaskEnds(result.ended);
-      if (result.progress) actor.observeTools(result.progress);
-      const now = clock.microTimestamp();
-      if (result.fallback(actor.state, now)) {
-        if (adapter(actor.provider()).caps.native_activity) actor.checkpointActivity(false, now);
-        else workers.summaries.submit(actor, result.progress!.commentary, result.progress, runtime.panes);
-      } else if (result.progress) workers.summaries.tools(actor.id, actor.state, result.progress);
-      if (!actor.headless_usage && !workspaceWatched(server, result.workspace))
-        runtime.workspaces.get(result.workspace)?.away.record(result.since, result.delta);
-      changed(server);
-    }
+    applyUsage(server, workers);
     workers.transcripts.reconcile(runtime.conversations.items);
     for (const result of workers.transcripts.take()) {
       const actor = runtime.conversations.byId(result.actor);
       if (!actor) continue;
+      if (result.outcome === "failed" && agentRetry.hold(runtime, actor, result.seq, Date.now())) continue;
       attention(
         server,
         actor.confirmStop(result.seq, result.outcome, clock.microTimestamp()) && !actorWatched(server, actor.id),
@@ -534,13 +606,20 @@ export async function tick(server: Server) {
       );
       changed(server);
     }
+    for (const held of agentRetry.released(runtime, Date.now())) {
+      const actor = runtime.conversations.byId(held.actor);
+      if (!actor) continue;
+      actor.confirmStop(held.seq, "failed", clock.microTimestamp());
+      changed(server);
+    }
     if (runtime.pruneConversations()) changed(server);
   }
   for (const session of runtime.sessions) {
-    const seq = session.next_seq;
+    const seq = session.next_seq,
+      ding = session.poll(runtime.conversations);
     attention(
       server,
-      session.poll(runtime.conversations),
+      ding && !session.corgi,
       session.status(),
       session.attachment.actor ? { conversation: session.attachment.actor.id } : { headless: session.id },
     );
@@ -549,6 +628,11 @@ export async function tick(server: Server) {
       workspace.away.record(workspace.away.since, session.usage_pending);
     session.usage_pending = new Counts();
     if (session.next_seq !== seq || session.reap()) changed(server);
+  }
+  if (runtime.sessions.some(s => s.corgi)) {
+    const headless = await import("./headless"),
+      attached = server.clients.some(c => c.viewer && !c.dead);
+    if (headless.retire(runtime, attached)) changed(server);
   }
 }
 export async function settle(server: Server) {
@@ -571,6 +655,26 @@ export async function settle(server: Server) {
   }
 }
 
+/** Pauses the workers a handoff carries. Usage results are applied first: the next daemon
+ * reads on from where usage counting stopped, so the checkpoint must hold what it found.
+ * A pause that fails leaves both running. */
+export async function pause(server: Server) {
+  const workers = services.get(server);
+  if (!workers) return;
+  await workers.summaries.pause();
+  try {
+    await workers.usage.pause();
+    applyUsage(server, workers);
+  } catch (error) {
+    unpause(server);
+    throw error;
+  }
+}
+export function unpause(server: Server) {
+  const workers = services.get(server);
+  workers?.summaries.unpause();
+  workers?.usage.unpause();
+}
 export function stop(server: Server) {
   const workers = services.get(server);
   if (!workers) return;

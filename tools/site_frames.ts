@@ -1,6 +1,7 @@
 /**
  * Site frames: renders the landing page's terminal screens with Corgi's own
- * renderer and writes them to site/frames.json, which the page imports.
+ * renderer and writes them to site/frames.json, which the page imports, and
+ * Ghostty's codepoint widths to site/widths.json for its text.ts.
  *
  *   bun tools/site_frames.ts            render and update the page
  *   bun tools/site_frames.ts --check    fail if the English recordings are stale
@@ -80,15 +81,13 @@ Date.now = () => PINNED;
 const data = JSON.parse(readFileSync(existsSync(FRAMES) ? FRAMES : join(root, "site/frames.json"), "utf8")) as {
   layout: { badge: number; controls: Record<string, unknown> };
   styles: unknown[][];
-  /** Ghostty's codepoint widths, for the page's text.ts. */
-  widths: unknown;
   /** What git answered about each of moonlander's checkouts, for the page's review panel. */
   review: unknown;
   /** corgi's and moonlander's worktrees, for the page's worktree overviews. */
   worktrees: unknown;
   frames: Record<string, any>;
 };
-const previousMetadata = JSON.stringify([data.layout, data.widths, data.review, data.worktrees]);
+const previousMetadata = JSON.stringify([data.layout, data.review, data.worktrees]);
 // The badge's column, as Corgi places it over a sidebar's header.
 data.layout = {
   badge: Array.from({ length: 34 }, (_, x) => x).findIndex(x => corgiBadge.hit("image", 34, x, 0)),
@@ -1187,30 +1186,45 @@ const MOON_BRIEFS = new Map<string, worktrees.Brief>(
     ["sprite", i18n.t`Draws the lander as pixel art`],
   ].map(([name, label]) => [moonPath(name), { path: moonPath(name), label, phase: "ready" }]),
 );
-/** The sidebar with moonlander alone, its agents under their worktrees, and
+/** The sidebar with moonlander alone, release notes in the main checkout,
+ * its other agents under their worktrees, and
  * again after each set of removals the overview can make (bit k for the
  * k-th linked worktree), their agents closed with them. While the overview
  * browses the j-th, only its agents are lit, as Corgi lights them. */
 const WT_ROWS = ROWS;
 function worktreeFrames() {
-  const linked = MOON_TREES.entries.filter(e => !e.primary),
+  const resident = sidebar.entry({
+      target: { pane: 13 },
+      conversation: 13,
+      cwd: MOON_ROOT,
+      name: i18n.t`Release notes`,
+      provider: "codex",
+      state: "working",
+      activity: i18n.t`Drafting release notes`,
+    }),
+    snapshot: worktrees.Snapshot = {
+      ...MOON_TREES,
+      agents: [...MOON_TREES.agents, { target: resident.target, path: MOON_ROOT, source: "cwd", stale: false }],
+    },
+    linked = snapshot.entries.filter(e => !e.primary),
     badges: (Rect | null)[] = [];
   let agents = new Map<string, sidebar.Tally>();
   for (let mask = 0; mask < 1 << linked.length; mask++) {
     const gone = new Set(linked.filter((_, k) => mask & (1 << k)).map(e => e.path)),
-      closed = new Set(MOON_TREES.agents.flatMap(a => (gone.has(a.path) && "pane" in a.target ? [a.target.pane] : []))),
+      closed = new Set(snapshot.agents.flatMap(a => (gone.has(a.path) && "pane" in a.target ? [a.target.pane] : []))),
       trees = {
-        ...MOON_TREES,
-        entries: MOON_TREES.entries.filter(e => !gone.has(e.path)),
-        agents: MOON_TREES.agents.filter(a => !gone.has(a.path)),
+        ...snapshot,
+        entries: snapshot.entries.filter(e => !gone.has(e.path)),
+        agents: snapshot.agents.filter(a => !gone.has(a.path)),
       };
     const s = scene({ phone: false, corgi: false, unread: 0, ahead: false, focused: false, read: false });
     s.workspaces = s.workspaces.filter(w => w.id === 2);
     s.entries[0].focused = true;
+    s.entries.unshift({ ...resident });
     const shut = s.entries.filter(e => "pane" in e.target && closed.has(e.target.pane));
     const ws = s.workspaces[0];
-    ws.working -= shut.filter(e => e.state === "working").length;
-    ws.agents -= shut.length;
+    ws.working += 1 - shut.filter(e => e.state === "working").length;
+    ws.agents += 1 - shut.length;
     ws.worktrees = trees;
     s.entries = worktreeAgents.grouped(
       trees,
@@ -1236,7 +1250,7 @@ function worktreeFrames() {
     badges.push(sidebar.worktreeBadge(side, s.workspaces, 2));
     if (!mask) agents = worktreeAgents.counts(trees, s.entries);
   }
-  keepOverview("moonlander", MOON_ROOT, MOON_TREES, MOON_BRIEFS, agents, badges, "moonlander alone");
+  keepOverview("moonlander", MOON_ROOT, snapshot, MOON_BRIEFS, agents, badges, "moonlander alone");
 }
 /** The sidebar beside moonlander's dev server: its agents under their
  * worktrees, the rule dragged up under the workspaces. Its worktree badge
@@ -1720,11 +1734,13 @@ for (const [name, frames] of made) {
 }
 const missing = Object.keys(data.frames).filter(k => !made.has(k));
 console.log(`${made.size} frames, ${changed} changed${missing.length ? `; not made here: ${missing.join(", ")}` : ""}`);
-data.widths = widthRanges();
 data.review = review;
 data.worktrees = overviews;
-const metadataChanged = previousMetadata !== JSON.stringify([data.layout, data.widths, data.review, data.worktrees]);
-if (checkOnly && (changed || missing.length || metadataChanged)) {
+const metadataChanged = previousMetadata !== JSON.stringify([data.layout, data.review, data.worktrees]);
+const widthsFile = join(root, "site/widths.json"),
+  widths = JSON.stringify(widthRanges()) + "\n",
+  widthsChanged = !existsSync(widthsFile) || readFileSync(widthsFile, "utf8") !== widths;
+if (checkOnly && (changed || missing.length || metadataChanged || widthsChanged)) {
   console.error(`Stale ${language} site recordings; run bun tools/site_frames.ts --language ${language}`);
   process.exitCode = 1;
 }
@@ -1739,7 +1755,6 @@ if (writes) {
       "{",
       `  "layout": ${JSON.stringify(data.layout)},`,
       `  "styles": ${JSON.stringify(data.styles)},`,
-      `  "widths": ${JSON.stringify(data.widths)},`,
       `  "review": ${JSON.stringify(data.review)},`,
       `  "worktrees": ${JSON.stringify(data.worktrees)},`,
       `  "frames": {`,
@@ -1750,4 +1765,5 @@ if (writes) {
     ].join("\n"),
   );
   console.log(`wrote ${FRAMES}`);
+  if (widthsChanged) writeFileSync(widthsFile, widths);
 }

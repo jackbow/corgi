@@ -1,7 +1,48 @@
 import { expect, test } from "bun:test";
 import * as viewer from "./viewer";
+import { Controller } from "./controller";
+import { version } from "./viewer_version";
+import * as sound from "./sound";
+import { spyOn } from "bun:test";
 
 const text = (chunk: Uint8Array) => Buffer.from(chunk).toString();
+
+test("pushed frames deliver permission notification targets once and honor mute", async () => {
+  const view = new Controller({ request: async () => ({ ok: true }) } as any),
+    bell = { seq: 0n },
+    target = { conversation: 17 },
+    received: unknown[] = [],
+    play = spyOn(sound, "play").mockImplementation(() => {});
+  view.notify = (...args) => {
+    received.push(args);
+  };
+  const frame = {
+    type: "view" as const,
+    viewer_protocol: version,
+    session: null,
+    session_hash: 0n,
+    resources: null,
+    resources_hash: 0n,
+    surfaces: [],
+    bell_seq: 1n,
+    bell_kind: "needs_input" as const,
+    bell_target: target,
+    controls: [],
+    viewer: 1,
+    detach: false,
+  };
+  try {
+    await viewer.receive(view, frame, bell, true);
+    await viewer.receive(view, frame, bell, true);
+    expect(received).toEqual([["needs_input", target, view.machine]]);
+    view.muted = true;
+    await viewer.receive(view, { ...frame, bell_seq: 2n }, bell, true);
+    expect(received).toHaveLength(1);
+  } finally {
+    play.mockRestore();
+    viewer.close(view);
+  }
+});
 
 test("keys that arrive while input is handled reach the next call", async () => {
   const input = [...Buffer.from("t")],

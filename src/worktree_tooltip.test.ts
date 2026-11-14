@@ -1,6 +1,7 @@
 import { transport } from "./fixtures/transport";
 import { expect, test } from "bun:test";
 import { Controller } from "./controller";
+import { Machine } from "./machine";
 import { worktreeSnapshot } from "./mirror";
 import { State, between, columnsFor, displayPath, draw, geometry, listing, sortAt } from "./worktree_tooltip";
 import * as worktreeRemoval from "./worktree_removal";
@@ -469,6 +470,7 @@ async function removing() {
       if (i === 10) expect(screen()).toContain("Removing topic-0 · branch kept");
       clock.advance(50);
     }
+    await view.tasks.idle();
   };
   return { view, requests, report, screen, hold };
 }
@@ -771,6 +773,7 @@ test("a ghost previews a worktree's newest conversations as agents; Enter brings
     expect(text).toContain("Enter resume agents");
     expect(text).toContain("⌥ topic-0");
     await view.input(Buffer.from("\r"));
+    await view.tasks.idle();
     expect(view.worktreeDetail()).toBeNull();
     expect(requests.filter(r => r.op === "session.command").map(r => r.command)).toEqual(
       [0, 1, 2].map(i => ({
@@ -802,6 +805,7 @@ test("clicking a ghost's agent brings its group back and wakes it; entering a li
   const { view, requests } = browsing();
   const entries = (view as any).sidebarEntries();
   await view.perform({ name: "worktree-agent", value: entries.findIndex((e: any) => e.target.asleep === "session-1") });
+  await view.tasks.idle();
   expect(requests.filter(r => r.command?.["agent.resume"]?.asleep)).toHaveLength(3);
   expect(view.focused()?.id).toBe(3);
   const { view: live } = browsing();
@@ -935,6 +939,7 @@ test("e in the overview starts a reviewer in the browsed worktree and pins the r
   const { view, requests } = browsing();
   view.width = 200;
   await view.input(Buffer.from("e"));
+  await view.tasks.idle();
   expect(view.worktreeDetail()).toBeNull();
   const commands = requests.filter(r => r.op === "session.command").map(r => r.command);
   expect(commands[0]).toEqual({ "agent.create": { workspace: 1, cwd: "/repo/.worktrees/0", provider: null } });
@@ -1003,4 +1008,31 @@ test("callout geometry keeps the agent pane and source badge uncovered", () => {
   expect(rect.x).toBeGreaterThan(side.width);
   expect(rect.contains(badge.x, badge.y)).toBe(false);
   expect(rect.h).toBe(10);
+});
+test("a remote machine's overview shows its own workspace, not this computer's with the same id", () => {
+  const view = new Controller(transport(async () => ({})));
+  const other = new Machine({ request: transport(async () => ({})).request }, "work", true);
+  view.adopt(other);
+  const workspace = (name: string, cwd: string, data?: Snapshot) => ({
+    workspaces: [
+      { id: 1, name, cwd, worktrees: data, model: { nodes: [{ pane: 1 }], tabs: [{ id: 1, root: 0 }], revision: 0 } },
+    ],
+    panes: [{ id: 1, workspace: 1, tab: 1, cols: 80, rows: 24, cwd }],
+  });
+  view.width = 140;
+  view.height = 30;
+  view.receiveSnapshot(workspace("here", "/here"));
+  view.receiveSnapshot(workspace("repo", "/repo", snapshot(2)), other);
+  view.switchMachine(other);
+  view.input_state.attached = true;
+  view.worktree_card.workspace = 1;
+  view.worktree_card.pinned = true;
+  const terminal = new Terminal(140, 30);
+  try {
+    terminal.feed(view.frame());
+    expect(terminal.text()).toContain("topic-1");
+  } finally {
+    terminal.destroy();
+    view.runtime.destroy();
+  }
 });

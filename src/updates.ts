@@ -3,19 +3,24 @@ import {
   chmodSync,
   closeSync,
   copyFileSync,
+  createReadStream,
   existsSync,
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
+  rmSync,
   unlinkSync,
 } from "node:fs";
+import { open } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
-import { spawn } from "node:child_process";
+import { homedir } from "node:os";
 import { atomicWrite } from "./os";
 import { flock } from "./native_bridge";
-import * as rpc from "./rpc";
+import * as rpc_http from "./rpc_http";
 import { path as recoveryPath } from "./persist/recovery";
 import { testBuild } from "./build_assets";
 import * as config from "./build_config";
@@ -24,7 +29,7 @@ import * as json from "./json";
 import type { Failure } from "./state_report";
 export const abi = "1-a826bd22ebcdbe60";
 const platforms = ["macos-aarch64", "linux-x86_64", "linux-aarch64"] as const;
-type Platform = (typeof platforms)[number];
+export type Platform = (typeof platforms)[number];
 export const platform: Platform =
   process.platform === "darwin" ? "macos-aarch64" : process.arch === "arm64" ? "linux-aarch64" : "linux-x86_64";
 const parsePlatform = (name: string): Platform | null => platforms.find(p => p === name) ?? null;
@@ -67,7 +72,7 @@ export function version(value: string): number[] {
   if (numbers.some(n => !Number.isSafeInteger(n))) throw Error("InvalidReleaseVersion");
   return numbers;
 }
-const compare = (a: string, b: string) => {
+export const compare = (a: string, b: string) => {
   const x = version(a),
     y = version(b);
   return Math.sign(x[0] - y[0] || x[1] - y[1] || x[2] - y[2]);
@@ -82,6 +87,9 @@ const read = (root: string, name: string): string | null => {
     throw error;
   }
 };
+type Pointer = "current" | "previous" | "staged" | "suppressed";
+/** The release a pointer file names. Machine setup used to end them with a newline. */
+const pointer = (root: string, name: Pointer): string | null => read(root, name)?.trim() ?? null;
 const write = (root: string, name: string, value: string) => atomicWrite(join(root, name), value);
 const remove = (root: string, name: string) => {
   try {
@@ -107,15 +115,70 @@ export function managed(rel: Release, exe: string): string | null {
   )
     return null;
   const root = dirname(dirname(dirname(exe)));
-  if (read(root, "current") === null) return null;
+  if (pointer(root, "current") === null) return null;
   privateDirectory(root);
   return root;
 }
-async function lock(root: string, name: string, wait: boolean): Promise<(() => void) | null> {
+/** XXX: Remove for next protocol bump. Whether an updater is activating a
+ * release of the install `exe` belongs to now: one holds its activation lock
+ * until it has named a release current, or given up. */
+export function activating(exe: string): boolean {
+  const root = managed(release(exe), exe);
+  if (root === null) return false;
+  let fd: number;
+  try {
+    fd = openSync(join(root, "activation.lock"), "a", 0o600);
+  } catch {
+    return false;
+  }
+  try {
+    if (!flock(fd)) return true;
+    flock(fd, false);
+    return false;
+  } finally {
+    closeSync(fd);
+  }
+}
+/** XXX: Remove for next protocol bump. Reads which release the install `exe`
+ * belongs to names current; null for a build no install manages. */
+export function currentOf(exe: string): (() => string | null) | null {
+  const root = managed(release(exe), exe);
+  return root === null ? null : () => pointer(root, "current");
+}
+/** The Omarchy plugin folder that installed the Corgi at `root`, as its
+ * installer recorded it, or null. Corgi removes itself when that folder goes. */
+export function pluginOf(root: string): string | null {
+  const dir = read(root, "plugin")?.trim() ?? "";
+  return isAbsolute(dir) ? dir : null;
+}
+/** Forgets the plugin that installed `root`, which then stays when it's gone. */
+export function forgetPlugin(root: string): void {
+  remove(root, "plugin");
+}
+/** The launcher's original path, independent of a later daemon's environment. */
+export function launcherOf(root: string): string {
+  const path = read(root, "launcher");
+  return path !== null && isAbsolute(path) ? path : join(process.env.HOME || homedir(), ".local", "bin", "corgi");
+}
+/** Removes what an installation at `root` leaves outside it once it's gone: the installer's launcher. */
+export function forget(root: string): void {
+  try {
+    const launcher = launcherOf(root);
+    const text = readFileSync(launcher, "utf8"),
+      roots = [root, existsSync(root) ? realpathSync(root) : root];
+    if (
+      text.includes('exec "$root/releases/$v/corgi"') &&
+      roots.some(path => text.includes(`root='${path.replaceAll("'", "'\\''")}'`))
+    )
+      unlinkSync(launcher);
+  } catch {}
+}
+async function lock(root: string, name: string, wait: boolean, signal?: AbortSignal): Promise<(() => void) | null> {
   const fd = openSync(join(root, name), "a", 0o600);
   while (!flock(fd)) {
-    if (!wait) {
+    if (!wait || signal?.aborted) {
       closeSync(fd);
+      if (signal?.aborted) throw signal.reason;
       return null;
     }
     await Bun.sleep(20);
@@ -125,7 +188,7 @@ async function lock(root: string, name: string, wait: boolean): Promise<(() => v
     closeSync(fd);
   };
 }
-export function parse(rel: Release, bytes: string): Manifest {
+export function parse(rel: Release, bytes: string, targetPlatform: Platform = platform): Manifest {
   const envelope = record(json.parse(bytes), ["payload", "signature"]);
   string(envelope, "payload");
   string(envelope, "signature");
@@ -147,7 +210,7 @@ export function parse(rel: Release, bytes: string): Manifest {
   for (const field of ["version", "commit", "update_abi"]) string(m, field);
   const targets = record(m.targets, null);
   for (const key of Object.keys(targets)) if (parsePlatform(key) === null) throw Error("UnknownField");
-  if (!Object.hasOwn(targets, platform)) throw Error("MissingField");
+  if (!Object.hasOwn(targets, targetPlatform)) throw Error("MissingField");
   for (const key of Object.keys(targets)) {
     const target = record(targets[key], ["url", "sha256", "size"]);
     string(target, "url");
@@ -156,7 +219,7 @@ export function parse(rel: Release, bytes: string): Manifest {
   }
   if (m.schema_version !== 1) throw Error("UnknownUpdateSchema");
   version(m.version);
-  const t = m.targets?.[platform];
+  const t = m.targets?.[targetPlatform];
   if (
     !t ||
     !Number.isSafeInteger(t.size) ||
@@ -188,111 +251,305 @@ function secure(rel: Release, url: string) {
   if (!url.startsWith("https://") && !(rel.test_mode && url.startsWith("http://127.0.0.1:")))
     throw Error("InsecureUpdateURL");
 }
-async function fetchBytes(rel: Release, url: string, limit: number): Promise<Buffer> {
+/** The body the feed serves at `url`, following redirects, in chunks of at most `limit` bytes in all. */
+async function* fetchChunks(
+  rel: Release,
+  url: string,
+  limit: number,
+  signal?: AbortSignal,
+): AsyncGenerator<Uint8Array> {
+  const timeout = AbortSignal.timeout(300000);
   for (let redirect = 0; redirect < 10; redirect++) {
     secure(rel, url);
-    const response = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(300000) });
+    const response = await fetch(url, {
+      redirect: "manual",
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    });
+    // A body that isn't read goes, rather than wait on its connection.
+    const skip = () => response.body?.cancel().catch(() => {});
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const next = response.headers.get("location");
+      await skip();
       if (!next) throw Error("UpdateSubprocessFailed");
       url = new URL(next, url).href;
       continue;
     }
-    if (!response.ok || !response.body) throw Error("UpdateSubprocessFailed");
-    if (Number(response.headers.get("content-length")) > limit) throw Error("FileTooBig");
-    const reader = response.body.getReader(),
-      chunks: Uint8Array[] = [];
+    if (!response.ok || !response.body) {
+      await skip();
+      throw Error("UpdateSubprocessFailed");
+    }
+    if (Number(response.headers.get("content-length")) > limit) {
+      await skip();
+      throw Error("FileTooBig");
+    }
+    const reader = response.body.getReader();
     let size = 0;
     try {
       for (;;) {
         const chunk = await reader.read();
-        if (chunk.done) break;
+        if (chunk.done) return;
         size += chunk.value.length;
         if (size > limit) throw Error("FileTooBig");
-        chunks.push(chunk.value);
+        yield chunk.value;
       }
     } finally {
       await reader.cancel();
     }
-    return Buffer.concat(chunks);
   }
   throw Error("UpdateSubprocessFailed");
 }
-function verifyFile(path: string, t: Target) {
+async function fetchBytes(rel: Release, url: string, limit: number, signal?: AbortSignal): Promise<Buffer> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of fetchChunks(rel, url, limit, signal)) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+/** Writes release target `t` to `path` as it downloads, checking its size and
+ * hash on the way: a runtime never holds the binary in memory or reads it back. */
+async function downloadTo(rel: Release, t: Target, path: string, signal?: AbortSignal): Promise<void> {
+  const hash = createHash("sha256"),
+    file = await open(path, "w", 0o700);
+  let size = 0;
+  try {
+    for await (const chunk of fetchChunks(rel, t.url, t.size, signal)) {
+      hash.update(chunk);
+      size += chunk.length;
+      for (let offset = 0; offset < chunk.length;)
+        offset += (await file.write(chunk, offset, chunk.length - offset)).bytesWritten;
+    }
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+  if (size !== t.size || hash.digest("hex") !== t.sha256) throw Error("UpdateChecksumMismatch");
+}
+/** Whether `path` holds release target `t`, read a chunk at a time. */
+async function holds(path: string, t: Target): Promise<boolean> {
+  try {
+    const hash = createHash("sha256");
+    let size = 0;
+    for await (const chunk of createReadStream(path)) {
+      size += chunk.length;
+      hash.update(chunk);
+    }
+    return size === t.size && hash.digest("hex") === t.sha256;
+  } catch {
+    return false;
+  }
+}
+function verifyFile(path: string, t: Target): Buffer {
   const bytes = readFileSync(path);
   if (bytes.length !== t.size || createHash("sha256").update(bytes).digest("hex") !== t.sha256)
     throw Error("UpdateChecksumMismatch");
+  return bytes;
 }
-async function feed(rel: Release, root: string, download: boolean, explicit: boolean): Promise<void> {
+/** Fetch one exact signed release, using the caller's existing update trust. */
+export async function artifact(rel: Release, v: string, target: Platform, directory: string): Promise<string> {
+  version(v);
+  const manifest = target === "linux-aarch64" ? "manifest-linux-aarch64.json" : "manifest.json";
+  const bytes = (await fetchBytes(rel, `${rel.feed_url}/releases/${v}/${manifest}`, 1024 * 1024)).toString();
+  const m = parse(rel, bytes, target);
+  if (m.version !== v) throw Error("WrongReleaseManifest");
+  atomicWrite(join(directory, "manifest.json"), bytes, 0o600);
+  const file = join(directory, "corgi");
+  atomicWrite(file, await fetchBytes(rel, m.targets[target]!.url, m.targets[target]!.size), 0o700);
+  verifyFile(file, m.targets[target]!);
+  return file;
+}
+/** Looks for a newer release, and downloads and stages it when asked; false
+ * when another download holds the lock and an automatic check gave way. */
+async function feed(
+  rel: Release,
+  root: string,
+  download: boolean,
+  explicit: boolean,
+  signal?: AbortSignal,
+): Promise<boolean> {
   const unlock = await lock(root, "download.lock", explicit);
-  if (!unlock) return;
+  if (!unlock) return false;
   try {
-    const bytes = (await fetchBytes(rel, `${rel.feed_url}/channels/${channel}.json`, 1024 * 1024)).toString(),
+    // What a download cut short by a crash or a handoff left.
+    remove(root, "download.tmp");
+    const channelUrl = `${rel.feed_url}/channels/${channel}.json`;
+    const bytes = (await fetchBytes(rel, channelUrl, 1024 * 1024, signal)).toString(),
       m = parse(rel, bytes),
-      current = read(root, "current");
+      current = pointer(root, "current");
     if (!current) throw Error("MissingInstalledVersion");
     if (compare(m.version, current) <= 0) {
       if (explicit) console.log("Corgi is up to date.");
-      return;
+      return true;
     }
-    const suppressed = read(root, "suppressed");
-    if (!explicit && suppressed && compare(m.version, suppressed) <= 0) return;
+    const suppressed = pointer(root, "suppressed");
+    if (!explicit && suppressed && compare(m.version, suppressed) <= 0) return true;
+    // A stale feed doesn't take back a newer update, such as one the installer staged.
+    const staged = pointer(root, "staged");
+    if (staged && compare(m.version, staged) < 0) return true;
     if (explicit) console.error(`Corgi ${m.version} is available.${download ? " Downloading…" : ""}`);
-    if (!download) return;
+    if (!download) return true;
     const dest = executable(root, m.version),
       dir = dirname(dest);
-    privateDirectory(dir);
-    try {
-      verifyFile(dest, own(m));
-    } catch {
-      const partial = join(dir, "download.tmp");
-      try {
-        atomicWrite(partial, await fetchBytes(rel, own(m).url, own(m).size), 0o700);
-        verifyFile(partial, own(m));
-        if (existsSync(dest)) throw Error("ExistingReleaseDiffers");
-        renameSync(partial, dest);
-      } finally {
-        remove(dir, "download.tmp");
-      }
+    // Already staged; activation verifies it before it runs.
+    if (staged === m.version && existsSync(dest)) {
+      remove(root, "last-error");
+      return true;
     }
-    write(dir, "manifest.json", bytes);
-    write(root, "staged", m.version);
-    remove(root, "last-error");
+    // A release kept for rollback needn't download again.
+    const present = await holds(dest, own(m));
+    // The download lock keeps this file to one download at a time.
+    const partial = join(root, "download.tmp");
+    try {
+      if (!present) await downloadTo(rel, own(m), partial, signal);
+      const unlockActivation = await lock(root, "activation.lock", true, signal);
+      try {
+        // An install or activation may have overtaken the download.
+        const current = pointer(root, "current"),
+          staged = pointer(root, "staged");
+        if (current === null) throw Error("MissingInstalledVersion");
+        if (compare(m.version, current) > 0 && (staged === null || compare(m.version, staged) >= 0)) {
+          privateDirectory(dir);
+          if (!(await holds(dest, own(m)))) {
+            if (existsSync(dest)) throw Error("ExistingReleaseDiffers");
+            // Removed since it was checked: the next check downloads it again.
+            if (present) return true;
+            renameSync(partial, dest);
+          }
+          write(dir, "manifest.json", bytes);
+          write(root, "staged", m.version);
+        }
+        remove(root, "last-error");
+        prune(root, true);
+      } finally {
+        unlockActivation?.();
+      }
+    } finally {
+      remove(root, "download.tmp");
+    }
+    return true;
   } finally {
     unlock();
   }
 }
-async function hello(socket: string): Promise<any | null> {
+/** The daemon's `hello`, or null with none running; `finishing_ms` is how
+ * long to wait out an update an older build started. */
+async function hello(daemon: rpc_http.Client, finishing_ms?: number): Promise<any | null> {
   try {
-    return await rpc.request(socket, "hello");
+    const reply = await daemon.discover(10_000, undefined, finishing_ms);
+    if ("err" in reply) throw errors.fromReply(reply);
+    return reply;
   } catch (error) {
     if (["ENOENT", "ECONNREFUSED"].includes((error as NodeJS.ErrnoException).code ?? "")) return null;
     throw error;
   }
 }
+/** Pane commands follow their runtime even when another socket changes the install's current release. */
+export async function route(daemon: rpc_http.Client, exe: string, args: string[]) {
+  if (args[0]?.startsWith("__") || !managed(release(exe), exe)) return;
+  let target: unknown;
+  try {
+    target = (await hello(daemon, 0))?.executable;
+  } catch (error) {
+    // XXX: Remove for next protocol bump. A daemon finishing an update an
+    // older build started is a release that answers commands meanwhile.
+    if (errors.is(error, "UpdateIncomplete")) return;
+    throw error;
+  }
+  if (typeof target === "string" && target && target !== exe)
+    process.execve!(target, [target, ...args], { ...process.env, CORGI_APP_EXE: target } as Record<string, string>);
+}
 function switchCurrent(root: string, v: string) {
-  const old = read(root, "current");
+  const old = pointer(root, "current");
   if (old === null) throw Error("MissingInstalledVersion");
   if (old !== v) {
     write(root, "previous", old);
     write(root, "current", v);
+    prune(root);
   }
-  if (read(root, "staged") === v) remove(root, "staged");
+  if (pointer(root, "staged") === v) remove(root, "staged");
+}
+const runtimeLock = /^runtime-\d+\.lock$/;
+let holding: number | null = null;
+/** Keeps the release at `exe` from being pruned while this runtime runs it:
+ * prune skips a release with a held `runtime-<pid>.lock`, and the kernel lets
+ * go of the lock however the runtime exits. */
+export async function hold(exe: string) {
+  const root = managed(release(exe), exe);
+  if (holding !== null || !root) return;
+  const unlock = await lock(root, "releases.lock", true);
+  try {
+    if (!existsSync(exe)) throw Error("MissingInstalledVersion");
+    const file = join(dirname(exe), `runtime-${process.pid}.lock`),
+      fd = openSync(file, "a", 0o600);
+    if (!flock(fd)) {
+      closeSync(fd);
+      throw Error("ReleaseLockBusy");
+    }
+    holding = fd;
+    process.once("exit", () => remove(dirname(file), basename(file)));
+  } finally {
+    unlock?.();
+  }
+}
+/** Whether a runtime holds the release in `dir`. */
+function runtimeHolds(dir: string): boolean {
+  return readdirSync(dir).some(name => {
+    if (!runtimeLock.test(name)) return false;
+    const fd = openSync(join(dir, name), "r");
+    try {
+      if (!flock(fd)) return true;
+      flock(fd, false);
+      return false;
+    } finally {
+      closeSync(fd);
+    }
+  });
+}
+/** Removes the releases nothing needs: all but the current one, the previous
+ * one kept for rollback, a staged update and any a runtime runs. Normally
+ * only older releases go; `downloads` says the download lock is held too,
+ * so superseded downloads can go regardless of version. */
+export function prune(root: string, downloads = false) {
+  try {
+    const guard = openSync(join(root, "releases.lock"), "a", 0o600);
+    try {
+      if (!flock(guard)) return;
+      const current = pointer(root, "current"),
+        keep = [current, pointer(root, "previous"), pointer(root, "staged")],
+        dir = join(root, "releases");
+      if (current === null) return;
+      for (const v of readdirSync(dir))
+        try {
+          // Throws for what isn't a release.
+          const older = compare(v, current) < 0,
+            path = join(dir, v);
+          if (!keep.includes(v) && (older || downloads) && !runtimeHolds(path))
+            rmSync(path, { recursive: true, force: true });
+        } catch {
+          // Not a release, or it couldn't go; a later prune tries again.
+        }
+    } finally {
+      flock(guard, false);
+      closeSync(guard);
+    }
+  } catch {}
 }
 function recordError(root: string, error: unknown) {
+  // An installation removed meanwhile stays removed.
+  if (!existsSync(join(root, "current"))) return;
   try {
     write(root, "last-error", error instanceof Error ? error.message : String(error));
   } catch {}
 }
-async function activate(root: string, socket: string, v: string, target: string, live: boolean) {
+async function activate(root: string, daemon: rpc_http.Client, v: string, target: string, live: boolean) {
   if (live)
     try {
-      await rpc.reload(socket, target);
+      await daemon.reload(target);
     } catch (error) {
-      if ((await hello(socket))?.executable !== target) throw error;
+      if ((await hello(daemon))?.executable !== target) throw error;
     }
   else {
-    const p = Bun.spawn([target, "__update-start"], {
+    // `--http`: this updater checks the daemon in over HTTP. An older release
+    // ignores it; keep passing it while one that reads a bare `__update-start`
+    // as an older build's can still be started.
+    const p = Bun.spawn([target, "__update-start", "--http"], {
       env: { ...process.env, CORGI_APP_EXE: target },
       stdin: "ignore",
       stdout: "ignore",
@@ -300,7 +557,7 @@ async function activate(root: string, socket: string, v: string, target: string,
     });
     if (await p.exited) throw Error("UpdateSubprocessFailed");
   }
-  const h = await hello(socket);
+  const h = await hello(daemon);
   if (!h) throw Error("UpdateRuntimeNotReady");
   if (h.executable !== target) throw Error("UpdateRuntimeChanged");
   switchCurrent(root, v);
@@ -312,34 +569,28 @@ const interactive = () => !!process.stdin.isTTY && !!process.stderr.isTTY && pro
 const recheck_ms = 3600000;
 /** Has the runtime that said `h` save its session, in the runtime protocol
  * it advertised: one from another release may speak another. */
-export async function save(socket: string, h: { protocol?: number }) {
-  // Untagged: a runtime before protocol 4 answers without the request id.
-  const conn = new rpc.Connection(socket, { requestIds: false });
-  try {
-    const reply: any = await conn.rawRequest({ op: "recovery.save", protocol: h.protocol });
-    if (reply && "err" in reply) throw Error(reply.err);
-  } finally {
-    conn.close();
-  }
+export async function save(daemon: rpc_http.Client, h: { protocol?: number }) {
+  const reply = json.object(await daemon.post({ op: "recovery.save", protocol: h.protocol }, 30_000));
+  if (typeof reply.err === "string") throw errors.fromReply({ ...reply, err: reply.err });
 }
 const check_ms = 30000;
 /** Has `target` load the state it would be handed, saved fresh when a
  * runtime runs. Only a release without the check is let through; one that
  * crashes, takes too long or answers something else has failed it. */
 export async function check(
-  socket: string,
+  daemon: rpc_http.Client,
   target: string,
   h: { protocol?: number } | null,
   limit_ms = check_ms,
 ): Promise<Failure | null> {
   if (h)
     try {
-      await save(socket, h);
+      await save(daemon, h);
     } catch {
       // The runtime saves on its own too; the check reads the last of those.
     }
   let timed_out = false;
-  const p = Bun.spawn([target, "__update-check", socket, recoveryPath(socket)], {
+  const p = Bun.spawn([target, "__update-check", daemon.socket, recoveryPath(daemon.socket)], {
       env: { ...process.env, CORGI_APP_EXE: target },
       stdin: "ignore",
       stdout: "pipe",
@@ -395,7 +646,7 @@ function turnedDown(root: string): Turned | null {
  * shown once per release; the record of it goes only once the release takes over. */
 async function vetted(
   root: string,
-  socket: string,
+  daemon: rpc_http.Client,
   current: string,
   candidate: string,
   target: string,
@@ -404,7 +655,7 @@ async function vetted(
 ) {
   const last = turnedDown(root);
   if (last?.version === candidate && !explicit && Date.now() - last.at < recheck_ms) return false;
-  const failure = await check(socket, target, h);
+  const failure = await check(daemon, target, h);
   if (!failure) return true;
   await refuse(root, current, candidate, failure, !!h, explicit);
   return false;
@@ -424,9 +675,9 @@ async function refuse(
   write(root, "check-failed", json.stringify({ version: candidate, at: Date.now(), shown: shown || show }));
   if (show) await (await import("./state_report")).show({ kind: "turned_down", current, candidate, running }, failure);
 }
-async function confirmRestart(socket: string): Promise<boolean | null> {
+async function confirmRestart(daemon: rpc_http.Client): Promise<boolean | null> {
   if (!interactive()) return null;
-  await rpc.request(socket, "session.snapshot");
+  await daemon.call("session.snapshot");
   process.stderr.write(
     "\n /ᐠ•ᴥ•ᐟ\\  An update is ready, but this session could not be moved safely.\n\nRestarting will stop ALL shells and agents in this runtime and disconnect\nits other viewers. Saved layout and output can be restored; running processes\nwill not survive.\n\nEnter / Esc: keep working     r: restart and update… ",
   );
@@ -460,20 +711,20 @@ async function confirmRestart(socket: string): Promise<boolean | null> {
 async function select(
   rel: Release,
   root: string,
-  socket: string,
+  daemon: rpc_http.Client,
   allow: boolean,
   explicit: boolean,
   rollback: boolean,
 ): Promise<string> {
   const unlock = await lock(root, "activation.lock", explicit);
   try {
-    let h = await hello(socket);
-    const current = read(root, "current");
+    let h = await hello(daemon);
+    const current = pointer(root, "current");
     if (current === null) throw Error("MissingInstalledVersion");
     if (h && !h.executable) throw Error("RuntimeDoesNotSupportUpdates");
     const old = h?.executable || executable(root, current);
     if (!allow || !unlock) return old;
-    const candidate = read(root, rollback ? "previous" : "staged") ?? (rollback ? null : current);
+    const candidate = pointer(root, rollback ? "previous" : "staged") ?? (rollback ? null : current);
     if (candidate === null) return old;
     if (!rollback && compare(candidate, current) < 0) return old;
     const target = executable(root, candidate);
@@ -487,16 +738,16 @@ async function select(
     if (m.version !== candidate) throw Error("WrongReleaseManifest");
     verifyFile(target, own(m));
     if (h && !(h.server_pid > 0)) throw Error("UpdateRuntimeChanged");
-    const deferred = h ? `deferred-${Bun.hash.wyhash(socket, 0n).toString(16)}-${h.server_pid}` : null;
+    const deferred = h ? `deferred-${Bun.hash.wyhash(daemon.socket, 0n).toString(16)}-${h.server_pid}` : null;
     if (!explicit && deferred && read(root, deferred) === candidate) return old;
-    if (!(await vetted(root, socket, current, candidate, target, h, explicit))) {
+    if (!(await vetted(root, daemon, current, candidate, target, h, explicit))) {
       if (explicit) throw Error("UpdateCheckFailed");
       return old;
     }
     let safe = !h || h.update_abi === m.update_abi;
     if (safe) {
       try {
-        await activate(root, socket, candidate, target, !!h);
+        await activate(root, daemon, candidate, target, !!h);
       } catch (error) {
         recordError(root, error);
         // The runtime is still running; restarting would hand the same state to a cold start.
@@ -529,26 +780,27 @@ async function select(
         if (rollback) write(root, "suppressed", current);
         return target;
       }
-      h = await hello(socket);
+      h = await hello(daemon);
       if (h?.executable === target) return target;
     }
-    const decision = h ? await confirmRestart(socket) : null;
+    const decision = h ? await confirmRestart(daemon) : null;
     if (decision) {
-      const fresh = await hello(socket);
+      const fresh = await hello(daemon);
       if (!fresh || fresh.server_pid !== h.server_pid) throw Error("UpdateRuntimeChanged");
-      await save(socket, h);
-      copyFileSync(recoveryPath(socket), recoveryPath(socket) + ".before-update");
-      await rpc.request(socket, "shutdown");
+      await save(daemon, h);
+      copyFileSync(recoveryPath(daemon.socket), recoveryPath(daemon.socket) + ".before-update");
+      await daemon.call("shutdown");
       let stopped = false;
       for (let i = 0; i < 100; i++) {
-        if (!(await hello(socket))) {
+        // A runtime on its way out may take a connection and drop it.
+        if (!(await hello(daemon).catch(() => null))) {
           stopped = true;
           break;
         }
         await Bun.sleep(50);
       }
       if (!stopped) throw Error("RuntimeDidNotStop");
-      await activate(root, socket, candidate, target, false);
+      await activate(root, daemon, candidate, target, false);
       if (rollback) write(root, "suppressed", current);
       return target;
     }
@@ -565,16 +817,18 @@ async function select(
   }
 }
 /** Reruns `args` with the selected release; its first word is the command. */
-export async function startup(socket: string, exe: string, args: string[], skip = false) {
+export async function startup(daemon: rpc_http.Client, exe: string, args: string[], skip = false) {
   const rel = release(exe),
     root = managed(rel, exe);
   if (!root) return;
   let target: string;
   try {
-    target = await select(rel, root, socket, !skip && !existsSync(join(root, "auto-off")), false, false);
+    target = await select(rel, root, daemon, !skip && !existsSync(join(root, "auto-off")), false, false);
   } catch (error) {
     recordError(root, error);
-    target = (await hello(socket))?.executable ?? exe;
+    // XXX: Remove for next protocol bump. Asking again would wait as long again.
+    if (errors.is(error, "UpdateIncomplete")) throw error;
+    target = (await hello(daemon))?.executable ?? exe;
   }
   if (target !== exe)
     process.execve!(target, [target, args[0], "--update-routed", ...args.slice(1)], {
@@ -584,15 +838,18 @@ export async function startup(socket: string, exe: string, args: string[], skip 
 }
 /** What `corgi update status` says about the install at `root`. */
 export function state(root: string): string[] {
+  const plugin = pluginOf(root);
   return [
     `Automatic updates: ${existsSync(join(root, "auto-off")) ? "off" : "on"}`,
-    ...["current", "staged", "previous", "suppressed", "last-error"].flatMap(name => {
-      const v = read(root, name);
+    ...(plugin ? [`Installed by the Omarchy plugin in ${plugin}; removing it removes Corgi`] : []),
+    ...(["current", "staged", "previous", "suppressed"] as const).flatMap(name => {
+      const v = pointer(root, name);
       return v === null ? [] : [`${name}: ${v}`];
     }),
+    ...[read(root, "last-error")].flatMap(v => (v === null ? [] : [`last-error: ${v}`])),
   ];
 }
-export async function command(args: string[], socket: string, exe: string) {
+export async function command(args: string[], daemon: rpc_http.Client, exe: string) {
   const rel = release(exe),
     root = managed(rel, exe);
   if (!root) {
@@ -601,15 +858,13 @@ export async function command(args: string[], socket: string, exe: string) {
   }
   if (args.length === 2 && args[0] === "auto") {
     if (args[1] === "off") write(root, "auto-off", "off");
-    else if (args[1] === "on") {
-      remove(root, "auto-off");
-      background(socket, exe);
-    } else throw Error("Usage");
+    else if (args[1] === "on") remove(root, "auto-off");
+    else throw Error("Usage");
     return;
   }
   if (args.length === 1 && args[0] === "status") {
     for (const line of state(root)) console.error(line);
-    const h = await hello(socket);
+    const h = await hello(daemon);
     if (h) console.error(`running: ${h.release_version}`);
     return;
   }
@@ -619,45 +874,22 @@ export async function command(args: string[], socket: string, exe: string) {
   if (!rollback) await feed(rel, root, args.length === 0 || args[0] === "--download-only", true);
   if (args.length === 1 && !rollback) return;
   if (rollback && !existsSync(join(root, "previous"))) throw Error("NoPreviousRelease");
-  await select(rel, root, socket, true, true, rollback);
+  await select(rel, root, daemon, true, true, rollback);
   console.log("Corgi is ready.");
 }
-export function background(socket: string, exe: string) {
-  const root = managed(release(exe), exe);
-  if (!root || existsSync(join(root, "auto-off"))) return;
-  spawn(exe, ["__update-worker", socket], {
-    env: { ...process.env, CORGI_APP_EXE: exe },
-    stdio: "ignore",
-    detached: true,
-  }).unref();
-}
-async function worker(exe: string, socket: string) {
+/** Downloads a newer release for the next launch to activate, as a runtime
+ * running `exe` does about hourly while automatic updates are on; false when
+ * another download was under way. A failure is kept for `corgi update
+ * status`; one `signal` cut short isn't. */
+export async function background(exe: string, signal: AbortSignal): Promise<boolean> {
   const rel = release(exe),
     root = managed(rel, exe);
-  if (!root) return;
-  const unlock = await lock(root, `worker-${Bun.hash.wyhash(socket, 0n).toString(16)}.lock`, false);
-  if (!unlock) return;
+  if (!root || existsSync(join(root, "auto-off"))) return true;
   try {
-    let next = 0;
-    while (!existsSync(join(root, "auto-off"))) {
-      if (!(await hello(socket))) return;
-      const now = Date.now();
-      if (now >= next) {
-        try {
-          await feed(rel, root, true, false);
-        } catch (error) {
-          recordError(root, error);
-        }
-        next = now + 3600000 + Math.random() * 300000;
-      }
-      const wake = Date.now() + 30000;
-      while (Date.now() < wake) {
-        if (existsSync(join(root, "auto-off")) || !existsSync(socket)) return;
-        await Bun.sleep(250);
-      }
-    }
-  } finally {
-    unlock();
+    return await feed(rel, root, true, false, signal);
+  } catch (error) {
+    if (!signal.aborted) recordError(root, error);
+    throw error;
   }
 }
 // The installer writes the launcher that runs the current release.
@@ -666,7 +898,7 @@ async function install(rel: Release, exe: string, root: string, manifest: string
   privateDirectory(root);
   const unlock = await lock(root, "activation.lock", true);
   try {
-    const current = read(root, "current");
+    const current = pointer(root, "current");
     if (current !== null && compare(rel.version, current) <= 0) throw Error("AlreadyInstalled");
     const bytes = readFileSync(manifest, "utf8"),
       m = parse(rel, bytes);
@@ -684,7 +916,7 @@ async function install(rel: Release, exe: string, root: string, manifest: string
     write(dir, "manifest.json", bytes);
     // Over an older installation it stages the release, as a background download would; the next launch activates it.
     if (current !== null) {
-      const staged = read(root, "staged");
+      const staged = pointer(root, "staged");
       if (staged === null || compare(staged, rel.version) < 0) write(root, "staged", rel.version);
       return;
     }
@@ -693,13 +925,30 @@ async function install(rel: Release, exe: string, root: string, manifest: string
     unlock?.();
   }
 }
+export async function setupLock(root: string): Promise<() => void> {
+  const unlock = await lock(root, "activation.lock", false);
+  if (!unlock) throw Error("UpdateInProgress");
+  return unlock;
+}
+export function verifyArtifact(exe: string, manifest: string): void {
+  const rel = release(exe);
+  const m = parse(rel, readFileSync(manifest, "utf8"));
+  if (m.version !== rel.version || m.commit !== rel.commit) throw Error("WrongReleaseManifest");
+  verifyFile(exe, own(m));
+}
 export async function internal(args: string[], exe: string): Promise<boolean> {
   switch (args[0]) {
     case "__update-info": {
       const r = release(exe);
       console.log(
-        JSON.stringify({ version: r.version, commit: r.commit, update_abi: abi, platform, test_mode: r.test_mode }),
+        JSON.stringify({ ...(await import("./machine_build")).describe(exe), platform, test_mode: r.test_mode }),
       );
+      return true;
+    }
+    case "__machine-install": {
+      if (args.length !== 4) throw Error("Usage");
+      const target = await (await import("./machine_install")).install(exe, args[1], args[2], args[3]);
+      console.log(JSON.stringify({ executable: target }));
       return true;
     }
     case "__update-check": {
@@ -708,10 +957,6 @@ export async function internal(args: string[], exe: string): Promise<boolean> {
       console.log(json.stringify(await check.run(args[2], args[1], exe)));
       return true;
     }
-    case "__update-worker":
-      if (args.length !== 2) return false;
-      await worker(exe, args[1]);
-      return true;
     case "__install":
       if (args.length !== 3) return false;
       await install(release(exe), exe, args[1], args[2]);

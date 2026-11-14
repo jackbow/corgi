@@ -28,7 +28,7 @@ const term = dlopen(`${nativeRoot}/lib/libcorgi_term.${suffix}`, {
   frame_diff_diff: { args: ["ptr", "ptr", "usize"], returns: FFIType.i64_fast },
   // Bun 1.3.9 mispacks small stack arguments on macOS ARM64; use pointer-sized scalars past argument eight.
   frame_diff_compose: {
-    args: ["ptr", "ptr", "usize", "ptr", "ptr", "usize", "u16", "u16", "usize", "usize"],
+    args: ["ptr", "ptr", "usize", "ptr", "ptr", "usize", "u16", "u16", "usize", "usize", "usize"],
     returns: FFIType.i64_fast,
   },
   frame_diff_stats: { args: ["ptr", "ptr"], returns: "void" },

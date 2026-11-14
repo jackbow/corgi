@@ -1,10 +1,14 @@
 import * as protocol from "./protocol";
+import * as machine_path from "./machine_path";
 import { basename, dirname, resolve } from "node:path";
 import { mkdirSync, openSync, closeSync, readFileSync, unlinkSync } from "node:fs";
 import { spawn } from "node:child_process";
 import * as os from "./os";
 import * as rpc from "./rpc";
+import * as rpc_http from "./rpc_http";
+import * as start_lock from "./start_lock";
 import * as cli from "./cli";
+import * as cli_help from "./cli_help";
 import * as agent_mode from "./agent_mode";
 import * as json from "./json";
 import * as errors from "./errors";
@@ -14,6 +18,7 @@ import { specs as actionSpecs } from "./action";
 import type { Preset } from "./keymap";
 import { flock, n } from "./native_bridge";
 import * as updates from "./updates";
+import * as current_release from "./current_release";
 import { testBuild } from "./build_assets";
 import * as config from "./build_config";
 import * as crash from "./crash";
@@ -53,28 +58,50 @@ export function paneId(value: string): number {
   if (!Number.isSafeInteger(pane) || pane > 0xffffffff) throw Error("Overflow");
   return pane;
 }
-/** Any reply, even an error, means a daemon owns the socket. */
-async function reachable(path: string): Promise<boolean> {
-  const connection = new rpc.Connection(path, { requestIds: false });
+/** Whether a daemon owns the socket: any reply, even an error, says so. `wait`
+ * lets one that's starting or reloading finish. With `finished`, one
+ * finishing an update an older build started is waited out too, and fails if
+ * it doesn't finish. */
+async function reachable(daemon: rpc_http.Client, wait = true, finished = false): Promise<boolean> {
   try {
-    await connection.request("hello");
+    const hello = await daemon.discover(10_000, wait ? start_lock.wait_ms : 0, finished ? start_lock.wait_ms : 0);
+    // XXX: Remove for next protocol bump.
+    if (finished && "err" in hello && hello.err === "UpdateIncomplete") throw errors.fromReply(hello);
     return true;
-  } catch {
-    return false;
-  } finally {
-    connection.close();
+  } catch (error) {
+    if (["ENOENT", "ECONNREFUSED"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+    throw error;
   }
 }
-export async function ensureServer(path: string, exe = executable): Promise<void> {
-  if (await reachable(path)) return;
+/** Starts this computer's daemon unless it answers. A failed start prints
+ * the end of its log, unless `quiet`: a full-screen viewer's terminal has no
+ * room for it. */
+export async function ensureServer(
+  daemon: rpc_http.Client,
+  exe = executable,
+  serve: string[] = [],
+  quiet = false,
+): Promise<void> {
+  const path = daemon.socket;
+  // A pane's daemon is running by definition. Starting one from inside it
+  // would unlink the live socket and orphan every pane, and the new daemon
+  // would inherit the environment of whatever ran here (an agent's tool).
+  const pane = process.env.CORGI_PANE !== undefined,
+    // XXX: Remove for next protocol bump. The older updater starting it
+    // finishes it, and a pane's commands are answered meanwhile.
+    finished = !pane && !serve.includes("--activating");
+  if (await reachable(daemon, true, finished).catch(error => (pane ? false : Promise.reject(error)))) return;
+  if (pane) throw Error("ServerUnreachableFromPane");
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const guard = openSync(path + ".start.lock", "a", 0o600);
+  const guard = openSync(start_lock.path(path), "a", 0o600),
+    // Waiting on a daemon that's starting, any failure means not yet.
+    answers = () => reachable(daemon, false, finished).catch(() => false);
   try {
     while (!flock(guard)) {
-      if (await reachable(path)) return;
+      if (await answers()) return;
       await Bun.sleep(20);
     }
-    if (await reachable(path)) return;
+    if (await reachable(daemon, false, finished)) return;
     try {
       unlinkSync(path);
     } catch {}
@@ -82,10 +109,10 @@ export async function ensureServer(path: string, exe = executable): Promise<void
       fd = openSync(log, "a", 0o600);
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(exe, ["serve"], {
+      child = spawn(exe, ["serve", ...serve], {
         detached: true,
         stdio: ["ignore", fd, fd],
-        env: { ...process.env, CORGI_APP_EXE: exe },
+        env: { ...process.env, CORGI_APP_EXE: exe, CORGI_MACHINE: undefined },
       });
       child.unref();
     } finally {
@@ -100,12 +127,13 @@ export async function ensureServer(path: string, exe = executable): Promise<void
     });
     const until = Date.now() + 10000;
     while (Date.now() < until && !exited) {
-      if (await reachable(path)) return;
+      if (await answers()) return;
       await Bun.sleep(20);
     }
-    try {
-      process.stderr.write(readFileSync(log, "utf8").slice(-8192));
-    } catch {}
+    if (!quiet)
+      try {
+        process.stderr.write(readFileSync(log, "utf8").slice(-8192));
+      } catch {}
     throw Error("ServerStartFailed");
   } finally {
     flock(guard, false);
@@ -168,11 +196,121 @@ function asksJson(args: string[]): boolean {
 }
 export async function run(args = process.argv.slice(2)): Promise<void> {
   localeHost.initialize(preferences.load().language);
+  const path = os.socketPath(),
+    daemon = new rpc_http.Client(path);
+  if (args[0] === "machine") {
+    const remote = await import("./machine_cli");
+    await remote.manage(args.slice(1));
+    return;
+  }
+  if (args[0] === "__remote-info") {
+    if (args.length !== 1) throw Error("Usage");
+    const remote = await import("./machine_cli");
+    await ensureServer(daemon);
+    process.stdout.write(json.stringify(remote.remoteInfo(executable)) + "\n");
+    return;
+  }
+  if (args[0] === "__remote-bridge") {
+    // For a viewer whose saved bridge an update or a reboot took away, or
+    // that found no daemon; `--running` leaves one that isn't stopped.
+    const running = args[1] === "--running",
+      socket = args[running ? 2 : 1];
+    if (args.length !== (running ? 3 : 2) || !socket?.startsWith("/")) throw Error("Usage");
+    if (!running && socket === path) await ensureServer(daemon);
+    const { nativeRoot } = await import("./native_paths");
+    const bridge = nativeRoot + "/bin/corgi-remote-bridge";
+    process.execve!(bridge, [bridge, socket], process.env as Record<string, string>);
+  }
+  if (args[0] === "__remote-image") {
+    if (args.length !== 4 || !args[1].startsWith("/")) throw Error("Usage");
+    const conn = new rpc.Connection(args[1], 10_000);
+    try {
+      if ((await conn.call("hello")).instance !== args[2]) throw Error("StaleConnection");
+      const upload = await import("./image_upload");
+      const bytes = await upload.receive(Bun.stdin.stream(), received => {
+        process.stdout.write(json.stringify({ received }) + "\n");
+      });
+      const clipboard = await import("./host_clipboard");
+      const path = clipboard.saveImage(dirname(args[1]) + "/paste", args[3], bytes, Date.now());
+      process.stdout.write(json.stringify({ path }) + "\n");
+    } finally {
+      conn.close();
+    }
+    return;
+  }
+  if (args[0] === "__remote-run") {
+    const remote = await import("./machine_cli");
+    if (!args[1]?.startsWith("/") || !remote.remoteCommand(args.slice(2))) throw Error("Usage");
+    process.env.CORGI_SOCKET = args[1];
+    delete process.env.CORGI_MACHINE;
+    delete process.env.CORGI_PANE;
+    const machines = await import("./machines");
+    // One timeout fails the connection: it's the slowest request's, as the local CLI allows.
+    const conn = new rpc.Connection(args[1], rpc_http.longest_ms);
+    try {
+      machine_path.compatible(await conn.call("hello"));
+      await remote.run(args[1], args.slice(2), conn);
+    } finally {
+      conn.close();
+    }
+    return;
+  }
+  // Every machine's, whichever CORGI_MACHINE names; it's JSON either way.
+  const listing = agent_mode.flags(args).args.filter(arg => arg !== "--json");
+  if (listing[0] === "list" && listing[1] === "--all-machines" && listing.length === 2) {
+    const remote = await import("./machine_cli");
+    await remote.all(path);
+    return;
+  }
+  const accepts_machine =
+    cli.handles(agent_mode.flags(args).args) ||
+    ["attach", "open", "ping", "rpc", "action", "checkpoint", "shutdown"].includes(args[0] ?? "attach");
+  const selected =
+    args[0] === "--machine"
+      ? args[1]
+      : process.env.CORGI_PANE || !accepts_machine
+        ? undefined
+        : process.env.CORGI_MACHINE;
+  if (args[0] === "--machine") {
+    if (!selected) throw Error("Usage");
+    args = args.slice(2);
+  }
+  if (selected && selected !== "local") {
+    const machines = await import("./machines");
+    const profile = machines.find(selected);
+    const command = args[0] ?? "attach";
+    if (command === "attach" || command === "open") {
+      if (process.env.CORGI_PANE) throw Error("NestedCorgi");
+      if ((command === "open" && args.length !== 2) || (command === "attach" && args.length > 1)) throw Error("Usage");
+      const client = await import("./client");
+      await client.attachMachines(path, selected, command === "open" ? args[1] : null, () =>
+        ensureServer(daemon, executable, [], true),
+      );
+    } else {
+      const remote = await import("./machine_cli");
+      if (!remote.remoteCommand(args)) throw Error("UnsupportedRemoteCommand");
+      const mode = agent_mode.flags(args);
+      const command = cli.handles(mode.args)
+        ? [
+            agent_mode.enabled(mode.flag, process.env, process.stdout.isTTY === true) ? "--agent" : "--no-agent",
+            ...mode.args,
+          ]
+        : args;
+      process.exitCode = await machines.execute(profile, command);
+    }
+    return;
+  }
   if (args[0] === "__opencode2") {
     await (await import("./providers/opencode2/worker")).run();
     return;
   }
-  const alias = providerAlias(os.processArgs(process.pid)?.argv[0] ?? process.argv[0]);
+  // The Corgi prompt as a pane of its own, which the prompt card opens.
+  if (args[0] === "__chat") {
+    await (await import("./prompt_pane")).run(args.slice(1));
+    return;
+  }
+  const original = args,
+    alias = providerAlias(os.processArgs(process.pid)?.argv[0] ?? process.argv[0]);
   if (!alias && (args[0] === "remote" || (args[0] === "help" && args[1] === "remote"))) {
     const remote = await import("./remote/command");
     await remote.command(os.socketPath(), executable, args[0] === "help" ? ["help"] : args.slice(1));
@@ -192,9 +330,11 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
   // A provider owns its flags; help returns before Corgi starts any command.
   const own = alias || command.startsWith("__") ? [] : command === "agent" ? args.slice(0, 2) : args;
   if (!alias && (cli.asksHelp(own) || command === "help")) {
-    const humanHelp = agent ? help : i18n.document(helpText).replace("\n\n\n\n", `\n\n${actionNames}\n\n`);
+    const humanHelp = agent ? help : cli_help.main().replace("\n\n\n\n", `\n\n${actionNames}\n\n`);
     const commandHelp = agent ? cli.help : cli.localizedHelp();
     const topic = (command === "help" ? args.slice(1) : args).filter(arg => arg !== "--help" && arg !== "-h");
+    // Agents get the full reference; people get the overview, which points to it.
+    const reference = humanHelp + "\n" + commandHelp + (await import("./machine_cli")).help;
     switch (topic[0]) {
       case "account": {
         const account = await import("./account_command");
@@ -206,25 +346,32 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
         process.stdout.write(agent ? integration.help : integration.localizedHelp());
         break;
       }
+      case "--all":
+        process.stdout.write(reference);
+        break;
       default:
-        process.stdout.write(
-          topic.length
-            ? cli.helpFor(cli.handles(topic) ? commandHelp : humanHelp, topic, agent)
-            : humanHelp + "\n" + commandHelp,
-        );
+        if (topic.length) process.stdout.write(cli.helpFor(cli.handles(topic) ? commandHelp : humanHelp, topic, agent));
+        else if (agent) process.stdout.write(reference);
+        else process.stdout.write(cli_help.overview(process.stdout.isTTY === true && !process.env.NO_COLOR));
         if (topic[0] === "action") process.stdout.write("\n" + actionNames + "\n");
         if (!topic.length) process.stdout.write("\nPhone access through Tailscale: corgi remote help\n");
         break;
     }
     return;
   }
+  if (
+    !alias &&
+    process.env.CORGI_PANE !== undefined &&
+    (cli.handles(args) ||
+      ["bugreport", "open", "onboard", "checkpoint", "action", "hook", "agent", "headless", "watch"].includes(command))
+  )
+    await updates.route(daemon, executable, original);
   const asJson = replies.includes(args[0]) && asksJson(args);
   if (asJson) args = args.filter(arg => arg !== "--json");
-  const print = async <K extends protocol.Op>(path: string, op: K, ...rest: protocol.Arguments<K>) => {
-    const reply = await rpc.request(path, op, ...rest);
+  const print = async <K extends protocol.Op>(op: K, ...rest: protocol.Arguments<K>) => {
+    const reply = await daemon.call(op, ...rest);
     process.stdout.write(asJson ? json.stringify(reply) + "\n" : say(op, reply));
   };
-  const path = os.socketPath();
   log.configure(alias ? "agent" : command);
   quietExecveWarning();
   // Daemon only: native messages go to server.log, and terminals learn the providers' programs.
@@ -241,11 +388,11 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
   if (await updates.internal(args, executable)) return;
   if (alias) {
     const integration = await import("./integration");
-    await integration.launch(alias, args, executable);
+    await integration.launch(alias, args, daemon);
   }
   if (cli.handles(args)) {
     try {
-      await cli.run(path, args, agent);
+      await cli.run(daemon, args, agent);
     } catch (error) {
       cli.failure(error instanceof Error ? error.message : String(error), 2, args);
     }
@@ -264,7 +411,7 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
     case "bugreport": {
       const asked = args[1] === "--full";
       if (args.length > (asked ? 2 : 1)) throw Error("Usage");
-      process.stdout.write(await (await import("./bug_report")).command(path, asked));
+      process.stdout.write(await (await import("./bug_report")).command(daemon, asked));
       return;
     }
     case "licenses":
@@ -272,28 +419,38 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
       process.stdout.write((await import("./licenses")).text);
       return;
     case "serve": {
+      await updates.hold(executable);
       const { Server } = await import("./server");
-      await new Server(path, executable, buildId()).run();
+      const server = new Server(path, executable, buildId());
+      // XXX: Remove for next protocol bump.
+      server.older_updater = args[1] === "--activating";
+      await server.run();
       return;
     }
     case "start":
-      if (args[1] !== "--update-routed") await updates.startup(path, executable, ["start"]);
-      await ensureServer(path);
-      updates.background(path, executable);
+      if (args[1] !== "--update-routed") await updates.startup(daemon, executable, ["start"]);
+      await ensureServer(daemon);
       return;
     case "__update-start":
-      await ensureServer(path);
+      // XXX: Remove for next protocol bump. An older build's updater runs this
+      // bare, then checks the daemon in with JSON lines; a newer one passes
+      // `--http`, and the daemon needn't wait for it.
+      await ensureServer(daemon, executable, args[1] === "--http" ? [] : ["--activating"]);
       return;
     case "attach":
     case "--no-update": {
       if (process.env.CORGI_PANE) throw Error("NestedCorgi");
       if (!process.stdin.isTTY || !process.stdout.isTTY) throw Error("TerminalRequired");
-      if (args[1] !== "--update-routed") await updates.startup(path, executable, ["attach"], command === "--no-update");
-      await ensureServer(path);
-      updates.background(path, executable);
+      if (args[1] !== "--update-routed")
+        await updates.startup(daemon, executable, ["attach"], command === "--no-update");
+      await ensureServer(daemon);
       await (await import("./state_report")).showRepairs(path);
       const client = await import("./client");
-      await client.attach(path);
+      // `--machine local` is the local viewer alone.
+      // A daemon that dies under the viewer is started again.
+      const restart = () => ensureServer(daemon, executable, [], true);
+      if (selected === "local") await client.attachLocal(path, restart);
+      else await client.attach(path, null, restart);
       return;
     }
     case "open": {
@@ -302,13 +459,12 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
       if (rest.length !== 1) throw Error("Usage");
       const folder = cli.directory(rest[0]);
       if (process.env.CORGI_PANE !== undefined) {
-        await rpc.request(path, "action", { name: "open", value: folder, pane: paneId(process.env.CORGI_PANE) });
+        await daemon.call("action", { name: "open", value: folder, pane: paneId(process.env.CORGI_PANE) });
         return;
       }
       if (!process.stdin.isTTY || !process.stdout.isTTY) throw Error("TerminalRequired");
-      if (!routed) await updates.startup(path, executable, ["open", folder]);
-      await ensureServer(path);
-      updates.background(path, executable);
+      if (!routed) await updates.startup(daemon, executable, ["open", folder]);
+      await ensureServer(daemon);
       await (await import("./state_report")).showRepairs(path);
       try {
         crash.init("viewer");
@@ -316,25 +472,25 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
         console.error("crash reports are off:", error);
       }
       const client = await import("./client");
-      await client.attach(path, folder);
+      await client.attach(path, folder, () => ensureServer(daemon, executable, [], true));
       return;
     }
     case "onboard": {
       if (args.length !== 1) throw Error("Usage");
       if (process.env.CORGI_PANE !== undefined) {
         const pane = paneId(process.env.CORGI_PANE);
-        await print(path, "action", { name: "onboard", pane });
+        await print("action", { name: "onboard", pane });
         return;
       }
       if (!process.stdin.isTTY || !process.stdout.isTTY) throw Error("TerminalRequired");
-      await ensureServer(path);
+      await ensureServer(daemon);
       try {
         crash.init("viewer");
       } catch (error) {
         console.error("crash reports are off:", error);
       }
       const client = await import("./client");
-      await client.onboard(path);
+      await client.onboard(path, () => ensureServer(daemon, executable, [], true));
       return;
     }
     case "__viewer-test": {
@@ -344,25 +500,27 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
       return;
     }
     case "ping":
-      await print(path, "ping");
+      await print("ping");
       return;
     case "shutdown": {
-      const reply = await rpc.request(path, "shutdown");
+      const reply = await daemon.call("shutdown");
       for (let i = 0; i < 500; i++) {
-        if (!(await reachable(path)))
+        // A daemon on its way out may take a connection and drop it.
+        if (!(await reachable(daemon).catch(() => false)))
           return void process.stdout.write(asJson ? json.stringify(reply) + "\n" : "stopped\n");
         await Bun.sleep(10);
       }
       throw Error("ShutdownTimedOut");
     }
     case "checkpoint":
-      await print(path, "recovery.save");
+      await print("recovery.save");
       return;
     case "reload":
       if (args.length > 2) throw Error("Usage");
-      await print(path, "server.reload", { executable: args[1] ?? executable });
+      await print("server.reload", { executable: args[1] ?? executable });
       return;
     case "__handoff": {
+      await updates.hold(executable);
       const handoff = await import("./persist/handoff");
       await handoff.importAndRun(path, executable, Number(args[1]), Number(args[2]));
       return;
@@ -375,22 +533,30 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
     case "rpc": {
       if (args.length !== 2) throw Error("Usage");
       // Sent as typed, so it reaches any daemon version.
-      const connection = new rpc.Connection(path, { requestIds: false });
-      try {
-        process.stdout.write(json.stringify(await connection.rawRequest(json.parse(args[1]))) + "\n");
-      } finally {
-        connection.close();
-      }
+      process.stdout.write(json.stringify(await daemon.post(json.parse(args[1]))) + "\n");
       return;
     }
-    case "action":
-      if (args.length < 2) throw Error("Usage");
-      await print(path, "action", { name: args[1], value: args[2] ?? "" });
+    case "action": {
+      // A trailing `--viewer ID` picks the viewer; a VALUE may itself look like a flag.
+      const viewer = args.length >= 4 && args.at(-2) === "--viewer" ? Number(args.at(-1)) : null,
+        rest = viewer === null ? args : args.slice(0, -2);
+      if (rest.length < 2 || (viewer !== null && !(Number.isInteger(viewer) && viewer > 0))) throw Error("Usage");
+      await print("action", { name: rest[1], value: rest[2] ?? "", ...(viewer === null ? {} : { viewer }) });
       return;
+    }
     case "which": {
       if (args.length !== 2) throw Error("Usage");
-      const d = await import("./discovery");
-      process.stdout.write((await d.resolve(provider(args[1]))) + "\n");
+      const d = await import("./discovery"),
+        p = provider(args[1]);
+      await d.ready([p]);
+      const stub = d.stubOf(p);
+      // What Corgi runs; a stub isn't the agent, as running it installs the agent first.
+      if (stub) {
+        process.stderr.write(`corgi: ${adapter(p).name} isn't installed; ${stub} installs it the first time it runs\n`);
+        process.exitCode = 1;
+        return;
+      }
+      process.stdout.write((await d.resolve(p)) + "\n");
       return;
     }
     case "keys": {
@@ -403,7 +569,7 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
       if (args.length !== 2) throw Error("Usage");
       try {
         const integration = await import("./integration");
-        await integration.hook(provider(args[1]), path);
+        await integration.hook(provider(args[1]), daemon);
       } catch {}
       return;
     }
@@ -436,35 +602,35 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
     }
     case "hooks": {
       if (args.length !== 2) throw Error("Usage");
-      process.stdout.write(adapter(provider(args[1])).integration.snippet(executable) + "\n");
+      process.stdout.write(adapter(provider(args[1])).integration.snippet(current_release.path(executable)) + "\n");
       return;
     }
     case "agent": {
       if (args.length < 2) throw Error("Usage");
       const integration = await import("./integration");
-      await integration.launch(provider(args[1]), args.slice(2), executable);
+      await integration.launch(provider(args[1]), args.slice(2), daemon);
       return;
     }
     case "headless": {
       const op = args[1];
       if (op === "start") {
         if (args.length !== 4 && (args.length !== 6 || args[4] !== "--workspace")) throw Error("Usage");
-        await ensureServer(path);
-        await print(path, "headless.start", {
+        await ensureServer(daemon);
+        await print("headless.start", {
           provider: provider(args[2]),
           prompt: args[3],
           cwd: process.cwd(),
           workspace: args[5] ? Number(args[5]) : null,
         });
-      } else if (op === "list") await print(path, "headless.list");
+      } else if (op === "list") await print("headless.list");
       else if ((op === "stop" && args.length === 4) || (op === "events" && (args.length === 4 || args.length === 5)))
-        await print(path, `headless.${op}`, {
+        await print(`headless.${op}`, {
           provider: provider(args[2]),
           session: args[3],
           ...(op === "events" ? { after: BigInt(args[4] ?? 0) } : {}),
         });
       else if (op === "send" && args.length === 5)
-        await print(path, "headless.send", {
+        await print("headless.send", {
           provider: provider(args[2]),
           session: args[3],
           input: json.parse(args[4]),
@@ -473,11 +639,11 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
       return;
     }
     case "dev": {
-      await ensureServer(path);
-      const hello = await rpc.request(path, "hello");
-      if (hello.build_id !== buildId()) await rpc.reload(path, executable);
+      await ensureServer(daemon);
+      const hello = await daemon.call("hello");
+      if (hello.build_id !== buildId()) await daemon.reload(executable);
       if (process.env.CORGI_PANE !== undefined)
-        await print(path, "action", { name: "relaunch", value: executable, pane: paneId(process.env.CORGI_PANE) });
+        await print("action", { name: "relaunch", value: executable, pane: paneId(process.env.CORGI_PANE) });
       else {
         const c = await import("./client");
         await c.attach(path);
@@ -485,8 +651,22 @@ export async function run(args = process.argv.slice(2)): Promise<void> {
       return;
     }
     case "update":
-      await updates.command(args.slice(1), path, executable);
+      await updates.command(args.slice(1), daemon, executable);
       return;
+    case "watch": {
+      // Never starts a daemon: one that isn't running is what it reports.
+      if (args.length !== 2 || args[1] !== "--json") throw Error("Usage");
+      const watch = await import("./watch");
+      await watch.command(path);
+      return;
+    }
+    case "usage": {
+      // Never starts a daemon either; one that isn't running has no readings.
+      if (args.length !== 2 || args[1] !== "--json") throw Error("Usage");
+      const usage = await import("./usage_report");
+      await usage.command(daemon);
+      return;
+    }
     default:
       throw Error("UnknownCommand");
   }
@@ -511,9 +691,21 @@ export function failure(args: string[], error: unknown): string {
     }
     case "UnknownCommand":
       return `corgi: unknown command ${args[0]}; see corgi --help\n`;
+    case "ProviderOnDemand": {
+      const agent = Provider.parse(args[2] ?? "");
+      return `corgi: ${agent ? adapter(agent).name : "the agent"} installs the first time it runs; start it once in a pane\n`;
+    }
+    case "ServerUnreachableFromPane":
+      return `corgi: can't reach the Corgi server at ${os.socketPath()}, and won't start one from inside a Corgi pane.\n`;
     case "IncompatibleViewerProtocol":
     case "UnsupportedViewerProtocol":
       return `corgi: this viewer is incompatible with the server (requires viewer protocol ${protocol.viewer_version}). The server may have changed during a restart. Reattach using the same Corgi version as the server.\n`;
+    // XXX: Remove for next protocol bump.
+    case "UpdateIncomplete":
+      return "corgi: the Corgi server is still finishing an update from an older version. If this keeps happening, run `corgi update` to finish it.\n";
+    // XXX: Remove for next protocol bump.
+    case "ServerRolledBack":
+      return "corgi: the server rolled back to a version without WebSocket support. Reattach using the selected Corgi version; running shells and agents were preserved.\n";
     case "UnsupportedProtocol":
       return `corgi: this client uses runtime protocol ${protocol.version}, which the server does not support. Reload the server using this Corgi version, or use a matching client.\n`;
     case "UnsupportedManagementProtocol":
@@ -531,8 +723,14 @@ export function failure(args: string[], error: unknown): string {
 /** What a busy daemon is in the middle of, in words. */
 function busyDoing(busy: protocol.Busy): string {
   switch (busy.op) {
+    case "account.signin":
+      return "an account signs in";
+    case "account.remove":
+      return "an account is removed";
     case "worktree.add":
       return `Git adds the worktree ${busy.path}`;
+    case "headless.start":
+      return `a headless ${busy.provider} agent starts`;
   }
 }
 if (import.meta.main) {

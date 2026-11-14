@@ -1,11 +1,15 @@
-import { mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { Runtime, EXE, layout_tree, Viewer } from "./runtime";
-import { registerCase, run, shellJoin } from "./support";
+import { Lines, registerCase, run, shellJoin } from "./support";
 import { write_ordinary_agent } from "./provider_sim";
 import { Provider } from "../src/providers";
 
 class AgentCli extends Runtime {
+  async configure() {
+    // Start in the isolated directory so repository tracker updates cannot race CLI snapshots.
+    await run([EXE, "start"], { env: this.env, cwd: this.temp.name });
+  }
   async cli(args: any[], { caller, error, stdin }: { caller?: number; error?: string; stdin?: string } = {}) {
     const env = { ...this.env };
     delete env.CORGI_PANE;
@@ -35,6 +39,21 @@ class AgentCli extends Runtime {
   }
   async topology() {
     return (await this.snapshot()).workspaces.map((w: any) => [w.id, w.model.tabs]);
+  }
+  async test_memory_lines_reach_the_prompt_session_they_ran_for() {
+    const ident = (
+      await this.rpc({ op: "headless.start", prompt: "test/init", provider: "codex", cwd: this.temp.name, corgi: true })
+    ).session;
+    const session = (await this.snapshot()).headless_sessions.find((s: any) => s.session === ident);
+    const memory = (args: string[], env: Record<string, string | undefined>) =>
+      run([EXE, "memory", ...args], { env: { ...this.env, CORGI_PANE: undefined, ...env } });
+    // The model's: run with the session's id, as the daemon starts it.
+    await memory(["add", "Ships Fridays"], { CORGI_HEADLESS_ID: String(session.id) });
+    // The user's, in their own shell: no session to tell.
+    await memory(["add", "Deploys from main"], {});
+    const events = (await this.rpc({ op: "headless.events", provider: "codex", session: ident })).events,
+      lines = events.filter((e: any) => e.event.kind === "memory").map((e: any) => e.event.line);
+    this.assertEqual(lines, ["- Ships Fridays"]);
   }
   async test_layout_moves_keep_processes_and_tree() {
     const one = await this.new("one"),
@@ -129,7 +148,7 @@ class AgentCli extends Runtime {
       await run([EXE, ...args], {
         env: { ...this.env, CORGI_SOCKET: this.temp.name + "/absent.sock" },
       });
-    this.assertIn("Otherwise run: corgi --skill", await this.run_cli("--help"));
+    this.assertIn("Otherwise run: corgi --skill", await this.run_cli("help", "--all"));
     this.assertEqual(
       await this.cli(["pane", "split", "current", "--right"], {
         error: "NoCallerPane",
@@ -144,6 +163,9 @@ class AgentCli extends Runtime {
     await this.until(async () => (await this.cli(["pane", "read", one.pane])).result.text.includes("cli_marker_123"));
     this.assertIn("cli_marker_123", await this.run_cli("pane", "read", String(one.pane)));
     this.assertIn(`    pane ${one.pane}`, await this.run_cli("list"));
+    // A shell would run a message as a command.
+    await this.cli(["message", `pane:${one.pane}`, "printf 'message_marker_456\\n'"], { error: "NoAgent" });
+    await this.cli(["message", "headless:999", "hello"], { error: "NoHeadlessSession" });
     await this.cli(["pane", "keys", one.pane, "ctrl+c"]);
     await this.cli(["pane", "keys", one.pane, "enter", "invalid-key"], {
       error: "InvalidKey",
@@ -233,10 +255,19 @@ class AgentCli extends Runtime {
       await viewer.focus(one.pane);
       await this.until(async () => (await state()).observation.read === 1);
       await viewer.focus(other.pane);
-      await this.cli(["pane", "send", one.pane, "work", "--enter"]);
+      // Without a conversation to reach, a message is typed and submitted, but
+      // only where Corgi can't tell or can see an empty composer: this stand-in
+      // draws none of Codex's.
+      if (provider === "claude")
+        this.assertIn(`typed into pane ${one.pane}`, await this.run_cli("message", String(one.pane), "work"));
+      else {
+        await this.cli(["message", one.pane, "work"], { error: "AgentBusy" });
+        await this.cli(["pane", "send", one.pane, "work", "--enter"]);
+      }
       await this.until(async () => (await state()).state === "working");
       await this.cli(["pane", "send", one.pane, "exit", "--enter"]);
       await this.until(async () => (await state()).provider === null);
+      await this.cli(["message", one.pane, "work"], { error: "NoAgent" });
       this.assertEqual((await state()).observation.completed, 1);
       this.assertEqual((await state()).observation.read, 1);
     }
@@ -319,6 +350,24 @@ class AgentCli extends Runtime {
     this.assertEqual(await idle("--cwd", realpathSync(empty)), []);
     await this.cli(["pane", "idle", "--workspace", 99], { error: "NoWorkspace" });
   }
+  async test_launcher_models_works_without_a_pane_or_workspace_argument() {
+    const result = await this.cli(["launcher", "models", "codex"]);
+    this.assertTrue(Array.isArray(result.models));
+  }
+  async test_launcher_lists_each_workspace_without_a_filter() {
+    const other = (await this.command("workspace.create", { name: "other", cwd: this.temp.name })).workspace;
+    await this.cli(["launcher", "hide", "codex", "--workspace", 1]);
+    const listed = (await this.cli(["launcher", "list"])).workspaces;
+    this.assertEqual(
+      listed.map((w: any) => w.id),
+      [1, other],
+    );
+    this.assertTrue(listed[0].agents.find((a: any) => a.agent === "codex").hidden);
+    this.assertFalse(listed[1].agents.find((a: any) => a.agent === "codex").hidden);
+    const text = await this.run_cli("launcher", "list");
+    this.assertIn("workspace 1", text);
+    this.assertIn(`workspace ${other}`, text);
+  }
   async test_launcher_hides_agents_in_one_workspace() {
     const one = await this.new(),
       other = (await this.command("workspace.create", { name: "other", cwd: this.temp.name })).workspace,
@@ -330,18 +379,25 @@ class AgentCli extends Runtime {
     // Inside a pane, its own workspace.
     await this.cli(["launcher", "hide", ...Provider.all.filter(p => p !== "codex")], { caller: one.pane });
     this.assertEqual(await shown(1), []);
-    this.assertEqual(await shown(other), Provider.all);
+    this.assertEqual(await shown(other), ["codex", "claude"]);
     this.assertEqual((await this.snapshot()).workspaces[0].launcher_hidden, Provider.all);
     this.assertEqual((await this.cli(["launcher", "show", "codex", "--workspace", 1])).workspaces[0].agents, [
       { agent: "codex", label: "Codex", launcher: true, hidden: false, options: { flags: "", env: [] }, yolo: false },
     ]);
-    this.assertRegex(await this.run_cli("launcher", "list", "--workspace", "1"), /claude +Claude Code +hidden/);
+    // Explicitly adding Codex ends the unconfigured-agent fallback.
+    this.assertRegex(
+      await this.run_cli("launcher", "list", "--workspace", "1"),
+      /claude +Claude Code +not in the launcher/,
+    );
     await this.cli(["launcher", "hide", "codex", "nobody", "--workspace", 1], { error: "UnknownAgent" });
     await this.cli(["launcher", "hide", "codex", "--workspace", 99], { error: "NoWorkspace" });
     await this.cli(["launcher", "hide", "codex"], { error: "MissingWorkspace" });
     this.assertEqual(await shown(1), ["codex"]);
     await this.cli(["launcher", "show", "pi", "--workspace", 1]);
-    this.assertEqual(await shown(1), ["codex", "pi"]);
+    this.assertEqual(await shown(1), ["codex"]);
+    this.assertTrue((await this.snapshot()).launcher_added.includes("pi"));
+    await this.cli(["launcher", "show", "claude", "--workspace", 1]);
+    this.assertEqual(await shown(1), ["codex", "claude"]);
   }
   async test_launcher_configures_clones_and_copies_layout() {
     const other = (await this.command("workspace.create", { name: "other", cwd: this.temp.name })).workspace;
@@ -524,6 +580,75 @@ class AgentCli extends Runtime {
     const reopened = await Viewer.create(this);
     this.assertEqual(reopened.state.workspace, ws);
     this.assertNotEqual(reopened.state.pane, one.pane);
+  }
+  async test_watch_prints_agent_changes_and_follows_the_daemon() {
+    const env = { ...this.env };
+    delete env.CORGI_PANE;
+    const watch = Bun.spawn([EXE, "watch", "--json"], { env, stdout: "pipe", stderr: "inherit" }),
+      lines = new Lines(),
+      printed: string[] = [];
+    void (async () => {
+      for await (const chunk of watch.stdout.pipeThrough(new TextDecoderStream())) lines.feed(chunk);
+      lines.end();
+    })();
+    /** The first summary from here on that `match` accepts. */
+    const seen = async (match: (summary: any) => boolean) => {
+      for (;;) {
+        const line = await lines.next(15000);
+        printed.push(line);
+        if (match(JSON.parse(line))) return JSON.parse(line);
+      }
+    };
+    try {
+      const first = await seen(() => true);
+      this.assertEqual([first.running, first.counts.agents, first.workspaces[0].id], [true, 0, 1]);
+      const executable = write_ordinary_agent(join(this.temp.name, "codex")),
+        one = await this.new("agent"),
+        agent = (summary: any) => summary.workspaces?.[0]?.agents.find((a: any) => a.pane === one.pane);
+      await this.cli(["pane", "send", one.pane, executable, "--enter"]);
+      const { status, detail, glyph, corgi, compacting_since, retry_at, ...appeared } = agent(
+        await seen(s => agent(s) !== undefined),
+      );
+      this.assertEqual(appeared, {
+        pane: one.pane,
+        headless: null,
+        title: "Codex",
+        provider: "codex",
+        starred: false,
+        section: "working",
+        needs_input: false,
+        unread: false,
+      });
+      // The sidebar's glyph and second line come with it.
+      this.assertIn(status, ["starting", "working"]);
+      this.assertEqual(
+        [typeof detail, typeof glyph, typeof corgi, compacting_since, retry_at],
+        ["string", "string", "string", 0, 0],
+      );
+      await this.cli(["pane", "send", one.pane, "block", "--enter"]);
+      const blocked = await seen(s => agent(s)?.needs_input === true);
+      this.assertEqual(
+        [agent(blocked).section, agent(blocked).status, blocked.counts.needs_input],
+        ["working", "needs_input", 1],
+      );
+      await this.cli(["pane", "send", one.pane, "stop", "--enter"]);
+      await seen(s => agent(s)?.needs_input === false);
+      // It keeps going through a restart, and says so while there's no daemon.
+      await this.run_cli("shutdown");
+      await seen(s => s.running === false);
+      await this.until(() => !existsSync(this.path));
+      await this.run_cli("start");
+      await seen(s => s.running === true);
+      // Only changes print.
+      this.assertTrue(
+        printed.every((line, i) => line !== printed[i - 1]),
+        printed,
+      );
+      this.assertEqual(watch.exitCode, null);
+    } finally {
+      watch.kill();
+      await watch.exited;
+    }
   }
 }
 registerCase("AgentCli", AgentCli, { inherited: false });

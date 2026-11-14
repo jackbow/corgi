@@ -1,8 +1,10 @@
 //! Shared launcher configuration, addressed by stable rows rather than display labels.
+import * as accountLock from "./account_lock";
 import type { Runtime } from "./runtime";
 import { Provider, adapter } from "./providers";
-import { Row } from "./launch/row";
+import { Row, hidden } from "./launch/row";
 import * as accounts from "./accounts";
+import * as visibility from "./launch/visibility";
 import * as profiles from "./agent_profiles";
 import * as options from "./agent_options";
 import * as effort from "./providers/effort";
@@ -20,7 +22,9 @@ export type Agent = {
   options: options.Options;
   yolo: boolean;
 };
-export function catalog(r: Runtime): Agent[] {
+export function catalog(r: Runtime, preview?: visibility.Preview): Agent[] {
+  const savedProfiles = profiles.list(),
+    defaults = preview && visibility.defaults(preview, r.launcher_added, savedProfiles);
   const native = Provider.all
     .flatMap(provider => [
       { provider, account: "", name: accounts.defaultName(provider) },
@@ -34,7 +38,11 @@ export function catalog(r: Runtime): Agent[] {
       names: [name, ...(!account ? [`${provider}/default`] : [])].filter(Boolean),
       row: Row.of(provider, account),
       label: name || adapter(provider).label,
-      launcher: account ? !r.account_hidden.includes(account) : !r.agent_hidden[provider],
+      launcher:
+        !hidden(r, { provider, account }) &&
+        (!preview ||
+          (visibility.available(preview, provider) &&
+            (account ? visibility.account(preview, { provider, account }, r.launcher_added) : defaults![provider]))),
       name,
       provider,
       account,
@@ -43,12 +51,12 @@ export function catalog(r: Runtime): Agent[] {
     }));
   return [
     ...native,
-    ...profiles.list().map((p): Agent => ({
+    ...savedProfiles.map((p): Agent => ({
       agent: `profile/${p.id}`,
       names: [p.name],
       row: Row.ofProfile(p.id),
       label: p.name,
-      launcher: true,
+      launcher: !preview || visibility.saved(preview, p),
       name: p.name,
       provider: p.provider,
       account: p.account,
@@ -93,6 +101,7 @@ export type Edit = {
 export function configure(r: Runtime, q: Edit): Row {
   const agent = get(r, q.row);
   if (!agent.provider) throw Error("CustomCommandOptions");
+  accountLock.check(agent.provider, agent.account);
   const settings = { ...agent.options };
   if (q.model !== null) {
     delete settings.model;

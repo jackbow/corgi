@@ -1,14 +1,15 @@
 import { test, expect, spyOn } from "bun:test";
-import { actionNames, ensureServer, failure, providerAlias, paneId, run, say } from "./main";
+import { actionNames, ensureServer, executable, failure, providerAlias, paneId, run, say } from "./main";
 import { specs } from "./action";
-import * as rpc from "./rpc";
+import * as rpc_http from "./rpc_http";
 import * as crash from "./crash";
 import * as updates from "./updates";
 import * as integration from "./integration";
 import * as accountCommand from "./account_command";
 import * as protocol from "./protocol";
 import * as errors from "./errors";
-import { existsSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import * as text from "./text";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname, relative } from "node:path";
@@ -33,6 +34,11 @@ test("runtime protocol errors are distinct from viewer incompatibility", () => {
     `management protocol ${protocol.management_version}`,
   );
 });
+test("rollback explains how to reattach without restarting programs", () => {
+  const message = failure(["attach"], Error("ServerRolledBack"));
+  expect(message).toContain("Reattach using the selected Corgi version");
+  expect(message).toContain("running shells and agents were preserved");
+});
 test("a busy reload says what it waits for", () => {
   const busy = errors.fromReply({ err: "ReloadBusy", busy: { op: "worktree.add", path: "/src/feature" } });
   expect(failure(["reload"], busy)).toBe(
@@ -42,18 +48,45 @@ test("a busy reload says what it waits for", () => {
     '{"ok":false,"err":"ReloadBusy","busy":{"op":"worktree.add","path":"/src/feature"}}\n',
   );
   expect(failure(["reload"], Error("ReloadBusy"))).toBe("corgi: ReloadBusy\n");
+  const starting = errors.fromReply({ err: "ReloadBusy", busy: { op: "headless.start", provider: "codex" } });
+  expect(failure(["reload"], starting)).toBe(
+    "corgi: the server can't reload while a headless codex agent starts; try again in a moment.\n",
+  );
 });
+/** One HTTP reply, as the daemon's socket sends it. */
+function http(body: string, status = "200 OK") {
+  return `HTTP/1.1 ${status}\r\nContent-Length: ${text.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`;
+}
 test("a daemon that rejects hello still counts as running", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "corgi-main-")), "s");
   const server = createServer(socket =>
-    socket.on("data", () => socket.write('{"err":"UnsupportedManagementProtocol"}\n')),
+    socket.once("data", () => socket.end(http('{"err":"UnsupportedManagementProtocol"}\n', "400 Bad Request"))),
   );
   await new Promise<void>(resolve => server.listen(path, resolve));
   try {
-    await ensureServer(path, "/nonexistent/corgi");
+    await ensureServer(new rpc_http.Client(path), "/nonexistent/corgi");
     expect(existsSync(path)).toBe(true);
   } finally {
     server.close();
+  }
+});
+test("a command inside a pane never replaces an unreachable daemon", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "corgi-main-")), "s"),
+    previous = process.env.CORGI_PANE;
+  // Stands in for the live socket that a new daemon would have unlinked.
+  writeFileSync(path, "");
+  process.env.CORGI_PANE = "7";
+  try {
+    await expect(ensureServer(new rpc_http.Client(path), "/nonexistent/corgi")).rejects.toThrow(
+      "ServerUnreachableFromPane",
+    );
+    expect(existsSync(path)).toBe(true);
+    expect(failure(["headless"], Error("ServerUnreachableFromPane"))).toBe(
+      `corgi: can't reach the Corgi server at ${process.env.CORGI_SOCKET}, and won't start one from inside a Corgi pane.\n`,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.CORGI_PANE;
+    else process.env.CORGI_PANE = previous;
   }
 });
 test("help names every action on lines of at most 80 columns", () => {
@@ -65,14 +98,25 @@ test("help names every action on lines of at most 80 columns", () => {
       .filter(Boolean),
   ).toEqual(Object.keys(specs).filter(name => !["relaunch", "open-notification"].includes(name)));
 });
+test("an inconclusive discovery never unlinks an existing daemon socket", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "corgi-main-")), "s");
+  const server = createServer(socket => socket.once("data", () => socket.end(http('{"ok":true}\n'))));
+  await new Promise<void>(resolve => server.listen(path, resolve));
+  try {
+    await expect(ensureServer(new rpc_http.Client(path), "/nonexistent/corgi")).rejects.toThrow("UnexpectedReply");
+    expect(existsSync(path)).toBe(true);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
 test("open inside a pane quietly sends its viewer the folder's real path", async () => {
   const previous = process.env.CORGI_PANE;
   process.env.CORGI_PANE = "7";
-  const request = spyOn(rpc, "request").mockResolvedValue({ ok: true });
+  const request = spyOn(rpc_http.Client.prototype, "call").mockResolvedValue({ ok: true });
   const output = spyOn(process.stdout, "write").mockReturnValue(true);
   try {
     await run(["open", import.meta.dir + "/.."]);
-    expect(request.mock.calls[0]?.slice(1)).toEqual([
+    expect(request.mock.calls[0]).toEqual([
       "action",
       { name: "open", value: realpathSync(resolve(import.meta.dir, "..")), pane: 7 },
     ]);
@@ -87,7 +131,7 @@ test("open inside a pane quietly sends its viewer the folder's real path", async
   }
 });
 test("--help prints help instead of running the command", async () => {
-  const request = spyOn(rpc, "request").mockResolvedValue({ ok: true });
+  const request = spyOn(rpc_http.Client.prototype, "call").mockResolvedValue({ ok: true });
   const output = spyOn(process.stdout, "write").mockReturnValue(true);
   const init = spyOn(crash, "init").mockImplementation(() => {});
   const update = spyOn(updates, "internal").mockResolvedValue(false);
@@ -95,7 +139,7 @@ test("--help prints help instead of running the command", async () => {
     for (const [args, expected] of [
       [["shutdown", "--help"], "corgi shutdown"],
       [["reload", "-h"], "corgi reload"],
-      [["--no-agent", "-h"], "corgi shutdown"],
+      [["--no-agent", "-h"], "corgi help --all"],
       [["agent", "--help"], "corgi agent"],
       [["serve", "--help"], "corgi shutdown"],
       [["--skill", "--help"], "corgi --skill"],
@@ -106,6 +150,7 @@ test("--help prints help instead of running the command", async () => {
       [["pane", "split", "--help"], "[--command SHELL_COMMAND]"],
       [["help", "account"], "Usage: corgi account"],
       [["help", "integration"], "Usage: corgi integration"],
+      [["watch", "--help"], "corgi watch --json"],
     ] as const) {
       output.mockClear();
       await run([...args]);
@@ -122,7 +167,7 @@ test("--help prints help instead of running the command", async () => {
   }
 });
 test("help after an unrelated option never reaches the daemon", async () => {
-  const request = spyOn(rpc, "request").mockRejectedValue(Error("UnexpectedRequest"));
+  const request = spyOn(rpc_http.Client.prototype, "call").mockRejectedValue(Error("UnexpectedRequest"));
   const output = spyOn(process.stdout, "write").mockReturnValue(true);
   try {
     for (const args of [
@@ -141,8 +186,31 @@ test("help after an unrelated option never reaches the daemon", async () => {
     output.mockRestore();
   }
 });
+test("local pane commands and reload never look up the runtime's executable", async () => {
+  const previous = process.env.CORGI_PANE;
+  process.env.CORGI_PANE = "7";
+  const route = spyOn(updates, "route").mockRejectedValue(Error("UnexpectedRoute")),
+    request = spyOn(rpc_http.Client.prototype, "call").mockResolvedValue({ ok: true }),
+    output = spyOn(process.stdout, "write").mockReturnValue(true);
+  try {
+    for (const args of [["--help"], ["help", "pane", "read"], ["pane", "read", "--help"], ["--version"], ["keys"]])
+      await run(args);
+    expect(request).not.toHaveBeenCalled();
+    await run(["reload"]);
+    expect(request.mock.calls[0]).toEqual(["server.reload", { executable }]);
+    await run(["reload", "/other/corgi"]);
+    expect(request.mock.calls[1]).toEqual(["server.reload", { executable: "/other/corgi" }]);
+    expect(route).not.toHaveBeenCalled();
+  } finally {
+    route.mockRestore();
+    request.mockRestore();
+    output.mockRestore();
+    if (previous === undefined) delete process.env.CORGI_PANE;
+    else process.env.CORGI_PANE = previous;
+  }
+});
 test("account and integration help routes distinguish human and agent output", async () => {
-  const request = spyOn(rpc, "request").mockRejectedValue(Error("UnexpectedRequest")),
+  const request = spyOn(rpc_http.Client.prototype, "call").mockRejectedValue(Error("UnexpectedRequest")),
     output = spyOn(process.stdout, "write").mockReturnValue(true),
     update = spyOn(updates, "internal").mockResolvedValue(false),
     accountHelp = spyOn(accountCommand, "localizedHelp").mockReturnValue("account translated\n"),
@@ -192,14 +260,29 @@ test("provider help remains the provider's argument", async () => {
   }
 });
 test("action values preserve agent mode flags", async () => {
-  const request = spyOn(rpc, "request").mockResolvedValue({ ok: true, viewer: 3, queued: true });
+  const request = spyOn(rpc_http.Client.prototype, "call").mockResolvedValue({ ok: true, viewer: 3, queued: true });
   const output = spyOn(process.stdout, "write").mockReturnValue(true);
   try {
     for (const value of ["--agent", "--no-agent"]) {
       request.mockClear();
       await run(["action", "rename", value]);
-      expect(request.mock.calls[0]?.slice(1)).toEqual(["action", { name: "rename", value }]);
+      expect(request.mock.calls[0]).toEqual(["action", { name: "rename", value }]);
     }
+  } finally {
+    request.mockRestore();
+    output.mockRestore();
+  }
+});
+test("an action goes to the viewer --viewer names", async () => {
+  const request = spyOn(rpc_http.Client.prototype, "call").mockResolvedValue({ ok: true, viewer: 3, queued: true });
+  const output = spyOn(process.stdout, "write").mockReturnValue(true);
+  try {
+    await run(["action", "new-agent", "--viewer", "3"]);
+    expect(request.mock.calls[0]).toEqual(["action", { name: "new-agent", value: "", viewer: 3 }]);
+    request.mockClear();
+    await run(["action", "rename", "--agent", "--viewer", "2"]);
+    expect(request.mock.calls[0]).toEqual(["action", { name: "rename", value: "--agent", viewer: 2 }]);
+    await expect(run(["action", "new-agent", "--viewer", "x"])).rejects.toThrow("Usage");
   } finally {
     request.mockRestore();
     output.mockRestore();
@@ -226,16 +309,25 @@ test("account command values preserve agent mode flags", async () => {
     process.exitCode = previousExit;
   }
 });
-test("agent mode does not hide commands from root help", async () => {
+test("root help lists every command for agents and with --all", async () => {
   const output = spyOn(process.stdout, "write").mockReturnValue(true);
   try {
-    for (const args of [["--help"], ["--agent", "--help"], ["--no-agent", "--help"]]) {
+    for (const args of [
+      ["--agent", "--help"],
+      ["--no-agent", "help", "--all"],
+      ["--no-agent", "--help", "--all"],
+    ]) {
       output.mockClear();
       await run(args);
       const text = String(output.mock.calls[0]?.[0]);
       expect(text).toContain("corgi pane read");
       expect(text).toContain("corgi shutdown");
     }
+    output.mockClear();
+    await run(["--no-agent", "--help"]);
+    const overview = String(output.mock.calls[0]?.[0]);
+    expect(overview).toContain("corgi help --all");
+    expect(overview).not.toContain("corgi shutdown");
   } finally {
     output.mockRestore();
   }
@@ -271,7 +363,7 @@ test("daemon replies print in words", () => {
   expect(say("headless.stop", { ok: true })).toBe("ok\n");
 });
 test("--json prints a daemon reply as it came", async () => {
-  const request = spyOn(rpc, "request").mockResolvedValue({ ok: true, pid: 42 });
+  const request = spyOn(rpc_http.Client.prototype, "call").mockResolvedValue({ ok: true, pid: 42 });
   const output = spyOn(process.stdout, "write").mockReturnValue(true);
   try {
     await run(["ping"]);
@@ -292,6 +384,7 @@ test("usage errors show the command's help lines", () => {
   expect(failure(["update", "status", "x"], Error("Usage"))).not.toContain("corgi update auto on|off");
   expect(failure(["update", "bogus"], Error("Usage"))).toContain("corgi update auto on|off");
   expect(failure(["action"], Error("Usage"))).toEndWith(actionNames + "\n");
+  expect(failure(["watch"], Error("Usage"))).toContain("corgi watch --json");
   expect(failure(["ping", "x"], Error("Usage"))).toBe("corgi: usage: see corgi --help\n");
   expect(failure(["shutdwon"], Error("UnknownCommand"))).toBe("corgi: unknown command shutdwon; see corgi --help\n");
   expect(failure(["open"], Error("NotDir"))).toBe("corgi: NotDir\n");
@@ -331,7 +424,9 @@ test("the daemon and the viewer never import each other", () => {
       "fork_hero",
       "frame_diff",
       "ghostty_integration",
+      "host",
       "host_clipboard",
+      "inline_rename",
       "keymap",
       "launch_preview_stream",
       "launcher_resume",
@@ -339,6 +434,9 @@ test("the daemon and the viewer never import each other", () => {
       "review/panel",
       "link_tooltip",
       "mirror",
+      "machine_connection",
+      "machine_input",
+      "machine_viewer",
       "name_dialog",
       "navigation",
       "new_workspace",
@@ -399,13 +497,28 @@ test("the daemon and the viewer never import each other", () => {
 });
 
 test("headless CLI passes provider IDs intact and includes the first prompt", async () => {
-  const request = spyOn(rpc, "request").mockResolvedValue({ ok: true, provider: "codex", session: "thread-abc" });
+  // Starting a session first makes sure a daemon runs; this one answers its hello.
+  const socket = join(mkdtempSync(join(tmpdir(), "corgi-main-")), "s"),
+    previous = process.env.CORGI_SOCKET;
+  const server = createServer(s =>
+    s.once("data", () => {
+      const reply = '{"type":"hello","protocol":4}';
+      s.end(http(reply));
+    }),
+  );
+  await new Promise<void>(resolve => server.listen(socket, resolve));
+  process.env.CORGI_SOCKET = socket;
+  const request = spyOn(rpc_http.Client.prototype, "call").mockResolvedValue({
+    ok: true,
+    provider: "codex",
+    session: "thread-abc",
+  });
   const output = spyOn(process.stdout, "write").mockReturnValue(true);
   try {
     await run(["headless", "start", "codex", "hello", "--workspace", "7"]);
     await run(["headless", "send", "codex", "thread-abc", '{"kind":"prompt","text":"again"}']);
     await run(["headless", "stop", "claude", "12345678901234567890"]);
-    const calls = request.mock.calls.map(call => call.slice(1));
+    const calls = request.mock.calls;
     expect(calls).toContainEqual([
       "headless.start",
       { provider: "codex", prompt: "hello", cwd: process.cwd(), workspace: 7 },
@@ -421,12 +534,15 @@ test("headless CLI passes provider IDs intact and includes the first prompt", as
   } finally {
     request.mockRestore();
     output.mockRestore();
+    server.close();
+    if (previous === undefined) delete process.env.CORGI_SOCKET;
+    else process.env.CORGI_SOCKET = previous;
   }
 });
 
 test("remote help is available without starting a daemon or touching Tailscale", async () => {
   const output = spyOn(process.stdout, "write").mockReturnValue(true),
-    request = spyOn(rpc, "request");
+    request = spyOn(rpc_http.Client.prototype, "request");
   try {
     await run(["remote", "--help"]);
     await run(["help", "remote"]);

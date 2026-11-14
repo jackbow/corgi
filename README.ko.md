@@ -39,7 +39,7 @@ Codex에서는 `/hooks`에서 한 번만 훅을 신뢰하도록 승인하면 됩
 | ---------------------------------- | :---------: | :---: | :-: | :------: | :------: |
 | 상태: ▶ 작업 중 ● 확인 필요 ● 완료 |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | 활동 요약                          |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
-| 하위 에이전트                      |      ✓      |   ✓   |     |    ✓     |    ✓     |
+| 하위 에이전트                      |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | 컨텍스트, 토큰, 사용량 제한        |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | 이름 변경 및 세션 분기             |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | 비정상 종료나 재부팅 후 세션 복원  |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
@@ -54,11 +54,11 @@ Codex에서는 `/hooks`에서 한 번만 훅을 신뢰하도록 승인하면 됩
 corgi list
 corgi tab new --workspace 1 --command 'bun run dev'
 corgi pane split current --right --command codex
-corgi pane send 3 'run the tests' --enter
+corgi message 3 'run the tests'
 corgi pane read 3 --lines 50
 ```
 
-`corgi --help`는 명령어 목록을, `corgi --skill`은 에이전트용 사용 지침을 출력합니다.
+`corgi --help`는 자주 쓰는 명령어를, `corgi help --all`은 모든 명령어를, `corgi --skill`은 에이전트용 사용 지침을 출력합니다.
 
 ## 제거
 
@@ -88,7 +88,7 @@ curl -fsSL https://corgi.computer/install.sh | bash -s uninstall
   [pi-tui](https://github.com/earendil-works/pi/tree/main/packages/tui) 라이브러리를 사용합니다.
 - [Bun](https://bun.sh): Corgi의 TypeScript 런타임입니다.
 
-제안과 피드백을 보내 주신 초기 테스터 여러분께도 감사드립니다.
+초기 테스터와 기여자 여러분의 지원이 없었다면 Corgi는 세상에 나오지 못했을 것입니다.
 [Max Bittker](https://x.com/MaxBittker),
 [Aaron Blakeman](https://github.com/ablakeman),
 [Kai Johnson](https://github.com/sirkaiserkai),

@@ -68,6 +68,7 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '["Copy the install command"]': () => `复制安装命令`,
     '["Corgi carrying out those commands."]': () => `Corgi 正在执行这些命令。`,
     '["Corgi loves both."]': () => `Corgi 两个都喜欢。`,
+    '["Corgi would not have been possible without their support."]': () => `没有他们的支持，就不会有 Corgi。`,
     '["Corgi\'s main inspiration. We borrow many of their ideas."]': () => `Corgi 的主要灵感来源。我们借鉴了许多点子。`,
     '["Date resume rows by reply"]': () => `按回复时间排列会话`,
     '["Docs pass"]': () => `检查文档`,
@@ -144,10 +145,10 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '["Shading the sprite"]': () => `给精灵图上色`,
     '["Sketching the lander"]': () => `勾勒着陆器`,
     '["Slow down the herd animation"]': () => `放慢羊群动画`,
-    '["Special thanks for their wonderful suggestions and feedback."]': () => `特别感谢他们的宝贵建议和反馈。`,
     '["Splitting the audit"]': () => `分配审查任务`,
     '["Static Linux build"]': () => `Linux 静态构建`,
-    '["Supported on macOS, Linux and WSL"]': () => `支持 macOS、Linux 和 WSL`,
+    '["Supported on macOS, Linux, WSL and <button class=\\"omarchy\\" type=\\"button\\">Omarchy</button>"]': () =>
+      `支持 macOS、Linux、WSL 和 <button class="omarchy" type="button">Omarchy</button>`,
     '["Terminal multiplexer for humans (and agents)."]': () => `为人类（和智能体）打造的终端复用器。`,
     '["The sidebar, showing what each agent is doing and which ones need you."]': () =>
       `侧边栏显示每个智能体正在做什么，以及哪些需要你处理。`,
@@ -179,7 +180,7 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '["agents + dev server · running in the background"]': () => `智能体 + 开发服务器 · 后台运行中`,
     '["catch-up · ",""]': v0 => `追赶进度 · ${v0}`,
     '["copy"]': () => `复制`,
-    '["early testers"]': () => `早期测试者`,
+    '["early testers &amp; contributors"]': () => `早期测试者与贡献者`,
     '["keeps watch"]': () => `帮你盯着`,
     '["link down · ",""]': v0 => `连接中断 · ${v0}`,
     '["moonlander"]': () => `moonlander`,
@@ -260,6 +261,8 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '["Copy the install command"]': () => `インストールコマンドをコピー`,
     '["Corgi carrying out those commands."]': () => `コマンドを実行する Corgi。`,
     '["Corgi loves both."]': () => `Corgi はどちらも大好き。`,
+    '["Corgi would not have been possible without their support."]': () =>
+      `皆さんの支えがなければ、Corgi は生まれませんでした。`,
     '["Corgi\'s main inspiration. We borrow many of their ideas."]': () =>
       `Corgi のいちばんの着想源。たくさんのアイデアを参考にしています。`,
     '["Date resume rows by reply"]': () => `返信日時で会話を並べる`,
@@ -339,11 +342,10 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '["Shading the sprite"]': () => `スプライトに陰影を追加中`,
     '["Sketching the lander"]': () => `着陸船をスケッチ中`,
     '["Slow down the herd animation"]': () => `群れのアニメーションをゆっくりに`,
-    '["Special thanks for their wonderful suggestions and feedback."]': () =>
-      `すばらしい提案とフィードバックを寄せてくれた皆さんに、心から感謝します。`,
     '["Splitting the audit"]': () => `監査を分担中`,
     '["Static Linux build"]': () => `Linux の静的ビルド`,
-    '["Supported on macOS, Linux and WSL"]': () => `macOS、Linux、WSL に対応`,
+    '["Supported on macOS, Linux, WSL and <button class=\\"omarchy\\" type=\\"button\\">Omarchy</button>"]': () =>
+      `macOS、Linux、WSL、<button class="omarchy" type="button">Omarchy</button> に対応`,
     '["Terminal multiplexer for humans (and agents)."]': () => `人とエージェントのためのターミナルマルチプレクサ。`,
     '["The sidebar, showing what each agent is doing and which ones need you."]': () =>
       `各エージェントの作業内容と、確認が必要な相手を表示するサイドバー。`,
@@ -377,7 +379,7 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
       `エージェント + 開発サーバー · バックグラウンドで実行中`,
     '["catch-up · ",""]': v0 => `追いつくまで · ${v0}`,
     '["copy"]': () => `コピー`,
-    '["early testers"]': () => `初期テスターの皆さん`,
+    '["early testers &amp; contributors"]': () => `初期テスターとコントリビューターの皆さん`,
     '["keeps watch"]': () => `いつも見守る`,
     '["link down · ",""]': v0 => `接続断 · ${v0}`,
     '["moonlander"]': () => `moonlander`,
@@ -460,6 +462,8 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '["Copy the install command"]': () => `설치 명령 복사`,
     '["Corgi carrying out those commands."]': () => `명령을 실행하는 Corgi입니다.`,
     '["Corgi loves both."]': () => `Corgi는 둘 다 좋아합니다.`,
+    '["Corgi would not have been possible without their support."]': () =>
+      `이분들의 지원이 없었다면 Corgi는 세상에 나오지 못했을 것입니다.`,
     '["Corgi\'s main inspiration. We borrow many of their ideas."]': () =>
       `Corgi에 가장 큰 영감을 준 프로젝트입니다. 많은 아이디어를 빌려왔습니다.`,
     '["Date resume rows by reply"]': () => `답변 시간순으로 세션 정렬`,
@@ -539,11 +543,10 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '["Shading the sprite"]': () => `스프라이트 명암 작업 중`,
     '["Sketching the lander"]': () => `착륙선 스케치 중`,
     '["Slow down the herd animation"]': () => `무리 애니메이션 속도 줄이기`,
-    '["Special thanks for their wonderful suggestions and feedback."]': () =>
-      `멋진 제안과 피드백을 보내주신 분들께 특별히 감사드립니다.`,
     '["Splitting the audit"]': () => `점검 작업 분담 중`,
     '["Static Linux build"]': () => `Linux 정적 빌드`,
-    '["Supported on macOS, Linux and WSL"]': () => `macOS, Linux, WSL 지원`,
+    '["Supported on macOS, Linux, WSL and <button class=\\"omarchy\\" type=\\"button\\">Omarchy</button>"]': () =>
+      `macOS, Linux, WSL, <button class="omarchy" type="button">Omarchy</button> 지원`,
     '["Terminal multiplexer for humans (and agents)."]': () => `사람과 에이전트를 위한 터미널 멀티플렉서.`,
     '["The sidebar, showing what each agent is doing and which ones need you."]': () =>
       `각 에이전트의 작업과 확인이 필요한 에이전트를 보여주는 사이드바입니다.`,
@@ -576,7 +579,7 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '["agents + dev server · running in the background"]': () => `에이전트 + 개발 서버 · 백그라운드 실행 중`,
     '["catch-up · ",""]': v0 => `따라잡는 중 · ${v0}`,
     '["copy"]': () => `복사`,
-    '["early testers"]': () => `초기 테스터`,
+    '["early testers &amp; contributors"]': () => `초기 테스터와 기여자`,
     '["keeps watch"]': () => `늘 지켜봅니다`,
     '["link down · ",""]': v0 => `연결 끊김 · ${v0}`,
     '["moonlander"]': () => `moonlander`,
@@ -657,6 +660,7 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '["Copy the install command"]': () => `Скопировать команду установки`,
     '["Corgi carrying out those commands."]': () => `Corgi выполняет эти команды.`,
     '["Corgi loves both."]': () => `Corgi любит и то и другое.`,
+    '["Corgi would not have been possible without their support."]': () => `Без их поддержки Corgi бы не появился.`,
     '["Corgi\'s main inspiration. We borrow many of their ideas."]': () =>
       `Главный источник вдохновения для Corgi. Многие идеи мы позаимствовали у них.`,
     '["Date resume rows by reply"]': () => `Датировать сессии по ответам`,
@@ -735,11 +739,10 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '["Shading the sprite"]': () => `Добавляет тени спрайту`,
     '["Sketching the lander"]': () => `Делает набросок модуля`,
     '["Slow down the herd animation"]': () => `Замедлить анимацию стада`,
-    '["Special thanks for their wonderful suggestions and feedback."]': () =>
-      `Отдельное спасибо за замечательные предложения и отзывы.`,
     '["Splitting the audit"]': () => `Распределяет проверку`,
     '["Static Linux build"]': () => `Статическая сборка для Linux`,
-    '["Supported on macOS, Linux and WSL"]': () => `Работает на macOS, Linux и WSL`,
+    '["Supported on macOS, Linux, WSL and <button class=\\"omarchy\\" type=\\"button\\">Omarchy</button>"]': () =>
+      `Работает на macOS, Linux, WSL и <button class="omarchy" type="button">Omarchy</button>`,
     '["Terminal multiplexer for humans (and agents)."]': () => `Терминальный мультиплексор для людей (и агентов).`,
     '["The sidebar, showing what each agent is doing and which ones need you."]': () =>
       `Боковая панель показывает, чем занят каждый агент и кому нужно ваше внимание.`,
@@ -772,7 +775,7 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '["agents + dev server · running in the background"]': () => `агенты + сервер разработки · работают в фоне`,
     '["catch-up · ",""]': v0 => `синхронизация · ${v0}`,
     '["copy"]': () => `копировать`,
-    '["early testers"]': () => `Первые тестировщики`,
+    '["early testers &amp; contributors"]': () => `Первые тестировщики и контрибьюторы`,
     '["keeps watch"]': () => `Следит за работой`,
     '["link down · ",""]': v0 => `нет связи · ${v0}`,
     '["moonlander"]': () => `moonlander`,

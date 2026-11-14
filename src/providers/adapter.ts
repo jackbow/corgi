@@ -1,3 +1,4 @@
+import type { Progress } from "../startup";
 import type { Effort } from "./effort";
 import type { Hook, Text } from "./common";
 import type { Quit } from "../subprocess";
@@ -12,13 +13,15 @@ import type { Tokens } from "../usage/live";
 import type { Request as UsageRequest, Result as UsageResult, Tail as UsageTail } from "../usage/worker";
 import type { Request as ObserverRequest, Snapshot } from "./snapshot";
 import type { Runtime } from "../runtime";
+import type { Search } from "./search";
 /** What the launcher shows about a provider. Corgi opens one per launcher
  * worker and closes it with that worker. */
 export interface Launcher {
   /** Its account, plan and usage limits. Usage is fetched again once the
    * reading, which folders signed in to the same account share, is `max_age`
-   * seconds old; 0 fetches it now, even while a failed read waits. */
-  account(quit: Quit, max_age: number): Promise<Account>;
+   * seconds old; 0 fetches it now, even while a failed read waits.
+   * `cwd` selects the workspace's executable for isolated account probes. */
+  account(quit: Quit, max_age: number, cwd?: string): Promise<Account>;
   /** The model it would start with in `cwd`, and the setting that chose it.
    * Corgi asks after `account`, whose sign-in may name the default. */
   model(cwd: string, quit: Quit): Promise<{ model: string; model_name?: string; source: string }>;
@@ -26,10 +29,19 @@ export interface Launcher {
   watches?(): string[];
   close(): void;
 }
+/** An image a prompt carries: a file on this machine, and its type. */
+export type Image = { path: string; mime: string };
+/** The image types a prompt may carry. */
+export const image_types = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+/** The most images one prompt carries. */
+export const max_images = 8;
+/** The largest image file a prompt carries. Claude and Pi take its bytes
+ * inline, read and encoded on the daemon's loop. */
+export const max_image_bytes = 20 * 1024 * 1024;
 /** What core asks of a headless client. A prompt or interrupt without a
  * session goes to the conversation it shows. */
 export type Input =
-  | { kind: "prompt"; text: string; session?: string }
+  | { kind: "prompt"; text: string; session?: string; images?: Image[] }
   | { kind: "answer"; request: string; allow: boolean; message?: string }
   | { kind: "interrupt"; session?: string };
 /** What a request asks: `tool` when it is a tool waiting to run. */
@@ -43,7 +55,19 @@ export type Event =
   | { kind: "turn"; session: string; turn: string; phase: "ended"; outcome: Outcome }
   | { kind: "message"; session: string; text: string }
   | { kind: "activity"; session: string; turn: string; text: string; amend: boolean }
-  | { kind: "tool"; session: string; turn: string; id: string; done: boolean; wrote: string[] }
+  | {
+      kind: "tool";
+      session: string;
+      turn: string;
+      id: string;
+      done: boolean;
+      wrote: string[];
+      /** The tool's name and what it's about in a few words ("Read", "src/x.ts"). */
+      name?: string;
+      summary?: string;
+    }
+  /** The assistant message so far, cumulative; the complete `message` follows. */
+  | { kind: "partial"; session: string; text: string }
   | { kind: "request"; session: string; id: string; ask: Ask }
   | { kind: "request_closed"; session: string; id: string; running: boolean }
   | {
@@ -74,9 +98,39 @@ export interface Client {
   processes?(): number[];
   /** A client restored from a handoff is the old daemon's until adopted. */
   adopt?(): void;
+  /** Who runs the host's tools now: after a handoff, the next daemon. */
+  serve?(host: Host): void;
 }
-/** Where a client runs: `account` names a provider account, "" the default. */
-export type Place = { cwd: string; account: string; executable: string };
+/** A tool the session's host offers its model beside the provider's own. */
+export type HostTool = { name: string; description: string; input: Record<string, unknown> };
+/** The tools a host offers, and how it runs a call to one. */
+export type Host = {
+  tools: HostTool[];
+  call(name: string, input: unknown, signal?: AbortSignal): Promise<{ text: string; failed: boolean }>;
+};
+/** Where a client runs: `account` names a provider account, "" the default.
+ * Ordinary headless sessions omit the rest. */
+export type Place = {
+  cwd: string;
+  account: string;
+  executable: string;
+  model?: string;
+  effort?: Effort;
+  /** Appended to the provider's own system prompt. */
+  instructions?: string;
+  /** false: the provider keeps no session file (Claude --no-session-persistence,
+   * Codex ephemeral, Pi/omp --no-session). */
+  persist?: boolean;
+  /** Variables it runs with over the daemon's own, undefined to unset: how a
+   * prompt session reaches this Corgi with its CLI. */
+  env?: Record<string, string | undefined>;
+  /** Runs without asking: Claude in auto mode, or skipping its checks where
+   * that's unavailable; Codex with no approvals or sandbox. */
+  unattended?: boolean;
+  /** Tools the host runs for this session alone, for an adapter whose
+   * `headless.tools` says it takes them. */
+  host?: Host;
+};
 /** A provider's session transcripts, read as they grow. */
 export interface Transcript {
   /** Initial user evidence for Corgi naming, only when the provider has no automatic titles. */
@@ -131,6 +185,17 @@ export interface Rename {
   channel(session: string, connected: boolean, account: string): Promise<((name: string) => Promise<void>) | null>;
   /** Types the rename into its composer instead. */
   typed?: { command(name: string): string; empty(t: Terminal): boolean; holds(t: Terminal, text: string): boolean };
+}
+/** How a provider takes a prompt Corgi sends it. */
+export interface Message {
+  /** Sends a prompt to `session`, in `account`, through the provider's own
+   * channel, if one reaches it now; `connected` as for `Rename.channel`.
+   * Sending throws MessageUnavailable when nothing reached the session, so
+   * Corgi can type the prompt instead. */
+  channel(session: string, connected: boolean, account: string): Promise<((text: string) => Promise<void>) | null>;
+  /** Whether its composer shows and is empty, so typed text goes into it
+   * alone. Without this, Corgi can't tell and types anyway. */
+  empty?(t: Terminal): boolean;
 }
 /** The past sessions the launcher offers to resume. Corgi opens one per
  * history worker and closes it with that worker. */
@@ -223,9 +288,28 @@ export type Inspection = {
   /** It signs in as the user's own default account. */
   default_account: boolean;
 };
+/** A model provider's subscription, whose limits every agent signed in to it
+ * shares: Codex, Pi and omp can all sign in to one ChatGPT login. */
+export type Service = "chatgpt" | "claude";
 /** Who signed in: the email the provider shows, and what tells two logins
- * apart, since one email can sign in to a personal plan and a team's. */
-export type Login = { email: string; id: string };
+ * apart, since one email can sign in to a personal plan and a team's. A
+ * subscription login also names its `service` and its `workspace`, "" when
+ * the credential doesn't say which; an API key names neither. */
+export type Login = { email: string; id: string; service?: Service; workspace?: string };
+/** Login metadata carried by a daemon preview; absent from older peers. */
+export function login(value: unknown): Login | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.id !== "string" || typeof v.email !== "string") return null;
+  if (v.service !== undefined && v.service !== "chatgpt" && v.service !== "claude") return null;
+  if (v.workspace !== undefined && typeof v.workspace !== "string") return null;
+  return {
+    id: v.id,
+    email: v.email,
+    ...(v.service !== undefined && { service: v.service }),
+    ...(v.workspace !== undefined && { workspace: v.workspace }),
+  };
+}
 /** What a first run shows while someone signs in: how to sign in, a link
  * whose page comes back to this machine, a link whose page gives a code to
  * paste here, or a link and a code to type on the page. */
@@ -258,6 +342,8 @@ export type Signin = {
 /** How a provider keeps accounts: each in a settings directory of its own,
  * which a variable picks. */
 export type Accounts = {
+  /** Its own subscription; preferred when other agents share the same login. */
+  service?: Service;
   /** The variable that picks the directory. */
   env: string;
   /** The directory it uses when the variable is unset. */
@@ -267,6 +353,8 @@ export type Accounts = {
   prefix: string;
   /** Who signed in at `directory`, as it caches that; null when no one has. */
   identity(directory: string): Login | null;
+  /** Local setup for `cwd` beyond a saved login, without starting the provider. */
+  configured?(directory: string, cwd: string): boolean;
   /** What a directory Corgi makes links to in the default one: folders,
    * and files the default has. */
   shared: { dirs: string[]; files: string[] };
@@ -325,6 +413,10 @@ export type Fork = {
   /** Whether `args` names the fork; if not, core renames it once it shows up. */
   named: boolean;
 };
+/** What became of starting a failed turn again: "held" when someone worked
+ * in its pane meanwhile, so it may try once they stop; "declined" when it
+ * won't, as another turn came or the channel failed. */
+export type Retried = "started" | "held" | "declined";
 /** How a provider behaves, wherever core has to know. */
 export type Caps = {
   /** A prompt's hook ID names the turn it opens. */
@@ -351,6 +443,8 @@ export interface Conversation {
   /** Whether the process holding an actor's pause still runs. */
   holds?(pid: number): boolean;
 }
+/** What a launch's deferred effort came to on a conversation. */
+export type Settled = { session: string } | "changed" | null;
 /** Everything core asks a provider. Each one lives in `providers/<name>/`. */
 export interface Adapter extends Info {
   caps: Caps;
@@ -358,8 +452,10 @@ export interface Adapter extends Info {
   /** Where it may be installed besides PATH, most likely first. `root`
    * prefixes system locations so tests can stand in for them. */
   installs(at: { home: string | null; root: string }): string[];
-  /** Whether a candidate's `--version` says it is this provider. Without it,
-   * the first `command` on PATH is. */
+  /** Package names and how a package manager's version becomes its version line. */
+  distribution?: { packages: string[]; version(value: string): string };
+  /** Whether an installation's version line identifies a supported provider.
+   * Metadata supplies it first; standalone installs may need `--version`. */
   version?(stdout: string): boolean;
   /** The versions `version` takes, as a sign-in says it: "1.0.0 or newer". */
   requires?: string;
@@ -381,14 +477,25 @@ export interface Adapter extends Info {
     /** Merge configured model and effort overrides with extra flags. */
     options(args: string[], model?: string, effort?: Effort): string[];
     /** Read-only launcher catalog, when inference discovery would probe access. */
-    models?(account: string, quit: Quit): Promise<InferenceModel[]>;
+    models?(account: string, quit: Quit, cwd?: string): Promise<InferenceModel[]>;
     /** Prepares a terminal session before exec, reporting its identity when
      * the provider's UI cannot report it itself, and variables the session
      * needs that the pane's shell does not set. */
     prepare?(
       args: string[],
       executable: string,
+      progress?: Progress,
     ): Promise<{ args: string[]; event?: unknown; env?: [string, string][] }>;
+    /** Options `args` without the effort they set, for `settle` to set on
+     * each conversation the agent a pane starts with them in `account`
+     * shows; null when the effort stays on the command line. */
+    deferred?(args: string[], account: string): { args: string[]; effort: Effort } | null;
+    /** Sets `effort` on the session `named` names in `account`, in full or
+     * as `titleSession` reads it, unless `last`, the session it set before,
+     * no longer has it: the session it set, "changed" when someone changed
+     * `last`'s effort since, or null while `named` doesn't run where the
+     * provider's channel reaches it yet. */
+    settle?(named: string, account: string, effort: Effort, last: string | null): Promise<Settled>;
     /** Arguments that start an agent. */
     start(s: Settings): string[];
     /** Arguments, after the ones it started with, that resume `session`. */
@@ -407,10 +514,18 @@ export interface Adapter extends Info {
     keep?(c: CommandLine): Kept;
   };
   rename?: Rename;
+  message?: Message;
+  /** Starts `session`'s turn `turn`, which failed on a condition that may
+   * pass, again through `account`'s own channel, if that turn is still its
+   * latest and nothing runs. It asks `clear` last, just before it starts
+   * the turn, whether no one has worked in its pane since it began. */
+  retry?(session: string, turn: string, account: string, clear: () => boolean): Promise<Retried>;
   /** Runs it headless, for a daemon-hosted session. */
   headless?: {
     start(at: Place): Client;
     restore(saved: Saved, live: boolean): Client;
+    /** Whether a session offers its model the host's tools, scoped to it alone. */
+    tools?: boolean;
   };
   inference: {
     model: string;
@@ -419,7 +534,7 @@ export interface Adapter extends Info {
     /** The model provider's display name for a native inference choice. */
     source?: string;
     /** Models for private inference; a provider may probe tool-less access. */
-    models?(account: string, quit: Quit): Promise<InferenceModel[]>;
+    models?(account: string, quit: Quit, cwd?: string): Promise<InferenceModel[]>;
     /** A private, tool-less client for `r`'s conversations. Its answer to a
      * prompt is the last message before the turn ends. */
     start(r: Inference, at: Place): Client;
@@ -432,6 +547,8 @@ export interface Adapter extends Info {
   launcher?(account: string): Promise<Launcher>;
   history?(account: string): Promise<SessionHistory>;
   transcript?: Transcript;
+  /** Its past conversations, as corgi grep reads them; loaded on use. */
+  search?(): Promise<Search>;
   conversation?: Conversation;
   /** Watches the conversations of panes in `account`. */
   observer?(account: string): Observer;
@@ -444,7 +561,9 @@ export interface Adapter extends Info {
     status(account: string): Promise<IntegrationStepResult[]>;
     /** Runs for each account when the daemon starts or takes over from an
      * older one in a handoff, unless the user uninstalled it there. */
-    startup(account: string, handoff: boolean): Promise<void>;
+    startup(account: string, handoff: boolean, cwd?: string): Promise<void>;
+    /** Refreshes hooks in the launch wrapper's account environment before exec. */
+    prepare_on_launch?: boolean;
     /** Settings that make it report to Corgi, to add by hand. */
     snippet(executable: string): string;
   };

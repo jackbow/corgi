@@ -5,6 +5,120 @@ export type Value = string | number | bigint;
 export type Message = (...values: Value[]) => string;
 export const messages: Record<TranslatedLocale, Record<string, Message>> = {
   "zh": {
+    '["    prompt through the agent\'s own channel, or type it and press Enter"]': () =>
+      `    通过智能体自己的通道发送提示；没有通道时输入文本并按 Enter`,
+    '["    search conversation text; --session PROVIDER:ID narrows, -o extracts matches"]': () =>
+      `    搜索对话文本；--session PROVIDER:ID 缩小范围，-o 提取匹配内容`,
+    "[\"    to today's log, MEMORY.md or a workspace's note; an exact repeat isn't added\"]": () =>
+      `    写入今日日志、MEMORY.md 或工作区笔记；完全重复的条目不会添加`,
+    '["  SKIP if a Corgi skill is already in your context. Otherwise run: corgi --skill"]': () =>
+      `  如果上下文中已有 Corgi 技能，请跳过。否则运行：corgi --skill`,
+    '["  corgi                         start / attach"]': () => `  corgi                         启动 / 连接`,
+    '["  corgi --help                  list common commands (also -h)"]': () =>
+      `  corgi --help                  列出常用命令（也可用 -h）`,
+    '["  corgi --no-update             attach without activating a staged update"]': () =>
+      `  corgi --no-update             连接时不启用待应用的更新`,
+    '["  corgi --skill                      print bundled agent instructions"]': () =>
+      `  corgi --skill                      输出内置的智能体说明`,
+    '["  corgi --version               print the version and commit"]': () =>
+      `  corgi --version               输出版本号和提交信息`,
+    '["  corgi account COMMAND         list, add, login, remove provider accounts"]': () =>
+      `  corgi account COMMAND         列出、添加、登录或移除服务商账号`,
+    '["  corgi action NAME [VALUE] [--viewer ID]  run a viewer action, named below"]': () =>
+      `  corgi action NAME [VALUE] [--viewer ID]  执行下文列出的客户端操作`,
+    '["  corgi agent claude|codex ...   optional discovered-binary launcher"]': () =>
+      `  corgi agent claude|codex ...   可选：启动自动发现的智能体程序`,
+    '["  corgi bugreport [--full]      details for a bug report, and a link to file it"]': () =>
+      `  corgi bugreport [--full]      生成问题报告详情和提交链接`,
+    '["  corgi checkpoint               save recovery context now"]': () =>
+      `  corgi checkpoint               立即保存恢复上下文`,
+    '["  corgi current                      calling pane\'s live location"]': () =>
+      `  corgi current                      调用命令的窗格的当前位置`,
+    '["  corgi dev                     reload if changed; attach or relaunch viewer"]': () =>
+      `  corgi dev                     有更改时重载；连接或重启客户端`,
+    '["  corgi focus ID|current --viewer ID  select in exactly one viewer"]': () =>
+      `  corgi focus ID|current --viewer ID  仅在指定客户端中选择`,
+    '["  corgi headless events PROVIDER SESSION [SEQ]   journal + pending requests"]': () =>
+      `  corgi headless events PROVIDER SESSION [SEQ]   日志和待处理请求`,
+    '["  corgi headless list              list headless sessions"]': () =>
+      `  corgi headless list              列出后台会话`,
+    '["  corgi headless send PROVIDER SESSION JSON   prompt, answer or interrupt"]': () =>
+      `  corgi headless send PROVIDER SESSION JSON   发送提示、回答或中断`,
+    '["  corgi headless stop PROVIDER SESSION        stop headless session"]': () =>
+      `  corgi headless stop PROVIDER SESSION        停止后台会话`,
+    '["  corgi help --all              list every command"]': () => `  corgi help --all              列出全部命令`,
+    '["  corgi help [COMMAND ...]      show help for a command or group"]': () =>
+      `  corgi help [COMMAND ...]      查看命令或命令组的帮助`,
+    '["  corgi history [--limit N] [--json]  past conversations, newest first"]': () =>
+      `  corgi history [--limit N] [--json]  历史对话，最新的在前`,
+    '["  corgi hooks claude|codex       print hook configuration"]': () =>
+      `  corgi hooks claude|codex       输出钩子配置`,
+    '["  corgi integration COMMAND     status, install, uninstall hooks"]': () =>
+      `  corgi integration COMMAND     查看状态、安装或卸载钩子`,
+    '["  corgi keys [PRESET]           list shortcuts: corgi, tmux, herdr, cmux"]': () =>
+      `  corgi keys [PRESET]           列出快捷键：corgi、tmux、herdr、cmux`,
+    '["  corgi launcher copy --from ID --workspace ID  replace destination order and visibility"]': () =>
+      `  corgi launcher copy --from ID --workspace ID  替换目标工作区的顺序和可见性`,
+    '["  corgi launcher hide AGENT... [--workspace ID]  in one workspace only"]': () =>
+      `  corgi launcher hide AGENT... [--workspace ID]  仅影响指定工作区`,
+    '["  corgi launcher list [--workspace ID] [--json]  agents each launcher shows"]': () =>
+      `  corgi launcher list [--workspace ID] [--json]  启动器显示的智能体`,
+    '["  corgi launcher models AGENT [--json]  native model IDs, efforts and defaults"]': () =>
+      `  corgi launcher models AGENT [--json]  原生模型 ID、推理强度及默认值`,
+    '["  corgi launcher remove AGENT [--workspace ID]  delete a clone or saved command"]': () =>
+      `  corgi launcher remove AGENT [--workspace ID]  删除克隆或已保存的命令`,
+    '["  corgi launcher show AGENT... [--workspace ID]  in one workspace only"]': () =>
+      `  corgi launcher show AGENT... [--workspace ID]  仅影响指定工作区`,
+    '["  corgi licenses                Corgi\'s license and the software it includes"]': () =>
+      `  corgi licenses                查看 Corgi 及其所含软件的许可证`,
+    '["  corgi list [--json]                 layout, panes, agents, viewers"]': () =>
+      `  corgi list [--json]                 布局、窗格、智能体和客户端`,
+    '["  corgi memory get [FILE[:FROM[-TO]]]  its files, or a file\'s lines"]': () =>
+      `  corgi memory get [FILE[:FROM[-TO]]]  列出记忆文件或读取文件中的行`,
+    '["  corgi memory search WORDS... [--limit N]  the Corgi prompt\'s memory lines"]': () =>
+      `  corgi memory search WORDS... [--limit N]  搜索 Corgi 对话的记忆条目`,
+    '["  corgi onboard                 open onboarding, even after setup"]': () =>
+      `  corgi onboard                 打开入门设置，也可在设置完成后使用`,
+    '["  corgi open DIR                show DIR\'s workspace; add one if none"]': () =>
+      `  corgi open DIR                显示 DIR 的工作区；不存在则新建`,
+    '["  corgi pane hibernate ID|current... hibernate panes and stop their processes"]': () =>
+      `  corgi pane hibernate ID|current... 休眠窗格并停止其进程`,
+    '["  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  shells at their prompt"]': () =>
+      `  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  等待输入的 Shell`,
+    '["  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, arrows, etc."]': () =>
+      `  corgi pane keys ID|current KEY...    enter、esc、ctrl+c、方向键等`,
+    '["  corgi pane wake ID|current         resume or restart a pane"]': () =>
+      `  corgi pane wake ID|current         恢复或重新启动窗格`,
+    '["  corgi reload [ABSOLUTE_EXE]    replace daemon, preserve live processes"]': () =>
+      `  corgi reload [ABSOLUTE_EXE]    替换守护进程，保留运行中的进程`,
+    '["  corgi resume PROVIDER SESSION [--viewer ID] [--workspace ID]  show it: focus\\n    the pane already showing it, or resume it in a tab where its folder belongs"]':
+      () => `  corgi resume PROVIDER SESSION [--viewer ID] [--workspace ID]  显示对话：聚焦
+    已显示它的窗格，或在其文件夹所属的工作区中打开标签页恢复对话`,
+    '["  corgi rpc JSON                local JSON control protocol"]': () =>
+      `  corgi rpc JSON                本地 JSON 控制协议`,
+    '["  corgi shutdown                terminate runtime and its panes"]': () =>
+      `  corgi shutdown                终止运行服务及其窗格`,
+    '["  corgi start                   start detached runtime"]': () =>
+      `  corgi start                   在后台启动运行服务`,
+    '["  corgi update                  download and safely apply an update"]': () =>
+      `  corgi update                  下载并安全应用更新`,
+    '["  corgi update auto on|off      control automatic updates"]': () =>
+      `  corgi update auto on|off      开启或关闭自动更新`,
+    '["  corgi update rollback         return to the previous release"]': () =>
+      `  corgi update rollback         回退到上一版本`,
+    '["  corgi update status           show update status"]': () => `  corgi update status           查看更新状态`,
+    '["  corgi usage --json            print each account\'s limits and spend as JSON"]': () =>
+      `  corgi usage --json            以 JSON 输出各账号的额度和花费`,
+    '["  corgi watch --json            print agent states as JSON lines as they change"]': () =>
+      `  corgi watch --json            状态变化时以 JSON 行输出智能体状态`,
+    '["  corgi which claude|codex      show automatically selected executable"]': () =>
+      `  corgi which claude|codex      显示自动选择的可执行程序`,
+    '["  corgi workspace archive ID        hibernate panes and hide the workspace"]': () =>
+      `  corgi workspace archive ID        休眠窗格并隐藏工作区`,
+    '["  corgi workspace close ID          requires an empty workspace"]': () =>
+      `  corgi workspace close ID          仅可关闭空工作区`,
+    '["  corgi workspace unarchive ID      show the workspace; panes stay asleep"]': () =>
+      `  corgi workspace unarchive ID      显示工作区；窗格保持休眠`,
     '["  now"]': () => `  当前`,
     '["  →  expand"]': () => `  →  展开`,
     '[" ",": off"]': v0 => ` ${v0}：已关闭`,
@@ -16,21 +130,23 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '[" "," session ",": ",". Inspect: corgi headless events "," ",""]': (v0, v1, v2, v3, v4) =>
       ` ${v0} 会话 ${v1}：${v2}。查看详情：corgi headless events ${v3} ${v1}`,
     '[" ",": waiting for a session ID"]': v0 => ` ${v0}：等待会话 ID`,
+    '[" (archived)"]': () => `（已归档）`,
     '[" + uncommitted"]': () => ` + 未提交`,
     '[" / memory ",""]': v0 => ` / 内存${v0}`,
     '[" Agent search needs at least 40 columns and 13 rows"]': () => ` 智能体搜索至少需要 40 列、13 行`,
     '[" Agent search: enlarge terminal or Esc"]': () => ` 智能体搜索：请扩大终端，或按 Esc 返回`,
+    '[" Auto-retry capacity errors off"]': () => ` 容量错误自动重试已关闭`,
+    '[" Auto-retry capacity errors on"]': () => ` 容量错误自动重试已开启`,
     '[" Cancel · Esc "]': () => ` 取消 · Esc `,
-    '[" Cannot close the last workspace"]': () => ` 无法关闭最后一个工作区`,
     '[" Copied to clipboard "]': () => ` 已复制到剪贴板 `,
     '[" Corgi setup: the runtime did not accept the change"]': () => ` Corgi 设置：运行服务未接受更改`,
+    '[" Could not change pane or workspace state"]': () => ` 无法更改窗格或工作区状态`,
     '[" Could not close workspace"]': () => ` 无法关闭工作区`,
     '[" Could not create workspace"]': () => ` 无法创建工作区`,
     '[" Could not fork this agent"]': () => ` 无法派生此智能体`,
     '[" Could not move tab to workspace"]': () => ` 无法将标签页移至工作区`,
     '[" Could not read Ghostty config; no changes made"]': () => ` 无法读取 Ghostty 配置；未作更改`,
     '[" Could not rename this agent"]': () => ` 无法重命名此智能体`,
-    '[" Could not resume this agent"]': () => ` 无法恢复此智能体`,
     '[" Couldn\'t add ",": ",""]': (v0, v1) => ` 无法添加 ${v0}：${v1}`,
     '[" Couldn\'t mark as unread"]': () => ` 无法标为未读`,
     '[" Couldn\'t open ",": ",""]': (v0, v1) => ` 无法打开 ${v0}：${v1}`,
@@ -47,6 +163,7 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '[" Ghostty integration requires a local macOS viewer"]': () => ` Ghostty 集成需要本机 macOS 客户端`,
     '[" Ghostty integration: ",""]': v0 => ` Ghostty 集成：${v0}`,
     '[" Image not pasted "]': () => ` 图片未粘贴 `,
+    '[" Keep at least one workspace active"]': () => ` 请保留至少一个活动工作区`,
     '[" Keyboard shortcuts "]': () => ` 键盘快捷键 `,
     '[" Keys "]': () => ` 按键 `,
     '[" Names are one line of up to 80 characters"]': () => ` 名称须为单行，最多 80 个字符`,
@@ -70,13 +187,12 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '[" Pushed ✓"]': () => ` 已推送 ✓`,
     '[" Pushing ",""]': v0 => ` 正在推送 ${v0}`,
     '[" Recent "]': () => ` 最近 `,
-    '[" Removed ",", but couldn\'t update launcher settings: ",""]': (v0, v1) =>
-      ` 已移除 ${v0}，但无法更新启动器设置：${v1}`,
     '[" Removed ","; kept its folder"]': v0 => ` 已移除 ${v0}；已保留其文件夹`,
     '[" Resize panes"]': () => ` 调整窗格大小`,
     '[" Resource readings are off: turn them on in Corgi setup → Resources"]': () =>
       ` 资源监测已关闭：可在 Corgi 设置 → 资源中开启`,
     '[" Retry !"]': () => ` 重试 !`,
+    '[" Review changes on the remote machine"]': () => ` 请在远程机器上审查更改`,
     '[" Review needs a wider window"]': () => ` 请加宽窗口以查看代码审查`,
     '[" Save · Ctrl+S "]': () => ` 保存 · Ctrl+S `,
     '[" Search "," agent"]': v0 => ` 搜索 ${v0} 个智能体`,
@@ -94,11 +210,16 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '[" Smart Links off: Corgi won\'t connect to pane ports"]': () => ` 智能链接已关闭：Corgi 不会连接窗格中的端口`,
     '[" Smart Links on"]': () => ` 智能链接已开启`,
     '[" Split "]': () => ` 分屏 `,
+    '[" Startup waits (",") "]': v0 => ` 启动等待（${v0}） `,
+    '[" Still sending the last paste; paste again once it lands"]': () => ` 上一次粘贴仍在发送中；送达后再粘贴`,
     '[" Summaries and link names: ",""]': v0 => ` 摘要与链接名称：${v0}`,
     '[" Summaries and link names: "," (not saved for next start)"]': v0 => ` 摘要与链接名称：${v0}（下次启动不保留）`,
+    '[" The new pane is still opening"]': () => ` 新窗格仍在打开`,
     '[" Theme "]': () => ` 主题 `,
     '[" This agent can\'t be renamed from outside"]': () => ` 无法从外部重命名此智能体`,
     '[" This agent has no conversation yet"]': () => ` 此智能体尚无对话`,
+    '[" Too much typed for a pane still opening; the rest was dropped"]': () =>
+      ` 为仍在打开的窗格输入的内容过多；其余部分已丢弃`,
     '[" Use prefix"]': () => ` 使用前缀键`,
     '[" Welcome to Corgi "]': () => ` 欢迎使用 Corgi `,
     '[" Worktree "]': () => ` 工作树 `,
@@ -137,6 +258,7 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '[""," GPUs"]': v0 => `${v0} 个 GPU`,
     '[""," agent"]': v0 => `${v0} 个智能体`,
     '[""," agents"]': v0 => `${v0} 个智能体`,
+    '[""," archived"]': v0 => `${v0} 个已归档`,
     '[""," changed"]': v0 => `${v0} 处更改`,
     '[""," commit"]': v0 => `${v0} 次提交`,
     '[""," commits"]': v0 => `${v0} 次提交`,
@@ -147,8 +269,6 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '[""," in ",""]': (v0, v1) => `${v1} 中有 ${v0} 个`,
     '[""," leading process "," ago"]': (v0, v1) => `前 ${v0} 个进程 · ${v1}前`,
     '[""," leading processes "," ago"]': (v0, v1) => `前 ${v0} 个进程 · ${v1}前`,
-    '[""," model"]': v0 => `${v0} 个模型`,
-    '[""," models"]': v0 => `${v0} 个模型`,
     '[""," more outside "," · tab widens"]': (v0, v1) => `${v1} 之外另有 ${v0} 个 · Tab 扩大范围`,
     '[""," note"]': v0 => `${v0} 条批注`,
     '[""," notes"]': v0 => `${v0} 条批注`,
@@ -162,14 +282,17 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '[""," unmodified line"]': v0 => `${v0} 行未更改`,
     '[""," unmodified lines"]': v0 => `${v0} 行未更改`,
     '[""," unread →"]': v0 => `${v0} 条未读 →`,
+    '[""," waiting"]': v0 => `${v0} 个等待中`,
     '[""," worktree"]': v0 => `${v0} 个工作树`,
     '[""," worktrees"]': v0 => `${v0} 个工作树`,
     '[""," d"]': v0 => `${v0}天`,
+    '[""," for details · "," for everything"]': (v0, v1) => `${v0} 查看详情 · ${v1} 查看全部`,
     '["","/"," done"]': (v0, v1) => `已完成 ${v0}/${v1}`,
     '["","/","+ done"]': (v0, v1) => `已完成 ${v0}/${v1}+`,
     '[""," Down"]': v0 => `${v0} 向下`,
     '[""," ago"]': v0 => `${v0}前`,
     '["","–"," of "," · tab to scroll"]': (v0, v1, v2) => `${v0}–${v1} / ${v2} · Tab 滚动`,
+    '[""," of ",""]': (v0, v1) => `${v0} / ${v1}`,
     '[""," late enough to hold frames; "," never came."]': (v0, v1) =>
       `${v0} 次响应过慢，导致画面等待；${v1} 次未返回。`,
     '[""," late enough to hold frames; one never came."]': v0 => `${v0} 次响应过慢，导致画面等待；1 次未返回。`,
@@ -201,10 +324,10 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '[""," local processes / "," / "," shown"]': (v0, v1, v2) => `${v0} 个本地进程 / ${v1} / 显示 ${v2} 个`,
     '[""," local processes / "," / partial / "," shown"]': (v0, v1, v2) =>
       `${v0} 个本地进程 / ${v1} / 部分数据 / 显示 ${v2} 个`,
+    '[""," models"]': v0 => `${v0} 个模型`,
     '[""," of "," GiB"]': (v0, v1) => `${v0} / ${v1} GiB`,
     '[""," · needs ",""]': (v0, v1) => `${v0} · 需要 ${v1}`,
     '[""," already exited"]': v0 => `${v0} 已退出`,
-    '["(auto choice)"]': () => `（自动选择）`,
     '["(empty)"]': () => `（空）`,
     '["(no directory)"]': () => `（无目录）`,
     '["+ Create “","”"]': v0 => `+ 创建“${v0}”`,
@@ -229,6 +352,9 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '["A path or a name on PATH; empty uses the default"]': () => `输入路径或 PATH 中的名称；留空则使用默认值`,
     '["A push is already running for this repository."]': () => `此仓库已有推送正在进行。`,
     '["AGE"]': () => `时长`,
+    '["AGENT is codex, claude, an account (claude/work or work), a saved command\'s\\nname, profile/ID, a clone name, or command/N, as launcher list names them."]':
+      () => `AGENT 可以是 codex、claude、账号（claude/work 或 work）、已保存命令的名称、
+profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。`,
     '["AGENTS"]': () => `智能体`,
     '["About"]': () => `关于`,
     '["About Corgi"]': () => `关于 Corgi`,
@@ -239,68 +365,23 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '["Activity summaries"]': () => `活动摘要`,
     '["Activity text stays blank; links say Open Link"]': () => `不显示活动摘要；链接显示为“打开链接”`,
     '["Add $NAME, so each worktree gets a folder of its own"]': () => `请加入 $NAME，让每个工作树拥有独立文件夹`,
+    '["Add a machine with corgi machine add NAME"]': () => `使用 corgi machine add NAME 添加机器`,
     '["Add a shortcut with +"]': () => `用 + 添加快捷键`,
     '["Add agent"]': () => `添加智能体`,
+    '["Add to the list"]': () => `添加到列表`,
     '["Agent"]': () => `智能体`,
-    "[\"Agent controls (--json prints the daemon's reply as JSON):\\n  corgi list [--json]                 layout, panes, agents, viewers\\n  corgi workspace list\\n  corgi workspace new NAME [--cwd DIR]\\n  corgi workspace edit ID [--name NAME] [--cwd DIR]\\n  corgi workspace close ID          requires an empty workspace\\n  corgi workspace switch ID [--viewer ID]\\n  corgi current                      calling pane's live location\\n  corgi tab new [--name NAME] [--cwd DIR] [--workspace ID] [--command SHELL_COMMAND]\\n  corgi tab rename ID|current NAME|--clear\\n  corgi tab move ID|current --before ID|--after ID|--workspace ID\\n  corgi tab merge ID|current --right-of ID|--left-of ID|--above ID|--below ID\\n  corgi tab close ID|current\\n  corgi pane split ID|current --right|--left|--up|--down [--cwd DIR] [--command SHELL_COMMAND]\\n  corgi pane move ID|current --right-of ID|--left-of ID|--above ID|--below ID\\n  corgi pane move ID|current --new-tab [--name NAME]\\n  corgi pane swap ID|current ID\\n  corgi pane resize ID|current --width PERCENT|--height PERCENT (10%-90%)\\n  corgi pane close ID|current\\n  corgi pane read ID|current [--lines N] [--json]\\n  corgi pane send ID|current TEXT|--stdin [--enter]\\n  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, arrows, etc.\\n  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  shells at their prompt\\n  corgi claim PROVIDER [--pane ID|current] [--owner PID]\\n  corgi claim --clear [--pane ID|current] [--owner PID]\\n  corgi focus ID|current --viewer ID  select in exactly one viewer\\n  corgi launcher list [--workspace ID] [--json]  agents each launcher shows\\n  corgi launcher hide AGENT... [--workspace ID]  in one workspace only\\n  corgi launcher show AGENT... [--workspace ID]  in one workspace only\\n  corgi launcher move AGENT [--before AGENT|--after AGENT|--first] [--workspace ID]\\n  corgi launcher edit AGENT [--name NAME] [--model ID|auto] [--effort LEVEL|default]\\n    [--flags FLAGS] [--env JSON_OBJECT] [--yolo on|off] [--workspace ID]\\n  corgi launcher clone AGENT [--name NAME] [--model ID|auto] [--effort LEVEL|default]\\n    [--flags FLAGS] [--env JSON_OBJECT] [--yolo on|off] [--workspace ID]\\n  corgi launcher models AGENT [--json]  native model IDs, efforts and defaults\\n  corgi launcher add --command COMMAND [--name NAME] [--workspace ID]\\n  corgi launcher edit AGENT --command COMMAND [--name NAME] [--workspace ID]\\n  corgi launcher remove AGENT [--workspace ID]  delete a clone or saved command\\n  corgi launcher copy --from ID --workspace ID  replace destination order and visibility\\n  corgi --skill                      print bundled agent instructions\\n\\nIDs come from list; current means CORGI_PANE, never UI focus.\\nNew tabs and launcher mutations outside Corgi require --workspace.\\nAgent settings are shared; order and visibility belong to each workspace.\\nMove without a position appends. Env replaces overrides, e.g. '{\\\"KEY\\\":\\\"value\\\"}'.\\nAuto uses the agent CLI's last model; default leaves effort to the agent CLI.\\nAGENT is codex, claude, an account (claude/work or work), a saved command's\\nname, profile/ID, a clone name, or command/N, as launcher list names them.\\nOperations never auto-start a server.\\nLayout changes preserve processes and do not select another pane in a viewer.\\n\\nControl Corgi panes, agents, or workspaces:\\n  SKIP if a Corgi skill is already in your context. Otherwise run: corgi --skill\\n\"]":
-      () => `智能体控制（--json 将守护进程的响应以 JSON 输出）：
-  corgi list [--json]                 布局、窗格、智能体和客户端
-  corgi workspace list
-  corgi workspace new NAME [--cwd DIR]
-  corgi workspace edit ID [--name NAME] [--cwd DIR]
-  corgi workspace close ID          仅可关闭空工作区
-  corgi workspace switch ID [--viewer ID]
-  corgi current                      调用命令的窗格的当前位置
-  corgi tab new [--name NAME] [--cwd DIR] [--workspace ID] [--command SHELL_COMMAND]
-  corgi tab rename ID|current NAME|--clear
-  corgi tab move ID|current --before ID|--after ID|--workspace ID
-  corgi tab merge ID|current --right-of ID|--left-of ID|--above ID|--below ID
-  corgi tab close ID|current
-  corgi pane split ID|current --right|--left|--up|--down [--cwd DIR] [--command SHELL_COMMAND]
-  corgi pane move ID|current --right-of ID|--left-of ID|--above ID|--below ID
-  corgi pane move ID|current --new-tab [--name NAME]
-  corgi pane swap ID|current ID
-  corgi pane resize ID|current --width PERCENT|--height PERCENT (10%-90%)
-  corgi pane close ID|current
-  corgi pane read ID|current [--lines N] [--json]
-  corgi pane send ID|current TEXT|--stdin [--enter]
-  corgi pane keys ID|current KEY...    enter、esc、ctrl+c、方向键等
-  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  等待输入的 Shell
-  corgi claim PROVIDER [--pane ID|current] [--owner PID]
-  corgi claim --clear [--pane ID|current] [--owner PID]
-  corgi focus ID|current --viewer ID  仅在指定客户端中选择
-  corgi launcher list [--workspace ID] [--json]  启动器显示的智能体
-  corgi launcher hide AGENT... [--workspace ID]  仅影响指定工作区
-  corgi launcher show AGENT... [--workspace ID]  仅影响指定工作区
-  corgi launcher move AGENT [--before AGENT|--after AGENT|--first] [--workspace ID]
-  corgi launcher edit AGENT [--name NAME] [--model ID|auto] [--effort LEVEL|default]
-    [--flags FLAGS] [--env JSON_OBJECT] [--yolo on|off] [--workspace ID]
-  corgi launcher clone AGENT [--name NAME] [--model ID|auto] [--effort LEVEL|default]
-    [--flags FLAGS] [--env JSON_OBJECT] [--yolo on|off] [--workspace ID]
-  corgi launcher models AGENT [--json]  原生模型 ID、推理强度及默认值
-  corgi launcher add --command COMMAND [--name NAME] [--workspace ID]
-  corgi launcher edit AGENT --command COMMAND [--name NAME] [--workspace ID]
-  corgi launcher remove AGENT [--workspace ID]  删除克隆或已保存的命令
-  corgi launcher copy --from ID --workspace ID  替换目标工作区的顺序和可见性
-  corgi --skill                      输出内置的智能体说明
-
-ID 来自 list；current 指 CORGI_PANE，始终不表示界面焦点。
-在 Corgi 外新建标签页或修改启动器时，必须指定 --workspace。
-智能体设置全局共享；顺序和可见性则属于各自的工作区。
-move 未指定位置时追加到末尾。--env 替换环境变量覆盖配置，例如 '{"KEY":"value"}'。
-auto 使用智能体 CLI 上次使用的模型；default 让智能体 CLI 决定推理强度。
-AGENT 可以是 codex、claude、账号（claude/work 或 work）、已保存命令的名称、
-profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
-操作不会自动启动服务端。
-更改布局会保留进程，且不会切换客户端中的选中窗格。
-
-控制 Corgi 窗格、智能体或工作区：
-  如果上下文中已有 Corgi 技能，请跳过。否则运行：corgi --skill
-`,
+    '["Agent controls (--json prints the daemon\'s reply as JSON):"]': () =>
+      `智能体控制（--json 将守护进程的响应以 JSON 输出）：`,
     '["Agent default"]': () => `智能体默认值`,
     '["Agent launch command"]': () => `智能体启动命令`,
     '["Agent or new terminal"]': () => `智能体或新终端`,
+    '["Agent settings are shared; order and visibility belong to each workspace."]': () =>
+      `智能体设置全局共享；顺序和可见性则属于各自的工作区。`,
+    '["Agent states unavailable"]': () => `代理状态不可用`,
     '["Agents"]': () => `智能体`,
+    '["Agents (",")"]': v0 => `智能体（${v0}）`,
+    '["Agents and processes will stop and release memory. Layout and history stay; unsaved state is lost."]': () =>
+      `智能体和进程将停止并释放内存。布局和历史记录会保留，未保存的状态将丢失。`,
     '["All"]': () => `全部`,
     '["All "," workspaces in this session move together."]': v0 => `此会话中的 ${v0} 个工作区将一并迁移。`,
     '["All files"]': () => `所有文件`,
@@ -315,16 +396,21 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Animal Style takes its colors from them."]': () => `Animal Style 使用终端的配色。`,
     '["Answers in ","."]': v0 => `响应耗时 ${v0}。`,
     '["Appended to Corgi\'s launch command. Quotes supported."]': () => `追加到 Corgi 的启动命令。支持引号。`,
+    '["Archive ","?"]': v0 => `归档 ${v0}？`,
+    '["Archive workspace"]': () => `归档工作区`,
+    '["Archiving…"]': () => `正在归档…`,
     '["Arrange"]': () => `排列`,
     '["Arrow keys"]': () => `方向键`,
     '["Auto"]': () => `自动`,
     '["Auto (",")"]': v0 => `自动（${v0}）`,
     '["Auto (follows your agents)"]': () => `自动（跟随你的智能体）`,
     '["Auto (last chosen)"]': () => `自动（上次选择）`,
+    '["Auto uses the agent CLI\'s last model; default leaves effort to the agent CLI."]': () =>
+      `auto 使用智能体 CLI 上次使用的模型；default 让智能体 CLI 决定推理强度。`,
+    '["Auto-retry capacity errors"]': () => `容量错误自动重试`,
     '["Back to agent"]': () => `返回智能体`,
     '["Background commands"]': () => `后台命令`,
     '["Backspace undo"]': () => `Backspace 撤销`,
-    '["Billing"]': () => `计费`,
     '["Binary file"]': () => `二进制文件`,
     '["Binary file · no text diff"]': () => `二进制文件 · 无文本差异`,
     '["Blocked by clipboard-read = deny."]': () => `已被 clipboard-read = deny 阻止。`,
@@ -332,17 +418,22 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Branch names can\'t have spaces, .., or ~^:?*[\\\\"]': () => `分支名不能含空格、.. 或 ~^:?*[\\`,
     '["Brief failed"]': () => `摘要生成失败`,
     '["Bring your work along"]': () => `把工作一起带过来`,
+    '["Build ",""]': v0 => `构建 ${v0}`,
+    '["Build "," built on ",""]': (v0, v1) => `构建 ${v0}（${v1}）`,
     '["Build: "]': () => `构建版本：`,
     '["Builds"]': () => `构建`,
     '["By activity"]': () => `按活动排序`,
     '["COPY"]': () => `复制`,
     '["CORGI"]': () => `CORGI`,
     '["CORGI_LANG overrides this setting when set."]': () => `设置 CORGI_LANG 后，它会覆盖此选项。`,
+    '["CORGI_SOCKET selects a runtime. Workspaces group tabs and panes; no worktrees."]': () =>
+      `CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不创建工作树。`,
     '["CPU and memory under each workspace in the sidebar."]': () => `在侧栏各工作区下显示 CPU 和内存用量。`,
     '["CPU busy"]': () => `CPU 使用率`,
     '["Cached"]': () => `已缓存`,
     '["Can\'t read this folder"]': () => `无法读取此文件夹`,
     '["Cancel"]': () => `取消`,
+    '["Change folder"]': () => `更改文件夹`,
     '["Change navigation"]': () => `跳转更改区块`,
     '["Check failed"]': () => `检查失败`,
     '["Check flag quotes; shell operators and expansions aren\'t supported."]': () =>
@@ -355,6 +446,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Choose a valid model ID."]': () => `请选择有效的模型 ID。`,
     '["Choose agent"]': () => `选择智能体`,
     '["Choose an agent or terminal"]': () => `选择智能体或终端`,
+    '["Choose an edge to split"]': () => `选择要拆分的边缘`,
     '["Choose familiar keys."]': () => `选择你熟悉的按键。`,
     '["Choose the language for Corgi\'s interface."]': () => `选择 Corgi 的界面语言。`,
     '["Choose workspace"]': () => `选择工作区`,
@@ -363,15 +455,12 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Clear pane name"]': () => `清除窗格名称`,
     '["Clear search to reorder agents."]': () => `清除搜索后即可调整智能体顺序。`,
     '["Clever Corgi"]': () => `聪明 Corgi`,
-    '["Click to resume"]': () => `点击继续`,
     '["Clone agent · draft"]': () => `克隆智能体 · 草稿`,
     '["Close"]': () => `关闭`,
     '["Close / reopen"]': () => `关闭 / 重开`,
     '["Close all agents for ",""]': v0 => `关闭 ${v0} 的所有智能体`,
     '["Close pane"]': () => `关闭窗格`,
     '["Close tab"]': () => `关闭标签页`,
-    '["Close the "," agents that run in it first."]': v0 => `请先关闭其中运行的 ${v0} 个智能体。`,
-    '["Close the agent that runs in it first."]': () => `请先关闭其中运行的智能体。`,
     '["Close workspace"]': () => `关闭工作区`,
     '["Cmd+T/D/W, workspace numbers and related bindings replace host actions."]': () =>
       `Cmd+T/D/W、工作区编号等快捷键将接管终端原有操作。`,
@@ -382,6 +471,8 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Command shortcuts"]': () => `Command 快捷键`,
     '["Command too long"]': () => `命令过长`,
     '["Commands"]': () => `命令`,
+    '["Commands print text; --json prints the daemon\'s reply as JSON instead."]': () =>
+      `命令默认输出文本；使用 --json 则将守护进程的响应以 JSON 输出。`,
     '["Comment"]': () => `批注`,
     '["Commit"]': () => `提交`,
     '["Commit details unavailable"]': () => `无法获取提交详情`,
@@ -392,14 +483,15 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Comparison branch unavailable"]': () => `无法获取比较分支`,
     '["Connect your Command keys"]': () => `连接你的 Command 键`,
     '["Connecting to Herdr"]': () => `正在连接 Herdr`,
+    '["Control Corgi panes, agents, or workspaces:"]': () => `控制 Corgi 窗格、智能体或工作区：`,
     '["Copied "," note."]': v0 => `已复制 ${v0} 条批注。`,
     '["Copied "," notes."]': v0 => `已复制 ${v0} 条批注。`,
-    '["Copied the link; paste it into your browser."]': () => `链接已复制；请粘贴到浏览器中。`,
     '["Copies the conversation into a new tab"]': () => `将对话复制到新标签页`,
     '["Copies the workspaces; their processes stay in Herdr."]': () => `复制工作区；进程继续在 Herdr 中运行。`,
     '["Copy"]': () => `复制`,
     '["Copy an image, then paste it to an agent."]': () => `复制图片后，将其粘贴给智能体。`,
     '["Copy details"]': () => `复制详情`,
+    '["Copy details for a bug report"]': () => `复制问题报告所需信息`,
     '["Copy full path"]': () => `复制完整路径`,
     '["Copy hovered link"]': () => `复制光标下的链接`,
     '["Copy sessions, scrollback and commands. Source processes stay in tmux."]': () =>
@@ -410,23 +502,28 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Copying into Corgi"]': () => `正在复制到 Corgi`,
     '["Corgi and your agents keep running."]': () => `Corgi 和智能体会继续运行。`,
     '["Corgi can\'t read your Ghostty config."]': () => `Corgi 无法读取你的 Ghostty 配置。`,
-    '["Corgi doesn\'t list this account any more."]': () => `Corgi 已不再列出此账号。`,
     '["Corgi keeps your background when it\'s dark and paints its own otherwise."]': () =>
       `终端背景为深色时 Corgi 会保留它，否则使用自己的背景色。`,
     '["Corgi pastes PNG, JPEG, GIF and WebP images"]': () => `Corgi 支持粘贴 PNG、JPEG、GIF 和 WebP 图片`,
+    '["Corgi prompt"]': () => `Corgi 对话`,
     '["Corgi setup"]': () => `Corgi 设置`,
+    '["Corgi was uninstalled."]': () => `Corgi 已卸载。`,
     "[\"Corgi's colors, or your terminal theme's.\"]": () => `使用 Corgi 或终端主题的配色。`,
     '["Corgi\'s own"]': () => `Corgi 配色`,
     '["Could not create that folder."]': () => `无法创建此文件夹。`,
+    '["Could not load workspace activity. Close and try again."]': () => `无法加载工作区活动。请关闭后重试。`,
+    '["Could not rename this workspace"]': () => `无法重命名此工作区`,
     '["Could not resolve shorthand. Paste its underlying command."]': () => `无法解析简写。请粘贴完整命令。`,
     '["Could not save command; max 2048 bytes."]': () => `无法保存命令；上限为 2048 字节。`,
     '["Could not save. Check folder or capacity."]': () => `无法保存。请检查文件夹或容量限制。`,
+    '["Could not stop startup"]': () => `无法停止启动`,
     '["Could not watch viewer.json for shortcut changes."]': () => `无法监测 viewer.json 中的快捷键更改。`,
     '["Couldn\'t read its panes or tabs"]': () => `无法读取其中的窗格或标签页`,
     '["Couldn\'t read the workspace list. R refreshes."]': () => `无法读取工作区列表。按 R 刷新。`,
     '["Couldn\'t read this source. R retries."]': () => `无法读取此来源。按 R 重试。`,
     '["Couldn\'t save the pasted image"]': () => `无法保存粘贴的图片`,
     '["Create "]': () => `创建 `,
+    '["Create workspace"]': () => `创建工作区`,
     '["Creating workspaces and shells"]': () => `正在创建工作区和 Shell`,
     '["Custom agent"]': () => `自定义智能体`,
     '["Custom command"]': () => `自定义命令`,
@@ -436,8 +533,8 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["DETACH"]': () => `断开连接`,
     '["Default"]': () => `默认`,
     '["Default ",""]': v0 => `默认 ${v0}`,
+    '["Default (",")"]': v0 => `默认（${v0}）`,
     '["Default account · unavailable"]': () => `默认账号 · 不可用`,
-    '["Default model"]': () => `默认模型`,
     '["Deleted the note on ","."]': v0 => `已删除 ${v0} 的批注。`,
     '["Deletes the saved command"]': () => `删除已保存的命令`,
     '["Deletes this configuration; keeps the account"]': () => `删除此配置，保留账号`,
@@ -445,9 +542,12 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Detected, not settings: what this terminal can do."]': () => `以下为检测到的终端能力，并非设置选项。`,
     '["Didn\'t say its name"]': () => `未提供终端名称`,
     '["Digs up likely HTTP links ↗"]': () => `发现可能的 HTTP 链接 ↗`,
+    '["Discovering ","…"]': v0 => `正在检测${v0}…`,
     '["Discovering worktrees…"]': () => `正在查找工作树…`,
+    '["Discovering…"]': () => `正在检测…`,
     '["Done"]': () => `完成`,
     '["Down"]': () => `下`,
+    '["Download and apply an update"]': () => `下载并应用更新`,
     '["Download: "]': () => `下载：`,
     '["Drop an agent here"]': () => `将智能体拖到这里`,
     '["Duplicate variable: ",""]': v0 => `重复变量：${v0}`,
@@ -456,6 +556,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Edit ",""]': v0 => `编辑 ${v0}`,
     '["Edit agent"]': () => `编辑智能体`,
     '["Edit workspace"]': () => `编辑工作区`,
+    '["Edit ›"]': () => `编辑 ›`,
     '["Edit, delete"]': () => `编辑、删除`,
     '["Ended"]': () => `已结束`,
     '["Enter a command."]': () => `请输入命令。`,
@@ -469,11 +570,13 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Escape is reserved for canceling Corgi controls"]': () => `Escape 专用于取消 Corgi 操作`,
     '["Expand lines"]': () => `展开行`,
     '["Extra flags"]': () => `附加参数`,
-    '["Fetching models…"]': () => `正在获取模型…`,
     '["File list"]': () => `文件列表`,
     '["File navigation"]': () => `文件导航`,
     '["Find"]': () => `查找`,
     '["Find agent"]': () => `查找智能体`,
+    '["Find agents"]': () => `查找智能体`,
+    '["Find it in the sidebar"]': () => `在侧栏中找到它`,
+    '["Finding ","…"]': v0 => `正在查找 ${v0}…`,
     '["Finished"]': () => `已完成`,
     '["Focus"]': () => `聚焦`,
     '["Focus a pane to review its checkout."]': () => `聚焦窗格以审查其代码目录。`,
@@ -485,7 +588,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Fold file"]': () => `折叠文件`,
     '["Folded lines take no notes; → opens them."]': () => `折叠行不能添加批注；按 → 展开。`,
     '["Folder"]': () => `文件夹`,
-    '["Follow "," · ",""]': (v0, v1) => `跟随 ${v0} · ${v1}`,
+    '["Follow ",""]': v0 => `跟随 ${v0}`,
     '["Follow the agents you run"]': () => `跟随你使用的智能体`,
     '["Follow your agents"]': () => `跟随你的智能体`,
     '["Follow your system language"]': () => `跟随系统语言`,
@@ -498,7 +601,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["From"]': () => `基于`,
     '["GPU use from device totals"]': () => `GPU 用量按设备统计`,
     '["GPU use shared out by memory"]': () => `按显存比例分摊 GPU 用量`,
-    '["Gathering details about this machine…"]': () => `正在收集本机信息…`,
+    '["Gathering bug report info…"]': () => `正在收集问题报告信息…`,
     '["Generated file · +"," −",""]': (v0, v1) => `生成的文件 · +${v0} −${v1}`,
     '["Generated file · enter loads its diff"]': () => `生成的文件 · Enter 加载差异`,
     '["Ghostty is set to refuse clipboard reads."]': () => `Ghostty 已设置为拒绝读取剪贴板。`,
@@ -511,7 +614,10 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Half page"]': () => `半页`,
     '["Handing off to Corgi"]': () => `正在由 Corgi 接管`,
     '["Handoff processes"]': () => `接管进程`,
+    '["Happy helper for your terminal."]': () => `你终端里的快乐小助手。`,
     '["Help needs 32 × 12"]': () => `帮助需要 32 × 12`,
+    '["Hibernate pane"]': () => `休眠窗格`,
+    '["Hibernated"]': () => `已休眠`,
     '["Hidden"]': () => `已隐藏`,
     '["Hide, resize"]': () => `隐藏、调整大小`,
     '["Hold with the action key."]': () => `按住此键，再按操作键。`,
@@ -519,6 +625,8 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Home row"]': () => `基准键位`,
     '["I\'ll bring over what I can."]': () => `我会尽可能把工作迁移过来。`,
     '["I\'m confused by this cmux version."]': () => `无法识别此 cmux 版本。`,
+    '["IDs come from list; current means CORGI_PANE, never UI focus."]': () =>
+      `ID 来自 list；current 指 CORGI_PANE，始终不表示界面焦点。`,
     '["Idle"]': () => `空闲`,
     '["Image paste"]': () => `粘贴图片`,
     '["Images over 32 MB don\'t paste"]': () => `无法粘贴超过 32 MB 的图片`,
@@ -530,12 +638,15 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["In Ghostty only, these keys drive Corgi:"]': () => `以下按键仅可在 Ghostty 中控制 Corgi：`,
     '["In the list"]': () => `在列表中`,
     '["Including subagents"]': () => `包含子智能体`,
+    '["Installing ","…"]': v0 => `正在安装 ${v0}…`,
+    '["Installs on use"]': () => `使用时安装`,
     '["Intensity"]': () => `亮度`,
     '["Invalid viewer.json; keeping the working shortcuts."]': () => `viewer.json 无效；保留当前可用的快捷键。`,
     '["Invalid viewer.json; using default preferences until the file is repaired."]': () =>
       `viewer.json 无效；文件修复前将使用默认设置。`,
     '["It runs in a background session, outside any pane"]': () => `此进程在后台会话中运行，不在任何窗格内`,
     '["Its diff starts collapsed. Enter loads it."]': () => `差异默认折叠。按 Enter 加载。`,
+    '["Join our Discord community:"]': () => `加入我们的 Discord 社区：`,
     '["Jump to attention"]': () => `跳转到待处理事项`,
     '["Jump to who needs you"]': () => `跳转到需要你的智能体`,
     '["Keep"]': () => `保留`,
@@ -545,6 +656,8 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Keyboard shortcuts"]': () => `键盘快捷键`,
     '["Keymap"]': () => `键位图`,
     '["Keys"]': () => `按键`,
+    '["Keys: Ctrl+B opens a clickable command menu; `corgi keys` lists every shortcut."]': () =>
+      `按键：Ctrl+B 打开可点击的命令菜单；\`corgi keys\` 列出所有快捷键。`,
     '["Kill "," with SIGKILL?"]': v0 => `用 SIGKILL 强制结束 ${v0}？`,
     '["Kitty graphics"]': () => `Kitty 图形`,
     '["Language"]': () => `语言`,
@@ -555,14 +668,20 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Last visited agent"]': () => `上次访问的智能体`,
     '["Last visited tab"]': () => `上次访问的标签页`,
     '["Last visited workspace"]': () => `上次访问的工作区`,
-    '["Launch inside a pane:"]': () => `在窗格内启动：`,
+    '["Layout"]': () => `布局`,
+    '["Layout changes preserve processes and do not select another pane in a viewer."]': () =>
+      `更改布局会保留进程，且不会切换客户端中的选中窗格。`,
+    '["Learn more about Corgi:"]': () => `了解 Corgi：`,
     '["Leave"]': () => `离开`,
     '["Limits"]': () => `额度`,
     '["Links · Esc to close"]': () => `链接 · Esc 关闭`,
     '["List"]': () => `列表`,
+    '["List shortcuts; Ctrl+B opens the menu"]': () => `列出快捷键；Ctrl+B 打开菜单`,
     '["List, diff"]': () => `列表、差异`,
     '["Live handoff unavailable for this session; turn it off to copy."]': () =>
       `此会话不支持进程接管；关闭接管即可复制。`,
+    '["Loading pane…"]': () => `正在加载窗格…`,
+    '["Loading tabs…"]': () => `正在加载标签页…`,
     '["Looking for running sessions…"]': () => `正在查找运行中的会话…`,
     '["MATCHING SHORTCUTS"]': () => `匹配的快捷键`,
     '["MODIFIER"]': () => `修饰键`,
@@ -590,9 +709,12 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Move tab right"]': () => `标签页右移`,
     '["Move tab to workspace…"]': () => `将标签页移至工作区…`,
     '["Move to new tab"]': () => `移至新标签页`,
+    '["Move without a position appends. Env replaces overrides, e.g. \'{\\"KEY\\":\\"value\\"}\'."]': () =>
+      `move 未指定位置时追加到末尾。--env 替换环境变量覆盖配置，例如 '{"KEY":"value"}'。`,
     '["Mute / unmute"]': () => `静音 / 取消静音`,
     '["Mute / unmute sounds"]': () => `静音 / 开启声音`,
     '["Name"]': () => `名称`,
+    '["Name it and pick a folder"]': () => `命名并选择文件夹`,
     '["Name tab"]': () => `命名标签页`,
     '["Names fit in 80 characters"]': () => `名称最多 80 个字符`,
     '["Navigate"]': () => `导航`,
@@ -610,6 +732,8 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["New tab"]': () => `新建标签页`,
     '["New tab (agent picker)"]': () => `新建标签页（选择智能体）`,
     '["New tab → agent picker"]': () => `新建标签页 → 选择智能体`,
+    '["New tabs and launcher mutations outside Corgi require --workspace."]': () =>
+      `在 Corgi 外新建标签页或修改启动器时，必须指定 --workspace。`,
     '["New terminal"]': () => `新建终端`,
     '["New workspace"]': () => `新建工作区`,
     '["Next / previous"]': () => `下一个 / 上一个`,
@@ -618,7 +742,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Next pane"]': () => `下一个窗格`,
     '["Next tab"]': () => `下一个标签页`,
     '["Next workspace"]': () => `下一个工作区`,
-    '["No agents yet"]': () => `暂无智能体`,
+    '["No active agents or processes."]': () => `没有活动的智能体或进程。`,
     '["No agents yet this session; using your last one"]': () => `本次会话尚无智能体；沿用上次选择`,
     '["No available sessions found."]': () => `未找到可用会话。`,
     '["No branch matches"]': () => `无匹配分支`,
@@ -627,20 +751,24 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["No commit picked yet. g opens the menu."]': () => `尚未选择提交。按 g 打开菜单。`,
     '["No commits since ",""]': v0 => `相较 ${v0} 无新提交`,
     '["No commits yet"]': () => `暂无提交`,
+    '["No daemon connection"]': () => `未连接守护进程`,
     '["No executable shell there."]': () => `此处没有可执行的 Shell。`,
     '["No folders"]': () => `没有文件夹`,
     '["No folders match"]': () => `没有匹配的文件夹`,
+    '["No image on the clipboard"]': () => `剪贴板中没有图片`,
     '["No lines changed"]': () => `没有更改的行`,
     '["No linked worktrees"]': () => `没有关联的工作树`,
     '["No matches."]': () => `无匹配项。`,
     '["No matching actions."]': () => `没有匹配的操作。`,
     '["No matching agents"]': () => `没有匹配的智能体`,
-    '["No matching models"]': () => `没有匹配的模型`,
+    '["No models"]': () => `没有模型`,
+    '["No models match"]': () => `没有匹配的模型`,
     '["No notes yet."]': () => `暂无批注。`,
     '["No notes yet. v selects lines, c comments."]': () => `暂无批注。按 v 选行，按 c 批注。`,
     '["No overrides; inherits your environment."]': () => `无覆盖配置；继承当前环境。`,
+    '["No processes"]': () => `无进程`,
     '["No shortcuts"]': () => `无快捷键`,
-    '["No signed-in models"]': () => `没有已登录账号的模型`,
+    '["No such workspace"]': () => `工作区不存在`,
     '["No summaries, plain links"]': () => `不生成摘要，使用普通链接`,
     '["No text diff and no line notes."]': () => `无文本差异，无法添加行批注。`,
     '["No uncommitted changes."]': () => `没有未提交的更改。`,
@@ -648,6 +776,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["No workspaces could be recovered yet."]': () => `暂未恢复任何工作区。`,
     '["None"]': () => `无`,
     '["None late enough to hold frames."]': () => `所有响应都及时返回，无需等待。`,
+    '["Not enough room for this split"]': () => `空间不足，无法拆分`,
     '["Not in a git checkout:"]': () => `当前不在 git 工作目录中：`,
     '["Not installed"]': () => `未安装`,
     '["Not signed in"]': () => `未登录`,
@@ -655,6 +784,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Nothing beyond main"]': () => `与 main 一致`,
     '["Nothing changed on "," yet."]': v0 => `${v0} 尚无更改。`,
     '["Nothing closed here. Tab widens the scope."]': () => `此处没有已关闭的智能体。按 Tab 扩大范围。`,
+    '["Nothing is waiting"]': () => `没有等待中的任务`,
     '["Observed tokens"]': () => `已观测的 Token`,
     '["Off"]': () => `关闭`,
     '["On"]': () => `开启`,
@@ -667,9 +797,12 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Open folder as workspace"]': () => `将文件夹作为工作区打开`,
     '["Open the agent picker"]': () => `打开智能体选择器`,
     '["Open · jumps to its tab"]': () => `已打开 · 跳转到对应标签页`,
+    '["Operations never auto-start a server."]': () => `操作不会自动启动服务端。`,
     '["Ordered key sets belong to an indexed action, such as tab"]': () => `有序按键组仅适用于 tab 等按编号操作`,
     '["Other agents"]': () => `其他智能体`,
     '["Other…"]': () => `其他…`,
+    '["Over SSH, images paste only from terminals that send them"]': () =>
+      `通过 SSH 连接时，只有支持发送图片的终端才能粘贴图片`,
     '["P  Continue with portable Herdr keys"]': () => `P  使用通用 Herdr 按键继续`,
     '["P = prefix · Cmd = hold"]': () => `P = 前缀键 · Cmd = 按住`,
     '["P prefix"]': () => `P 前缀键`,
@@ -678,6 +811,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["PROCESS"]': () => `进程`,
     '["Page"]': () => `翻页`,
     '["Partial process coverage"]': () => `仅覆盖部分进程`,
+    '["Past conversations, newest first"]': () => `历史对话，最新的在前`,
     '["Paste (host terminal)"]': () => `粘贴（宿主终端）`,
     '["Paste a command…"]': () => `粘贴命令…`,
     '["Paste copied text"]': () => `粘贴已复制的文本`,
@@ -707,15 +841,23 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Previous pane"]': () => `上一个窗格`,
     '["Previous tab"]': () => `上一个标签页`,
     '["Previous workspace"]': () => `上一个工作区`,
+    '["Process counts unavailable"]': () => `进程数量不可用`,
+    '["Process information unavailable"]': () => `进程信息不可用`,
+    '["Process list may be incomplete"]': () => `进程列表可能不完整`,
+    '["Processes"]': () => `进程`,
+    '["Prompt an agent through its own channel"]': () => `通过智能体自己的通道发送提示`,
     '["Push failed"]': () => `推送失败`,
     '["Reading branches…"]': () => `正在读取分支…`,
     '["Reading default account…"]': () => `正在读取默认账号…`,
     '["Reading git…"]': () => `正在读取 git…`,
+    '["Reading models…"]': () => `正在读取模型…`,
     '["Reading the diff…"]': () => `正在读取差异…`,
+    '["Reading workspace activity…"]': () => `正在读取工作区活动…`,
     '["Reading…"]': () => `正在读取…`,
     '["Receiving live terminals"]': () => `正在接收运行中的终端`,
     '["Record Enter"]': () => `Enter 录制`,
     '["Record a sequence…"]': () => `录制按键序列…`,
+    '["Redo layout change"]': () => `重做布局更改`,
     '["Relaunch viewer"]': () => `重新启动客户端`,
     '["Release notes"]': () => `版本说明`,
     '["Release, then press a key."]': () => `松开后，再按一个键。`,
@@ -726,7 +868,6 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Reload Ghostty: Cmd+Shift+, to apply Command keys."]': () =>
       `按 Cmd+Shift+, 重载 Ghostty 以应用 Command 键设置。`,
     '["Remove"]': () => `移除`,
-    '["Removed"]': () => `已移除`,
     '["Removing"]': () => `正在移除`,
     '["Rename"]': () => `重命名`,
     '["Rename agent"]': () => `重命名智能体`,
@@ -734,6 +875,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Rename tab"]': () => `重命名标签页`,
     '["Rename workspace"]': () => `重命名工作区`,
     '["Reopen"]': () => `重新打开`,
+    '["Reopen a past conversation"]': () => `重新打开历史对话`,
     '["Reopen directly"]': () => `直接重开`,
     '["Reopen last closed agent"]': () => `重开最近关闭的智能体`,
     '["Reopen tab"]': () => `重开标签页`,
@@ -750,6 +892,11 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Resources"]': () => `资源`,
     '["Restoring…"]': () => `正在恢复…`,
     '["Resume"]': () => `恢复`,
+    '["Resume pane"]': () => `恢复窗格`,
+    '["Resume with corgi pane wake ",""]': v0 => `使用 corgi pane wake ${v0} 恢复`,
+    '["Retries Codex at capacity; Esc stops it."]': () => `Codex 满载时自动重试；按 Esc 停止。`,
+    '["Retrying in ",""]': v0 => `${v0}后重试`,
+    '["Retrying…"]': () => `正在重试…`,
     '["Return in each pane restarts its command"]': () => `在各窗格内按 Return 可重启其命令`,
     '["Review"]': () => `审查`,
     '["Review changes"]': () => `审查更改`,
@@ -770,7 +917,9 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Scroll / copy"]': () => `滚动 / 复制`,
     '["Scroll / copy mode"]': () => `滚动 / 复制模式`,
     '["Search"]': () => `搜索`,
+    '["Search conversation text"]': () => `搜索对话文本`,
     '["Search models"]': () => `搜索模型`,
+    '["Search models, agents and accounts"]': () => `搜索模型、代理和账户`,
     '["Select"]': () => `选择`,
     '["Select tab"]': () => `选择标签页`,
     '["Select workspace"]': () => `选择工作区`,
@@ -780,6 +929,8 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Sent "," notes to ",". Enter there submits them."]': (v0, v1) =>
       `已向 ${v1} 发送 ${v0} 条批注。请在那里按 Enter 提交。`,
     '["Sent "," to ",""]': (v0, v1) => `已向 ${v1} 发送 ${v0}`,
+    '["Served links"]': () => `服务链接`,
+    '["Served links will go offline."]': () => `服务链接将离线。`,
     '["Servers"]': () => `服务`,
     '["Session ended"]': () => `会话已结束`,
     '["Set clipboard-read = ask to enable paste with ","."]': v0 => `设置 clipboard-read = ask，即可用 ${v0} 粘贴。`,
@@ -797,14 +948,13 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
       `快捷键已重载。请重载 Ghostty 以更新菜单快捷键。`,
     '["Shortcuts reloaded; could not update the Ghostty integration."]': () => `快捷键已重载；无法更新 Ghostty 集成。`,
     '["Show"]': () => `显示`,
-    '["Show "," more"]': v0 => `再显示 ${v0} 个`,
-    '["Show fewer"]': () => `收起`,
+    '["Show a folder\'s workspace, or add one"]': () => `显示文件夹的工作区，没有则新建`,
     '["Show less"]': () => `收起`,
     '["Show resources"]': () => `显示资源`,
+    '["Show startup waits"]': () => `显示启动等待`,
     '["Show worktrees"]': () => `显示工作树`,
     '["Sidebar corgi brightness."]': () => `侧栏柯基的亮度。`,
     '["Sign in"]': () => `登录`,
-    '["Sign in first"]': () => `请先登录`,
     '["Sign in to a model provider through ",""]': v0 => `通过 ${v0} 登录模型服务商`,
     '["Signed out"]': () => `已退出登录`,
     '["Signs out and deletes its folder"]': () => `退出登录并删除其文件夹`,
@@ -821,10 +971,14 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Star"]': () => `收藏`,
     '["Star / unstar agent"]': () => `收藏 / 取消收藏智能体`,
     '["Star / unstar headless agent"]': () => `收藏 / 取消收藏后台智能体`,
+    '["Start"]': () => `开始`,
+    '["Start Corgi or attach to it"]': () => `启动 Corgi 或连接到它`,
     '["Starting"]': () => `正在启动`,
     '["Starting session"]': () => `正在启动会话`,
+    '["Startup waits: enlarge terminal · Esc to close"]': () => `启动等待：请放大终端 · Esc 关闭`,
     '["Still pasting the previous image"]': () => `上一张图片仍在粘贴中`,
     '["Stop "," with SIGTERM?"]': v0 => `用 SIGTERM 停止 ${v0}？`,
+    '["Stopping ","…"]': v0 => `正在停止 ${v0}…`,
     '["Suggested automatically"]': () => `自动建议`,
     '["Swap"]': () => `交换`,
     '["Swap down"]': () => `与下方交换`,
@@ -845,10 +999,9 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["That pane would run the notes as commands; copied them instead."]': () =>
       `此窗格会将批注作为命令执行；已改为复制。`,
     '["That\'s a file, not a folder."]': () => `这是文件，不是文件夹。`,
+    '["The Farm"]': () => `农场`,
     '["The clipboard image was damaged"]': () => `剪贴板中的图片已损坏`,
     '["The commits to push changed. Review them and push again."]': () => `待推送的提交已改变。请重新审查后推送。`,
-    '["The issue starts with these details. Nothing is sent until you submit it on GitHub."]': () =>
-      `问题报告会包含以下信息。只有在 GitHub 上提交后才会发送。`,
     '["The limit is 2 MB or 50,000 lines."]': () => `上限为 2 MB 或 50,000 行。`,
     '["The notes hold an end-of-paste marker; they\'re kept."]': () => `批注含有粘贴结束标记；已保留批注。`,
     '["The pane closed before the paste arrived"]': () => `粘贴内容到达前，窗格已关闭`,
@@ -885,11 +1038,13 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Type a folder, such as ",""]': v0 => `输入文件夹路径，例如 ${v0}`,
     '["Type a path"]': () => `输入路径`,
     '["UNCOMMITTED CHANGES"]': () => `未提交的更改`,
+    '["Unarchive workspace"]': () => `取消归档工作区`,
     '["Unavailable"]': () => `不可用`,
     '["Unavailable · ",""]': v0 => `不可用 · ${v0}`,
     '["Unavailable · server returned 429"]': () => `不可用 · 服务端返回 429`,
     '["Uncommitted"]': () => `未提交`,
     '["Undo"]': () => `撤销`,
+    '["Undo layout change"]': () => `撤销布局更改`,
     '["Unfold"]': () => `展开`,
     '["Unified / split diff"]': () => `统一 / 分栏差异`,
     '["Unknown"]': () => `未知`,
@@ -932,7 +1087,7 @@ ${v1} 使用该账号。
 涵盖 Corgi 已知的所有账号；--account 指定单个账号（default 表示默认账号）。
 `,
     '["Use"]': () => `使用`,
-    '["Use "," · ",""]': (v0, v1) => `使用 ${v0} · ${v1}`,
+    '["Use ",""]': v0 => `使用 ${v0}`,
     '["Use "," to enable paste with ","."]': (v0, v1) => `使用 ${v0}，即可用 ${v1} 粘贴。`,
     '["Use a nonblank name up to 160 bytes, without control characters."]': () =>
       `名称不能为空，最多 160 字节，不能含控制字符。`,
@@ -955,7 +1110,11 @@ ${v1} 使用该账号。
     '["Visual flourishes"]': () => `视觉效果`,
     '["WORKSPACES"]': () => `工作区`,
     '["WORKTREE"]': () => `工作树`,
+    '["Waiting for "," service…"]': v0 => `正在等待 ${v0} 服务…`,
+    '["Waiting for "," session…"]': v0 => `正在等待 ${v0} 会话…`,
+    '["Waiting for ","…"]': v0 => `正在等待 ${v0}…`,
     '["Waiting for Herdr ownership confirmation"]': () => `正在等待 Herdr 确认移交控制权`,
+    '["Waiting for a response"]': () => `正在等待响应`,
     '["Waiting for activity"]': () => `等待活动`,
     '["Waiting on agents"]': () => `等待智能体`,
     '["Waiting on subagents"]': () => `等待子智能体`,
@@ -969,6 +1128,7 @@ ${v1} 使用该账号。
     '["Working"]': () => `工作中`,
     '["Workspace / all"]': () => `当前工作区 / 全部`,
     '["Workspace only · opens a new shell"]': () => `仅工作区 · 打开新 Shell`,
+    '["Workspaces, tabs, panes and agents"]': () => `工作区、标签页、窗格和智能体`,
     '["Worktree briefs"]': () => `工作树摘要`,
     '["Worktree folder"]': () => `工作树文件夹`,
     '["Worktrees: enlarge terminal · Esc to close"]': () => `工作树：请扩大终端 · Esc 关闭`,
@@ -1008,6 +1168,7 @@ ${v1} 使用该账号。
     '["[Save]"]': () => `[保存]`,
     '["[Show alts Ctrl+L]"]': () => `[显示备选 Ctrl+L]`,
     '["[Show command]"]': () => `[显示命令]`,
+    '["[x Kill]"]': () => `[x 终止]`,
     '["[···] Working"]': () => `[···] 进行中`,
     '["[✓] Complete"]': () => `[✓] 已完成`,
     '["^C Clear"]': () => `^C 清除`,
@@ -1020,7 +1181,7 @@ ${v1} 使用该账号。
     '["a workspace is open in it"]': () => `有工作区正在使用它`,
     '["accounts"]': () => `账号`,
     '["activate"]': () => `启用`,
-    '["add back to the list"]': () => `重新加入列表`,
+    '["add to the list"]': () => `添加到列表`,
     '["adding ","…"]': v0 => `正在添加 ${v0}…`,
     '["adjust"]': () => `调整`,
     '["age"]': () => `时长`,
@@ -1031,6 +1192,7 @@ ${v1} 使用该账号。
     '["an update"]': () => `更新`,
     '["another one is being removed"]': () => `正在移除另一个工作树`,
     '["as dragged"]': () => `按拖选范围`,
+    '["auto"]': () => `自动`,
     '["back"]': () => `返回`,
     '["background session"]': () => `后台会话`,
     '["bin"]': () => `二进制`,
@@ -1039,6 +1201,7 @@ ${v1} 使用该账号。
     '["change"]': () => `更改`,
     '["checking…"]': () => `检查中…`,
     '["choose"]': () => `选择`,
+    '["choose effort"]': () => `选择推理强度`,
     '["chosen"]': () => `已选`,
     '["clean"]': () => `无更改`,
     '["clear"]': () => `清除`,
@@ -1054,61 +1217,22 @@ ${v1} 使用该账号。
     '["commits "," ",""]': (v0, v1) => `提交 ${v0} ${v1}`,
     '["committed"]': () => `已提交`,
     '["committed + working copy"]': () => `已提交 + 工作副本`,
+    '["connecting"]': () => `连接中`,
     '["context "]': () => `上下文 `,
+    '["copy details"]': () => `复制信息`,
     '["copy link"]': () => `复制链接`,
-    "[\"corgi — a small Ghostty-powered agent terminal\\n\\n  corgi                         start / attach\\n  corgi open DIR                show DIR's workspace; add one if none\\n  corgi onboard                 open onboarding, even after setup\\n  corgi dev                     reload if changed; attach or relaunch viewer\\n  corgi --no-update             attach without activating a staged update\\n  corgi update                  download and safely apply an update\\n  corgi update status           show update status\\n  corgi update rollback         return to the previous release\\n  corgi update --check|--download-only\\n  corgi update auto on|off      control automatic updates\\n  corgi start                   start detached runtime\\n  corgi action NAME [VALUE]     run a viewer action, named below\\n  corgi agent claude|codex ...   optional discovered-binary launcher\\n  corgi hooks claude|codex       print hook configuration\\n  corgi integration COMMAND     status, install, uninstall hooks\\n  corgi account COMMAND         list, add, login, remove provider accounts\\n  corgi which claude|codex      show automatically selected executable\\n  corgi keys [PRESET]           list shortcuts: corgi, tmux, herdr, cmux\\n  corgi headless start PROVIDER PROMPT [--workspace ID]\\n  corgi headless list              list headless sessions\\n  corgi headless send PROVIDER SESSION JSON   prompt, answer or interrupt\\n  corgi headless events PROVIDER SESSION [SEQ]   journal + pending requests\\n  corgi headless stop PROVIDER SESSION        stop headless session\\n  corgi rpc JSON                local JSON control protocol\\n  corgi reload [ABSOLUTE_EXE]    replace daemon, preserve live processes\\n  corgi checkpoint               save recovery context now\\n  corgi shutdown                terminate runtime and its panes\\n  corgi bugreport [--full]      details for a bug report, and a link to file it\\n  corgi licenses                Corgi's license and the software it includes\\n  corgi help [COMMAND ...]      show help for a command or group\\n  corgi --help                  list all commands (also -h)\\n  corgi --version               print the version and commit\\n\\nKeys: Ctrl+B opens a clickable command menu; `corgi keys` lists every shortcut.\\n\\n\\n\\n\\nCORGI_SOCKET selects a runtime. Workspaces group tabs and panes; no worktrees.\\nCommands print text; --json prints the daemon's reply as JSON instead.\\n\"]":
-      () => `corgi — 基于 Ghostty 的小巧智能体终端
-
-  corgi                         启动 / 连接
-  corgi open DIR                显示 DIR 的工作区；不存在则新建
-  corgi onboard                 打开入门设置，也可在设置完成后使用
-  corgi dev                     有更改时重载；连接或重启客户端
-  corgi --no-update             连接时不启用待应用的更新
-  corgi update                  下载并安全应用更新
-  corgi update status           查看更新状态
-  corgi update rollback         回退到上一版本
-  corgi update --check|--download-only
-  corgi update auto on|off      开启或关闭自动更新
-  corgi start                   在后台启动运行服务
-  corgi action NAME [VALUE]     执行下文列出的客户端操作
-  corgi agent claude|codex ...   可选：启动自动发现的智能体程序
-  corgi hooks claude|codex       输出钩子配置
-  corgi integration COMMAND     查看状态、安装或卸载钩子
-  corgi account COMMAND         列出、添加、登录或移除服务商账号
-  corgi which claude|codex      显示自动选择的可执行程序
-  corgi keys [PRESET]           列出快捷键：corgi、tmux、herdr、cmux
-  corgi headless start PROVIDER PROMPT [--workspace ID]
-  corgi headless list              列出后台会话
-  corgi headless send PROVIDER SESSION JSON   发送提示、回答或中断
-  corgi headless events PROVIDER SESSION [SEQ]   日志和待处理请求
-  corgi headless stop PROVIDER SESSION        停止后台会话
-  corgi rpc JSON                本地 JSON 控制协议
-  corgi reload [ABSOLUTE_EXE]    替换守护进程，保留运行中的进程
-  corgi checkpoint               立即保存恢复上下文
-  corgi shutdown                终止运行服务及其窗格
-  corgi bugreport [--full]      生成问题报告详情和提交链接
-  corgi licenses                查看 Corgi 及其所含软件的许可证
-  corgi help [COMMAND ...]      查看命令或命令组的帮助
-  corgi --help                  列出全部命令（也可用 -h）
-  corgi --version               输出版本号和提交信息
-
-按键：Ctrl+B 打开可点击的命令菜单；\`corgi keys\` 列出所有快捷键。
-
-
-
-
-CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不创建工作树。
-命令默认输出文本；使用 --json 则将守护进程的响应以 JSON 输出。
-`,
+    '["corgi — a small Ghostty-powered agent terminal"]': () => `corgi — 基于 Ghostty 的小巧智能体终端`,
     '["create"]': () => `创建`,
     '["critical"]': () => `严重`,
     '["custom"]': () => `自定义`,
+    '["default"]': () => `默认`,
     '["delete"]': () => `删除`,
     '["detach"]': () => `断开连接`,
     '["done"]': () => `完成`,
     '["e.g. --verbose"]': () => `例如 --verbose`,
     '["edit"]': () => `编辑`,
     '["edit note"]': () => `编辑批注`,
+    '["effort"]': () => `推理强度`,
     '["esc Cancel"]': () => `esc 取消`,
     '["everywhere"]': () => `所有位置`,
     '["exited"]': () => `已退出`,
@@ -1134,10 +1258,10 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '["handoff"]': () => `接管`,
     '["hide"]': () => `隐藏`,
     '["hide the row"]': () => `隐藏此行`,
-    '["hold ↵ to create"]': () => `按住 ↵ 创建`,
     '["hunk"]': () => `更改区块`,
     '["idle"]': () => `空闲`,
     '["import ",""]': v0 => `导入 ${v0} 个`,
+    '["incompatible"]': () => `不兼容`,
     '["inspiration and sound cues"]': () => `灵感与提示音`,
     '["it\'s already gone"]': () => `它已不存在`,
     '["it\'s locked"]': () => `它已被锁定`,
@@ -1176,14 +1300,16 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '["now"]': () => `当前`,
     '["off"]': () => `关闭`,
     '["open"]': () => `打开`,
-    '["or  ",""]': v0 => `或  ${v0}`,
     '["our TypeScript runtime"]': () => `我们的 TypeScript 运行时`,
     '["our terminal engine"]': () => `我们的终端引擎`,
     '["out / in"]': () => `移出 / 移入`,
+    '["paused"]': () => `已暂停`,
     '["pick"]': () => `选择`,
     '["pin"]': () => `固定`,
     '["play"]': () => `游玩`,
+    '["rate limited"]': () => `已达速率限制`,
     '["ready"]': () => `就绪`,
+    '["reconnecting"]': () => `重新连接中`,
     '["refresh"]': () => `刷新`,
     '["reload Corgi\'s daemon first"]': () => `请先重载 Corgi 守护进程`,
     '["remaining surfaces in additional tabs"]': () => `其余终端视图放入额外标签页`,
@@ -1192,6 +1318,7 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '["resolved at launch"]': () => `启动时确定`,
     '["resume"]': () => `恢复`,
     '["resume agents"]': () => `恢复智能体`,
+    '["retry in"]': () => `重试倒计时`,
     '["review it alone"]': () => `单独审查`,
     '["review panel design"]': () => `审查面板设计`,
     '["save"]': () => `保存`,
@@ -1205,6 +1332,7 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '["send "," to ",""]': (v0, v1) => `发送 ${v0} 条给 ${v1}`,
     '["send prefix"]': () => `发送前缀键`,
     '["send to ",""]': v0 => `发送给 ${v0}`,
+    '["shell at ",""]': v0 => `位于 ${v0} 的 shell`,
     '["shortcuts"]': () => `快捷键`,
     '["show all"]': () => `显示全部`,
     '["show the readings row"]': () => `显示监测行`,
@@ -1212,6 +1340,7 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '["sign in to a new "," account"]': v0 => `登录新的 ${v0} 账号`,
     '["split"]': () => `分屏`,
     '["stale"]': () => `数据已过期`,
+    '["stalled"]': () => `无响应`,
     '["starred"]': () => `已收藏`,
     '["switch to ",""]': v0 => `切换为 ${v0}`,
     '["tab"]': () => `标签页`,
@@ -1251,6 +1380,7 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '["— tokens"]': () => `— Token`,
     '["… "," done"]': v0 => `…已完成 ${v0} 项`,
     '["…"," more"]': v0 => `…另有 ${v0} 个`,
+    '["‹ "," · Effort"]': v0 => `‹ ${v0} · 推理强度`,
     '["← keys"]': () => `← 按键`,
     '["←→ sources · ↑↓ choose · PgUp/PgDn scroll · R refresh · S skip"]': () =>
       `←→ 来源 · ↑↓ 选择 · PgUp/PgDn 翻页 · R 刷新 · S 跳过`,
@@ -1259,7 +1389,10 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '["↑ Update "," ready · relaunch Corgi"]': v0 => `↑ 更新 ${v0} 已就绪 · 请重启 Corgi`,
     '["↑ Update ready"]': () => `↑ 更新已就绪`,
     '["↑ Update ready · relaunch Corgi"]': () => `↑ 更新已就绪 · 请重启 Corgi`,
+    '["↑ ↓ Scroll to see all activity"]': () => `↑ ↓ 滚动查看所有活动`,
     '["↑↓  ↵ jump  Esc back"]': () => `↑↓  ↵ 跳转  Esc 返回`,
+    '["↑↓ Preview agents · PgUp/PgDn Scroll"]': () => `↑↓ 预览代理 · PgUp/PgDn 滚动`,
+    '["↑↓ Select · Enter Open · Tab Actions"]': () => `↑↓ 选择 · Enter 打开 · Tab 操作`,
     '["↑↓ browse · Enter "," · e review · hold ⌫ remove · Esc close"]': v0 =>
       `↑↓ 浏览 · Enter ${v0} · e 审查 · 按住 ⌫ 移除 · Esc 关闭`,
     '["↑↓ browse · Enter "," · e review · hold ⌫ remove · r refresh · Esc close"]': v0 =>
@@ -1273,6 +1406,8 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '["↗ Browser link"]': () => `↗ 浏览器链接`,
     '["↗ open in a tab"]': () => `↗ 在标签页中打开`,
     '["↵ Create Fork"]': () => `↵ 派生会话`,
+    '["↵ Show pane · Esc Close"]': () => `↵ 显示窗格 · Esc 关闭`,
+    '["↵ create"]': () => `↵ 创建`,
     '["↵ switch"]': () => `↵ 切换`,
     '["↵ use branch"]': () => `↵ 使用分支`,
     '["↻ Resume available"]': () => `↻ 可恢复`,
@@ -1281,9 +1416,125 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '["◇ Prefix = ",""]': v0 => `◇ 前缀键 = ${v0}`,
     '["○ Corgi (Activity summarizer)"]': () => `○ Corgi（活动摘要）`,
     '["● Jump to who needs you"]': () => `● 跳转到需要你的智能体`,
+    '["✓ Copied"]': () => `✓ 已复制`,
     '["🐕 badge; animations stay still."]': () => `🐕 图标；动画保持静止。`,
   },
   "ja": {
+    '["    prompt through the agent\'s own channel, or type it and press Enter"]': () =>
+      `    エージェント自身のチャネルでプロンプトを送る。なければ入力して Enter を押す`,
+    '["    search conversation text; --session PROVIDER:ID narrows, -o extracts matches"]': () =>
+      `    会話の本文を検索。--session PROVIDER:ID で絞り込み、-o で一致部分を抽出`,
+    "[\"    to today's log, MEMORY.md or a workspace's note; an exact repeat isn't added\"]": () =>
+      `    今日のログ、MEMORY.md、ワークスペースのメモに追加。完全な重複は追加しません`,
+    '["  SKIP if a Corgi skill is already in your context. Otherwise run: corgi --skill"]': () =>
+      `  Corgiスキルをすでに読み込んでいる場合は不要です。それ以外は実行：corgi --skill`,
+    '["  corgi                         start / attach"]': () => `  corgi                         起動 / 接続`,
+    '["  corgi --help                  list common commands (also -h)"]': () =>
+      `  corgi --help                  よく使うコマンドを表示（-hも可）`,
+    '["  corgi --no-update             attach without activating a staged update"]': () =>
+      `  corgi --no-update             準備済みの更新を適用せずに接続`,
+    '["  corgi --skill                      print bundled agent instructions"]': () =>
+      `  corgi --skill                      同梱のエージェント向け指示を出力`,
+    '["  corgi --version               print the version and commit"]': () =>
+      `  corgi --version               バージョンとコミットを出力`,
+    '["  corgi account COMMAND         list, add, login, remove provider accounts"]': () =>
+      `  corgi account COMMAND         提供元のアカウント一覧、追加、ログイン、削除`,
+    '["  corgi action NAME [VALUE] [--viewer ID]  run a viewer action, named below"]': () =>
+      `  corgi action NAME [VALUE] [--viewer ID]  下記の名前でビューアー操作を実行`,
+    '["  corgi agent claude|codex ...   optional discovered-binary launcher"]': () =>
+      `  corgi agent claude|codex ...   検出済みの実行ファイルからエージェントを起動`,
+    '["  corgi bugreport [--full]      details for a bug report, and a link to file it"]': () =>
+      `  corgi bugreport [--full]      バグ報告用の情報と報告先リンクを表示`,
+    '["  corgi checkpoint               save recovery context now"]': () =>
+      `  corgi checkpoint               復元用の情報を今すぐ保存`,
+    '["  corgi current                      calling pane\'s live location"]': () =>
+      `  corgi current                      呼び出し元ペインの現在位置`,
+    '["  corgi dev                     reload if changed; attach or relaunch viewer"]': () =>
+      `  corgi dev                     変更があれば再読み込みし、ビューアーに接続または再起動`,
+    '["  corgi focus ID|current --viewer ID  select in exactly one viewer"]': () =>
+      `  corgi focus ID|current --viewer ID  指定したビューアーだけで選択`,
+    '["  corgi headless events PROVIDER SESSION [SEQ]   journal + pending requests"]': () =>
+      `  corgi headless events PROVIDER SESSION [SEQ]   イベント履歴と待機中の要求`,
+    '["  corgi headless list              list headless sessions"]': () =>
+      `  corgi headless list              ヘッドレスセッション一覧`,
+    '["  corgi headless send PROVIDER SESSION JSON   prompt, answer or interrupt"]': () =>
+      `  corgi headless send PROVIDER SESSION JSON   プロンプト、回答、割り込みを送信`,
+    '["  corgi headless stop PROVIDER SESSION        stop headless session"]': () =>
+      `  corgi headless stop PROVIDER SESSION        ヘッドレスセッションを停止`,
+    '["  corgi help --all              list every command"]': () =>
+      `  corgi help --all              すべてのコマンドを表示`,
+    '["  corgi help [COMMAND ...]      show help for a command or group"]': () =>
+      `  corgi help [COMMAND ...]      コマンドやグループのヘルプを表示`,
+    '["  corgi history [--limit N] [--json]  past conversations, newest first"]': () =>
+      `  corgi history [--limit N] [--json]  過去の会話を新しい順に表示`,
+    '["  corgi hooks claude|codex       print hook configuration"]': () =>
+      `  corgi hooks claude|codex       フック設定を出力`,
+    '["  corgi integration COMMAND     status, install, uninstall hooks"]': () =>
+      `  corgi integration COMMAND     フックの状態確認、インストール、削除`,
+    '["  corgi keys [PRESET]           list shortcuts: corgi, tmux, herdr, cmux"]': () =>
+      `  corgi keys [PRESET]           ショートカット一覧：corgi、tmux、herdr、cmux`,
+    '["  corgi launcher copy --from ID --workspace ID  replace destination order and visibility"]': () =>
+      `  corgi launcher copy --from ID --workspace ID  コピー先の順序と表示設定を置き換え`,
+    '["  corgi launcher hide AGENT... [--workspace ID]  in one workspace only"]': () =>
+      `  corgi launcher hide AGENT... [--workspace ID]  指定ワークスペースのみに適用`,
+    '["  corgi launcher list [--workspace ID] [--json]  agents each launcher shows"]': () =>
+      `  corgi launcher list [--workspace ID] [--json]  各ランチャーに表示するエージェント`,
+    '["  corgi launcher models AGENT [--json]  native model IDs, efforts and defaults"]': () =>
+      `  corgi launcher models AGENT [--json]  モデル固有のID、推論レベル、既定値`,
+    '["  corgi launcher remove AGENT [--workspace ID]  delete a clone or saved command"]': () =>
+      `  corgi launcher remove AGENT [--workspace ID]  複製したエージェントや保存済みコマンドを削除`,
+    '["  corgi launcher show AGENT... [--workspace ID]  in one workspace only"]': () =>
+      `  corgi launcher show AGENT... [--workspace ID]  指定ワークスペースのみに適用`,
+    '["  corgi licenses                Corgi\'s license and the software it includes"]': () =>
+      `  corgi licenses                Corgiと同梱ソフトウェアのライセンス`,
+    '["  corgi list [--json]                 layout, panes, agents, viewers"]': () =>
+      `  corgi list [--json]                 レイアウト、ペイン、エージェント、ビューアーを表示`,
+    '["  corgi memory get [FILE[:FROM[-TO]]]  its files, or a file\'s lines"]': () =>
+      `  corgi memory get [FILE[:FROM[-TO]]]  記憶ファイルの一覧または指定行を表示`,
+    '["  corgi memory search WORDS... [--limit N]  the Corgi prompt\'s memory lines"]': () =>
+      `  corgi memory search WORDS... [--limit N]  Corgi プロンプトの記憶を検索`,
+    '["  corgi onboard                 open onboarding, even after setup"]': () =>
+      `  corgi onboard                 設定済みでも初期設定を開く`,
+    '["  corgi open DIR                show DIR\'s workspace; add one if none"]': () =>
+      `  corgi open DIR                DIRのワークスペースを表示。なければ追加`,
+    '["  corgi pane hibernate ID|current... hibernate panes and stop their processes"]': () =>
+      `  corgi pane hibernate ID|current... ペインを休止し、プロセスを停止`,
+    '["  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  shells at their prompt"]': () =>
+      `  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  プロンプト待機中のシェル`,
+    '["  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, arrows, etc."]': () =>
+      `  corgi pane keys ID|current KEY...    enter、esc、ctrl+c、矢印キーなど`,
+    '["  corgi pane wake ID|current         resume or restart a pane"]': () =>
+      `  corgi pane wake ID|current         ペインを再開または再起動`,
+    '["  corgi reload [ABSOLUTE_EXE]    replace daemon, preserve live processes"]': () =>
+      `  corgi reload [ABSOLUTE_EXE]    実行中のプロセスを維持してデーモンを置き換え`,
+    '["  corgi resume PROVIDER SESSION [--viewer ID] [--workspace ID]  show it: focus\\n    the pane already showing it, or resume it in a tab where its folder belongs"]':
+      () => `  corgi resume PROVIDER SESSION [--viewer ID] [--workspace ID]  会話を表示：
+    表示中のペインに移動するか、フォルダに対応するワークスペースのタブで再開`,
+    '["  corgi rpc JSON                local JSON control protocol"]': () =>
+      `  corgi rpc JSON                ローカルJSON操作プロトコル`,
+    '["  corgi shutdown                terminate runtime and its panes"]': () =>
+      `  corgi shutdown                ランタイムとそのペインを終了`,
+    '["  corgi start                   start detached runtime"]': () =>
+      `  corgi start                   バックグラウンドでランタイムを起動`,
+    '["  corgi update                  download and safely apply an update"]': () =>
+      `  corgi update                  更新をダウンロードして安全に適用`,
+    '["  corgi update auto on|off      control automatic updates"]': () =>
+      `  corgi update auto on|off      自動更新を切り替え`,
+    '["  corgi update rollback         return to the previous release"]': () =>
+      `  corgi update rollback         前のリリースに戻す`,
+    '["  corgi update status           show update status"]': () => `  corgi update status           更新状況を表示`,
+    '["  corgi usage --json            print each account\'s limits and spend as JSON"]': () =>
+      `  corgi usage --json            各アカウントの上限と利用額を JSON で出力`,
+    '["  corgi watch --json            print agent states as JSON lines as they change"]': () =>
+      `  corgi watch --json            エージェントの状態が変わるたびJSON行で出力`,
+    '["  corgi which claude|codex      show automatically selected executable"]': () =>
+      `  corgi which claude|codex      自動選択された実行ファイルを表示`,
+    '["  corgi workspace archive ID        hibernate panes and hide the workspace"]': () =>
+      `  corgi workspace archive ID        ペインを休止してワークスペースを非表示にする`,
+    '["  corgi workspace close ID          requires an empty workspace"]': () =>
+      `  corgi workspace close ID          空のワークスペースのみ閉じられます`,
+    '["  corgi workspace unarchive ID      show the workspace; panes stay asleep"]': () =>
+      `  corgi workspace unarchive ID      ワークスペースを表示（ペインは休止したまま）`,
     '["  now"]': () => `  現在`,
     '["  →  expand"]': () => `  →  展開`,
     '[" ",": off"]': v0 => ` ${v0}：オフ`,
@@ -1296,15 +1547,18 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '[" "," session ",": ",". Inspect: corgi headless events "," ",""]': (v0, v1, v2, v3, v4) =>
       ` ${v0}のセッション${v1}：${v2}。詳細：corgi headless events ${v3} ${v1}`,
     '[" ",": waiting for a session ID"]': v0 => ` ${v0}：セッションIDを待機中`,
+    '[" (archived)"]': () => `（アーカイブ済み）`,
     '[" + uncommitted"]': () => ` + 未コミット`,
     '[" / memory ",""]': v0 => ` / メモリ ${v0}`,
     '[" Agent search needs at least 40 columns and 13 rows"]': () => ` エージェント検索には40列×13行以上必要です`,
     '[" Agent search: enlarge terminal or Esc"]': () => ` エージェント検索：端末を広げるかEscで閉じてください`,
+    '[" Auto-retry capacity errors off"]': () => ` 容量エラーの自動再試行はオフです`,
+    '[" Auto-retry capacity errors on"]': () => ` 容量エラーの自動再試行はオンです`,
     '[" Cancel · Esc "]': () => ` キャンセル · Esc `,
-    '[" Cannot close the last workspace"]': () => ` 最後のワークスペースは閉じられません`,
     '[" Copied to clipboard "]': () => ` クリップボードにコピーしました `,
     '[" Corgi setup: the runtime did not accept the change"]': () =>
       ` Corgi設定：変更がランタイムに反映されませんでした`,
+    '[" Could not change pane or workspace state"]': () => ` ペインまたはワークスペースの状態を変更できませんでした`,
     '[" Could not close workspace"]': () => ` ワークスペースを閉じられませんでした`,
     '[" Could not create workspace"]': () => ` ワークスペースを作成できませんでした`,
     '[" Could not fork this agent"]': () => ` このエージェントを分岐できませんでした`,
@@ -1312,7 +1566,6 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '[" Could not read Ghostty config; no changes made"]': () =>
       ` Ghosttyの設定を読み込めませんでした。変更していません`,
     '[" Could not rename this agent"]': () => ` このエージェントの名前を変更できませんでした`,
-    '[" Could not resume this agent"]': () => ` このエージェントを再開できませんでした`,
     '[" Couldn\'t add ",": ",""]': (v0, v1) => ` ${v0}を追加できませんでした：${v1}`,
     '[" Couldn\'t mark as unread"]': () => ` 未読にできませんでした`,
     '[" Couldn\'t open ",": ",""]': (v0, v1) => ` ${v0}を開けませんでした：${v1}`,
@@ -1330,6 +1583,7 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
       ` Ghostty連携はローカルのmacOSビューアーで利用できます`,
     '[" Ghostty integration: ",""]': v0 => ` Ghostty連携：${v0}`,
     '[" Image not pasted "]': () => ` 画像を貼り付けられませんでした `,
+    '[" Keep at least one workspace active"]': () => ` 少なくとも1つのワークスペースを有効にしてください`,
     '[" Keyboard shortcuts "]': () => ` キーボードショートカット `,
     '[" Keys "]': () => ` キー `,
     '[" Names are one line of up to 80 characters"]': () => ` 名前は80文字以内の1行で入力してください`,
@@ -1354,13 +1608,12 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '[" Pushed ✓"]': () => ` プッシュ済み ✓`,
     '[" Pushing ",""]': v0 => ` プッシュ中 ${v0}`,
     '[" Recent "]': () => ` 最近 `,
-    '[" Removed ",", but couldn\'t update launcher settings: ",""]': (v0, v1) =>
-      ` ${v0}を削除しましたが、ランチャー設定を更新できませんでした：${v1}`,
     '[" Removed ","; kept its folder"]': v0 => ` ${v0}を削除しました。フォルダーは残しています`,
     '[" Resize panes"]': () => ` ペインのサイズ変更`,
     '[" Resource readings are off: turn them on in Corgi setup → Resources"]': () =>
       ` リソース表示はオフです。Corgi設定 → リソースで有効にできます`,
     '[" Retry !"]': () => ` 再試行 !`,
+    '[" Review changes on the remote machine"]': () => ` リモートマシンで変更をレビューしてください`,
     '[" Review needs a wider window"]': () => ` レビューにはウィンドウを広げてください`,
     '[" Save · Ctrl+S "]': () => ` 保存 · Ctrl+S `,
     '[" Search "," agent"]': v0 => ` ${v0}エージェントを検索`,
@@ -1380,12 +1633,18 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
       ` スマートリンクはオフです。ペインのポートには接続しません`,
     '[" Smart Links on"]': () => ` スマートリンクはオンです`,
     '[" Split "]': () => ` 分割 `,
+    '[" Startup waits (",") "]': v0 => ` 起動待ち（${v0}） `,
+    '[" Still sending the last paste; paste again once it lands"]': () =>
+      ` 前回の貼り付けをまだ送信中です。届いてから貼り付け直してください`,
     '[" Summaries and link names: ",""]': v0 => ` 要約とリンク名：${v0}`,
     '[" Summaries and link names: "," (not saved for next start)"]': v0 =>
       ` 要約とリンク名：${v0}（次回起動時には引き継ぎません）`,
+    '[" The new pane is still opening"]': () => ` 新しいペインはまだ開いています`,
     '[" Theme "]': () => ` テーマ `,
     '[" This agent can\'t be renamed from outside"]': () => ` このエージェントの名前は外部から変更できません`,
     '[" This agent has no conversation yet"]': () => ` このエージェントにはまだ会話がありません`,
+    '[" Too much typed for a pane still opening; the rest was dropped"]': () =>
+      ` 開いている途中のペインへの入力が多すぎるため、残りは破棄されました`,
     '[" Use prefix"]': () => ` プレフィックスを使用`,
     '[" Welcome to Corgi "]': () => ` Corgiへようこそ `,
     '[" Worktree "]': () => ` ワークツリー `,
@@ -1425,6 +1684,7 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '[""," GPUs"]': v0 => `GPU ${v0}基`,
     '[""," agent"]': v0 => `${v0}エージェント`,
     '[""," agents"]': v0 => `${v0}エージェント`,
+    '[""," archived"]': v0 => `アーカイブ済み ${v0} 件`,
     '[""," changed"]': v0 => `${v0}件変更`,
     '[""," commit"]': v0 => `${v0}コミット`,
     '[""," commits"]': v0 => `${v0}コミット`,
@@ -1435,8 +1695,6 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '[""," in ",""]': (v0, v1) => `${v1}内に${v0}件`,
     '[""," leading process "," ago"]': (v0, v1) => `上位${v0}プロセス・${v1}前`,
     '[""," leading processes "," ago"]': (v0, v1) => `上位${v0}プロセス・${v1}前`,
-    '[""," model"]': v0 => `${v0}モデル`,
-    '[""," models"]': v0 => `${v0}モデル`,
     '[""," more outside "," · tab widens"]': (v0, v1) => `${v1}の外にほか${v0}件 · tabで範囲拡大`,
     '[""," note"]': v0 => `${v0}件のコメント`,
     '[""," notes"]': v0 => `${v0}件のコメント`,
@@ -1450,14 +1708,17 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '[""," unmodified line"]': v0 => `変更のない${v0}行`,
     '[""," unmodified lines"]': v0 => `変更のない${v0}行`,
     '[""," unread →"]': v0 => `未読${v0}件 →`,
+    '[""," waiting"]': v0 => `${v0} 件待機中`,
     '[""," worktree"]': v0 => `${v0}ワークツリー`,
     '[""," worktrees"]': v0 => `${v0}ワークツリー`,
     '[""," d"]': v0 => `${v0}日`,
+    '[""," for details · "," for everything"]': (v0, v1) => `詳細は ${v0} · すべては ${v1}`,
     '["","/"," done"]': (v0, v1) => `${v0}/${v1}完了`,
     '["","/","+ done"]': (v0, v1) => `${v0}/${v1}+完了`,
     '[""," Down"]': v0 => `${v0} 下へ`,
     '[""," ago"]': v0 => `${v0}前`,
     '["","–"," of "," · tab to scroll"]': (v0, v1, v2) => `${v2}件中${v0}–${v1}件 · tabでスクロール`,
+    '[""," of ",""]': (v0, v1) => `${v1} 件中 ${v0} 件`,
     '[""," late enough to hold frames; "," never came."]': (v0, v1) =>
       `${v0}回の遅延で描画が待機。うち${v1}回は応答なし。`,
     '[""," late enough to hold frames; one never came."]': v0 => `${v0}回の遅延で描画が待機。うち1回は応答なし。`,
@@ -1489,10 +1750,10 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '[""," local processes / "," / "," shown"]': (v0, v1, v2) => `ローカル${v0}プロセス / ${v1} / ${v2}件表示`,
     '[""," local processes / "," / partial / "," shown"]': (v0, v1, v2) =>
       `ローカル${v0}プロセス / ${v1} / 一部のみ / ${v2}件表示`,
+    '[""," models"]': v0 => `${v0} モデル`,
     '[""," of "," GiB"]': (v0, v1) => `${v0} / ${v1} GiB`,
     '[""," · needs ",""]': (v0, v1) => `${v0} · ${v1}が必要`,
     '[""," already exited"]': v0 => `${v0}はすでに終了しています`,
-    '["(auto choice)"]': () => `（自動選択）`,
     '["(empty)"]': () => `（空）`,
     '["(no directory)"]': () => `（ディレクトリなし）`,
     '["+ Create “","”"]': v0 => `+ 「${v0}」を作成`,
@@ -1518,6 +1779,9 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
     '["A path or a name on PATH; empty uses the default"]': () => `パスまたはPATH上の名前。空欄なら既定値`,
     '["A push is already running for this repository."]': () => `このリポジトリではすでにプッシュを実行中です。`,
     '["AGE"]': () => `経過`,
+    '["AGENT is codex, claude, an account (claude/work or work), a saved command\'s\\nname, profile/ID, a clone name, or command/N, as launcher list names them."]':
+      () => `AGENTにはlauncher listに表示されるcodex、claude、アカウント（claude/workやwork）、
+保存済みコマンド名、profile/ID、複製したエージェント名、command/Nを指定します。`,
     '["AGENTS"]': () => `エージェント`,
     '["About"]': () => `このアプリについて`,
     '["About Corgi"]': () => `Corgiについて`,
@@ -1530,68 +1794,23 @@ CORGI_SOCKET 用于选择运行服务。工作区组织标签页和窗格，不�
       `作業状況は空欄になり、リンクは「リンクを開く」と表示します`,
     '["Add $NAME, so each worktree gets a folder of its own"]': () =>
       `ワークツリーごとに別のフォルダーになるよう、$NAMEを含めてください`,
+    '["Add a machine with corgi machine add NAME"]': () => `corgi machine add NAME でマシンを追加してください`,
     '["Add a shortcut with +"]': () => `+でショートカットを追加`,
     '["Add agent"]': () => `エージェントを追加`,
+    '["Add to the list"]': () => `一覧に追加`,
     '["Agent"]': () => `エージェント`,
-    "[\"Agent controls (--json prints the daemon's reply as JSON):\\n  corgi list [--json]                 layout, panes, agents, viewers\\n  corgi workspace list\\n  corgi workspace new NAME [--cwd DIR]\\n  corgi workspace edit ID [--name NAME] [--cwd DIR]\\n  corgi workspace close ID          requires an empty workspace\\n  corgi workspace switch ID [--viewer ID]\\n  corgi current                      calling pane's live location\\n  corgi tab new [--name NAME] [--cwd DIR] [--workspace ID] [--command SHELL_COMMAND]\\n  corgi tab rename ID|current NAME|--clear\\n  corgi tab move ID|current --before ID|--after ID|--workspace ID\\n  corgi tab merge ID|current --right-of ID|--left-of ID|--above ID|--below ID\\n  corgi tab close ID|current\\n  corgi pane split ID|current --right|--left|--up|--down [--cwd DIR] [--command SHELL_COMMAND]\\n  corgi pane move ID|current --right-of ID|--left-of ID|--above ID|--below ID\\n  corgi pane move ID|current --new-tab [--name NAME]\\n  corgi pane swap ID|current ID\\n  corgi pane resize ID|current --width PERCENT|--height PERCENT (10%-90%)\\n  corgi pane close ID|current\\n  corgi pane read ID|current [--lines N] [--json]\\n  corgi pane send ID|current TEXT|--stdin [--enter]\\n  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, arrows, etc.\\n  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  shells at their prompt\\n  corgi claim PROVIDER [--pane ID|current] [--owner PID]\\n  corgi claim --clear [--pane ID|current] [--owner PID]\\n  corgi focus ID|current --viewer ID  select in exactly one viewer\\n  corgi launcher list [--workspace ID] [--json]  agents each launcher shows\\n  corgi launcher hide AGENT... [--workspace ID]  in one workspace only\\n  corgi launcher show AGENT... [--workspace ID]  in one workspace only\\n  corgi launcher move AGENT [--before AGENT|--after AGENT|--first] [--workspace ID]\\n  corgi launcher edit AGENT [--name NAME] [--model ID|auto] [--effort LEVEL|default]\\n    [--flags FLAGS] [--env JSON_OBJECT] [--yolo on|off] [--workspace ID]\\n  corgi launcher clone AGENT [--name NAME] [--model ID|auto] [--effort LEVEL|default]\\n    [--flags FLAGS] [--env JSON_OBJECT] [--yolo on|off] [--workspace ID]\\n  corgi launcher models AGENT [--json]  native model IDs, efforts and defaults\\n  corgi launcher add --command COMMAND [--name NAME] [--workspace ID]\\n  corgi launcher edit AGENT --command COMMAND [--name NAME] [--workspace ID]\\n  corgi launcher remove AGENT [--workspace ID]  delete a clone or saved command\\n  corgi launcher copy --from ID --workspace ID  replace destination order and visibility\\n  corgi --skill                      print bundled agent instructions\\n\\nIDs come from list; current means CORGI_PANE, never UI focus.\\nNew tabs and launcher mutations outside Corgi require --workspace.\\nAgent settings are shared; order and visibility belong to each workspace.\\nMove without a position appends. Env replaces overrides, e.g. '{\\\"KEY\\\":\\\"value\\\"}'.\\nAuto uses the agent CLI's last model; default leaves effort to the agent CLI.\\nAGENT is codex, claude, an account (claude/work or work), a saved command's\\nname, profile/ID, a clone name, or command/N, as launcher list names them.\\nOperations never auto-start a server.\\nLayout changes preserve processes and do not select another pane in a viewer.\\n\\nControl Corgi panes, agents, or workspaces:\\n  SKIP if a Corgi skill is already in your context. Otherwise run: corgi --skill\\n\"]":
-      () => `エージェント操作（--jsonでデーモンの応答をJSON出力）：
-  corgi list [--json]                 レイアウト、ペイン、エージェント、ビューアーを表示
-  corgi workspace list
-  corgi workspace new NAME [--cwd DIR]
-  corgi workspace edit ID [--name NAME] [--cwd DIR]
-  corgi workspace close ID          空のワークスペースのみ閉じられます
-  corgi workspace switch ID [--viewer ID]
-  corgi current                      呼び出し元ペインの現在位置
-  corgi tab new [--name NAME] [--cwd DIR] [--workspace ID] [--command SHELL_COMMAND]
-  corgi tab rename ID|current NAME|--clear
-  corgi tab move ID|current --before ID|--after ID|--workspace ID
-  corgi tab merge ID|current --right-of ID|--left-of ID|--above ID|--below ID
-  corgi tab close ID|current
-  corgi pane split ID|current --right|--left|--up|--down [--cwd DIR] [--command SHELL_COMMAND]
-  corgi pane move ID|current --right-of ID|--left-of ID|--above ID|--below ID
-  corgi pane move ID|current --new-tab [--name NAME]
-  corgi pane swap ID|current ID
-  corgi pane resize ID|current --width PERCENT|--height PERCENT (10%-90%)
-  corgi pane close ID|current
-  corgi pane read ID|current [--lines N] [--json]
-  corgi pane send ID|current TEXT|--stdin [--enter]
-  corgi pane keys ID|current KEY...    enter、esc、ctrl+c、矢印キーなど
-  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  プロンプト待機中のシェル
-  corgi claim PROVIDER [--pane ID|current] [--owner PID]
-  corgi claim --clear [--pane ID|current] [--owner PID]
-  corgi focus ID|current --viewer ID  指定したビューアーだけで選択
-  corgi launcher list [--workspace ID] [--json]  各ランチャーに表示するエージェント
-  corgi launcher hide AGENT... [--workspace ID]  指定ワークスペースのみに適用
-  corgi launcher show AGENT... [--workspace ID]  指定ワークスペースのみに適用
-  corgi launcher move AGENT [--before AGENT|--after AGENT|--first] [--workspace ID]
-  corgi launcher edit AGENT [--name NAME] [--model ID|auto] [--effort LEVEL|default]
-    [--flags FLAGS] [--env JSON_OBJECT] [--yolo on|off] [--workspace ID]
-  corgi launcher clone AGENT [--name NAME] [--model ID|auto] [--effort LEVEL|default]
-    [--flags FLAGS] [--env JSON_OBJECT] [--yolo on|off] [--workspace ID]
-  corgi launcher models AGENT [--json]  モデル固有のID、推論レベル、既定値
-  corgi launcher add --command COMMAND [--name NAME] [--workspace ID]
-  corgi launcher edit AGENT --command COMMAND [--name NAME] [--workspace ID]
-  corgi launcher remove AGENT [--workspace ID]  複製したエージェントや保存済みコマンドを削除
-  corgi launcher copy --from ID --workspace ID  コピー先の順序と表示設定を置き換え
-  corgi --skill                      同梱のエージェント向け指示を出力
-
-IDはlistで確認できます。currentはCORGI_PANEを指し、画面のフォーカスとは無関係です。
-Corgiの外からタブを作成したりランチャーを変更したりするには--workspaceが必要です。
-エージェント設定は共有され、順序と表示設定はワークスペースごとに保存されます。
-移動先の位置を省略すると末尾に移動します。Envは環境変数の上書き設定を置き換えます。例：'{"KEY":"value"}'。
-autoはエージェントCLIで最後に使ったモデルを選び、defaultは推論レベルをCLIに任せます。
-AGENTにはlauncher listに表示されるcodex、claude、アカウント（claude/workやwork）、
-保存済みコマンド名、profile/ID、複製したエージェント名、command/Nを指定します。
-これらの操作でサーバーが自動起動することはありません。
-レイアウトを変更してもプロセスは維持され、ビューアーの選択ペインも変わりません。
-
-Corgiのペイン、エージェント、ワークスペースを操作するには：
-  Corgiスキルをすでに読み込んでいる場合は不要です。それ以外は実行：corgi --skill
-`,
+    '["Agent controls (--json prints the daemon\'s reply as JSON):"]': () =>
+      `エージェント操作（--jsonでデーモンの応答をJSON出力）：`,
     '["Agent default"]': () => `エージェントの既定値`,
     '["Agent launch command"]': () => `エージェントの起動コマンド`,
     '["Agent or new terminal"]': () => `エージェントか新しい端末`,
+    '["Agent settings are shared; order and visibility belong to each workspace."]': () =>
+      `エージェント設定は共有され、順序と表示設定はワークスペースごとに保存されます。`,
+    '["Agent states unavailable"]': () => `エージェントの状態は不明です`,
     '["Agents"]': () => `エージェント`,
+    '["Agents (",")"]': v0 => `エージェント（${v0}）`,
+    '["Agents and processes will stop and release memory. Layout and history stay; unsaved state is lost."]': () =>
+      `エージェントとプロセスを停止してメモリを解放します。レイアウトと履歴は残りますが、未保存の状態は失われます。`,
     '["All"]': () => `すべて`,
     '["All "," workspaces in this session move together."]': v0 =>
       `このセッションの全${v0}ワークスペースをまとめて移します。`,
@@ -1609,16 +1828,21 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Answers in ","."]': v0 => `応答時間：${v0}。`,
     '["Appended to Corgi\'s launch command. Quotes supported."]': () =>
       `Corgiが使う起動コマンドに追加します。引用符も使えます。`,
+    '["Archive ","?"]': v0 => `${v0} をアーカイブしますか？`,
+    '["Archive workspace"]': () => `ワークスペースをアーカイブ`,
+    '["Archiving…"]': () => `アーカイブ中…`,
     '["Arrange"]': () => `配置`,
     '["Arrow keys"]': () => `矢印キー`,
     '["Auto"]': () => `自動`,
     '["Auto (",")"]': v0 => `自動（${v0}）`,
     '["Auto (follows your agents)"]': () => `自動（使用中のエージェントに合わせる）`,
     '["Auto (last chosen)"]': () => `自動（前回の選択）`,
+    '["Auto uses the agent CLI\'s last model; default leaves effort to the agent CLI."]': () =>
+      `autoはエージェントCLIで最後に使ったモデルを選び、defaultは推論レベルをCLIに任せます。`,
+    '["Auto-retry capacity errors"]': () => `容量エラーを自動再試行`,
     '["Back to agent"]': () => `エージェントに戻る`,
     '["Background commands"]': () => `バックグラウンドのコマンド`,
     '["Backspace undo"]': () => `Backspaceで元に戻す`,
-    '["Billing"]': () => `課金方式`,
     '["Binary file"]': () => `バイナリファイル`,
     '["Binary file · no text diff"]': () => `バイナリファイル · テキスト差分なし`,
     '["Blocked by clipboard-read = deny."]': () => `clipboard-read = denyにより拒否されています。`,
@@ -1626,18 +1850,23 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Branch names can\'t have spaces, .., or ~^:?*[\\\\"]': () => `ブランチ名に空白、..、~^:?*[\\ は使えません`,
     '["Brief failed"]': () => `要約に失敗`,
     '["Bring your work along"]': () => `作業を引き継ぐ`,
+    '["Build ",""]': v0 => `ビルド ${v0}`,
+    '["Build "," built on ",""]': (v0, v1) => `ビルド ${v0}（${v1}）`,
     '["Build: "]': () => `ビルド：`,
     '["Builds"]': () => `ビルド`,
     '["By activity"]': () => `状態別`,
     '["COPY"]': () => `コピー`,
     '["CORGI"]': () => `CORGI`,
     '["CORGI_LANG overrides this setting when set."]': () => `CORGI_LANGが設定されていれば優先します。`,
+    '["CORGI_SOCKET selects a runtime. Workspaces group tabs and panes; no worktrees."]': () =>
+      `CORGI_SOCKETでランタイムを選びます。ワークスペースはタブとペインをまとめるもので、ワークツリーとは別です。`,
     '["CPU and memory under each workspace in the sidebar."]': () =>
       `サイドバーの各ワークスペースにCPUとメモリの使用量を表示します。`,
     '["CPU busy"]': () => `CPU使用率`,
     '["Cached"]': () => `キャッシュ`,
     '["Can\'t read this folder"]': () => `このフォルダーを読み込めません`,
     '["Cancel"]': () => `キャンセル`,
+    '["Change folder"]': () => `フォルダーを変更`,
     '["Change navigation"]': () => `操作方法を変更`,
     '["Check failed"]': () => `確認に失敗しました`,
     '["Check flag quotes; shell operators and expansions aren\'t supported."]': () =>
@@ -1650,6 +1879,7 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Choose a valid model ID."]': () => `有効なモデルIDを選択してください。`,
     '["Choose agent"]': () => `エージェントを選択`,
     '["Choose an agent or terminal"]': () => `エージェントか端末を選択`,
+    '["Choose an edge to split"]': () => `分割する端を選択`,
     '["Choose familiar keys."]': () => `使い慣れたキーを選んでください。`,
     '["Choose the language for Corgi\'s interface."]': () => `Corgiの表示言語を選びます。`,
     '["Choose workspace"]': () => `ワークスペースを選択`,
@@ -1658,15 +1888,12 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Clear pane name"]': () => `ペイン名をクリア`,
     '["Clear search to reorder agents."]': () => `並べ替えるには検索を解除してください。`,
     '["Clever Corgi"]': () => `かしこいCorgi`,
-    '["Click to resume"]': () => `クリックして再開`,
     '["Clone agent · draft"]': () => `エージェントを複製 · 下書き`,
     '["Close"]': () => `閉じる`,
     '["Close / reopen"]': () => `閉じる / 開き直す`,
     '["Close all agents for ",""]': v0 => `${v0}の全エージェントを閉じる`,
     '["Close pane"]': () => `ペインを閉じる`,
     '["Close tab"]': () => `タブを閉じる`,
-    '["Close the "," agents that run in it first."]': v0 => `先にそこで動作中の${v0}エージェントを閉じてください。`,
-    '["Close the agent that runs in it first."]': () => `先にそこで動作中のエージェントを閉じてください。`,
     '["Close workspace"]': () => `ワークスペースを閉じる`,
     '["Cmd+T/D/W, workspace numbers and related bindings replace host actions."]': () =>
       `Cmd+T/D/Wやワークスペース番号などが端末本体の操作に優先します。`,
@@ -1677,6 +1904,8 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Command shortcuts"]': () => `Commandキーの操作`,
     '["Command too long"]': () => `コマンドが長すぎます`,
     '["Commands"]': () => `コマンド`,
+    '["Commands print text; --json prints the daemon\'s reply as JSON instead."]': () =>
+      `通常はテキストを出力します。--jsonを付けるとデーモンの応答をJSONで出力します。`,
     '["Comment"]': () => `コメント`,
     '["Commit"]': () => `コミット`,
     '["Commit details unavailable"]': () => `コミットの詳細を取得できません`,
@@ -1687,16 +1916,17 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Comparison branch unavailable"]': () => `比較先ブランチを取得できません`,
     '["Connect your Command keys"]': () => `Commandキーを連携`,
     '["Connecting to Herdr"]': () => `Herdrに接続中`,
+    '["Control Corgi panes, agents, or workspaces:"]': () =>
+      `Corgiのペイン、エージェント、ワークスペースを操作するには：`,
     '["Copied "," note."]': v0 => `${v0}件のコメントをコピーしました。`,
     '["Copied "," notes."]': v0 => `${v0}件のコメントをコピーしました。`,
-    '["Copied the link; paste it into your browser."]': () =>
-      `リンクをコピーしました。ブラウザーに貼り付けてください。`,
     '["Copies the conversation into a new tab"]': () => `会話を新しいタブにコピーします`,
     '["Copies the workspaces; their processes stay in Herdr."]': () =>
       `ワークスペースをコピーします。プロセスはHerdrに残ります。`,
     '["Copy"]': () => `コピー`,
     '["Copy an image, then paste it to an agent."]': () => `画像をコピーして、エージェントに貼り付けてください。`,
     '["Copy details"]': () => `詳細をコピー`,
+    '["Copy details for a bug report"]': () => `バグ報告用の情報をコピー`,
     '["Copy full path"]': () => `フルパスをコピー`,
     '["Copy hovered link"]': () => `カーソル下のリンクをコピー`,
     '["Copy sessions, scrollback and commands. Source processes stay in tmux."]': () =>
@@ -1707,19 +1937,24 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Copying into Corgi"]': () => `Corgiにコピー中`,
     '["Corgi and your agents keep running."]': () => `Corgiとエージェントは動作を続けます。`,
     '["Corgi can\'t read your Ghostty config."]': () => `Ghosttyの設定を読み込めません。`,
-    '["Corgi doesn\'t list this account any more."]': () => `このアカウントはCorgiに登録されていません。`,
     '["Corgi keeps your background when it\'s dark and paints its own otherwise."]': () =>
       `背景が暗い場合はそのまま使い、それ以外はCorgiの背景色にします。`,
     '["Corgi pastes PNG, JPEG, GIF and WebP images"]': () => `PNG、JPEG、GIF、WebP画像を貼り付けられます`,
+    '["Corgi prompt"]': () => `Corgi プロンプト`,
     '["Corgi setup"]': () => `Corgi設定`,
+    '["Corgi was uninstalled."]': () => `Corgiはアンインストールされました。`,
     "[\"Corgi's colors, or your terminal theme's.\"]": () => `Corgi独自の配色か、端末のテーマの配色を選びます。`,
     '["Corgi\'s own"]': () => `Corgi標準`,
     '["Could not create that folder."]': () => `フォルダーを作成できませんでした。`,
+    '["Could not load workspace activity. Close and try again."]': () =>
+      `ワークスペースの稼働状況を読み込めませんでした。閉じてから再試行してください。`,
+    '["Could not rename this workspace"]': () => `このワークスペースの名前を変更できませんでした`,
     '["Could not resolve shorthand. Paste its underlying command."]': () =>
       `省略形を解決できませんでした。元のコマンドを貼り付けてください。`,
     '["Could not save command; max 2048 bytes."]': () => `コマンドを保存できません。上限は2048バイトです。`,
     '["Could not save. Check folder or capacity."]': () =>
       `保存できませんでした。フォルダーや空き容量を確認してください。`,
+    '["Could not stop startup"]': () => `起動を停止できませんでした`,
     '["Could not watch viewer.json for shortcut changes."]': () =>
       `viewer.jsonのショートカット変更を監視できませんでした。`,
     '["Couldn\'t read its panes or tabs"]': () => `ペインやタブを読み取れませんでした`,
@@ -1727,6 +1962,7 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Couldn\'t read this source. R retries."]': () => `取り込み元を読み込めません。Rで再試行。`,
     '["Couldn\'t save the pasted image"]': () => `貼り付けた画像を保存できませんでした`,
     '["Create "]': () => `作成 `,
+    '["Create workspace"]': () => `ワークスペースを作成`,
     '["Creating workspaces and shells"]': () => `ワークスペースとシェルを作成中`,
     '["Custom agent"]': () => `カスタムエージェント`,
     '["Custom command"]': () => `カスタムコマンド`,
@@ -1736,8 +1972,8 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["DETACH"]': () => `デタッチ`,
     '["Default"]': () => `既定`,
     '["Default ",""]': v0 => `標準 ${v0}`,
+    '["Default (",")"]': v0 => `デフォルト（${v0}）`,
     '["Default account · unavailable"]': () => `既定のアカウント · 利用不可`,
-    '["Default model"]': () => `既定のモデル`,
     '["Deleted the note on ","."]': v0 => `${v0}のコメントを削除しました。`,
     '["Deletes the saved command"]': () => `保存したコマンドを削除します`,
     '["Deletes this configuration; keeps the account"]': () => `この設定を削除します。アカウントは残します`,
@@ -1745,9 +1981,12 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Detected, not settings: what this terminal can do."]': () => `端末で検出した機能です。設定項目ではありません。`,
     '["Didn\'t say its name"]': () => `名前を取得できませんでした`,
     '["Digs up likely HTTP links ↗"]': () => `HTTPリンクらしきものを見つけます ↗`,
+    '["Discovering ","…"]': v0 => `${v0} を検出中…`,
     '["Discovering worktrees…"]': () => `ワークツリーを検索中…`,
+    '["Discovering…"]': () => `検出中…`,
     '["Done"]': () => `完了`,
     '["Down"]': () => `下`,
+    '["Download and apply an update"]': () => `更新をダウンロードして適用`,
     '["Download: "]': () => `ダウンロード：`,
     '["Drop an agent here"]': () => `ここにエージェントをドロップ`,
     '["Duplicate variable: ",""]': v0 => `変数が重複しています：${v0}`,
@@ -1756,6 +1995,7 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Edit ",""]': v0 => `${v0}を編集`,
     '["Edit agent"]': () => `エージェントを編集`,
     '["Edit workspace"]': () => `ワークスペースを編集`,
+    '["Edit ›"]': () => `編集 ›`,
     '["Edit, delete"]': () => `編集・削除`,
     '["Ended"]': () => `終了`,
     '["Enter a command."]': () => `コマンドを入力してください。`,
@@ -1769,11 +2009,13 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Escape is reserved for canceling Corgi controls"]': () => `EscapeはCorgiの操作のキャンセル用です`,
     '["Expand lines"]': () => `行を展開`,
     '["Extra flags"]': () => `追加オプション`,
-    '["Fetching models…"]': () => `モデルを取得中…`,
     '["File list"]': () => `ファイル一覧`,
     '["File navigation"]': () => `ファイル間の移動`,
     '["Find"]': () => `検索`,
     '["Find agent"]': () => `エージェントを検索`,
+    '["Find agents"]': () => `エージェントを探す`,
+    '["Find it in the sidebar"]': () => `サイドバーに表示されます`,
+    '["Finding ","…"]': v0 => `${v0} を検索中…`,
     '["Finished"]': () => `完了`,
     '["Focus"]': () => `選択`,
     '["Focus a pane to review its checkout."]': () => `ペインを選択すると、その作業ディレクトリをレビューできます。`,
@@ -1785,7 +2027,7 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Fold file"]': () => `ファイルを折りたたむ`,
     '["Folded lines take no notes; → opens them."]': () => `折りたたんだ行にはコメントできません。→で展開。`,
     '["Folder"]': () => `フォルダー`,
-    '["Follow "," · ",""]': (v0, v1) => `${v0} · ${v1}に追従`,
+    '["Follow ",""]': v0 => `${v0} に追従`,
     '["Follow the agents you run"]': () => `使用中のエージェントに合わせる`,
     '["Follow your agents"]': () => `エージェントに合わせる`,
     '["Follow your system language"]': () => `システムの言語に合わせる`,
@@ -1798,7 +2040,7 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["From"]': () => `元`,
     '["GPU use from device totals"]': () => `GPU使用率（デバイス全体）`,
     '["GPU use shared out by memory"]': () => `GPU使用率（メモリ比で按分）`,
-    '["Gathering details about this machine…"]': () => `このマシンの情報を収集中…`,
+    '["Gathering bug report info…"]': () => `バグ報告用の情報を収集中…`,
     '["Generated file · +"," −",""]': (v0, v1) => `生成ファイル · +${v0} −${v1}`,
     '["Generated file · enter loads its diff"]': () => `生成ファイル · Enterで差分を読み込む`,
     '["Ghostty is set to refuse clipboard reads."]': () => `Ghosttyでクリップボードの読み取りが拒否されています。`,
@@ -1811,7 +2053,10 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Half page"]': () => `半ページ`,
     '["Handing off to Corgi"]': () => `Corgiに引き継ぎ中`,
     '["Handoff processes"]': () => `プロセスを引き継ぐ`,
+    '["Happy helper for your terminal."]': () => `ターミナルのごきげんな相棒。`,
     '["Help needs 32 × 12"]': () => `ヘルプには32 × 12以上必要です`,
+    '["Hibernate pane"]': () => `ペインを休止`,
+    '["Hibernated"]': () => `休止中`,
     '["Hidden"]': () => `非表示`,
     '["Hide, resize"]': () => `非表示・サイズ変更`,
     '["Hold with the action key."]': () => `操作キーと同時に押してください。`,
@@ -1819,6 +2064,8 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Home row"]': () => `ホームポジション`,
     '["I\'ll bring over what I can."]': () => `取り込めるものを取り込みます。`,
     '["I\'m confused by this cmux version."]': () => `このcmuxのバージョンを認識できません。`,
+    '["IDs come from list; current means CORGI_PANE, never UI focus."]': () =>
+      `IDはlistで確認できます。currentはCORGI_PANEを指し、画面のフォーカスとは無関係です。`,
     '["Idle"]': () => `待機中`,
     '["Image paste"]': () => `画像の貼り付け`,
     '["Images over 32 MB don\'t paste"]': () => `32 MBを超える画像は貼り付けられません`,
@@ -1830,6 +2077,8 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["In Ghostty only, these keys drive Corgi:"]': () => `Ghosttyでは、次のキーでCorgiを操作できます：`,
     '["In the list"]': () => `一覧に表示中`,
     '["Including subagents"]': () => `サブエージェントを含む`,
+    '["Installing ","…"]': v0 => `${v0} をインストール中…`,
+    '["Installs on use"]': () => `使用時にインストール`,
     '["Intensity"]': () => `明るさ`,
     '["Invalid viewer.json; keeping the working shortcuts."]': () =>
       `viewer.jsonが不正です。現在のショートカットを維持します。`,
@@ -1838,6 +2087,7 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["It runs in a background session, outside any pane"]': () =>
       `ペインを使わず、バックグラウンドセッションで動作します`,
     '["Its diff starts collapsed. Enter loads it."]': () => `差分は折りたたまれています。Enterで読み込みます。`,
+    '["Join our Discord community:"]': () => `Discordコミュニティに参加：`,
     '["Jump to attention"]': () => `要確認の項目へ移動`,
     '["Jump to who needs you"]': () => `対応待ちのエージェントへ`,
     '["Keep"]': () => `維持`,
@@ -1848,6 +2098,8 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Keyboard shortcuts"]': () => `キーボードショートカット`,
     '["Keymap"]': () => `キー割り当て`,
     '["Keys"]': () => `キー`,
+    '["Keys: Ctrl+B opens a clickable command menu; `corgi keys` lists every shortcut."]': () =>
+      `キー操作：Ctrl+Bでクリック可能なコマンドメニューを開き、\`corgi keys\`ですべてのショートカットを表示します。`,
     '["Kill "," with SIGKILL?"]': v0 => `${v0}をSIGKILLで強制終了しますか？`,
     '["Kitty graphics"]': () => `Kitty画像表示`,
     '["Language"]': () => `言語`,
@@ -1858,14 +2110,20 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Last visited agent"]': () => `直前のエージェント`,
     '["Last visited tab"]': () => `直前のタブ`,
     '["Last visited workspace"]': () => `直前のワークスペース`,
-    '["Launch inside a pane:"]': () => `ペイン内で起動:`,
+    '["Layout"]': () => `レイアウト`,
+    '["Layout changes preserve processes and do not select another pane in a viewer."]': () =>
+      `レイアウトを変更してもプロセスは維持され、ビューアーの選択ペインも変わりません。`,
+    '["Learn more about Corgi:"]': () => `Corgiについて詳しく：`,
     '["Leave"]': () => `戻る・閉じる`,
     '["Limits"]': () => `上限`,
     '["Links · Esc to close"]': () => `リンク · Escで閉じる`,
     '["List"]': () => `一覧`,
+    '["List shortcuts; Ctrl+B opens the menu"]': () => `ショートカット一覧。Ctrl+Bでメニュー`,
     '["List, diff"]': () => `一覧・差分`,
     '["Live handoff unavailable for this session; turn it off to copy."]': () =>
       `このセッションは実行中の引き継ぎに非対応です。オフにするとコピーできます。`,
+    '["Loading pane…"]': () => `ペインを読み込み中…`,
+    '["Loading tabs…"]': () => `タブを読み込み中…`,
     '["Looking for running sessions…"]': () => `実行中のセッションを検索中…`,
     '["MATCHING SHORTCUTS"]': () => `一致するショートカット`,
     '["MODIFIER"]': () => `修飾キー`,
@@ -1893,9 +2151,12 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Move tab right"]': () => `タブを右へ移動`,
     '["Move tab to workspace…"]': () => `タブをワークスペースに移動…`,
     '["Move to new tab"]': () => `新しいタブに移動`,
+    '["Move without a position appends. Env replaces overrides, e.g. \'{\\"KEY\\":\\"value\\"}\'."]': () =>
+      `移動先の位置を省略すると末尾に移動します。Envは環境変数の上書き設定を置き換えます。例：'{"KEY":"value"}'。`,
     '["Mute / unmute"]': () => `ミュート切替`,
     '["Mute / unmute sounds"]': () => `通知音のミュート切り替え`,
     '["Name"]': () => `名前`,
+    '["Name it and pick a folder"]': () => `名前とフォルダーを決める`,
     '["Name tab"]': () => `タブに名前を付ける`,
     '["Names fit in 80 characters"]': () => `名前は80文字以内で入力してください`,
     '["Navigate"]': () => `移動`,
@@ -1913,6 +2174,8 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["New tab"]': () => `新しいタブ`,
     '["New tab (agent picker)"]': () => `新しいタブ（エージェント選択）`,
     '["New tab → agent picker"]': () => `新しいタブ → エージェント選択`,
+    '["New tabs and launcher mutations outside Corgi require --workspace."]': () =>
+      `Corgiの外からタブを作成したりランチャーを変更したりするには--workspaceが必要です。`,
     '["New terminal"]': () => `新しい端末`,
     '["New workspace"]': () => `新しいワークスペース`,
     '["Next / previous"]': () => `次 / 前`,
@@ -1921,7 +2184,7 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Next pane"]': () => `次のペイン`,
     '["Next tab"]': () => `次のタブ`,
     '["Next workspace"]': () => `次のワークスペース`,
-    '["No agents yet"]': () => `エージェントはまだありません`,
+    '["No active agents or processes."]': () => `稼働中のエージェントやプロセスはありません。`,
     '["No agents yet this session; using your last one"]': () =>
       `このセッションではまだエージェントを使っていないため、前回のものを使用`,
     '["No available sessions found."]': () => `利用できるセッションが見つかりません。`,
@@ -1931,20 +2194,24 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["No commit picked yet. g opens the menu."]': () => `コミット未選択です。gでメニューを開きます。`,
     '["No commits since ",""]': v0 => `${v0}以降のコミットはありません`,
     '["No commits yet"]': () => `コミットはまだありません`,
+    '["No daemon connection"]': () => `デーモンに接続されていません`,
     '["No executable shell there."]': () => `その場所に実行可能なシェルはありません。`,
     '["No folders"]': () => `フォルダーなし`,
     '["No folders match"]': () => `一致するフォルダーなし`,
+    '["No image on the clipboard"]': () => `クリップボードに画像がありません`,
     '["No lines changed"]': () => `変更された行はありません`,
     '["No linked worktrees"]': () => `リンクされたワークツリーなし`,
     '["No matches."]': () => `該当するものはありません。`,
     '["No matching actions."]': () => `一致する操作はありません。`,
     '["No matching agents"]': () => `一致するエージェントなし`,
-    '["No matching models"]': () => `該当するモデルはありません`,
+    '["No models"]': () => `モデルがありません`,
+    '["No models match"]': () => `一致するモデルがありません`,
     '["No notes yet."]': () => `コメントはまだありません。`,
     '["No notes yet. v selects lines, c comments."]': () => `コメントはまだありません。vで行を選択、cでコメント。`,
     '["No overrides; inherits your environment."]': () => `上書き設定はありません。現在の環境を引き継ぎます。`,
+    '["No processes"]': () => `プロセスなし`,
     '["No shortcuts"]': () => `ショートカットなし`,
-    '["No signed-in models"]': () => `利用できるモデルがありません`,
+    '["No such workspace"]': () => `ワークスペースが存在しません`,
     '["No summaries, plain links"]': () => `要約なし・通常のリンク`,
     '["No text diff and no line notes."]': () => `テキスト差分と行コメントはありません。`,
     '["No uncommitted changes."]': () => `未コミットの変更はありません。`,
@@ -1952,6 +2219,7 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["No workspaces could be recovered yet."]': () => `復元できるワークスペースはまだありません。`,
     '["None"]': () => `なし`,
     '["None late enough to hold frames."]': () => `描画が待機するほどの遅延はありません。`,
+    '["Not enough room for this split"]': () => `この分割にはスペースが足りません`,
     '["Not in a git checkout:"]': () => `Gitの作業ディレクトリではありません:`,
     '["Not installed"]': () => `未インストール`,
     '["Not signed in"]': () => `未ログイン`,
@@ -1960,6 +2228,7 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Nothing changed on "," yet."]': v0 => `${v0}にはまだ変更がありません。`,
     '["Nothing closed here. Tab widens the scope."]': () =>
       `ここには閉じたエージェントがありません。Tabで検索範囲を広げます。`,
+    '["Nothing is waiting"]': () => `待機中の処理はありません`,
     '["Observed tokens"]': () => `観測されたトークン`,
     '["Off"]': () => `オフ`,
     '["On"]': () => `オン`,
@@ -1972,10 +2241,13 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Open folder as workspace"]': () => `フォルダーをワークスペースとして開く`,
     '["Open the agent picker"]': () => `エージェント選択を開く`,
     '["Open · jumps to its tab"]': () => `開いています · タブへ移動`,
+    '["Operations never auto-start a server."]': () => `これらの操作でサーバーが自動起動することはありません。`,
     '["Ordered key sets belong to an indexed action, such as tab"]': () =>
       `順序付きキーセットはタブなど、番号で指定する操作にのみ使えます`,
     '["Other agents"]': () => `ほかのエージェント`,
     '["Other…"]': () => `その他…`,
+    '["Over SSH, images paste only from terminals that send them"]': () =>
+      `SSH 接続では、画像を送信できるターミナルからのみ貼り付けられます`,
     '["P  Continue with portable Herdr keys"]': () => `P  端末を選ばないHerdrキーで続行`,
     '["P = prefix · Cmd = hold"]': () => `P = プレフィックス · Cmd = 同時押し`,
     '["P prefix"]': () => `P プレフィックス`,
@@ -1984,6 +2256,7 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["PROCESS"]': () => `プロセス`,
     '["Page"]': () => `ページ`,
     '["Partial process coverage"]': () => `一部のプロセスのみ取得`,
+    '["Past conversations, newest first"]': () => `過去の会話を新しい順に表示`,
     '["Paste (host terminal)"]': () => `貼り付け（端末本体）`,
     '["Paste a command…"]': () => `コマンドを貼り付け…`,
     '["Paste copied text"]': () => `コピーしたテキストを貼り付け`,
@@ -2014,15 +2287,23 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Previous pane"]': () => `前のペイン`,
     '["Previous tab"]': () => `前のタブ`,
     '["Previous workspace"]': () => `前のワークスペース`,
+    '["Process counts unavailable"]': () => `プロセス数は不明です`,
+    '["Process information unavailable"]': () => `プロセス情報を取得できません`,
+    '["Process list may be incomplete"]': () => `プロセス一覧が不完全な可能性があります`,
+    '["Processes"]': () => `プロセス`,
+    '["Prompt an agent through its own channel"]': () => `エージェント自身のチャネルでプロンプト`,
     '["Push failed"]': () => `プッシュ失敗`,
     '["Reading branches…"]': () => `ブランチを読み込み中…`,
     '["Reading default account…"]': () => `既定のアカウントを読み込み中…`,
     '["Reading git…"]': () => `Git情報を読み込み中…`,
+    '["Reading models…"]': () => `モデルを読み込み中…`,
     '["Reading the diff…"]': () => `差分を読み込み中…`,
+    '["Reading workspace activity…"]': () => `ワークスペースの稼働状況を取得中…`,
     '["Reading…"]': () => `読み込み中…`,
     '["Receiving live terminals"]': () => `実行中の端末を受信中`,
     '["Record Enter"]': () => `Enterを登録`,
     '["Record a sequence…"]': () => `キー操作を順に登録…`,
+    '["Redo layout change"]': () => `レイアウト変更をやり直す`,
     '["Relaunch viewer"]': () => `ビューアーを再起動`,
     '["Release notes"]': () => `リリースノート`,
     '["Release, then press a key."]': () => `キーを離してから次のキーを押してください。`,
@@ -2034,7 +2315,6 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Reload Ghostty: Cmd+Shift+, to apply Command keys."]': () =>
       `Cmd+Shift+,でGhosttyを再読み込みするとCommandキーが有効になります。`,
     '["Remove"]': () => `削除`,
-    '["Removed"]': () => `削除済み`,
     '["Removing"]': () => `削除中`,
     '["Rename"]': () => `名前を変更`,
     '["Rename agent"]': () => `エージェント名を変更`,
@@ -2042,6 +2322,7 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Rename tab"]': () => `タブ名を変更`,
     '["Rename workspace"]': () => `ワークスペース名を変更`,
     '["Reopen"]': () => `開き直す`,
+    '["Reopen a past conversation"]': () => `過去の会話をもう一度開く`,
     '["Reopen directly"]': () => `直接開き直す`,
     '["Reopen last closed agent"]': () => `最後に閉じたエージェントを再開`,
     '["Reopen tab"]': () => `タブを開き直す`,
@@ -2058,6 +2339,11 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Resources"]': () => `リソース`,
     '["Restoring…"]': () => `復元中…`,
     '["Resume"]': () => `再開`,
+    '["Resume pane"]': () => `ペインを再開`,
+    '["Resume with corgi pane wake ",""]': v0 => `corgi pane wake ${v0} で再開`,
+    '["Retries Codex at capacity; Esc stops it."]': () => `Codexが混雑時に再試行。Escで停止。`,
+    '["Retrying in ",""]': v0 => `${v0}後に再試行`,
+    '["Retrying…"]': () => `再試行中…`,
     '["Return in each pane restarts its command"]': () => `各ペインでReturnを押すとコマンドを再実行`,
     '["Review"]': () => `レビュー`,
     '["Review changes"]': () => `変更をレビュー`,
@@ -2080,7 +2366,9 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Scroll / copy"]': () => `スクロール / コピー`,
     '["Scroll / copy mode"]': () => `スクロール・コピーモード`,
     '["Search"]': () => `検索`,
+    '["Search conversation text"]': () => `会話の本文を検索`,
     '["Search models"]': () => `モデルを検索`,
+    '["Search models, agents and accounts"]': () => `モデル、エージェント、アカウントを検索`,
     '["Select"]': () => `選択`,
     '["Select tab"]': () => `タブを選択`,
     '["Select workspace"]': () => `ワークスペースを選択`,
@@ -2090,6 +2378,8 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Sent "," notes to ",". Enter there submits them."]': (v0, v1) =>
       `${v1}に${v0}件のコメントを送りました。移動してEnterで送信できます。`,
     '["Sent "," to ",""]': (v0, v1) => `${v1}に${v0}を送信しました`,
+    '["Served links"]': () => `公開リンク`,
+    '["Served links will go offline."]': () => `公開リンクはオフラインになります。`,
     '["Servers"]': () => `サーバー`,
     '["Session ended"]': () => `セッション終了`,
     '["Set clipboard-read = ask to enable paste with ","."]': v0 =>
@@ -2109,14 +2399,13 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Shortcuts reloaded; could not update the Ghostty integration."]': () =>
       `ショートカットを再読み込みしましたが、Ghostty連携を更新できませんでした。`,
     '["Show"]': () => `表示`,
-    '["Show "," more"]': v0 => `ほか${v0}件を表示`,
-    '["Show fewer"]': () => `表示を減らす`,
+    '["Show a folder\'s workspace, or add one"]': () => `フォルダーのワークスペースを表示`,
     '["Show less"]': () => `折りたたむ`,
     '["Show resources"]': () => `リソースを表示`,
+    '["Show startup waits"]': () => `起動待ちを表示`,
     '["Show worktrees"]': () => `ワークツリーを表示`,
     '["Sidebar corgi brightness."]': () => `サイドバーのコーギーの明るさ。`,
     '["Sign in"]': () => `ログイン`,
-    '["Sign in first"]': () => `先にログインしてください`,
     '["Sign in to a model provider through ",""]': v0 => `${v0}からモデルの提供元にログインしてください`,
     '["Signed out"]': () => `未ログイン`,
     '["Signs out and deletes its folder"]': () => `ログアウトしてフォルダーを削除します`,
@@ -2133,10 +2422,14 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Star"]': () => `スター`,
     '["Star / unstar agent"]': () => `エージェントのスター切り替え`,
     '["Star / unstar headless agent"]': () => `ヘッドレスエージェントのスター切り替え`,
+    '["Start"]': () => `起動`,
+    '["Start Corgi or attach to it"]': () => `Corgiを起動、または接続`,
     '["Starting"]': () => `起動中`,
     '["Starting session"]': () => `セッションを開始中`,
+    '["Startup waits: enlarge terminal · Esc to close"]': () => `起動待ち：端末を広げてください · Esc で閉じる`,
     '["Still pasting the previous image"]': () => `前の画像をまだ貼り付け中です`,
     '["Stop "," with SIGTERM?"]': v0 => `${v0}をSIGTERMで停止しますか？`,
+    '["Stopping ","…"]': v0 => `${v0} を停止中…`,
     '["Suggested automatically"]': () => `自動提案`,
     '["Swap"]': () => `入れ替え`,
     '["Swap down"]': () => `下と入れ替え`,
@@ -2157,11 +2450,10 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["That pane would run the notes as commands; copied them instead."]': () =>
       `このペインではコメントがコマンドとして実行されるため、コピーしました。`,
     '["That\'s a file, not a folder."]': () => `それはフォルダーではなくファイルです。`,
+    '["The Farm"]': () => `農場`,
     '["The clipboard image was damaged"]': () => `クリップボードの画像が破損しています`,
     '["The commits to push changed. Review them and push again."]': () =>
       `プッシュ対象のコミットが変わりました。確認してから再度プッシュしてください。`,
-    '["The issue starts with these details. Nothing is sent until you submit it on GitHub."]': () =>
-      `次の情報をIssueに含めます。GitHubで送信するまで、情報は送られません。`,
     '["The limit is 2 MB or 50,000 lines."]': () => `上限は2 MBまたは50,000行です。`,
     '["The notes hold an end-of-paste marker; they\'re kept."]': () =>
       `コメントに貼り付け終了マーカーが含まれています。送信せず保持しました。`,
@@ -2199,11 +2491,13 @@ Corgiのペイン、エージェント、ワークスペースを操作するに
     '["Type a folder, such as ",""]': v0 => `フォルダーを入力してください（例：${v0}）`,
     '["Type a path"]': () => `パスを入力`,
     '["UNCOMMITTED CHANGES"]': () => `未コミットの変更`,
+    '["Unarchive workspace"]': () => `ワークスペースのアーカイブを解除`,
     '["Unavailable"]': () => `利用不可`,
     '["Unavailable · ",""]': v0 => `利用不可 · ${v0}`,
     '["Unavailable · server returned 429"]': () => `利用不可 · サーバー応答429`,
     '["Uncommitted"]': () => `未コミット`,
     '["Undo"]': () => `元に戻す`,
+    '["Undo layout change"]': () => `レイアウト変更を元に戻す`,
     '["Unfold"]': () => `展開`,
     '["Unified / split diff"]': () => `統合 / 分割差分`,
     '["Unknown"]': () => `不明`,
@@ -2246,7 +2540,7 @@ ${v1}を設定してそのアカウントを使います。
 Corgiに登録された全アカウントが対象になります。--accountで1つに絞れます（defaultは既定のアカウント）。
 `,
     '["Use"]': () => `使用`,
-    '["Use "," · ",""]': (v0, v1) => `${v0} · ${v1}を使う`,
+    '["Use ",""]': v0 => `${v0} を使用`,
     '["Use "," to enable paste with ","."]': (v0, v1) => `${v1}で貼り付けるには、${v0}を使ってください。`,
     '["Use a nonblank name up to 160 bytes, without control characters."]': () =>
       `名前は空欄にせず、制御文字を含まない160バイト以内の文字列にしてください。`,
@@ -2270,7 +2564,11 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '["Visual flourishes"]': () => `視覚効果`,
     '["WORKSPACES"]': () => `ワークスペース`,
     '["WORKTREE"]': () => `ワークツリー`,
+    '["Waiting for "," service…"]': v0 => `${v0} サービスを待機中…`,
+    '["Waiting for "," session…"]': v0 => `${v0} セッションを待機中…`,
+    '["Waiting for ","…"]': v0 => `${v0} を待機中…`,
     '["Waiting for Herdr ownership confirmation"]': () => `Herdr側の引き継ぎ確認を待機中`,
+    '["Waiting for a response"]': () => `応答を待機中`,
     '["Waiting for activity"]': () => `作業の開始待ち`,
     '["Waiting on agents"]': () => `エージェント待ち`,
     '["Waiting on subagents"]': () => `サブエージェント待ち`,
@@ -2284,6 +2582,7 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '["Working"]': () => `作業中`,
     '["Workspace / all"]': () => `ワークスペース / すべて`,
     '["Workspace only · opens a new shell"]': () => `ワークスペースのみ · 新しいシェルを開く`,
+    '["Workspaces, tabs, panes and agents"]': () => `ワークスペース、タブ、ペイン、エージェント`,
     '["Worktree briefs"]': () => `ワークツリー要約`,
     '["Worktree folder"]': () => `ワークツリーフォルダー`,
     '["Worktrees: enlarge terminal · Esc to close"]': () => `ワークツリー：端末を広げてください · Escで閉じる`,
@@ -2324,6 +2623,7 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '["[Save]"]': () => `[保存]`,
     '["[Show alts Ctrl+L]"]': () => `[別の割り当てを表示 Ctrl+L]`,
     '["[Show command]"]': () => `[コマンドを表示]`,
+    '["[x Kill]"]': () => `[x 強制終了]`,
     '["[···] Working"]': () => `[···] 処理中`,
     '["[✓] Complete"]': () => `[✓] 完了`,
     '["^C Clear"]': () => `^C クリア`,
@@ -2336,7 +2636,7 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '["a workspace is open in it"]': () => `その中でワークスペースが開いています`,
     '["accounts"]': () => `アカウント`,
     '["activate"]': () => `表示`,
-    '["add back to the list"]': () => `一覧に戻す`,
+    '["add to the list"]': () => `一覧に追加`,
     '["adding ","…"]': v0 => `${v0}を追加中…`,
     '["adjust"]': () => `調整`,
     '["age"]': () => `経過`,
@@ -2347,6 +2647,7 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '["an update"]': () => `更新`,
     '["another one is being removed"]': () => `別の項目を削除中です`,
     '["as dragged"]': () => `ドラッグ順`,
+    '["auto"]': () => `自動`,
     '["back"]': () => `戻る`,
     '["background session"]': () => `バックグラウンドセッション`,
     '["bin"]': () => `バイナリ`,
@@ -2355,6 +2656,7 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '["change"]': () => `変更`,
     '["checking…"]': () => `確認中…`,
     '["choose"]': () => `選択`,
+    '["choose effort"]': () => `推論量を選択`,
     '["chosen"]': () => `指定済み`,
     '["clean"]': () => `変更なし`,
     '["clear"]': () => `クリア`,
@@ -2370,61 +2672,22 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '["commits "," ",""]': (v0, v1) => `コミット ${v0} ${v1}`,
     '["committed"]': () => `コミット済み`,
     '["committed + working copy"]': () => `コミット済み + 作業コピー`,
+    '["connecting"]': () => `接続中`,
     '["context "]': () => `コンテキスト `,
+    '["copy details"]': () => `情報をコピー`,
     '["copy link"]': () => `リンクをコピー`,
-    "[\"corgi — a small Ghostty-powered agent terminal\\n\\n  corgi                         start / attach\\n  corgi open DIR                show DIR's workspace; add one if none\\n  corgi onboard                 open onboarding, even after setup\\n  corgi dev                     reload if changed; attach or relaunch viewer\\n  corgi --no-update             attach without activating a staged update\\n  corgi update                  download and safely apply an update\\n  corgi update status           show update status\\n  corgi update rollback         return to the previous release\\n  corgi update --check|--download-only\\n  corgi update auto on|off      control automatic updates\\n  corgi start                   start detached runtime\\n  corgi action NAME [VALUE]     run a viewer action, named below\\n  corgi agent claude|codex ...   optional discovered-binary launcher\\n  corgi hooks claude|codex       print hook configuration\\n  corgi integration COMMAND     status, install, uninstall hooks\\n  corgi account COMMAND         list, add, login, remove provider accounts\\n  corgi which claude|codex      show automatically selected executable\\n  corgi keys [PRESET]           list shortcuts: corgi, tmux, herdr, cmux\\n  corgi headless start PROVIDER PROMPT [--workspace ID]\\n  corgi headless list              list headless sessions\\n  corgi headless send PROVIDER SESSION JSON   prompt, answer or interrupt\\n  corgi headless events PROVIDER SESSION [SEQ]   journal + pending requests\\n  corgi headless stop PROVIDER SESSION        stop headless session\\n  corgi rpc JSON                local JSON control protocol\\n  corgi reload [ABSOLUTE_EXE]    replace daemon, preserve live processes\\n  corgi checkpoint               save recovery context now\\n  corgi shutdown                terminate runtime and its panes\\n  corgi bugreport [--full]      details for a bug report, and a link to file it\\n  corgi licenses                Corgi's license and the software it includes\\n  corgi help [COMMAND ...]      show help for a command or group\\n  corgi --help                  list all commands (also -h)\\n  corgi --version               print the version and commit\\n\\nKeys: Ctrl+B opens a clickable command menu; `corgi keys` lists every shortcut.\\n\\n\\n\\n\\nCORGI_SOCKET selects a runtime. Workspaces group tabs and panes; no worktrees.\\nCommands print text; --json prints the daemon's reply as JSON instead.\\n\"]":
-      () => `corgi — Ghosttyを使った小さなエージェント用端末
-
-  corgi                         起動 / 接続
-  corgi open DIR                DIRのワークスペースを表示。なければ追加
-  corgi onboard                 設定済みでも初期設定を開く
-  corgi dev                     変更があれば再読み込みし、ビューアーに接続または再起動
-  corgi --no-update             準備済みの更新を適用せずに接続
-  corgi update                  更新をダウンロードして安全に適用
-  corgi update status           更新状況を表示
-  corgi update rollback         前のリリースに戻す
-  corgi update --check|--download-only
-  corgi update auto on|off      自動更新を切り替え
-  corgi start                   バックグラウンドでランタイムを起動
-  corgi action NAME [VALUE]     下記の名前でビューアー操作を実行
-  corgi agent claude|codex ...   検出済みの実行ファイルからエージェントを起動
-  corgi hooks claude|codex       フック設定を出力
-  corgi integration COMMAND     フックの状態確認、インストール、削除
-  corgi account COMMAND         提供元のアカウント一覧、追加、ログイン、削除
-  corgi which claude|codex      自動選択された実行ファイルを表示
-  corgi keys [PRESET]           ショートカット一覧：corgi、tmux、herdr、cmux
-  corgi headless start PROVIDER PROMPT [--workspace ID]
-  corgi headless list              ヘッドレスセッション一覧
-  corgi headless send PROVIDER SESSION JSON   プロンプト、回答、割り込みを送信
-  corgi headless events PROVIDER SESSION [SEQ]   イベント履歴と待機中の要求
-  corgi headless stop PROVIDER SESSION        ヘッドレスセッションを停止
-  corgi rpc JSON                ローカルJSON操作プロトコル
-  corgi reload [ABSOLUTE_EXE]    実行中のプロセスを維持してデーモンを置き換え
-  corgi checkpoint               復元用の情報を今すぐ保存
-  corgi shutdown                ランタイムとそのペインを終了
-  corgi bugreport [--full]      バグ報告用の情報と報告先リンクを表示
-  corgi licenses                Corgiと同梱ソフトウェアのライセンス
-  corgi help [COMMAND ...]      コマンドやグループのヘルプを表示
-  corgi --help                  すべてのコマンドを表示（-hも可）
-  corgi --version               バージョンとコミットを出力
-
-キー操作：Ctrl+Bでクリック可能なコマンドメニューを開き、\`corgi keys\`ですべてのショートカットを表示します。
-
-
-
-
-CORGI_SOCKETでランタイムを選びます。ワークスペースはタブとペインをまとめるもので、ワークツリーとは別です。
-通常はテキストを出力します。--jsonを付けるとデーモンの応答をJSONで出力します。
-`,
+    '["corgi — a small Ghostty-powered agent terminal"]': () => `corgi — Ghosttyを使った小さなエージェント用端末`,
     '["create"]': () => `作成`,
     '["critical"]': () => `危険`,
     '["custom"]': () => `カスタム`,
+    '["default"]': () => `デフォルト`,
     '["delete"]': () => `削除`,
     '["detach"]': () => `デタッチ`,
     '["done"]': () => `完了`,
     '["e.g. --verbose"]': () => `例：--verbose`,
     '["edit"]': () => `編集`,
     '["edit note"]': () => `コメントを編集`,
+    '["effort"]': () => `推論量`,
     '["esc Cancel"]': () => `esc キャンセル`,
     '["everywhere"]': () => `すべての場所`,
     '["exited"]': () => `終了済み`,
@@ -2450,10 +2713,10 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
     '["handoff"]': () => `引き継ぎ`,
     '["hide"]': () => `非表示`,
     '["hide the row"]': () => `使用量を非表示`,
-    '["hold ↵ to create"]': () => `↵長押しで作成`,
     '["hunk"]': () => `変更ブロック`,
     '["idle"]': () => `待機中`,
     '["import ",""]': v0 => `${v0}件をインポート`,
+    '["incompatible"]': () => `互換性なし`,
     '["inspiration and sound cues"]': () => `着想と通知音`,
     '["it\'s already gone"]': () => `すでに削除されています`,
     '["it\'s locked"]': () => `ロックされています`,
@@ -2492,14 +2755,16 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
     '["now"]': () => `今`,
     '["off"]': () => `オフ`,
     '["open"]': () => `開く`,
-    '["or  ",""]': v0 => `または  ${v0}`,
     '["our TypeScript runtime"]': () => `TypeScriptランタイム`,
     '["our terminal engine"]': () => `端末エンジン`,
     '["out / in"]': () => `出力 / 入力`,
+    '["paused"]': () => `一時停止`,
     '["pick"]': () => `選択`,
     '["pin"]': () => `固定`,
     '["play"]': () => `遊ぶ`,
+    '["rate limited"]': () => `レート制限中`,
     '["ready"]': () => `準備完了`,
+    '["reconnecting"]': () => `再接続中`,
     '["refresh"]': () => `更新`,
     '["reload Corgi\'s daemon first"]': () => `先にCorgiのデーモンを再読み込みしてください`,
     '["remaining surfaces in additional tabs"]': () => `残りのサーフェスは別タブへ`,
@@ -2508,6 +2773,7 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
     '["resolved at launch"]': () => `起動時に決定`,
     '["resume"]': () => `再開`,
     '["resume agents"]': () => `エージェントを再開`,
+    '["retry in"]': () => `再試行まで`,
     '["review it alone"]': () => `単独でレビュー`,
     '["review panel design"]': () => `レビューパネルのデザイン`,
     '["save"]': () => `保存`,
@@ -2521,6 +2787,7 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
     '["send "," to ",""]': (v0, v1) => `${v1}に${v0}件送信`,
     '["send prefix"]': () => `プレフィックスを送信`,
     '["send to ",""]': v0 => `${v0}に送信`,
+    '["shell at ",""]': v0 => `${v0} のシェル`,
     '["shortcuts"]': () => `ショートカット`,
     '["show all"]': () => `すべて表示`,
     '["show the readings row"]': () => `使用量を表示`,
@@ -2528,6 +2795,7 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
     '["sign in to a new "," account"]': v0 => `新しい${v0}アカウントにログイン`,
     '["split"]': () => `分割`,
     '["stale"]': () => `古い情報`,
+    '["stalled"]': () => `応答待ち`,
     '["starred"]': () => `スター付き`,
     '["switch to ",""]': v0 => `${v0}に切り替え`,
     '["tab"]': () => `タブ`,
@@ -2567,6 +2835,7 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
     '["— tokens"]': () => `— トークン`,
     '["… "," done"]': v0 => `… ${v0}件完了`,
     '["…"," more"]': v0 => `…ほか${v0}件`,
+    '["‹ "," · Effort"]': v0 => `‹ ${v0} · 推論量`,
     '["← keys"]': () => `← キー`,
     '["←→ sources · ↑↓ choose · PgUp/PgDn scroll · R refresh · S skip"]': () =>
       `←→ 取り込み元 · ↑↓ 選択 · PgUp/PgDn スクロール · R 更新 · S スキップ`,
@@ -2575,7 +2844,10 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
     '["↑ Update "," ready · relaunch Corgi"]': v0 => `↑ 更新 ${v0} 準備完了 · Corgiを再起動`,
     '["↑ Update ready"]': () => `↑ 更新準備完了`,
     '["↑ Update ready · relaunch Corgi"]': () => `↑ 更新準備完了 · Corgiを再起動`,
+    '["↑ ↓ Scroll to see all activity"]': () => `↑ ↓ スクロールですべての稼働状況を表示`,
     '["↑↓  ↵ jump  Esc back"]': () => `↑↓  ↵ 移動  Esc 戻る`,
+    '["↑↓ Preview agents · PgUp/PgDn Scroll"]': () => `↑↓ エージェントのプレビュー · PgUp/PgDn スクロール`,
+    '["↑↓ Select · Enter Open · Tab Actions"]': () => `↑↓ 選択 · Enter 開く · Tab 操作`,
     '["↑↓ browse · Enter "," · e review · hold ⌫ remove · Esc close"]': v0 =>
       `↑↓ 移動 · Enter ${v0} · e レビュー · ⌫長押し 削除 · Esc 閉じる`,
     '["↑↓ browse · Enter "," · e review · hold ⌫ remove · r refresh · Esc close"]': v0 =>
@@ -2589,6 +2861,8 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
     '["↗ Browser link"]': () => `↗ ブラウザーのリンク`,
     '["↗ open in a tab"]': () => `↗ タブで開く`,
     '["↵ Create Fork"]': () => `↵ 分岐を作成`,
+    '["↵ Show pane · Esc Close"]': () => `↵ ペインを表示 · Esc 閉じる`,
+    '["↵ create"]': () => `↵ 作成`,
     '["↵ switch"]': () => `↵ 切替`,
     '["↵ use branch"]': () => `↵ ブランチを使用`,
     '["↻ Resume available"]': () => `↻ 再開可能`,
@@ -2597,9 +2871,125 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
     '["◇ Prefix = ",""]': v0 => `◇ プレフィックス = ${v0}`,
     '["○ Corgi (Activity summarizer)"]': () => `○ Corgi（作業の要約）`,
     '["● Jump to who needs you"]': () => `● 対応待ちのエージェントへ`,
+    '["✓ Copied"]': () => `✓ コピーしました`,
     '["🐕 badge; animations stay still."]': () => `🐕 バッジを表示。アニメーションは停止します。`,
   },
   "ko": {
+    '["    prompt through the agent\'s own channel, or type it and press Enter"]': () =>
+      `    에이전트 자체 채널로 프롬프트를 보내고, 없으면 입력한 뒤 Enter를 누릅니다`,
+    '["    search conversation text; --session PROVIDER:ID narrows, -o extracts matches"]': () =>
+      `    대화 본문 검색; --session PROVIDER:ID로 범위를 좁히고 -o로 일치 부분 추출`,
+    "[\"    to today's log, MEMORY.md or a workspace's note; an exact repeat isn't added\"]": () =>
+      `    오늘의 로그, MEMORY.md 또는 워크스페이스 메모에 추가. 완전히 같은 내용은 제외`,
+    '["  SKIP if a Corgi skill is already in your context. Otherwise run: corgi --skill"]': () =>
+      `  컨텍스트에 이미 Corgi 스킬이 있으면 건너뛰세요. 없다면 실행: corgi --skill`,
+    '["  corgi                         start / attach"]': () => `  corgi                         시작 / 연결`,
+    '["  corgi --help                  list common commands (also -h)"]': () =>
+      `  corgi --help                  자주 쓰는 명령 표시(-h도 가능)`,
+    '["  corgi --no-update             attach without activating a staged update"]': () =>
+      `  corgi --no-update             준비된 업데이트를 적용하지 않고 연결`,
+    '["  corgi --skill                      print bundled agent instructions"]': () =>
+      `  corgi --skill                      내장 에이전트 지침 출력`,
+    '["  corgi --version               print the version and commit"]': () =>
+      `  corgi --version               버전과 커밋 출력`,
+    '["  corgi account COMMAND         list, add, login, remove provider accounts"]': () =>
+      `  corgi account COMMAND         제공업체 계정 목록, 추가, 로그인, 제거`,
+    '["  corgi action NAME [VALUE] [--viewer ID]  run a viewer action, named below"]': () =>
+      `  corgi action NAME [VALUE] [--viewer ID]  아래에 나열된 클라이언트 동작 실행`,
+    '["  corgi agent claude|codex ...   optional discovered-binary launcher"]': () =>
+      `  corgi agent claude|codex ...   선택 사항: 자동으로 찾은 에이전트 프로그램 실행`,
+    '["  corgi bugreport [--full]      details for a bug report, and a link to file it"]': () =>
+      `  corgi bugreport [--full]      버그 신고 정보와 제출 링크`,
+    '["  corgi checkpoint               save recovery context now"]': () =>
+      `  corgi checkpoint               복구 컨텍스트 즉시 저장`,
+    '["  corgi current                      calling pane\'s live location"]': () =>
+      `  corgi current                      명령을 호출한 패널의 현재 위치`,
+    '["  corgi dev                     reload if changed; attach or relaunch viewer"]': () =>
+      `  corgi dev                     변경 시 다시 불러오기, 클라이언트 연결 또는 재시작`,
+    '["  corgi focus ID|current --viewer ID  select in exactly one viewer"]': () =>
+      `  corgi focus ID|current --viewer ID  지정한 클라이언트에서만 선택`,
+    '["  corgi headless events PROVIDER SESSION [SEQ]   journal + pending requests"]': () =>
+      `  corgi headless events PROVIDER SESSION [SEQ]   기록과 대기 중인 요청`,
+    '["  corgi headless list              list headless sessions"]': () =>
+      `  corgi headless list              백그라운드 세션 목록`,
+    '["  corgi headless send PROVIDER SESSION JSON   prompt, answer or interrupt"]': () =>
+      `  corgi headless send PROVIDER SESSION JSON   프롬프트, 응답 또는 중단`,
+    '["  corgi headless stop PROVIDER SESSION        stop headless session"]': () =>
+      `  corgi headless stop PROVIDER SESSION        백그라운드 세션 중지`,
+    '["  corgi help --all              list every command"]': () => `  corgi help --all              모든 명령 표시`,
+    '["  corgi help [COMMAND ...]      show help for a command or group"]': () =>
+      `  corgi help [COMMAND ...]      명령 또는 명령 그룹의 도움말`,
+    '["  corgi history [--limit N] [--json]  past conversations, newest first"]': () =>
+      `  corgi history [--limit N] [--json]  이전 대화를 최신순으로 표시`,
+    '["  corgi hooks claude|codex       print hook configuration"]': () =>
+      `  corgi hooks claude|codex       훅 설정 출력`,
+    '["  corgi integration COMMAND     status, install, uninstall hooks"]': () =>
+      `  corgi integration COMMAND     훅 상태 확인, 설치, 제거`,
+    '["  corgi keys [PRESET]           list shortcuts: corgi, tmux, herdr, cmux"]': () =>
+      `  corgi keys [PRESET]           단축키 목록: corgi, tmux, herdr, cmux`,
+    '["  corgi launcher copy --from ID --workspace ID  replace destination order and visibility"]': () =>
+      `  corgi launcher copy --from ID --workspace ID  대상의 순서와 표시 여부 교체`,
+    '["  corgi launcher hide AGENT... [--workspace ID]  in one workspace only"]': () =>
+      `  corgi launcher hide AGENT... [--workspace ID]  지정한 작업 공간에만 적용`,
+    '["  corgi launcher list [--workspace ID] [--json]  agents each launcher shows"]': () =>
+      `  corgi launcher list [--workspace ID] [--json]  실행기에 표시되는 에이전트`,
+    '["  corgi launcher models AGENT [--json]  native model IDs, efforts and defaults"]': () =>
+      `  corgi launcher models AGENT [--json]  에이전트의 모델 ID, 추론 강도와 기본값`,
+    '["  corgi launcher remove AGENT [--workspace ID]  delete a clone or saved command"]': () =>
+      `  corgi launcher remove AGENT [--workspace ID]  복제본 또는 저장된 명령 삭제`,
+    '["  corgi launcher show AGENT... [--workspace ID]  in one workspace only"]': () =>
+      `  corgi launcher show AGENT... [--workspace ID]  지정한 작업 공간에만 적용`,
+    '["  corgi licenses                Corgi\'s license and the software it includes"]': () =>
+      `  corgi licenses                Corgi와 포함된 소프트웨어의 라이선스`,
+    '["  corgi list [--json]                 layout, panes, agents, viewers"]': () =>
+      `  corgi list [--json]                 레이아웃, 패널, 에이전트, 클라이언트`,
+    '["  corgi memory get [FILE[:FROM[-TO]]]  its files, or a file\'s lines"]': () =>
+      `  corgi memory get [FILE[:FROM[-TO]]]  기억 파일 목록 또는 파일의 행 표시`,
+    '["  corgi memory search WORDS... [--limit N]  the Corgi prompt\'s memory lines"]': () =>
+      `  corgi memory search WORDS... [--limit N]  Corgi 프롬프트의 기억 검색`,
+    '["  corgi onboard                 open onboarding, even after setup"]': () =>
+      `  corgi onboard                 설정을 마친 뒤에도 시작 안내 열기`,
+    '["  corgi open DIR                show DIR\'s workspace; add one if none"]': () =>
+      `  corgi open DIR                DIR의 작업 공간 표시, 없으면 생성`,
+    '["  corgi pane hibernate ID|current... hibernate panes and stop their processes"]': () =>
+      `  corgi pane hibernate ID|current... 창을 최대 절전 모드로 전환하고 프로세스 중지`,
+    '["  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  shells at their prompt"]': () =>
+      `  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  입력을 기다리는 셸`,
+    '["  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, arrows, etc."]': () =>
+      `  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, 방향키 등`,
+    '["  corgi pane wake ID|current         resume or restart a pane"]': () =>
+      `  corgi pane wake ID|current         창 재개 또는 다시 시작`,
+    '["  corgi reload [ABSOLUTE_EXE]    replace daemon, preserve live processes"]': () =>
+      `  corgi reload [ABSOLUTE_EXE]    데몬 교체, 실행 중인 프로세스 유지`,
+    '["  corgi resume PROVIDER SESSION [--viewer ID] [--workspace ID]  show it: focus\\n    the pane already showing it, or resume it in a tab where its folder belongs"]':
+      () => `  corgi resume PROVIDER SESSION [--viewer ID] [--workspace ID]  대화 표시:
+    이미 표시 중인 창으로 이동하거나 폴더가 속한 워크스페이스의 탭에서 재개`,
+    '["  corgi rpc JSON                local JSON control protocol"]': () =>
+      `  corgi rpc JSON                로컬 JSON 제어 프로토콜`,
+    '["  corgi shutdown                terminate runtime and its panes"]': () =>
+      `  corgi shutdown                서비스와 패널 종료`,
+    '["  corgi start                   start detached runtime"]': () =>
+      `  corgi start                   백그라운드 서비스 시작`,
+    '["  corgi update                  download and safely apply an update"]': () =>
+      `  corgi update                  업데이트 다운로드 후 안전하게 적용`,
+    '["  corgi update auto on|off      control automatic updates"]': () =>
+      `  corgi update auto on|off      자동 업데이트 켜기 / 끄기`,
+    '["  corgi update rollback         return to the previous release"]': () =>
+      `  corgi update rollback         이전 릴리스로 되돌리기`,
+    '["  corgi update status           show update status"]': () =>
+      `  corgi update status           업데이트 상태 표시`,
+    '["  corgi usage --json            print each account\'s limits and spend as JSON"]': () =>
+      `  corgi usage --json            각 계정의 한도와 사용액을 JSON으로 출력`,
+    '["  corgi watch --json            print agent states as JSON lines as they change"]': () =>
+      `  corgi watch --json            에이전트 상태가 바뀔 때마다 JSON 줄로 출력`,
+    '["  corgi which claude|codex      show automatically selected executable"]': () =>
+      `  corgi which claude|codex      자동 선택된 실행 파일 표시`,
+    '["  corgi workspace archive ID        hibernate panes and hide the workspace"]': () =>
+      `  corgi workspace archive ID        창을 최대 절전 모드로 전환하고 작업 공간 숨기기`,
+    '["  corgi workspace close ID          requires an empty workspace"]': () =>
+      `  corgi workspace close ID          빈 작업 공간만 닫을 수 있음`,
+    '["  corgi workspace unarchive ID      show the workspace; panes stay asleep"]': () =>
+      `  corgi workspace unarchive ID      작업 공간 표시; 창은 절전 상태 유지`,
     '["  now"]': () => `  현재`,
     '["  →  expand"]': () => `  →  펼치기`,
     '[" ",": off"]': v0 => ` ${v0}: 끔`,
@@ -2612,22 +3002,24 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
     '[" "," session ",": ",". Inspect: corgi headless events "," ",""]': (v0, v1, v2, v3, v4) =>
       ` ${v0} 세션 ${v1}: ${v2}. 확인: corgi headless events ${v3} ${v1}`,
     '[" ",": waiting for a session ID"]': v0 => ` ${v0}: 세션 ID 대기 중`,
+    '[" (archived)"]': () => ` (보관됨)`,
     '[" + uncommitted"]': () => ` + 커밋 안 됨`,
     '[" / memory ",""]': v0 => ` / 메모리 ${v0}`,
     '[" Agent search needs at least 40 columns and 13 rows"]': () => ` 에이전트 검색에는 40열 × 13행 이상이 필요합니다`,
     '[" Agent search: enlarge terminal or Esc"]': () => ` 에이전트 검색: 터미널 늘리기 또는 Esc`,
+    '[" Auto-retry capacity errors off"]': () => ` 용량 오류 자동 재시도 꺼짐`,
+    '[" Auto-retry capacity errors on"]': () => ` 용량 오류 자동 재시도 켜짐`,
     '[" Cancel · Esc "]': () => ` 취소 · Esc `,
-    '[" Cannot close the last workspace"]': () => ` 마지막 작업 공간은 닫을 수 없습니다`,
     '[" Copied to clipboard "]': () => ` 클립보드에 복사됨 `,
     '[" Corgi setup: the runtime did not accept the change"]': () =>
       ` Corgi 설정: 서비스에서 변경을 적용하지 못했습니다`,
+    '[" Could not change pane or workspace state"]': () => ` 창 또는 작업 공간 상태를 변경하지 못했습니다`,
     '[" Could not close workspace"]': () => ` 작업 공간을 닫을 수 없습니다`,
     '[" Could not create workspace"]': () => ` 작업 공간을 만들 수 없습니다`,
     '[" Could not fork this agent"]': () => ` 이 에이전트에서 분기할 수 없습니다`,
     '[" Could not move tab to workspace"]': () => ` 탭을 작업 공간으로 이동하지 못했습니다`,
     '[" Could not read Ghostty config; no changes made"]': () => ` Ghostty 설정을 읽을 수 없어 변경하지 않았습니다`,
     '[" Could not rename this agent"]': () => ` 이 에이전트의 이름을 변경할 수 없습니다`,
-    '[" Could not resume this agent"]': () => ` 이 에이전트를 재개할 수 없습니다`,
     '[" Couldn\'t add ",": ",""]': (v0, v1) => ` ${v0} 추가 실패: ${v1}`,
     '[" Couldn\'t mark as unread"]': () => ` 읽지 않음으로 표시할 수 없습니다`,
     '[" Couldn\'t open ",": ",""]': (v0, v1) => ` ${v0} 열기 실패: ${v1}`,
@@ -2645,6 +3037,7 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
       ` Ghostty 연동에는 로컬 macOS 클라이언트가 필요합니다`,
     '[" Ghostty integration: ",""]': v0 => ` Ghostty 연동: ${v0}`,
     '[" Image not pasted "]': () => ` 이미지가 붙여넣어지지 않았습니다 `,
+    '[" Keep at least one workspace active"]': () => ` 작업 공간을 하나 이상 활성 상태로 유지하세요`,
     '[" Keyboard shortcuts "]': () => ` 키보드 단축키 `,
     '[" Keys "]': () => ` 키 `,
     '[" Names are one line of up to 80 characters"]': () => ` 이름은 한 줄로 80자까지 입력할 수 있습니다`,
@@ -2668,13 +3061,12 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
     '[" Pushed ✓"]': () => ` 푸시 완료 ✓`,
     '[" Pushing ",""]': v0 => ` 푸시 중 ${v0}`,
     '[" Recent "]': () => ` 최근 `,
-    '[" Removed ",", but couldn\'t update launcher settings: ",""]': (v0, v1) =>
-      ` ${v0} 제거 완료. 실행기 설정 갱신 실패: ${v1}`,
     '[" Removed ","; kept its folder"]': v0 => ` ${v0} 제거 완료; 폴더는 유지했습니다`,
     '[" Resize panes"]': () => ` 패널 크기 조절`,
     '[" Resource readings are off: turn them on in Corgi setup → Resources"]': () =>
       ` 리소스 표시가 꺼져 있습니다: Corgi 설정 → 리소스에서 켜세요`,
     '[" Retry !"]': () => ` 재시도 !`,
+    '[" Review changes on the remote machine"]': () => ` 원격 컴퓨터에서 변경 사항을 리뷰하세요`,
     '[" Review needs a wider window"]': () => ` 리뷰하려면 창을 넓혀 주세요`,
     '[" Save · Ctrl+S "]': () => ` 저장 · Ctrl+S `,
     '[" Search "," agent"]': v0 => ` 에이전트 ${v0}개 검색`,
@@ -2693,12 +3085,18 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
       ` 스마트 링크 꺼짐: Corgi가 패널의 포트에 연결하지 않습니다`,
     '[" Smart Links on"]': () => ` 스마트 링크 켜짐`,
     '[" Split "]': () => ` 분할 `,
+    '[" Startup waits (",") "]': v0 => ` 시작 대기 (${v0}) `,
+    '[" Still sending the last paste; paste again once it lands"]': () =>
+      ` 이전 붙여넣기를 아직 보내는 중입니다. 도착한 뒤 다시 붙여넣으세요`,
     '[" Summaries and link names: ",""]': v0 => ` 요약 및 링크 이름: ${v0}`,
     '[" Summaries and link names: "," (not saved for next start)"]': v0 =>
       ` 요약 및 링크 이름: ${v0} (다음 시작에는 유지되지 않음)`,
+    '[" The new pane is still opening"]': () => ` 새 창이 아직 열리는 중입니다`,
     '[" Theme "]': () => ` 테마 `,
     '[" This agent can\'t be renamed from outside"]': () => ` 이 에이전트는 외부에서 이름을 변경할 수 없습니다`,
     '[" This agent has no conversation yet"]': () => ` 이 에이전트에는 아직 대화가 없습니다`,
+    '[" Too much typed for a pane still opening; the rest was dropped"]': () =>
+      ` 아직 열리는 창에 입력한 내용이 너무 많아 나머지는 버렸습니다`,
     '[" Use prefix"]': () => ` 접두 키 사용`,
     '[" Welcome to Corgi "]': () => ` Corgi에 오신 것을 환영합니다 `,
     '[" Worktree "]': () => ` 작업 트리 `,
@@ -2738,6 +3136,7 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
     '[""," GPUs"]': v0 => `GPU ${v0}개`,
     '[""," agent"]': v0 => `에이전트 ${v0}개`,
     '[""," agents"]': v0 => `에이전트 ${v0}개`,
+    '[""," archived"]': v0 => `보관됨 ${v0}개`,
     '[""," changed"]': v0 => `${v0}개 변경됨`,
     '[""," commit"]': v0 => `커밋 ${v0}개`,
     '[""," commits"]': v0 => `커밋 ${v0}개`,
@@ -2748,8 +3147,6 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
     '[""," in ",""]': (v0, v1) => `${v1}에 ${v0}개`,
     '[""," leading process "," ago"]': (v0, v1) => `상위 프로세스 ${v0}개 · ${v1} 전`,
     '[""," leading processes "," ago"]': (v0, v1) => `상위 프로세스 ${v0}개 · ${v1} 전`,
-    '[""," model"]': v0 => `모델 ${v0}개`,
-    '[""," models"]': v0 => `모델 ${v0}개`,
     '[""," more outside "," · tab widens"]': (v0, v1) => `${v1} 밖에 ${v0}개 더 · Tab 범위 넓히기`,
     '[""," note"]': v0 => `메모 ${v0}개`,
     '[""," notes"]': v0 => `메모 ${v0}개`,
@@ -2763,14 +3160,17 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
     '[""," unmodified line"]': v0 => `변경 없는 ${v0}행`,
     '[""," unmodified lines"]': v0 => `변경 없는 ${v0}행`,
     '[""," unread →"]': v0 => `읽지 않음 ${v0}개 →`,
+    '[""," waiting"]': v0 => `${v0}개 대기 중`,
     '[""," worktree"]': v0 => `작업 트리 ${v0}개`,
     '[""," worktrees"]': v0 => `작업 트리 ${v0}개`,
     '[""," d"]': v0 => `${v0}일`,
+    '[""," for details · "," for everything"]': (v0, v1) => `자세히: ${v0} · 전체: ${v1}`,
     '["","/"," done"]': (v0, v1) => `${v0}/${v1} 완료`,
     '["","/","+ done"]': (v0, v1) => `${v0}/${v1}+ 완료`,
     '[""," Down"]': v0 => `${v0} 아래`,
     '[""," ago"]': v0 => `${v0} 전`,
     '["","–"," of "," · tab to scroll"]': (v0, v1, v2) => `${v0}–${v1} / ${v2} · Tab 스크롤`,
+    '[""," of ",""]': (v0, v1) => `${v1}개 중 ${v0}개`,
     '[""," late enough to hold frames; "," never came."]': (v0, v1) =>
       `응답 ${v0}개가 늦어 프레임이 대기했습니다. ${v1}개는 도착하지 않았습니다.`,
     '[""," late enough to hold frames; one never came."]': v0 =>
@@ -2804,10 +3204,10 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
     '[""," local processes / "," / "," shown"]': (v0, v1, v2) => `로컬 프로세스 ${v0}개 / ${v1} / ${v2}개 표시`,
     '[""," local processes / "," / partial / "," shown"]': (v0, v1, v2) =>
       `로컬 프로세스 ${v0}개 / ${v1} / 일부 데이터 / ${v2}개 표시`,
+    '[""," models"]': v0 => `모델 ${v0}개`,
     '[""," of "," GiB"]': (v0, v1) => `${v1} GiB 중 ${v0}`,
     '[""," · needs ",""]': (v0, v1) => `${v0} · ${v1} 필요`,
     '[""," already exited"]': v0 => `${v0} 이미 종료됨`,
-    '["(auto choice)"]': () => `(자동 선택)`,
     '["(empty)"]': () => `(비어 있음)`,
     '["(no directory)"]': () => `(디렉터리 없음)`,
     '["+ Create “","”"]': v0 => `+ “${v0}” 만들기`,
@@ -2833,6 +3233,9 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
       `경로나 PATH의 이름을 입력하세요. 비워 두면 기본값을 사용합니다`,
     '["A push is already running for this repository."]': () => `이 저장소에서 이미 푸시가 진행 중입니다.`,
     '["AGE"]': () => `경과`,
+    '["AGENT is codex, claude, an account (claude/work or work), a saved command\'s\\nname, profile/ID, a clone name, or command/N, as launcher list names them."]':
+      () => `AGENT는 codex, claude, 계정(claude/work 또는 work), 저장된 명령 이름,
+profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 이름을 씁니다.`,
     '["AGENTS"]': () => `에이전트`,
     '["About"]': () => `정보`,
     '["About Corgi"]': () => `Corgi 정보`,
@@ -2845,68 +3248,23 @@ CORGI_SOCKETでランタイムを選びます。ワークスペースはタブ�
       `활동 요약을 표시하지 않고 링크는 ‘링크 열기’로 표시합니다`,
     '["Add $NAME, so each worktree gets a folder of its own"]': () =>
       `작업 트리마다 폴더를 만들도록 $NAME을 추가하세요`,
+    '["Add a machine with corgi machine add NAME"]': () => `corgi machine add NAME으로 컴퓨터를 추가하세요`,
     '["Add a shortcut with +"]': () => `+로 단축키 추가`,
     '["Add agent"]': () => `에이전트 추가`,
+    '["Add to the list"]': () => `목록에 추가`,
     '["Agent"]': () => `에이전트`,
-    "[\"Agent controls (--json prints the daemon's reply as JSON):\\n  corgi list [--json]                 layout, panes, agents, viewers\\n  corgi workspace list\\n  corgi workspace new NAME [--cwd DIR]\\n  corgi workspace edit ID [--name NAME] [--cwd DIR]\\n  corgi workspace close ID          requires an empty workspace\\n  corgi workspace switch ID [--viewer ID]\\n  corgi current                      calling pane's live location\\n  corgi tab new [--name NAME] [--cwd DIR] [--workspace ID] [--command SHELL_COMMAND]\\n  corgi tab rename ID|current NAME|--clear\\n  corgi tab move ID|current --before ID|--after ID|--workspace ID\\n  corgi tab merge ID|current --right-of ID|--left-of ID|--above ID|--below ID\\n  corgi tab close ID|current\\n  corgi pane split ID|current --right|--left|--up|--down [--cwd DIR] [--command SHELL_COMMAND]\\n  corgi pane move ID|current --right-of ID|--left-of ID|--above ID|--below ID\\n  corgi pane move ID|current --new-tab [--name NAME]\\n  corgi pane swap ID|current ID\\n  corgi pane resize ID|current --width PERCENT|--height PERCENT (10%-90%)\\n  corgi pane close ID|current\\n  corgi pane read ID|current [--lines N] [--json]\\n  corgi pane send ID|current TEXT|--stdin [--enter]\\n  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, arrows, etc.\\n  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  shells at their prompt\\n  corgi claim PROVIDER [--pane ID|current] [--owner PID]\\n  corgi claim --clear [--pane ID|current] [--owner PID]\\n  corgi focus ID|current --viewer ID  select in exactly one viewer\\n  corgi launcher list [--workspace ID] [--json]  agents each launcher shows\\n  corgi launcher hide AGENT... [--workspace ID]  in one workspace only\\n  corgi launcher show AGENT... [--workspace ID]  in one workspace only\\n  corgi launcher move AGENT [--before AGENT|--after AGENT|--first] [--workspace ID]\\n  corgi launcher edit AGENT [--name NAME] [--model ID|auto] [--effort LEVEL|default]\\n    [--flags FLAGS] [--env JSON_OBJECT] [--yolo on|off] [--workspace ID]\\n  corgi launcher clone AGENT [--name NAME] [--model ID|auto] [--effort LEVEL|default]\\n    [--flags FLAGS] [--env JSON_OBJECT] [--yolo on|off] [--workspace ID]\\n  corgi launcher models AGENT [--json]  native model IDs, efforts and defaults\\n  corgi launcher add --command COMMAND [--name NAME] [--workspace ID]\\n  corgi launcher edit AGENT --command COMMAND [--name NAME] [--workspace ID]\\n  corgi launcher remove AGENT [--workspace ID]  delete a clone or saved command\\n  corgi launcher copy --from ID --workspace ID  replace destination order and visibility\\n  corgi --skill                      print bundled agent instructions\\n\\nIDs come from list; current means CORGI_PANE, never UI focus.\\nNew tabs and launcher mutations outside Corgi require --workspace.\\nAgent settings are shared; order and visibility belong to each workspace.\\nMove without a position appends. Env replaces overrides, e.g. '{\\\"KEY\\\":\\\"value\\\"}'.\\nAuto uses the agent CLI's last model; default leaves effort to the agent CLI.\\nAGENT is codex, claude, an account (claude/work or work), a saved command's\\nname, profile/ID, a clone name, or command/N, as launcher list names them.\\nOperations never auto-start a server.\\nLayout changes preserve processes and do not select another pane in a viewer.\\n\\nControl Corgi panes, agents, or workspaces:\\n  SKIP if a Corgi skill is already in your context. Otherwise run: corgi --skill\\n\"]":
-      () => `에이전트 제어(--json은 데몬 응답을 JSON으로 출력):
-  corgi list [--json]                 레이아웃, 패널, 에이전트, 클라이언트
-  corgi workspace list
-  corgi workspace new NAME [--cwd DIR]
-  corgi workspace edit ID [--name NAME] [--cwd DIR]
-  corgi workspace close ID          빈 작업 공간만 닫을 수 있음
-  corgi workspace switch ID [--viewer ID]
-  corgi current                      명령을 호출한 패널의 현재 위치
-  corgi tab new [--name NAME] [--cwd DIR] [--workspace ID] [--command SHELL_COMMAND]
-  corgi tab rename ID|current NAME|--clear
-  corgi tab move ID|current --before ID|--after ID|--workspace ID
-  corgi tab merge ID|current --right-of ID|--left-of ID|--above ID|--below ID
-  corgi tab close ID|current
-  corgi pane split ID|current --right|--left|--up|--down [--cwd DIR] [--command SHELL_COMMAND]
-  corgi pane move ID|current --right-of ID|--left-of ID|--above ID|--below ID
-  corgi pane move ID|current --new-tab [--name NAME]
-  corgi pane swap ID|current ID
-  corgi pane resize ID|current --width PERCENT|--height PERCENT (10%-90%)
-  corgi pane close ID|current
-  corgi pane read ID|current [--lines N] [--json]
-  corgi pane send ID|current TEXT|--stdin [--enter]
-  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, 방향키 등
-  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  입력을 기다리는 셸
-  corgi claim PROVIDER [--pane ID|current] [--owner PID]
-  corgi claim --clear [--pane ID|current] [--owner PID]
-  corgi focus ID|current --viewer ID  지정한 클라이언트에서만 선택
-  corgi launcher list [--workspace ID] [--json]  실행기에 표시되는 에이전트
-  corgi launcher hide AGENT... [--workspace ID]  지정한 작업 공간에만 적용
-  corgi launcher show AGENT... [--workspace ID]  지정한 작업 공간에만 적용
-  corgi launcher move AGENT [--before AGENT|--after AGENT|--first] [--workspace ID]
-  corgi launcher edit AGENT [--name NAME] [--model ID|auto] [--effort LEVEL|default]
-    [--flags FLAGS] [--env JSON_OBJECT] [--yolo on|off] [--workspace ID]
-  corgi launcher clone AGENT [--name NAME] [--model ID|auto] [--effort LEVEL|default]
-    [--flags FLAGS] [--env JSON_OBJECT] [--yolo on|off] [--workspace ID]
-  corgi launcher models AGENT [--json]  에이전트의 모델 ID, 추론 강도와 기본값
-  corgi launcher add --command COMMAND [--name NAME] [--workspace ID]
-  corgi launcher edit AGENT --command COMMAND [--name NAME] [--workspace ID]
-  corgi launcher remove AGENT [--workspace ID]  복제본 또는 저장된 명령 삭제
-  corgi launcher copy --from ID --workspace ID  대상의 순서와 표시 여부 교체
-  corgi --skill                      내장 에이전트 지침 출력
-
-ID는 list에서 확인합니다. current는 CORGI_PANE이며 UI 포커스를 뜻하지 않습니다.
-Corgi 밖에서 새 탭을 만들거나 실행기를 변경할 때는 --workspace가 필요합니다.
-에이전트 설정은 공유되며 순서와 표시 여부는 작업 공간별로 관리합니다.
-위치 없이 move하면 끝에 추가합니다. Env는 재정의 값을 교체합니다. 예: '{"KEY":"value"}'.
-Auto는 에이전트 CLI의 마지막 모델을 사용하고 default는 추론 강도를 CLI에 맡깁니다.
-AGENT는 codex, claude, 계정(claude/work 또는 work), 저장된 명령 이름,
-profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 이름을 씁니다.
-명령은 서버를 자동으로 시작하지 않습니다.
-레이아웃을 변경해도 프로세스를 유지하며 클라이언트의 선택된 패널은 바뀌지 않습니다.
-
-Corgi 패널, 에이전트 또는 작업 공간 제어:
-  컨텍스트에 이미 Corgi 스킬이 있으면 건너뛰세요. 없다면 실행: corgi --skill
-`,
+    '["Agent controls (--json prints the daemon\'s reply as JSON):"]': () =>
+      `에이전트 제어(--json은 데몬 응답을 JSON으로 출력):`,
     '["Agent default"]': () => `에이전트 기본값`,
     '["Agent launch command"]': () => `에이전트 실행 명령`,
     '["Agent or new terminal"]': () => `에이전트 또는 새 터미널`,
+    '["Agent settings are shared; order and visibility belong to each workspace."]': () =>
+      `에이전트 설정은 공유되며 순서와 표시 여부는 작업 공간별로 관리합니다.`,
+    '["Agent states unavailable"]': () => `에이전트 상태를 알 수 없음`,
     '["Agents"]': () => `에이전트`,
+    '["Agents (",")"]': v0 => `에이전트 (${v0})`,
+    '["Agents and processes will stop and release memory. Layout and history stay; unsaved state is lost."]': () =>
+      `에이전트와 프로세스가 중지되고 메모리가 해제됩니다. 레이아웃과 기록은 유지되지만 저장하지 않은 상태는 사라집니다.`,
     '["All"]': () => `전체`,
     '["All "," workspaces in this session move together."]': v0 => `이 세션의 작업 공간 ${v0}개가 함께 이동합니다.`,
     '["All files"]': () => `모든 파일`,
@@ -2923,16 +3281,21 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Answers in ","."]': v0 => `응답 시간: ${v0}.`,
     '["Appended to Corgi\'s launch command. Quotes supported."]': () =>
       `Corgi 실행 명령 뒤에 추가합니다. 따옴표를 사용할 수 있습니다.`,
+    '["Archive ","?"]': v0 => `${v0}을(를) 보관할까요?`,
+    '["Archive workspace"]': () => `작업 공간 보관`,
+    '["Archiving…"]': () => `보관 중…`,
     '["Arrange"]': () => `배치`,
     '["Arrow keys"]': () => `방향키`,
     '["Auto"]': () => `자동`,
     '["Auto (",")"]': v0 => `자동 (${v0})`,
     '["Auto (follows your agents)"]': () => `자동(사용 중인 에이전트 기준)`,
     '["Auto (last chosen)"]': () => `자동(마지막 선택)`,
+    '["Auto uses the agent CLI\'s last model; default leaves effort to the agent CLI."]': () =>
+      `Auto는 에이전트 CLI의 마지막 모델을 사용하고 default는 추론 강도를 CLI에 맡깁니다.`,
+    '["Auto-retry capacity errors"]': () => `용량 오류 자동 재시도`,
     '["Back to agent"]': () => `에이전트로 돌아가기`,
     '["Background commands"]': () => `백그라운드 명령`,
     '["Backspace undo"]': () => `Backspace 실행 취소`,
-    '["Billing"]': () => `과금`,
     '["Binary file"]': () => `바이너리 파일`,
     '["Binary file · no text diff"]': () => `바이너리 파일 · 텍스트 차이 없음`,
     '["Blocked by clipboard-read = deny."]': () => `clipboard-read = deny 설정으로 차단되었습니다.`,
@@ -2941,18 +3304,23 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
       `브랜치 이름에는 공백, .., ~^:?*[\\를 넣을 수 없습니다`,
     '["Brief failed"]': () => `요약 실패`,
     '["Bring your work along"]': () => `하던 작업을 가져오세요`,
+    '["Build ",""]': v0 => `빌드 ${v0}`,
+    '["Build "," built on ",""]': (v0, v1) => `빌드 ${v0} (${v1})`,
     '["Build: "]': () => `빌드: `,
     '["Builds"]': () => `빌드`,
     '["By activity"]': () => `활동순`,
     '["COPY"]': () => `복사`,
     '["CORGI"]': () => `CORGI`,
     '["CORGI_LANG overrides this setting when set."]': () => `CORGI_LANG이 설정되어 있으면 이 설정보다 우선합니다.`,
+    '["CORGI_SOCKET selects a runtime. Workspaces group tabs and panes; no worktrees."]': () =>
+      `CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널을 묶으며 작업 트리를 만들지 않습니다.`,
     '["CPU and memory under each workspace in the sidebar."]': () =>
       `사이드바의 각 작업 공간 아래에 CPU와 메모리를 표시합니다.`,
     '["CPU busy"]': () => `CPU 사용률`,
     '["Cached"]': () => `캐시됨`,
     '["Can\'t read this folder"]': () => `이 폴더를 읽을 수 없습니다`,
     '["Cancel"]': () => `취소`,
+    '["Change folder"]': () => `폴더 변경`,
     '["Change navigation"]': () => `탐색 방식 변경`,
     '["Check failed"]': () => `확인 실패`,
     '["Check flag quotes; shell operators and expansions aren\'t supported."]': () =>
@@ -2965,6 +3333,7 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Choose a valid model ID."]': () => `올바른 모델 ID를 선택하세요.`,
     '["Choose agent"]': () => `에이전트 선택`,
     '["Choose an agent or terminal"]': () => `에이전트 또는 터미널 선택`,
+    '["Choose an edge to split"]': () => `분할할 가장자리를 선택하세요`,
     '["Choose familiar keys."]': () => `익숙한 키를 선택하세요.`,
     '["Choose the language for Corgi\'s interface."]': () => `Corgi의 표시 언어를 선택하세요.`,
     '["Choose workspace"]': () => `작업 공간 선택`,
@@ -2973,15 +3342,12 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Clear pane name"]': () => `패널 이름 지우기`,
     '["Clear search to reorder agents."]': () => `검색을 지우면 에이전트 순서를 바꿀 수 있습니다.`,
     '["Clever Corgi"]': () => `똑똑한 Corgi`,
-    '["Click to resume"]': () => `클릭하여 재개`,
     '["Clone agent · draft"]': () => `에이전트 복제 · 초안`,
     '["Close"]': () => `닫기`,
     '["Close / reopen"]': () => `닫기 / 다시 열기`,
     '["Close all agents for ",""]': v0 => `${v0}의 모든 에이전트 닫기`,
     '["Close pane"]': () => `패널 닫기`,
     '["Close tab"]': () => `탭 닫기`,
-    '["Close the "," agents that run in it first."]': v0 => `먼저 해당 계정으로 실행 중인 에이전트 ${v0}개를 닫으세요.`,
-    '["Close the agent that runs in it first."]': () => `먼저 해당 계정으로 실행 중인 에이전트를 닫으세요.`,
     '["Close workspace"]': () => `작업 공간 닫기`,
     '["Cmd+T/D/W, workspace numbers and related bindings replace host actions."]': () =>
       `Cmd+T/D/W, 작업 공간 번호와 관련 단축키가 호스트의 동작을 대신합니다.`,
@@ -2992,6 +3358,8 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Command shortcuts"]': () => `Command 단축키`,
     '["Command too long"]': () => `명령이 너무 깁니다`,
     '["Commands"]': () => `명령`,
+    '["Commands print text; --json prints the daemon\'s reply as JSON instead."]': () =>
+      `명령은 텍스트를 출력합니다. --json을 사용하면 데몬 응답을 JSON으로 출력합니다.`,
     '["Comment"]': () => `메모`,
     '["Commit"]': () => `커밋`,
     '["Commit details unavailable"]': () => `커밋 상세 정보 없음`,
@@ -3002,15 +3370,16 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Comparison branch unavailable"]': () => `비교할 브랜치를 사용할 수 없습니다`,
     '["Connect your Command keys"]': () => `Command 키 연결하기`,
     '["Connecting to Herdr"]': () => `Herdr에 연결 중`,
+    '["Control Corgi panes, agents, or workspaces:"]': () => `Corgi 패널, 에이전트 또는 작업 공간 제어:`,
     '["Copied "," note."]': v0 => `메모 ${v0}개를 복사했습니다.`,
     '["Copied "," notes."]': v0 => `메모 ${v0}개를 복사했습니다.`,
-    '["Copied the link; paste it into your browser."]': () => `링크를 복사했습니다. 브라우저에 붙여넣으세요.`,
     '["Copies the conversation into a new tab"]': () => `대화를 새 탭으로 복사합니다`,
     '["Copies the workspaces; their processes stay in Herdr."]': () =>
       `작업 공간을 복사합니다. 프로세스는 Herdr에서 계속 실행됩니다.`,
     '["Copy"]': () => `복사`,
     '["Copy an image, then paste it to an agent."]': () => `이미지를 복사한 후 에이전트에 붙여넣으세요.`,
     '["Copy details"]': () => `상세 정보 복사`,
+    '["Copy details for a bug report"]': () => `버그 신고용 정보 복사`,
     '["Copy full path"]': () => `전체 경로 복사`,
     '["Copy hovered link"]': () => `가리킨 링크 복사`,
     '["Copy sessions, scrollback and commands. Source processes stay in tmux."]': () =>
@@ -3021,19 +3390,24 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Copying into Corgi"]': () => `Corgi로 복사 중`,
     '["Corgi and your agents keep running."]': () => `Corgi와 에이전트는 계속 실행됩니다.`,
     '["Corgi can\'t read your Ghostty config."]': () => `Corgi가 Ghostty 설정을 읽을 수 없습니다.`,
-    '["Corgi doesn\'t list this account any more."]': () => `Corgi에 더 이상 이 계정이 없습니다.`,
     '["Corgi keeps your background when it\'s dark and paints its own otherwise."]': () =>
       `터미널 배경이 어두우면 유지하고, 그렇지 않으면 Corgi의 배경을 사용합니다.`,
     '["Corgi pastes PNG, JPEG, GIF and WebP images"]': () =>
       `Corgi는 PNG, JPEG, GIF, WebP 이미지를 붙여넣을 수 있습니다`,
+    '["Corgi prompt"]': () => `Corgi 프롬프트`,
     '["Corgi setup"]': () => `Corgi 설정`,
+    '["Corgi was uninstalled."]': () => `Corgi가 제거되었습니다.`,
     "[\"Corgi's colors, or your terminal theme's.\"]": () => `Corgi 또는 터미널 테마의 색상을 사용합니다.`,
     '["Corgi\'s own"]': () => `Corgi 색상`,
     '["Could not create that folder."]': () => `폴더를 만들 수 없습니다.`,
+    '["Could not load workspace activity. Close and try again."]': () =>
+      `워크스페이스 활동을 불러오지 못했습니다. 닫고 다시 시도하세요.`,
+    '["Could not rename this workspace"]': () => `이 작업 공간의 이름을 변경할 수 없습니다`,
     '["Could not resolve shorthand. Paste its underlying command."]': () =>
       `축약형을 해석할 수 없습니다. 전체 명령을 붙여넣으세요.`,
     '["Could not save command; max 2048 bytes."]': () => `명령을 저장할 수 없습니다. 최대 2048바이트입니다.`,
     '["Could not save. Check folder or capacity."]': () => `저장할 수 없습니다. 폴더나 용량 제한을 확인하세요.`,
+    '["Could not stop startup"]': () => `시작을 중지하지 못했습니다`,
     '["Could not watch viewer.json for shortcut changes."]': () => `viewer.json의 단축키 변경을 감지할 수 없습니다.`,
     '["Couldn\'t read its panes or tabs"]': () => `패널이나 탭을 읽지 못함`,
     '["Couldn\'t read the workspace list. R refreshes."]': () =>
@@ -3041,6 +3415,7 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Couldn\'t read this source. R retries."]': () => `이 소스를 읽을 수 없습니다. R로 다시 시도하세요.`,
     '["Couldn\'t save the pasted image"]': () => `붙여넣은 이미지를 저장할 수 없습니다`,
     '["Create "]': () => `만들기 `,
+    '["Create workspace"]': () => `작업 공간 만들기`,
     '["Creating workspaces and shells"]': () => `작업 공간과 셸 생성 중`,
     '["Custom agent"]': () => `사용자 지정 에이전트`,
     '["Custom command"]': () => `사용자 지정 명령`,
@@ -3050,8 +3425,8 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["DETACH"]': () => `연결 끊기`,
     '["Default"]': () => `기본값`,
     '["Default ",""]': v0 => `기본값 ${v0}`,
+    '["Default (",")"]': v0 => `기본값 (${v0})`,
     '["Default account · unavailable"]': () => `기본 계정 · 사용할 수 없음`,
-    '["Default model"]': () => `기본 모델`,
     '["Deleted the note on ","."]': v0 => `${v0}의 메모를 삭제했습니다.`,
     '["Deletes the saved command"]': () => `저장된 명령을 삭제합니다`,
     '["Deletes this configuration; keeps the account"]': () => `이 설정을 삭제하고 계정은 유지합니다`,
@@ -3059,9 +3434,12 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Detected, not settings: what this terminal can do."]': () => `설정 항목이 아닌, 감지된 터미널 기능입니다.`,
     '["Didn\'t say its name"]': () => `터미널 이름이 제공되지 않았습니다`,
     '["Digs up likely HTTP links ↗"]': () => `사용 가능한 HTTP 링크 찾기 ↗`,
+    '["Discovering ","…"]': v0 => `${v0} 검색 중…`,
     '["Discovering worktrees…"]': () => `작업 트리 찾는 중…`,
+    '["Discovering…"]': () => `검색 중…`,
     '["Done"]': () => `완료`,
     '["Down"]': () => `아래`,
+    '["Download and apply an update"]': () => `업데이트 다운로드 후 적용`,
     '["Download: "]': () => `다운로드: `,
     '["Drop an agent here"]': () => `에이전트를 여기로 끌어오세요`,
     '["Duplicate variable: ",""]': v0 => `중복 변수: ${v0}`,
@@ -3070,6 +3448,7 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Edit ",""]': v0 => `${v0} 편집`,
     '["Edit agent"]': () => `에이전트 편집`,
     '["Edit workspace"]': () => `작업 공간 편집`,
+    '["Edit ›"]': () => `편집 ›`,
     '["Edit, delete"]': () => `편집, 삭제`,
     '["Ended"]': () => `종료됨`,
     '["Enter a command."]': () => `명령을 입력하세요.`,
@@ -3083,11 +3462,13 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Escape is reserved for canceling Corgi controls"]': () => `Escape는 Corgi 조작을 취소하는 전용 키입니다`,
     '["Expand lines"]': () => `행 펼치기`,
     '["Extra flags"]': () => `추가 옵션`,
-    '["Fetching models…"]': () => `모델 가져오는 중…`,
     '["File list"]': () => `파일 목록`,
     '["File navigation"]': () => `파일 탐색`,
     '["Find"]': () => `찾기`,
     '["Find agent"]': () => `에이전트 찾기`,
+    '["Find agents"]': () => `에이전트 찾기`,
+    '["Find it in the sidebar"]': () => `사이드바에서 확인`,
+    '["Finding ","…"]': v0 => `${v0} 찾는 중…`,
     '["Finished"]': () => `완료됨`,
     '["Focus"]': () => `포커스`,
     '["Focus a pane to review its checkout."]': () => `패널에 포커스를 두면 해당 코드 디렉터리를 리뷰할 수 있습니다.`,
@@ -3099,7 +3480,7 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Fold file"]': () => `파일 접기`,
     '["Folded lines take no notes; → opens them."]': () => `접힌 행에는 메모할 수 없습니다. →로 펼치세요.`,
     '["Folder"]': () => `폴더`,
-    '["Follow "," · ",""]': (v0, v1) => `자동 선택: ${v0} · ${v1}`,
+    '["Follow ",""]': v0 => `${v0} 따르기`,
     '["Follow the agents you run"]': () => `사용 중인 에이전트에 맞춰 선택합니다`,
     '["Follow your agents"]': () => `에이전트에 맞춰 자동 선택`,
     '["Follow your system language"]': () => `시스템 언어 따르기`,
@@ -3112,7 +3493,7 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["From"]': () => `기준`,
     '["GPU use from device totals"]': () => `기기 전체의 GPU 사용량`,
     '["GPU use shared out by memory"]': () => `메모리 비율로 나눈 GPU 사용량`,
-    '["Gathering details about this machine…"]': () => `이 컴퓨터의 정보 수집 중…`,
+    '["Gathering bug report info…"]': () => `버그 신고 정보 수집 중…`,
     '["Generated file · +"," −",""]': (v0, v1) => `생성된 파일 · +${v0} −${v1}`,
     '["Generated file · enter loads its diff"]': () => `생성된 파일 · Enter로 차이 불러오기`,
     '["Ghostty is set to refuse clipboard reads."]': () => `Ghostty가 클립보드 읽기를 거부하도록 설정되어 있습니다.`,
@@ -3125,7 +3506,10 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Half page"]': () => `반 페이지`,
     '["Handing off to Corgi"]': () => `Corgi로 인계 중`,
     '["Handoff processes"]': () => `프로세스 인계`,
+    '["Happy helper for your terminal."]': () => `터미널의 즐거운 도우미.`,
     '["Help needs 32 × 12"]': () => `도움말에는 32 × 12 필요`,
+    '["Hibernate pane"]': () => `창 최대 절전 모드`,
+    '["Hibernated"]': () => `최대 절전 모드`,
     '["Hidden"]': () => `숨김`,
     '["Hide, resize"]': () => `숨기기, 크기 조절`,
     '["Hold with the action key."]': () => `이 키를 누른 채 동작 키를 누르세요.`,
@@ -3133,6 +3517,8 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Home row"]': () => `홈 포지션`,
     '["I\'ll bring over what I can."]': () => `가져올 수 있는 작업을 옮겨 드릴게요.`,
     '["I\'m confused by this cmux version."]': () => `이 cmux 버전을 인식할 수 없습니다.`,
+    '["IDs come from list; current means CORGI_PANE, never UI focus."]': () =>
+      `ID는 list에서 확인합니다. current는 CORGI_PANE이며 UI 포커스를 뜻하지 않습니다.`,
     '["Idle"]': () => `대기 중`,
     '["Image paste"]': () => `이미지 붙여넣기`,
     '["Images over 32 MB don\'t paste"]': () => `32 MB가 넘는 이미지는 붙여넣을 수 없습니다`,
@@ -3144,6 +3530,8 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["In Ghostty only, these keys drive Corgi:"]': () => `Ghostty에서는 다음 키로 Corgi를 조작합니다:`,
     '["In the list"]': () => `목록에 있음`,
     '["Including subagents"]': () => `하위 에이전트 포함`,
+    '["Installing ","…"]': v0 => `${v0} 설치 중…`,
+    '["Installs on use"]': () => `사용할 때 설치`,
     '["Intensity"]': () => `밝기`,
     '["Invalid viewer.json; keeping the working shortcuts."]': () =>
       `viewer.json이 올바르지 않아 현재 단축키를 유지합니다.`,
@@ -3151,6 +3539,7 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
       `viewer.json이 올바르지 않아 파일을 수정할 때까지 기본 설정을 사용합니다.`,
     '["It runs in a background session, outside any pane"]': () => `패널이 아닌 백그라운드 세션에서 실행 중입니다`,
     '["Its diff starts collapsed. Enter loads it."]': () => `차이는 접힌 상태로 시작합니다. Enter로 불러오세요.`,
+    '["Join our Discord community:"]': () => `Discord 커뮤니티 참여:`,
     '["Jump to attention"]': () => `확인할 항목으로 이동`,
     '["Jump to who needs you"]': () => `응답이 필요한 에이전트로 이동`,
     '["Keep"]': () => `유지`,
@@ -3161,6 +3550,8 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Keyboard shortcuts"]': () => `키보드 단축키`,
     '["Keymap"]': () => `키맵`,
     '["Keys"]': () => `키`,
+    '["Keys: Ctrl+B opens a clickable command menu; `corgi keys` lists every shortcut."]': () =>
+      `키: Ctrl+B로 클릭 가능한 명령 메뉴를 엽니다. \`corgi keys\`로 모든 단축키를 확인하세요.`,
     '["Kill "," with SIGKILL?"]': v0 => `SIGKILL로 ${v0} 항목을 강제 종료할까요?`,
     '["Kitty graphics"]': () => `Kitty 그래픽`,
     '["Language"]': () => `언어`,
@@ -3171,14 +3562,20 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Last visited agent"]': () => `직전 에이전트`,
     '["Last visited tab"]': () => `직전 탭`,
     '["Last visited workspace"]': () => `직전 작업 공간`,
-    '["Launch inside a pane:"]': () => `패널 안에서 실행:`,
+    '["Layout"]': () => `레이아웃`,
+    '["Layout changes preserve processes and do not select another pane in a viewer."]': () =>
+      `레이아웃을 변경해도 프로세스를 유지하며 클라이언트의 선택된 패널은 바뀌지 않습니다.`,
+    '["Learn more about Corgi:"]': () => `Corgi 더 알아보기:`,
     '["Leave"]': () => `나가기`,
     '["Limits"]': () => `한도`,
     '["Links · Esc to close"]': () => `링크 · Esc 닫기`,
     '["List"]': () => `목록`,
+    '["List shortcuts; Ctrl+B opens the menu"]': () => `단축키 목록, Ctrl+B로 메뉴 열기`,
     '["List, diff"]': () => `목록, 차이`,
     '["Live handoff unavailable for this session; turn it off to copy."]': () =>
       `이 세션은 실행 중인 프로세스를 인계할 수 없습니다. 인계를 끄면 복사합니다.`,
+    '["Loading pane…"]': () => `창 불러오는 중…`,
+    '["Loading tabs…"]': () => `탭 불러오는 중…`,
     '["Looking for running sessions…"]': () => `실행 중인 세션 찾는 중…`,
     '["MATCHING SHORTCUTS"]': () => `일치하는 단축키`,
     '["MODIFIER"]': () => `보조 키`,
@@ -3206,9 +3603,12 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Move tab right"]': () => `탭을 오른쪽으로`,
     '["Move tab to workspace…"]': () => `탭을 작업 공간으로 이동…`,
     '["Move to new tab"]': () => `새 탭으로 이동`,
+    '["Move without a position appends. Env replaces overrides, e.g. \'{\\"KEY\\":\\"value\\"}\'."]': () =>
+      `위치 없이 move하면 끝에 추가합니다. Env는 재정의 값을 교체합니다. 예: '{"KEY":"value"}'.`,
     '["Mute / unmute"]': () => `음소거 / 해제`,
     '["Mute / unmute sounds"]': () => `알림음 끄기 / 켜기`,
     '["Name"]': () => `이름`,
+    '["Name it and pick a folder"]': () => `이름을 정하고 폴더 선택`,
     '["Name tab"]': () => `탭 이름 지정`,
     '["Names fit in 80 characters"]': () => `이름은 80자까지 입력할 수 있습니다`,
     '["Navigate"]': () => `탐색`,
@@ -3226,6 +3626,8 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["New tab"]': () => `새 탭`,
     '["New tab (agent picker)"]': () => `새 탭(에이전트 선택)`,
     '["New tab → agent picker"]': () => `새 탭 → 에이전트 선택`,
+    '["New tabs and launcher mutations outside Corgi require --workspace."]': () =>
+      `Corgi 밖에서 새 탭을 만들거나 실행기를 변경할 때는 --workspace가 필요합니다.`,
     '["New terminal"]': () => `새 터미널`,
     '["New workspace"]': () => `새 작업 공간`,
     '["Next / previous"]': () => `다음 / 이전`,
@@ -3234,7 +3636,7 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Next pane"]': () => `다음 패널`,
     '["Next tab"]': () => `다음 탭`,
     '["Next workspace"]': () => `다음 작업 공간`,
-    '["No agents yet"]': () => `아직 에이전트 없음`,
+    '["No active agents or processes."]': () => `활성 에이전트나 프로세스가 없습니다.`,
     '["No agents yet this session; using your last one"]': () => `이번 세션에 에이전트가 없어 마지막 선택을 사용합니다`,
     '["No available sessions found."]': () => `사용 가능한 세션을 찾지 못했습니다.`,
     '["No branch matches"]': () => `일치하는 브랜치 없음`,
@@ -3243,20 +3645,24 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["No commit picked yet. g opens the menu."]': () => `아직 커밋을 선택하지 않았습니다. g로 메뉴를 여세요.`,
     '["No commits since ",""]': v0 => `${v0} 이후 커밋 없음`,
     '["No commits yet"]': () => `아직 커밋 없음`,
+    '["No daemon connection"]': () => `데몬에 연결되어 있지 않음`,
     '["No executable shell there."]': () => `실행 가능한 셸이 없습니다.`,
     '["No folders"]': () => `폴더 없음`,
     '["No folders match"]': () => `일치하는 폴더 없음`,
+    '["No image on the clipboard"]': () => `클립보드에 이미지가 없습니다`,
     '["No lines changed"]': () => `변경된 행 없음`,
     '["No linked worktrees"]': () => `연결된 작업 트리 없음`,
     '["No matches."]': () => `일치하는 항목이 없습니다.`,
     '["No matching actions."]': () => `일치하는 동작이 없습니다.`,
     '["No matching agents"]': () => `일치하는 에이전트 없음`,
-    '["No matching models"]': () => `일치하는 모델 없음`,
+    '["No models"]': () => `모델 없음`,
+    '["No models match"]': () => `일치하는 모델 없음`,
     '["No notes yet."]': () => `아직 메모가 없습니다.`,
     '["No notes yet. v selects lines, c comments."]': () => `아직 메모가 없습니다. v로 행을 선택하고 c로 메모하세요.`,
     '["No overrides; inherits your environment."]': () => `재정의 없이 현재 환경을 상속합니다.`,
+    '["No processes"]': () => `프로세스 없음`,
     '["No shortcuts"]': () => `단축키 없음`,
-    '["No signed-in models"]': () => `로그인 계정의 모델 없음`,
+    '["No such workspace"]': () => `해당 작업 공간이 없습니다`,
     '["No summaries, plain links"]': () => `요약 없이 일반 링크 사용`,
     '["No text diff and no line notes."]': () => `텍스트 차이와 행 메모가 없습니다.`,
     '["No uncommitted changes."]': () => `커밋하지 않은 변경이 없습니다.`,
@@ -3264,6 +3670,7 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["No workspaces could be recovered yet."]': () => `아직 복구할 수 있는 작업 공간이 없습니다.`,
     '["None"]': () => `없음`,
     '["None late enough to hold frames."]': () => `프레임이 대기할 만큼 늦은 응답은 없습니다.`,
+    '["Not enough room for this split"]': () => `분할할 공간이 부족합니다`,
     '["Not in a git checkout:"]': () => `git 작업 디렉터리가 아닙니다:`,
     '["Not installed"]': () => `설치되지 않음`,
     '["Not signed in"]': () => `로그인되지 않음`,
@@ -3271,6 +3678,7 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Nothing beyond main"]': () => `main과 동일`,
     '["Nothing changed on "," yet."]': v0 => `${v0}에 아직 변경이 없습니다.`,
     '["Nothing closed here. Tab widens the scope."]': () => `여기에서 닫힌 항목이 없습니다. Tab으로 범위를 넓히세요.`,
+    '["Nothing is waiting"]': () => `대기 중인 작업 없음`,
     '["Observed tokens"]': () => `관측된 토큰`,
     '["Off"]': () => `끔`,
     '["On"]': () => `켬`,
@@ -3283,10 +3691,13 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Open folder as workspace"]': () => `폴더를 작업 공간으로 열기`,
     '["Open the agent picker"]': () => `에이전트 선택창 열기`,
     '["Open · jumps to its tab"]': () => `열린 세션 · 해당 탭으로 이동`,
+    '["Operations never auto-start a server."]': () => `명령은 서버를 자동으로 시작하지 않습니다.`,
     '["Ordered key sets belong to an indexed action, such as tab"]': () =>
       `순서가 있는 키 모음은 tab처럼 번호로 선택하는 동작에만 사용할 수 있습니다`,
     '["Other agents"]': () => `다른 에이전트`,
     '["Other…"]': () => `기타…`,
+    '["Over SSH, images paste only from terminals that send them"]': () =>
+      `SSH에서는 이미지를 전송하는 터미널에서만 이미지를 붙여넣을 수 있습니다`,
     '["P  Continue with portable Herdr keys"]': () => `P  어디서나 쓰는 Herdr 키로 계속`,
     '["P = prefix · Cmd = hold"]': () => `P = 접두 키 · Cmd = 길게 누르기`,
     '["P prefix"]': () => `P 접두 키`,
@@ -3295,6 +3706,7 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["PROCESS"]': () => `프로세스`,
     '["Page"]': () => `페이지`,
     '["Partial process coverage"]': () => `일부 프로세스만 포함`,
+    '["Past conversations, newest first"]': () => `이전 대화를 최신순으로 표시`,
     '["Paste (host terminal)"]': () => `붙여넣기(호스트 터미널)`,
     '["Paste a command…"]': () => `명령 붙여넣기…`,
     '["Paste copied text"]': () => `복사한 텍스트 붙여넣기`,
@@ -3325,15 +3737,23 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Previous pane"]': () => `이전 패널`,
     '["Previous tab"]': () => `이전 탭`,
     '["Previous workspace"]': () => `이전 작업 공간`,
+    '["Process counts unavailable"]': () => `프로세스 수를 알 수 없음`,
+    '["Process information unavailable"]': () => `프로세스 정보를 사용할 수 없습니다`,
+    '["Process list may be incomplete"]': () => `프로세스 목록이 불완전할 수 있습니다`,
+    '["Processes"]': () => `프로세스`,
+    '["Prompt an agent through its own channel"]': () => `에이전트 자체 채널로 프롬프트 보내기`,
     '["Push failed"]': () => `푸시 실패`,
     '["Reading branches…"]': () => `브랜치 불러오는 중…`,
     '["Reading default account…"]': () => `기본 계정 확인 중…`,
     '["Reading git…"]': () => `Git 정보 불러오는 중…`,
+    '["Reading models…"]': () => `모델 읽는 중…`,
     '["Reading the diff…"]': () => `차이 불러오는 중…`,
+    '["Reading workspace activity…"]': () => `워크스페이스 활동을 읽는 중…`,
     '["Reading…"]': () => `불러오는 중…`,
     '["Receiving live terminals"]': () => `실행 중인 터미널 수신 중`,
     '["Record Enter"]': () => `Enter 기록`,
     '["Record a sequence…"]': () => `키 순서 기록…`,
+    '["Redo layout change"]': () => `레이아웃 변경 다시 실행`,
     '["Relaunch viewer"]': () => `클라이언트 다시 시작`,
     '["Release notes"]': () => `릴리스 노트`,
     '["Release, then press a key."]': () => `손을 뗀 후 키를 누르세요.`,
@@ -3344,7 +3764,6 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Reload Ghostty: Cmd+Shift+, to apply Command keys."]': () =>
       `Cmd+Shift+,로 Ghostty를 다시 불러와 Command 키를 적용하세요.`,
     '["Remove"]': () => `제거`,
-    '["Removed"]': () => `제거됨`,
     '["Removing"]': () => `제거 중`,
     '["Rename"]': () => `이름 변경`,
     '["Rename agent"]': () => `에이전트 이름 변경`,
@@ -3352,6 +3771,7 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Rename tab"]': () => `탭 이름 변경`,
     '["Rename workspace"]': () => `작업 공간 이름 변경`,
     '["Reopen"]': () => `다시 열기`,
+    '["Reopen a past conversation"]': () => `이전 대화 다시 열기`,
     '["Reopen directly"]': () => `직접 다시 열기`,
     '["Reopen last closed agent"]': () => `마지막으로 닫은 에이전트 열기`,
     '["Reopen tab"]': () => `탭 다시 열기`,
@@ -3368,6 +3788,11 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Resources"]': () => `리소스`,
     '["Restoring…"]': () => `복원 중…`,
     '["Resume"]': () => `재개`,
+    '["Resume pane"]': () => `창 다시 시작`,
+    '["Resume with corgi pane wake ",""]': v0 => `corgi pane wake ${v0} 명령으로 재개`,
+    '["Retries Codex at capacity; Esc stops it."]': () => `Codex 용량 초과 시 재시도. Esc로 중지.`,
+    '["Retrying in ",""]': v0 => `${v0} 후 재시도`,
+    '["Retrying…"]': () => `재시도 중…`,
     '["Return in each pane restarts its command"]': () => `각 패널에서 Return을 누르면 명령을 다시 실행합니다`,
     '["Review"]': () => `리뷰`,
     '["Review changes"]': () => `변경 리뷰`,
@@ -3390,7 +3815,9 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Scroll / copy"]': () => `스크롤 / 복사`,
     '["Scroll / copy mode"]': () => `스크롤 / 복사 모드`,
     '["Search"]': () => `검색`,
+    '["Search conversation text"]': () => `대화 본문 검색`,
     '["Search models"]': () => `모델 검색`,
+    '["Search models, agents and accounts"]': () => `모델, 에이전트, 계정 검색`,
     '["Select"]': () => `선택`,
     '["Select tab"]': () => `탭 선택`,
     '["Select workspace"]': () => `작업 공간 선택`,
@@ -3400,6 +3827,8 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Sent "," notes to ",". Enter there submits them."]': (v0, v1) =>
       `${v1}에게 메모 ${v0}개를 보냈습니다. 해당 화면에서 Enter를 눌러 제출하세요.`,
     '["Sent "," to ",""]': (v0, v1) => `${v1}: ${v0} 전송 완료`,
+    '["Served links"]': () => `서비스 링크`,
+    '["Served links will go offline."]': () => `서비스 링크는 오프라인이 됩니다.`,
     '["Servers"]': () => `서버`,
     '["Session ended"]': () => `세션 종료됨`,
     '["Set clipboard-read = ask to enable paste with ","."]': v0 =>
@@ -3419,14 +3848,13 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Shortcuts reloaded; could not update the Ghostty integration."]': () =>
       `단축키를 다시 불러왔지만 Ghostty 연동은 갱신하지 못했습니다.`,
     '["Show"]': () => `표시`,
-    '["Show "," more"]': v0 => `${v0}개 더 보기`,
-    '["Show fewer"]': () => `접기`,
+    '["Show a folder\'s workspace, or add one"]': () => `폴더의 작업 공간 표시, 없으면 생성`,
     '["Show less"]': () => `접기`,
     '["Show resources"]': () => `리소스 표시`,
+    '["Show startup waits"]': () => `시작 대기 표시`,
     '["Show worktrees"]': () => `작업 트리 표시`,
     '["Sidebar corgi brightness."]': () => `사이드바의 코기 밝기입니다.`,
     '["Sign in"]': () => `로그인`,
-    '["Sign in first"]': () => `먼저 로그인하세요`,
     '["Sign in to a model provider through ",""]': v0 => `${v0}에서 모델 제공업체에 로그인하세요`,
     '["Signed out"]': () => `로그아웃됨`,
     '["Signs out and deletes its folder"]': () => `로그아웃하고 해당 폴더를 삭제합니다`,
@@ -3443,10 +3871,14 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Star"]': () => `즐겨찾기`,
     '["Star / unstar agent"]': () => `에이전트 즐겨찾기 / 해제`,
     '["Star / unstar headless agent"]': () => `백그라운드 에이전트 즐겨찾기 / 해제`,
+    '["Start"]': () => `시작`,
+    '["Start Corgi or attach to it"]': () => `Corgi 시작 또는 연결`,
     '["Starting"]': () => `시작 중`,
     '["Starting session"]': () => `세션 시작 중`,
+    '["Startup waits: enlarge terminal · Esc to close"]': () => `시작 대기: 터미널을 확대하세요 · Esc 닫기`,
     '["Still pasting the previous image"]': () => `이전 이미지를 아직 붙여넣고 있습니다`,
     '["Stop "," with SIGTERM?"]': v0 => `SIGTERM으로 ${v0} 항목을 중지할까요?`,
+    '["Stopping ","…"]': v0 => `${v0} 중지 중…`,
     '["Suggested automatically"]': () => `자동 제안`,
     '["Swap"]': () => `맞바꾸기`,
     '["Swap down"]': () => `아래와 맞바꾸기`,
@@ -3467,11 +3899,10 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["That pane would run the notes as commands; copied them instead."]': () =>
       `이 패널에서는 메모가 명령으로 실행되므로 대신 복사했습니다.`,
     '["That\'s a file, not a folder."]': () => `폴더가 아닌 파일입니다.`,
+    '["The Farm"]': () => `농장`,
     '["The clipboard image was damaged"]': () => `클립보드의 이미지가 손상되었습니다`,
     '["The commits to push changed. Review them and push again."]': () =>
       `푸시할 커밋이 변경되었습니다. 다시 리뷰하고 푸시하세요.`,
-    '["The issue starts with these details. Nothing is sent until you submit it on GitHub."]': () =>
-      `이슈에 아래 정보를 넣습니다. GitHub에서 직접 제출하기 전에는 전송하지 않습니다.`,
     '["The limit is 2 MB or 50,000 lines."]': () => `최대 2 MB 또는 50,000행입니다.`,
     '["The notes hold an end-of-paste marker; they\'re kept."]': () =>
       `메모에 붙여넣기 종료 표식이 있습니다. 메모는 유지됩니다.`,
@@ -3509,11 +3940,13 @@ Corgi 패널, 에이전트 또는 작업 공간 제어:
     '["Type a folder, such as ",""]': v0 => `${v0} 같은 폴더 경로를 입력하세요`,
     '["Type a path"]': () => `경로 입력`,
     '["UNCOMMITTED CHANGES"]': () => `커밋하지 않은 변경`,
+    '["Unarchive workspace"]': () => `작업 공간 보관 해제`,
     '["Unavailable"]': () => `사용할 수 없음`,
     '["Unavailable · ",""]': v0 => `사용할 수 없음 · ${v0}`,
     '["Unavailable · server returned 429"]': () => `사용할 수 없음 · 서버 응답 429`,
     '["Uncommitted"]': () => `커밋 안 됨`,
     '["Undo"]': () => `실행 취소`,
+    '["Undo layout change"]': () => `레이아웃 변경 실행 취소`,
     '["Unfold"]': () => `펼치기`,
     '["Unified / split diff"]': () => `통합 / 분할 diff`,
     '["Unknown"]': () => `알 수 없음`,
@@ -3556,7 +3989,7 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
 모든 등록된 계정에 적용합니다. --account로 계정 하나를 선택할 수 있습니다(default는 기본 계정).
 `,
     '["Use"]': () => `사용`,
-    '["Use "," · ",""]': (v0, v1) => `사용: ${v0} · ${v1}`,
+    '["Use ",""]': v0 => `${v0} 사용`,
     '["Use "," to enable paste with ","."]': (v0, v1) => `${v0}을 사용하면 ${v1} 키로 붙여넣을 수 있습니다.`,
     '["Use a nonblank name up to 160 bytes, without control characters."]': () =>
       `이름은 비어 있지 않아야 하며 제어 문자 없이 160바이트 이하여야 합니다.`,
@@ -3581,7 +4014,11 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '["Visual flourishes"]': () => `시각 효과`,
     '["WORKSPACES"]': () => `작업 공간`,
     '["WORKTREE"]': () => `작업 트리`,
+    '["Waiting for "," service…"]': v0 => `${v0} 서비스 대기 중…`,
+    '["Waiting for "," session…"]': v0 => `${v0} 세션 대기 중…`,
+    '["Waiting for ","…"]': v0 => `${v0} 대기 중…`,
     '["Waiting for Herdr ownership confirmation"]': () => `Herdr의 터미널 소유권 이전 확인 대기 중`,
+    '["Waiting for a response"]': () => `응답 대기 중`,
     '["Waiting for activity"]': () => `활동 대기 중`,
     '["Waiting on agents"]': () => `에이전트 대기 중`,
     '["Waiting on subagents"]': () => `하위 에이전트 대기 중`,
@@ -3595,6 +4032,7 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '["Working"]': () => `작업 중`,
     '["Workspace / all"]': () => `작업 공간 / 전체`,
     '["Workspace only · opens a new shell"]': () => `작업 공간만 · 새 셸 열기`,
+    '["Workspaces, tabs, panes and agents"]': () => `작업 공간, 탭, 패널, 에이전트`,
     '["Worktree briefs"]': () => `작업 트리 요약`,
     '["Worktree folder"]': () => `작업 트리 폴더`,
     '["Worktrees: enlarge terminal · Esc to close"]': () => `작업 트리: 터미널을 늘려 주세요 · Esc 닫기`,
@@ -3635,6 +4073,7 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '["[Save]"]': () => `[저장]`,
     '["[Show alts Ctrl+L]"]': () => `[다른 키 보기 Ctrl+L]`,
     '["[Show command]"]': () => `[명령 보기]`,
+    '["[x Kill]"]': () => `[x 강제 종료]`,
     '["[···] Working"]': () => `[···] 작업 중`,
     '["[✓] Complete"]': () => `[✓] 완료`,
     '["^C Clear"]': () => `^C 지우기`,
@@ -3647,7 +4086,7 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '["a workspace is open in it"]': () => `작업 공간에서 사용 중입니다`,
     '["accounts"]': () => `계정`,
     '["activate"]': () => `활성화`,
-    '["add back to the list"]': () => `목록에 다시 추가`,
+    '["add to the list"]': () => `목록에 추가`,
     '["adding ","…"]': v0 => `${v0} 추가 중…`,
     '["adjust"]': () => `조절`,
     '["age"]': () => `경과`,
@@ -3658,6 +4097,7 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '["an update"]': () => `업데이트`,
     '["another one is being removed"]': () => `다른 작업 트리를 제거 중입니다`,
     '["as dragged"]': () => `드래그한 범위`,
+    '["auto"]': () => `자동`,
     '["back"]': () => `뒤로`,
     '["background session"]': () => `백그라운드 세션`,
     '["bin"]': () => `바이너리`,
@@ -3666,6 +4106,7 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '["change"]': () => `변경`,
     '["checking…"]': () => `확인 중…`,
     '["choose"]': () => `선택`,
+    '["choose effort"]': () => `추론 강도 선택`,
     '["chosen"]': () => `선택됨`,
     '["clean"]': () => `변경 없음`,
     '["clear"]': () => `지우기`,
@@ -3681,61 +4122,22 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '["commits "," ",""]': (v0, v1) => `커밋 ${v0} ${v1}`,
     '["committed"]': () => `커밋됨`,
     '["committed + working copy"]': () => `커밋 + 작업 사본`,
+    '["connecting"]': () => `연결 중`,
     '["context "]': () => `컨텍스트 `,
+    '["copy details"]': () => `정보 복사`,
     '["copy link"]': () => `링크 복사`,
-    "[\"corgi — a small Ghostty-powered agent terminal\\n\\n  corgi                         start / attach\\n  corgi open DIR                show DIR's workspace; add one if none\\n  corgi onboard                 open onboarding, even after setup\\n  corgi dev                     reload if changed; attach or relaunch viewer\\n  corgi --no-update             attach without activating a staged update\\n  corgi update                  download and safely apply an update\\n  corgi update status           show update status\\n  corgi update rollback         return to the previous release\\n  corgi update --check|--download-only\\n  corgi update auto on|off      control automatic updates\\n  corgi start                   start detached runtime\\n  corgi action NAME [VALUE]     run a viewer action, named below\\n  corgi agent claude|codex ...   optional discovered-binary launcher\\n  corgi hooks claude|codex       print hook configuration\\n  corgi integration COMMAND     status, install, uninstall hooks\\n  corgi account COMMAND         list, add, login, remove provider accounts\\n  corgi which claude|codex      show automatically selected executable\\n  corgi keys [PRESET]           list shortcuts: corgi, tmux, herdr, cmux\\n  corgi headless start PROVIDER PROMPT [--workspace ID]\\n  corgi headless list              list headless sessions\\n  corgi headless send PROVIDER SESSION JSON   prompt, answer or interrupt\\n  corgi headless events PROVIDER SESSION [SEQ]   journal + pending requests\\n  corgi headless stop PROVIDER SESSION        stop headless session\\n  corgi rpc JSON                local JSON control protocol\\n  corgi reload [ABSOLUTE_EXE]    replace daemon, preserve live processes\\n  corgi checkpoint               save recovery context now\\n  corgi shutdown                terminate runtime and its panes\\n  corgi bugreport [--full]      details for a bug report, and a link to file it\\n  corgi licenses                Corgi's license and the software it includes\\n  corgi help [COMMAND ...]      show help for a command or group\\n  corgi --help                  list all commands (also -h)\\n  corgi --version               print the version and commit\\n\\nKeys: Ctrl+B opens a clickable command menu; `corgi keys` lists every shortcut.\\n\\n\\n\\n\\nCORGI_SOCKET selects a runtime. Workspaces group tabs and panes; no worktrees.\\nCommands print text; --json prints the daemon's reply as JSON instead.\\n\"]":
-      () => `corgi — Ghostty 기반의 작은 에이전트 터미널
-
-  corgi                         시작 / 연결
-  corgi open DIR                DIR의 작업 공간 표시, 없으면 생성
-  corgi onboard                 설정을 마친 뒤에도 시작 안내 열기
-  corgi dev                     변경 시 다시 불러오기, 클라이언트 연결 또는 재시작
-  corgi --no-update             준비된 업데이트를 적용하지 않고 연결
-  corgi update                  업데이트 다운로드 후 안전하게 적용
-  corgi update status           업데이트 상태 표시
-  corgi update rollback         이전 릴리스로 되돌리기
-  corgi update --check|--download-only
-  corgi update auto on|off      자동 업데이트 켜기 / 끄기
-  corgi start                   백그라운드 서비스 시작
-  corgi action NAME [VALUE]     아래에 나열된 클라이언트 동작 실행
-  corgi agent claude|codex ...   선택 사항: 자동으로 찾은 에이전트 프로그램 실행
-  corgi hooks claude|codex       훅 설정 출력
-  corgi integration COMMAND     훅 상태 확인, 설치, 제거
-  corgi account COMMAND         제공업체 계정 목록, 추가, 로그인, 제거
-  corgi which claude|codex      자동 선택된 실행 파일 표시
-  corgi keys [PRESET]           단축키 목록: corgi, tmux, herdr, cmux
-  corgi headless start PROVIDER PROMPT [--workspace ID]
-  corgi headless list              백그라운드 세션 목록
-  corgi headless send PROVIDER SESSION JSON   프롬프트, 응답 또는 중단
-  corgi headless events PROVIDER SESSION [SEQ]   기록과 대기 중인 요청
-  corgi headless stop PROVIDER SESSION        백그라운드 세션 중지
-  corgi rpc JSON                로컬 JSON 제어 프로토콜
-  corgi reload [ABSOLUTE_EXE]    데몬 교체, 실행 중인 프로세스 유지
-  corgi checkpoint               복구 컨텍스트 즉시 저장
-  corgi shutdown                서비스와 패널 종료
-  corgi bugreport [--full]      버그 신고 정보와 제출 링크
-  corgi licenses                Corgi와 포함된 소프트웨어의 라이선스
-  corgi help [COMMAND ...]      명령 또는 명령 그룹의 도움말
-  corgi --help                  모든 명령 표시(-h도 가능)
-  corgi --version               버전과 커밋 출력
-
-키: Ctrl+B로 클릭 가능한 명령 메뉴를 엽니다. \`corgi keys\`로 모든 단축키를 확인하세요.
-
-
-
-
-CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널을 묶으며 작업 트리를 만들지 않습니다.
-명령은 텍스트를 출력합니다. --json을 사용하면 데몬 응답을 JSON으로 출력합니다.
-`,
+    '["corgi — a small Ghostty-powered agent terminal"]': () => `corgi — Ghostty 기반의 작은 에이전트 터미널`,
     '["create"]': () => `만들기`,
     '["critical"]': () => `심각`,
     '["custom"]': () => `사용자 지정`,
+    '["default"]': () => `기본값`,
     '["delete"]': () => `삭제`,
     '["detach"]': () => `연결 끊기`,
     '["done"]': () => `완료`,
     '["e.g. --verbose"]': () => `예: --verbose`,
     '["edit"]': () => `편집`,
     '["edit note"]': () => `메모 편집`,
+    '["effort"]': () => `추론 강도`,
     '["esc Cancel"]': () => `esc 취소`,
     '["everywhere"]': () => `모든 위치`,
     '["exited"]': () => `종료됨`,
@@ -3761,10 +4163,10 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
     '["handoff"]': () => `인계`,
     '["hide"]': () => `숨기기`,
     '["hide the row"]': () => `행 숨기기`,
-    '["hold ↵ to create"]': () => `↵ 길게 눌러 만들기`,
     '["hunk"]': () => `변경 구간`,
     '["idle"]': () => `대기 중`,
     '["import ",""]': v0 => `${v0}개 가져오기`,
+    '["incompatible"]': () => `호환되지 않음`,
     '["inspiration and sound cues"]': () => `영감과 알림음`,
     '["it\'s already gone"]': () => `이미 제거되었습니다`,
     '["it\'s locked"]': () => `잠겨 있습니다`,
@@ -3803,14 +4205,16 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
     '["now"]': () => `현재`,
     '["off"]': () => `끄기`,
     '["open"]': () => `열기`,
-    '["or  ",""]': v0 => `또는  ${v0}`,
     '["our TypeScript runtime"]': () => `TypeScript 런타임`,
     '["our terminal engine"]': () => `터미널 엔진`,
     '["out / in"]': () => `밖으로 / 안으로`,
+    '["paused"]': () => `일시 중지`,
     '["pick"]': () => `선택`,
     '["pin"]': () => `고정`,
     '["play"]': () => `플레이`,
+    '["rate limited"]': () => `요청 제한됨`,
     '["ready"]': () => `준비됨`,
+    '["reconnecting"]': () => `재연결 중`,
     '["refresh"]': () => `새로고침`,
     '["reload Corgi\'s daemon first"]': () => `먼저 Corgi 데몬을 다시 불러오세요`,
     '["remaining surfaces in additional tabs"]': () => `나머지 화면은 추가 탭에 표시`,
@@ -3819,6 +4223,7 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
     '["resolved at launch"]': () => `실행 시 결정`,
     '["resume"]': () => `재개`,
     '["resume agents"]': () => `에이전트 재개`,
+    '["retry in"]': () => `재시도까지`,
     '["review it alone"]': () => `따로 리뷰`,
     '["review panel design"]': () => `리뷰 패널 디자인`,
     '["save"]': () => `저장`,
@@ -3832,6 +4237,7 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
     '["send "," to ",""]': (v0, v1) => `${v1}에게 ${v0}개 보내기`,
     '["send prefix"]': () => `접두 키 전달`,
     '["send to ",""]': v0 => `${v0}에게 보내기`,
+    '["shell at ",""]': v0 => `${v0}의 셸`,
     '["shortcuts"]': () => `단축키`,
     '["show all"]': () => `모두 표시`,
     '["show the readings row"]': () => `리소스 행 표시`,
@@ -3839,6 +4245,7 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
     '["sign in to a new "," account"]': v0 => `새 ${v0} 계정으로 로그인`,
     '["split"]': () => `분할`,
     '["stale"]': () => `오래된 정보`,
+    '["stalled"]': () => `응답 지연`,
     '["starred"]': () => `즐겨찾기됨`,
     '["switch to ",""]': v0 => `${v0} 사용`,
     '["tab"]': () => `탭`,
@@ -3878,6 +4285,7 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
     '["— tokens"]': () => `— 토큰`,
     '["… "," done"]': v0 => `… ${v0}개 완료`,
     '["…"," more"]': v0 => `…${v0}개 더`,
+    '["‹ "," · Effort"]': v0 => `‹ ${v0} · 추론 강도`,
     '["← keys"]': () => `← 키`,
     '["←→ sources · ↑↓ choose · PgUp/PgDn scroll · R refresh · S skip"]': () =>
       `←→ 소스 · ↑↓ 선택 · PgUp/PgDn 스크롤 · R 새로고침 · S 건너뛰기`,
@@ -3886,7 +4294,10 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
     '["↑ Update "," ready · relaunch Corgi"]': v0 => `↑ 업데이트 ${v0} 준비됨 · Corgi 다시 시작`,
     '["↑ Update ready"]': () => `↑ 업데이트 준비됨`,
     '["↑ Update ready · relaunch Corgi"]': () => `↑ 업데이트 준비됨 · Corgi 다시 시작`,
+    '["↑ ↓ Scroll to see all activity"]': () => `↑ ↓ 스크롤하여 모든 활동 보기`,
     '["↑↓  ↵ jump  Esc back"]': () => `↑↓  ↵ 이동  Esc 뒤로`,
+    '["↑↓ Preview agents · PgUp/PgDn Scroll"]': () => `↑↓ 에이전트 미리보기 · PgUp/PgDn 스크롤`,
+    '["↑↓ Select · Enter Open · Tab Actions"]': () => `↑↓ 선택 · Enter 열기 · Tab 작업`,
     '["↑↓ browse · Enter "," · e review · hold ⌫ remove · Esc close"]': v0 =>
       `↑↓ 탐색 · Enter ${v0} · e 리뷰 · ⌫ 길게 눌러 제거 · Esc 닫기`,
     '["↑↓ browse · Enter "," · e review · hold ⌫ remove · r refresh · Esc close"]': v0 =>
@@ -3900,6 +4311,8 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
     '["↗ Browser link"]': () => `↗ 브라우저 링크`,
     '["↗ open in a tab"]': () => `↗ 탭에서 열기`,
     '["↵ Create Fork"]': () => `↵ 분기 만들기`,
+    '["↵ Show pane · Esc Close"]': () => `↵ 창 보기 · Esc 닫기`,
+    '["↵ create"]': () => `↵ 만들기`,
     '["↵ switch"]': () => `↵ 전환`,
     '["↵ use branch"]': () => `↵ 브랜치 사용`,
     '["↻ Resume available"]': () => `↻ 재개 가능`,
@@ -3908,9 +4321,127 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
     '["◇ Prefix = ",""]': v0 => `◇ 접두 키 = ${v0}`,
     '["○ Corgi (Activity summarizer)"]': () => `○ Corgi (활동 요약)`,
     '["● Jump to who needs you"]': () => `● 응답이 필요한 에이전트로 이동`,
+    '["✓ Copied"]': () => `✓ 복사됨`,
     '["🐕 badge; animations stay still."]': () => `🐕 배지; 애니메이션은 멈춰 있습니다.`,
   },
   "ru": {
+    '["    prompt through the agent\'s own channel, or type it and press Enter"]': () =>
+      `    отправить запрос через канал самого агента, а без него ввести текст и нажать Enter`,
+    '["    search conversation text; --session PROVIDER:ID narrows, -o extracts matches"]': () =>
+      `    поиск по тексту бесед; --session PROVIDER:ID сужает поиск, -o выводит совпадения`,
+    "[\"    to today's log, MEMORY.md or a workspace's note; an exact repeat isn't added\"]": () =>
+      `    добавить в журнал за сегодня, MEMORY.md или заметку пространства; точные повторы пропускаются`,
+    '["  SKIP if a Corgi skill is already in your context. Otherwise run: corgi --skill"]': () =>
+      `  ПРОПУСТИТЕ, если навык Corgi уже есть в контексте. Иначе выполните: corgi --skill`,
+    '["  corgi                         start / attach"]': () =>
+      `  corgi                         запустить / подключиться`,
+    '["  corgi --help                  list common commands (also -h)"]': () =>
+      `  corgi --help                  основные команды (также -h)`,
+    '["  corgi --no-update             attach without activating a staged update"]': () =>
+      `  corgi --no-update             подключиться без применения подготовленного обновления`,
+    '["  corgi --skill                      print bundled agent instructions"]': () =>
+      `  corgi --skill                      вывести встроенные инструкции для агентов`,
+    '["  corgi --version               print the version and commit"]': () =>
+      `  corgi --version               вывести версию и коммит`,
+    '["  corgi account COMMAND         list, add, login, remove provider accounts"]': () =>
+      `  corgi account COMMAND         список, добавление, вход и удаление аккаунтов провайдеров`,
+    '["  corgi action NAME [VALUE] [--viewer ID]  run a viewer action, named below"]': () =>
+      `  corgi action NAME [VALUE] [--viewer ID]  выполнить действие клиента из списка ниже`,
+    '["  corgi agent claude|codex ...   optional discovered-binary launcher"]': () =>
+      `  corgi agent claude|codex ...   запустить найденный исполняемый файл агента`,
+    '["  corgi bugreport [--full]      details for a bug report, and a link to file it"]': () =>
+      `  corgi bugreport [--full]      сведения об ошибке и ссылка для отправки обращения`,
+    '["  corgi checkpoint               save recovery context now"]': () =>
+      `  corgi checkpoint               сохранить данные восстановления сейчас`,
+    '["  corgi current                      calling pane\'s live location"]': () =>
+      `  corgi current                      текущее расположение вызывающей панели`,
+    '["  corgi dev                     reload if changed; attach or relaunch viewer"]': () =>
+      `  corgi dev                     перезагрузить при изменениях; подключить или перезапустить клиент`,
+    '["  corgi focus ID|current --viewer ID  select in exactly one viewer"]': () =>
+      `  corgi focus ID|current --viewer ID  выбрать ровно в одном клиенте`,
+    '["  corgi headless events PROVIDER SESSION [SEQ]   journal + pending requests"]': () =>
+      `  corgi headless events PROVIDER SESSION [SEQ]   журнал + ожидающие запросы`,
+    '["  corgi headless list              list headless sessions"]': () =>
+      `  corgi headless list              список фоновых сеансов`,
+    '["  corgi headless send PROVIDER SESSION JSON   prompt, answer or interrupt"]': () =>
+      `  corgi headless send PROVIDER SESSION JSON   запрос, ответ или прерывание`,
+    '["  corgi headless stop PROVIDER SESSION        stop headless session"]': () =>
+      `  corgi headless stop PROVIDER SESSION        остановить фоновый сеанс`,
+    '["  corgi help --all              list every command"]': () =>
+      `  corgi help --all              список всех команд`,
+    '["  corgi help [COMMAND ...]      show help for a command or group"]': () =>
+      `  corgi help [COMMAND ...]      справка по команде или группе`,
+    '["  corgi history [--limit N] [--json]  past conversations, newest first"]': () =>
+      `  corgi history [--limit N] [--json]  прошлые диалоги, сначала новые`,
+    '["  corgi hooks claude|codex       print hook configuration"]': () =>
+      `  corgi hooks claude|codex       вывести настройки хуков`,
+    '["  corgi integration COMMAND     status, install, uninstall hooks"]': () =>
+      `  corgi integration COMMAND     состояние, установка и удаление хуков`,
+    '["  corgi keys [PRESET]           list shortcuts: corgi, tmux, herdr, cmux"]': () =>
+      `  corgi keys [PRESET]           список сочетаний: corgi, tmux, herdr, cmux`,
+    '["  corgi launcher copy --from ID --workspace ID  replace destination order and visibility"]': () =>
+      `  corgi launcher copy --from ID --workspace ID  заменить порядок и видимость в целевом пространстве`,
+    '["  corgi launcher hide AGENT... [--workspace ID]  in one workspace only"]': () =>
+      `  corgi launcher hide AGENT... [--workspace ID]  только в одном пространстве`,
+    '["  corgi launcher list [--workspace ID] [--json]  agents each launcher shows"]': () =>
+      `  corgi launcher list [--workspace ID] [--json]  агенты, видимые в каждом списке запуска`,
+    '["  corgi launcher models AGENT [--json]  native model IDs, efforts and defaults"]': () =>
+      `  corgi launcher models AGENT [--json]  ID моделей, глубина рассуждений и значения по умолчанию`,
+    '["  corgi launcher remove AGENT [--workspace ID]  delete a clone or saved command"]': () =>
+      `  corgi launcher remove AGENT [--workspace ID]  удалить копию или сохранённую команду`,
+    '["  corgi launcher show AGENT... [--workspace ID]  in one workspace only"]': () =>
+      `  corgi launcher show AGENT... [--workspace ID]  только в одном пространстве`,
+    '["  corgi licenses                Corgi\'s license and the software it includes"]': () =>
+      `  corgi licenses                лицензия Corgi и входящего в него ПО`,
+    '["  corgi list [--json]                 layout, panes, agents, viewers"]': () =>
+      `  corgi list [--json]                 расположение, панели, агенты, клиенты`,
+    '["  corgi memory get [FILE[:FROM[-TO]]]  its files, or a file\'s lines"]': () =>
+      `  corgi memory get [FILE[:FROM[-TO]]]  список файлов памяти или строки файла`,
+    '["  corgi memory search WORDS... [--limit N]  the Corgi prompt\'s memory lines"]': () =>
+      `  corgi memory search WORDS... [--limit N]  поиск записей памяти диалога Corgi`,
+    '["  corgi onboard                 open onboarding, even after setup"]': () =>
+      `  corgi onboard                 открыть первоначальную настройку повторно`,
+    '["  corgi open DIR                show DIR\'s workspace; add one if none"]': () =>
+      `  corgi open DIR                показать пространство DIR; создать, если нет`,
+    '["  corgi pane hibernate ID|current... hibernate panes and stop their processes"]': () =>
+      `  corgi pane hibernate ID|current... перевести панели в спящий режим и остановить процессы`,
+    '["  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  shells at their prompt"]': () =>
+      `  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  оболочки, ожидающие ввода`,
+    '["  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, arrows, etc."]': () =>
+      `  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, стрелки и т. д.`,
+    '["  corgi pane wake ID|current         resume or restart a pane"]': () =>
+      `  corgi pane wake ID|current         возобновить или перезапустить панель`,
+    '["  corgi reload [ABSOLUTE_EXE]    replace daemon, preserve live processes"]': () =>
+      `  corgi reload [ABSOLUTE_EXE]    заменить сервер, сохранив работающие процессы`,
+    '["  corgi resume PROVIDER SESSION [--viewer ID] [--workspace ID]  show it: focus\\n    the pane already showing it, or resume it in a tab where its folder belongs"]':
+      () => `  corgi resume PROVIDER SESSION [--viewer ID] [--workspace ID]  показать диалог:
+    перейти к его панели или возобновить во вкладке рабочего пространства его папки`,
+    '["  corgi rpc JSON                local JSON control protocol"]': () =>
+      `  corgi rpc JSON                локальный протокол управления JSON`,
+    '["  corgi shutdown                terminate runtime and its panes"]': () =>
+      `  corgi shutdown                остановить сервер и его панели`,
+    '["  corgi start                   start detached runtime"]': () =>
+      `  corgi start                   запустить сервер в фоне`,
+    '["  corgi update                  download and safely apply an update"]': () =>
+      `  corgi update                  скачать и безопасно применить обновление`,
+    '["  corgi update auto on|off      control automatic updates"]': () =>
+      `  corgi update auto on|off      настроить автообновления`,
+    '["  corgi update rollback         return to the previous release"]': () =>
+      `  corgi update rollback         вернуться к предыдущей версии`,
+    '["  corgi update status           show update status"]': () =>
+      `  corgi update status           показать состояние обновления`,
+    '["  corgi usage --json            print each account\'s limits and spend as JSON"]': () =>
+      `  corgi usage --json            вывести лимиты и расходы каждого аккаунта в JSON`,
+    '["  corgi watch --json            print agent states as JSON lines as they change"]': () =>
+      `  corgi watch --json            выводить состояния агентов строками JSON при изменении`,
+    '["  corgi which claude|codex      show automatically selected executable"]': () =>
+      `  corgi which claude|codex      показать автоматически выбранный исполняемый файл`,
+    '["  corgi workspace archive ID        hibernate panes and hide the workspace"]': () =>
+      `  corgi workspace archive ID        усыпить панели и скрыть рабочее пространство`,
+    '["  corgi workspace close ID          requires an empty workspace"]': () =>
+      `  corgi workspace close ID          требуется пустое пространство`,
+    '["  corgi workspace unarchive ID      show the workspace; panes stay asleep"]': () =>
+      `  corgi workspace unarchive ID      показать рабочее пространство, оставив панели спящими`,
     '["  now"]': () => `  сейчас`,
     '["  →  expand"]': () => `  →  развернуть`,
     '[" ",": off"]': v0 => ` ${v0}: выкл.`,
@@ -3923,15 +4454,19 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
     '[" "," session ",": ",". Inspect: corgi headless events "," ",""]': (v0, v1, v2, v3, v4) =>
       ` Сеанс ${v0} ${v1}: ${v2}. Подробнее: corgi headless events ${v3} ${v1}`,
     '[" ",": waiting for a session ID"]': v0 => ` ${v0}: ожидание ID сеанса`,
+    '[" (archived)"]': () => ` (в архиве)`,
     '[" + uncommitted"]': () => ` + незакоммичено`,
     '[" / memory ",""]': v0 => ` / память: ${v0}`,
     '[" Agent search needs at least 40 columns and 13 rows"]': () =>
       ` Для поиска агентов нужно окно не меньше 40 столбцов и 13 строк`,
     '[" Agent search: enlarge terminal or Esc"]': () => ` Поиск агентов: увеличьте терминал или нажмите Esc`,
+    '[" Auto-retry capacity errors off"]': () => ` Автоповтор при перегрузке выключен`,
+    '[" Auto-retry capacity errors on"]': () => ` Автоповтор при перегрузке включён`,
     '[" Cancel · Esc "]': () => ` Отмена · Esc `,
-    '[" Cannot close the last workspace"]': () => ` Нельзя закрыть последнее пространство`,
     '[" Copied to clipboard "]': () => ` Скопировано в буфер `,
     '[" Corgi setup: the runtime did not accept the change"]': () => ` Настройка Corgi: сервер не принял изменение`,
+    '[" Could not change pane or workspace state"]': () =>
+      ` Не удалось изменить состояние панели или рабочего пространства`,
     '[" Could not close workspace"]': () => ` Не удалось закрыть пространство`,
     '[" Could not create workspace"]': () => ` Не удалось создать рабочее пространство`,
     '[" Could not fork this agent"]': () => ` Не удалось ответвить диалог`,
@@ -3939,7 +4474,6 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
     '[" Could not read Ghostty config; no changes made"]': () =>
       ` Не удалось прочитать настройки Ghostty; изменений нет`,
     '[" Could not rename this agent"]': () => ` Не удалось переименовать этого агента`,
-    '[" Could not resume this agent"]': () => ` Не удалось возобновить работу агента`,
     '[" Couldn\'t add ",": ",""]': (v0, v1) => ` Не удалось добавить ${v0}: ${v1}`,
     '[" Couldn\'t mark as unread"]': () => ` Не удалось отметить как непрочитанное`,
     '[" Couldn\'t open ",": ",""]': (v0, v1) => ` Не удалось открыть ${v0}: ${v1}`,
@@ -3957,6 +4491,7 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
       ` Для интеграции с Ghostty нужен локальный клиент на macOS`,
     '[" Ghostty integration: ",""]': v0 => ` Интеграция с Ghostty: ${v0}`,
     '[" Image not pasted "]': () => ` Изображение не вставлено `,
+    '[" Keep at least one workspace active"]': () => ` Оставьте хотя бы одно рабочее пространство активным`,
     '[" Keyboard shortcuts "]': () => ` Сочетания клавиш `,
     '[" Keys "]': () => ` Клавиши `,
     '[" Names are one line of up to 80 characters"]': () =>
@@ -3981,13 +4516,12 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
     '[" Pushed ✓"]': () => ` Отправлено ✓`,
     '[" Pushing ",""]': v0 => ` Отправка ${v0}`,
     '[" Recent "]': () => ` Недавнее `,
-    '[" Removed ",", but couldn\'t update launcher settings: ",""]': (v0, v1) =>
-      ` ${v0} удалён, но настройки запуска не обновлены: ${v1}`,
     '[" Removed ","; kept its folder"]': v0 => ` ${v0} удалён; его папка сохранена`,
     '[" Resize panes"]': () => ` Размер панелей`,
     '[" Resource readings are off: turn them on in Corgi setup → Resources"]': () =>
       ` Сбор данных о ресурсах выключен: включите его в Настройка Corgi → Ресурсы`,
     '[" Retry !"]': () => ` Повторить !`,
+    '[" Review changes on the remote machine"]': () => ` Просматривайте изменения на удалённом компьютере`,
     '[" Review needs a wider window"]': () => ` Для просмотра изменений нужно более широкое окно`,
     '[" Save · Ctrl+S "]': () => ` Сохранить · Ctrl+S `,
     '[" Search "," agent"]': v0 => {
@@ -4032,12 +4566,18 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
       ` Умные ссылки выключены: Corgi не будет подключаться к портам панелей`,
     '[" Smart Links on"]': () => ` Умные ссылки включены`,
     '[" Split "]': () => ` Разделить `,
+    '[" Startup waits (",") "]': v0 => ` Ожидание запуска (${v0}) `,
+    '[" Still sending the last paste; paste again once it lands"]': () =>
+      ` Предыдущая вставка ещё отправляется; вставьте снова, когда она дойдёт`,
     '[" Summaries and link names: ",""]': v0 => ` Описания и названия ссылок: ${v0}`,
     '[" Summaries and link names: "," (not saved for next start)"]': v0 =>
       ` Описания и названия ссылок: ${v0} (не сохранено для следующего запуска)`,
+    '[" The new pane is still opening"]': () => ` Новая панель ещё открывается`,
     '[" Theme "]': () => ` Тема `,
     '[" This agent can\'t be renamed from outside"]': () => ` Этого агента нельзя переименовать извне`,
     '[" This agent has no conversation yet"]': () => ` У этого агента пока нет диалога`,
+    '[" Too much typed for a pane still opening; the rest was dropped"]': () =>
+      ` Слишком много ввода для открывающейся панели; остальное отброшено`,
     '[" Use prefix"]': () => ` Через префикс`,
     '[" Welcome to Corgi "]': () => ` Добро пожаловать в Corgi `,
     '[" Worktree "]': () => ` Рабочее дерево `,
@@ -4117,6 +4657,7 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
           return `${v0} агента`;
       }
     },
+    '[""," archived"]': v0 => `В архиве: ${v0}`,
     '[""," changed"]': v0 => `изменено: ${v0}`,
     '[""," commit"]': v0 => {
       switch (plural("ru", Number(v0))) {
@@ -4229,34 +4770,6 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
           return `${v0} ведущих процесса ${v1} назад`;
         default:
           return `${v0} ведущих процесса ${v1} назад`;
-      }
-    },
-    '[""," model"]': v0 => {
-      switch (plural("ru", Number(v0))) {
-        case "one":
-          return `${v0} модель`;
-        case "few":
-          return `${v0} модели`;
-        case "many":
-          return `${v0} моделей`;
-        case "other":
-          return `${v0} модели`;
-        default:
-          return `${v0} модели`;
-      }
-    },
-    '[""," models"]': v0 => {
-      switch (plural("ru", Number(v0))) {
-        case "one":
-          return `${v0} модель`;
-        case "few":
-          return `${v0} модели`;
-        case "many":
-          return `${v0} моделей`;
-        case "other":
-          return `${v0} модели`;
-        default:
-          return `${v0} модели`;
       }
     },
     '[""," more outside "," · tab widens"]': (v0, v1) => `Ещё ${v0} вне области «${v1}» · tab расширить`,
@@ -4402,6 +4915,7 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
       }
     },
     '[""," unread →"]': v0 => `непрочитано: ${v0} →`,
+    '[""," waiting"]': v0 => `Ожидают: ${v0}`,
     '[""," worktree"]': v0 => {
       switch (plural("ru", Number(v0))) {
         case "one":
@@ -4431,11 +4945,13 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
       }
     },
     '[""," d"]': v0 => `${v0} дн.`,
+    '[""," for details · "," for everything"]': (v0, v1) => `${v0} — подробности · ${v1} — все команды`,
     '["","/"," done"]': (v0, v1) => `готово ${v0}/${v1}`,
     '["","/","+ done"]': (v0, v1) => `готово ${v0}/${v1}+`,
     '[""," Down"]': v0 => `${v0} Вниз`,
     '[""," ago"]': v0 => `${v0} назад`,
     '["","–"," of "," · tab to scroll"]': (v0, v1, v2) => `${v0}–${v1} из ${v2} · tab прокрутка`,
+    '[""," of ",""]': (v0, v1) => `${v0} из ${v1}`,
     '[""," late enough to hold frames; "," never came."]': (v0, v1) => `Поздних ответов: ${v0}; не получено: ${v1}.`,
     '[""," late enough to hold frames; one never came."]': v0 => `Поздних ответов: ${v0}; один не получен.`,
     '[""," late enough to hold frames; slowest ","."]': (v0, v1) =>
@@ -4493,10 +5009,10 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
     '[""," local processes / "," / "," shown"]': (v0, v1, v2) => `Локальных процессов: ${v0} / ${v1} / показано: ${v2}`,
     '[""," local processes / "," / partial / "," shown"]': (v0, v1, v2) =>
       `Локальных процессов: ${v0} / ${v1} / неполные данные / показано: ${v2}`,
+    '[""," models"]': v0 => `Моделей: ${v0}`,
     '[""," of "," GiB"]': (v0, v1) => `${v0} из ${v1} GiB`,
     '[""," · needs ",""]': (v0, v1) => `${v0} · требуется ${v1}`,
     '[""," already exited"]': v0 => `${v0} уже завершён`,
-    '["(auto choice)"]': () => `(автовыбор)`,
     '["(empty)"]': () => `(пусто)`,
     '["(no directory)"]': () => `(нет каталога)`,
     '["+ Create “","”"]': v0 => `+ Создать «${v0}»`,
@@ -4548,6 +5064,9 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
     '["A path or a name on PATH; empty uses the default"]': () => `Путь или имя в PATH; пустая строка — по умолчанию`,
     '["A push is already running for this repository."]': () => `Отправка для этого репозитория уже выполняется.`,
     '["AGE"]': () => `ВОЗРАСТ`,
+    '["AGENT is codex, claude, an account (claude/work or work), a saved command\'s\\nname, profile/ID, a clone name, or command/N, as launcher list names them."]':
+      () => `AGENT — codex, claude, аккаунт (claude/work или work), имя сохранённой команды,
+profile/ID, имя копии или command/N — как в выводе launcher list.`,
     '["AGENTS"]': () => `АГЕНТЫ`,
     '["About"]': () => `О программе`,
     '["About Corgi"]': () => `О Corgi`,
@@ -4560,68 +5079,23 @@ CORGI_SOCKET으로 서비스를 선택합니다. 작업 공간은 탭과 패널�
       `Действия не описываются; ссылки подписаны «Открыть ссылку»`,
     '["Add $NAME, so each worktree gets a folder of its own"]': () =>
       `Добавьте $NAME, чтобы у каждого рабочего дерева была своя папка`,
+    '["Add a machine with corgi machine add NAME"]': () => `Добавьте компьютер командой corgi machine add NAME`,
     '["Add a shortcut with +"]': () => `Добавьте сочетание кнопкой +`,
     '["Add agent"]': () => `Добавить агента`,
+    '["Add to the list"]': () => `Добавить в список`,
     '["Agent"]': () => `Агент`,
-    "[\"Agent controls (--json prints the daemon's reply as JSON):\\n  corgi list [--json]                 layout, panes, agents, viewers\\n  corgi workspace list\\n  corgi workspace new NAME [--cwd DIR]\\n  corgi workspace edit ID [--name NAME] [--cwd DIR]\\n  corgi workspace close ID          requires an empty workspace\\n  corgi workspace switch ID [--viewer ID]\\n  corgi current                      calling pane's live location\\n  corgi tab new [--name NAME] [--cwd DIR] [--workspace ID] [--command SHELL_COMMAND]\\n  corgi tab rename ID|current NAME|--clear\\n  corgi tab move ID|current --before ID|--after ID|--workspace ID\\n  corgi tab merge ID|current --right-of ID|--left-of ID|--above ID|--below ID\\n  corgi tab close ID|current\\n  corgi pane split ID|current --right|--left|--up|--down [--cwd DIR] [--command SHELL_COMMAND]\\n  corgi pane move ID|current --right-of ID|--left-of ID|--above ID|--below ID\\n  corgi pane move ID|current --new-tab [--name NAME]\\n  corgi pane swap ID|current ID\\n  corgi pane resize ID|current --width PERCENT|--height PERCENT (10%-90%)\\n  corgi pane close ID|current\\n  corgi pane read ID|current [--lines N] [--json]\\n  corgi pane send ID|current TEXT|--stdin [--enter]\\n  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, arrows, etc.\\n  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  shells at their prompt\\n  corgi claim PROVIDER [--pane ID|current] [--owner PID]\\n  corgi claim --clear [--pane ID|current] [--owner PID]\\n  corgi focus ID|current --viewer ID  select in exactly one viewer\\n  corgi launcher list [--workspace ID] [--json]  agents each launcher shows\\n  corgi launcher hide AGENT... [--workspace ID]  in one workspace only\\n  corgi launcher show AGENT... [--workspace ID]  in one workspace only\\n  corgi launcher move AGENT [--before AGENT|--after AGENT|--first] [--workspace ID]\\n  corgi launcher edit AGENT [--name NAME] [--model ID|auto] [--effort LEVEL|default]\\n    [--flags FLAGS] [--env JSON_OBJECT] [--yolo on|off] [--workspace ID]\\n  corgi launcher clone AGENT [--name NAME] [--model ID|auto] [--effort LEVEL|default]\\n    [--flags FLAGS] [--env JSON_OBJECT] [--yolo on|off] [--workspace ID]\\n  corgi launcher models AGENT [--json]  native model IDs, efforts and defaults\\n  corgi launcher add --command COMMAND [--name NAME] [--workspace ID]\\n  corgi launcher edit AGENT --command COMMAND [--name NAME] [--workspace ID]\\n  corgi launcher remove AGENT [--workspace ID]  delete a clone or saved command\\n  corgi launcher copy --from ID --workspace ID  replace destination order and visibility\\n  corgi --skill                      print bundled agent instructions\\n\\nIDs come from list; current means CORGI_PANE, never UI focus.\\nNew tabs and launcher mutations outside Corgi require --workspace.\\nAgent settings are shared; order and visibility belong to each workspace.\\nMove without a position appends. Env replaces overrides, e.g. '{\\\"KEY\\\":\\\"value\\\"}'.\\nAuto uses the agent CLI's last model; default leaves effort to the agent CLI.\\nAGENT is codex, claude, an account (claude/work or work), a saved command's\\nname, profile/ID, a clone name, or command/N, as launcher list names them.\\nOperations never auto-start a server.\\nLayout changes preserve processes and do not select another pane in a viewer.\\n\\nControl Corgi panes, agents, or workspaces:\\n  SKIP if a Corgi skill is already in your context. Otherwise run: corgi --skill\\n\"]":
-      () => `Управление агентами (--json выводит ответ сервера в JSON):
-  corgi list [--json]                 расположение, панели, агенты, клиенты
-  corgi workspace list
-  corgi workspace new NAME [--cwd DIR]
-  corgi workspace edit ID [--name NAME] [--cwd DIR]
-  corgi workspace close ID          требуется пустое пространство
-  corgi workspace switch ID [--viewer ID]
-  corgi current                      текущее расположение вызывающей панели
-  corgi tab new [--name NAME] [--cwd DIR] [--workspace ID] [--command SHELL_COMMAND]
-  corgi tab rename ID|current NAME|--clear
-  corgi tab move ID|current --before ID|--after ID|--workspace ID
-  corgi tab merge ID|current --right-of ID|--left-of ID|--above ID|--below ID
-  corgi tab close ID|current
-  corgi pane split ID|current --right|--left|--up|--down [--cwd DIR] [--command SHELL_COMMAND]
-  corgi pane move ID|current --right-of ID|--left-of ID|--above ID|--below ID
-  corgi pane move ID|current --new-tab [--name NAME]
-  corgi pane swap ID|current ID
-  corgi pane resize ID|current --width PERCENT|--height PERCENT (10%-90%)
-  corgi pane close ID|current
-  corgi pane read ID|current [--lines N] [--json]
-  corgi pane send ID|current TEXT|--stdin [--enter]
-  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, стрелки и т. д.
-  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  оболочки, ожидающие ввода
-  corgi claim PROVIDER [--pane ID|current] [--owner PID]
-  corgi claim --clear [--pane ID|current] [--owner PID]
-  corgi focus ID|current --viewer ID  выбрать ровно в одном клиенте
-  corgi launcher list [--workspace ID] [--json]  агенты, видимые в каждом списке запуска
-  corgi launcher hide AGENT... [--workspace ID]  только в одном пространстве
-  corgi launcher show AGENT... [--workspace ID]  только в одном пространстве
-  corgi launcher move AGENT [--before AGENT|--after AGENT|--first] [--workspace ID]
-  corgi launcher edit AGENT [--name NAME] [--model ID|auto] [--effort LEVEL|default]
-    [--flags FLAGS] [--env JSON_OBJECT] [--yolo on|off] [--workspace ID]
-  corgi launcher clone AGENT [--name NAME] [--model ID|auto] [--effort LEVEL|default]
-    [--flags FLAGS] [--env JSON_OBJECT] [--yolo on|off] [--workspace ID]
-  corgi launcher models AGENT [--json]  ID моделей, глубина рассуждений и значения по умолчанию
-  corgi launcher add --command COMMAND [--name NAME] [--workspace ID]
-  corgi launcher edit AGENT --command COMMAND [--name NAME] [--workspace ID]
-  corgi launcher remove AGENT [--workspace ID]  удалить копию или сохранённую команду
-  corgi launcher copy --from ID --workspace ID  заменить порядок и видимость в целевом пространстве
-  corgi --skill                      вывести встроенные инструкции для агентов
-
-ID берутся из list; current означает CORGI_PANE, а не выбранную в интерфейсе панель.
-Для новых вкладок и изменения списка запуска вне Corgi нужен --workspace.
-Настройки агентов общие; порядок и видимость задаются отдельно для каждого пространства.
-Перемещение без позиции добавляет в конец. Env заменяет переопределения, например '{"KEY":"value"}'.
-auto использует последнюю модель CLI агента; default оставляет выбор глубины рассуждений CLI агента.
-AGENT — codex, claude, аккаунт (claude/work или work), имя сохранённой команды,
-profile/ID, имя копии или command/N — как в выводе launcher list.
-Операции не запускают сервер автоматически.
-Изменение расположения сохраняет процессы и не переключает панель клиента.
-
-Управление панелями, агентами и пространствами Corgi:
-  ПРОПУСТИТЕ, если навык Corgi уже есть в контексте. Иначе выполните: corgi --skill
-`,
+    '["Agent controls (--json prints the daemon\'s reply as JSON):"]': () =>
+      `Управление агентами (--json выводит ответ сервера в JSON):`,
     '["Agent default"]': () => `По умолчанию у агента`,
     '["Agent launch command"]': () => `Команда запуска агента`,
     '["Agent or new terminal"]': () => `Агент или новый терминал`,
+    '["Agent settings are shared; order and visibility belong to each workspace."]': () =>
+      `Настройки агентов общие; порядок и видимость задаются отдельно для каждого пространства.`,
+    '["Agent states unavailable"]': () => `Состояния агентов неизвестны`,
     '["Agents"]': () => `Агенты`,
+    '["Agents (",")"]': v0 => `Агенты (${v0})`,
+    '["Agents and processes will stop and release memory. Layout and history stay; unsaved state is lost."]': () =>
+      `Агенты и процессы будут остановлены, а память освобождена. Раскладка и история сохранятся; несохранённое состояние будет потеряно.`,
     '["All"]': () => `Все`,
     '["All "," workspaces in this session move together."]': v0 =>
       `Все пространства этого сеанса (${v0}) переносятся вместе.`,
@@ -4639,16 +5113,21 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Answers in ","."]': v0 => `Ответ за ${v0}.`,
     '["Appended to Corgi\'s launch command. Quotes supported."]': () =>
       `Добавляется к команде запуска Corgi. Кавычки поддерживаются.`,
+    '["Archive ","?"]': v0 => `Архивировать ${v0}?`,
+    '["Archive workspace"]': () => `Архивировать рабочее пространство`,
+    '["Archiving…"]': () => `Архивация…`,
     '["Arrange"]': () => `Расположение`,
     '["Arrow keys"]': () => `Стрелки`,
     '["Auto"]': () => `Авто`,
     '["Auto (",")"]': v0 => `Авто (${v0})`,
     '["Auto (follows your agents)"]': () => `Авто (по вашим агентам)`,
     '["Auto (last chosen)"]': () => `Авто (последний выбор)`,
+    '["Auto uses the agent CLI\'s last model; default leaves effort to the agent CLI."]': () =>
+      `auto использует последнюю модель CLI агента; default оставляет выбор глубины рассуждений CLI агента.`,
+    '["Auto-retry capacity errors"]': () => `Автоповтор при перегрузке`,
     '["Back to agent"]': () => `Вернуться к агенту`,
     '["Background commands"]': () => `Фоновые команды`,
     '["Backspace undo"]': () => `Backspace отмена`,
-    '["Billing"]': () => `Оплата`,
     '["Binary file"]': () => `Двоичный файл`,
     '["Binary file · no text diff"]': () => `Двоичный файл · нет текстовых изменений`,
     '["Blocked by clipboard-read = deny."]': () => `Заблокировано настройкой clipboard-read = deny.`,
@@ -4657,6 +5136,8 @@ profile/ID, имя копии или command/N — как в выводе launch
       `В имени ветки нельзя использовать пробелы, .. и ~^:?*[\\`,
     '["Brief failed"]': () => `Не удалось составить описание`,
     '["Bring your work along"]': () => `Перенесите свою работу`,
+    '["Build ",""]': v0 => `Сборка ${v0}`,
+    '["Build "," built on ",""]': (v0, v1) => `Сборка ${v0} от ${v1}`,
     '["Build: "]': () => `Сборка: `,
     '["Builds"]': () => `Сборки`,
     '["By activity"]': () => `По активности`,
@@ -4664,12 +5145,15 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["CORGI"]': () => `CORGI`,
     '["CORGI_LANG overrides this setting when set."]': () =>
       `Если задан CORGI_LANG, он имеет приоритет над этой настройкой.`,
+    '["CORGI_SOCKET selects a runtime. Workspaces group tabs and panes; no worktrees."]': () =>
+      `CORGI_SOCKET выбирает сервер. Пространства объединяют вкладки и панели, но не рабочие деревья.`,
     '["CPU and memory under each workspace in the sidebar."]': () =>
       `ЦП и память под каждым пространством в боковой панели.`,
     '["CPU busy"]': () => `ЦП занят`,
     '["Cached"]': () => `Кэш`,
     '["Can\'t read this folder"]': () => `Не удалось прочитать эту папку`,
     '["Cancel"]': () => `Отмена`,
+    '["Change folder"]': () => `Сменить папку`,
     '["Change navigation"]': () => `Переход по изменениям`,
     '["Check failed"]': () => `Проверка не удалась`,
     '["Check flag quotes; shell operators and expansions aren\'t supported."]': () =>
@@ -4682,6 +5166,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Choose a valid model ID."]': () => `Выберите допустимый ID модели.`,
     '["Choose agent"]': () => `Выбрать агента`,
     '["Choose an agent or terminal"]': () => `Выберите агента или терминал`,
+    '["Choose an edge to split"]': () => `Выберите край для разделения`,
     '["Choose familiar keys."]': () => `Выберите привычные клавиши.`,
     '["Choose the language for Corgi\'s interface."]': () => `Выберите язык интерфейса Corgi.`,
     '["Choose workspace"]': () => `Выбрать пространство`,
@@ -4690,15 +5175,12 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Clear pane name"]': () => `Сбросить имя панели`,
     '["Clear search to reorder agents."]': () => `Очистите поиск для изменения порядка агентов.`,
     '["Clever Corgi"]': () => `Умный Corgi`,
-    '["Click to resume"]': () => `Нажмите, чтобы продолжить`,
     '["Clone agent · draft"]': () => `Копия агента · черновик`,
     '["Close"]': () => `Закрыть`,
     '["Close / reopen"]': () => `Закрыть / открыть снова`,
     '["Close all agents for ",""]': v0 => `Закрыть всех агентов для ${v0}`,
     '["Close pane"]': () => `Закрыть панель`,
     '["Close tab"]': () => `Закрыть вкладку`,
-    '["Close the "," agents that run in it first."]': v0 => `Сначала закройте работающих в нём агентов (${v0}).`,
-    '["Close the agent that runs in it first."]': () => `Сначала закройте работающего в нём агента.`,
     '["Close workspace"]': () => `Закрыть пространство`,
     '["Cmd+T/D/W, workspace numbers and related bindings replace host actions."]': () =>
       `Cmd+T/D/W, номера пространств и связанные сочетания заменят действия терминала.`,
@@ -4709,6 +5191,8 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Command shortcuts"]': () => `Сочетания Command`,
     '["Command too long"]': () => `Слишком длинная команда`,
     '["Commands"]': () => `Команды`,
+    '["Commands print text; --json prints the daemon\'s reply as JSON instead."]': () =>
+      `Команды выводят текст; --json выводит ответ сервера в формате JSON.`,
     '["Comment"]': () => `Комментировать`,
     '["Commit"]': () => `Коммит`,
     '["Commit details unavailable"]': () => `Данные коммита недоступны`,
@@ -4720,6 +5204,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Comparison branch unavailable"]': () => `Ветка для сравнения недоступна`,
     '["Connect your Command keys"]': () => `Подключите клавиши Command`,
     '["Connecting to Herdr"]': () => `Подключение к Herdr`,
+    '["Control Corgi panes, agents, or workspaces:"]': () => `Управление панелями, агентами и пространствами Corgi:`,
     '["Copied "," note."]': v0 => {
       switch (plural("ru", Number(v0))) {
         case "one":
@@ -4748,13 +5233,13 @@ profile/ID, имя копии или command/N — как в выводе launch
           return `Скопировано ${v0} заметки.`;
       }
     },
-    '["Copied the link; paste it into your browser."]': () => `Ссылка скопирована; вставьте её в браузер.`,
     '["Copies the conversation into a new tab"]': () => `Копирует диалог в новую вкладку`,
     '["Copies the workspaces; their processes stay in Herdr."]': () =>
       `Копирует пространства; процессы остаются в Herdr.`,
     '["Copy"]': () => `Копировать`,
     '["Copy an image, then paste it to an agent."]': () => `Скопируйте изображение и вставьте его агенту.`,
     '["Copy details"]': () => `Скопировать сведения`,
+    '["Copy details for a bug report"]': () => `Скопировать сведения для отчёта об ошибке`,
     '["Copy full path"]': () => `Скопировать полный путь`,
     '["Copy hovered link"]': () => `Скопировать ссылку под курсором`,
     '["Copy sessions, scrollback and commands. Source processes stay in tmux."]': () =>
@@ -4765,18 +5250,23 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Copying into Corgi"]': () => `Копирование в Corgi`,
     '["Corgi and your agents keep running."]': () => `Corgi и ваши агенты продолжают работать.`,
     '["Corgi can\'t read your Ghostty config."]': () => `Corgi не может прочитать настройки Ghostty.`,
-    '["Corgi doesn\'t list this account any more."]': () => `Corgi больше не видит этот аккаунт.`,
     '["Corgi keeps your background when it\'s dark and paints its own otherwise."]': () =>
       `Corgi сохраняет тёмный фон терминала, иначе использует свой.`,
     '["Corgi pastes PNG, JPEG, GIF and WebP images"]': () => `Corgi вставляет изображения PNG, JPEG, GIF и WebP`,
+    '["Corgi prompt"]': () => `Диалог с Corgi`,
     '["Corgi setup"]': () => `Настройка Corgi`,
+    '["Corgi was uninstalled."]': () => `Corgi удалён.`,
     "[\"Corgi's colors, or your terminal theme's.\"]": () => `Цвета Corgi или темы вашего терминала.`,
     '["Corgi\'s own"]': () => `Цвета Corgi`,
     '["Could not create that folder."]': () => `Не удалось создать эту папку.`,
+    '["Could not load workspace activity. Close and try again."]': () =>
+      `Не удалось загрузить активность рабочего пространства. Закройте окно и повторите попытку.`,
+    '["Could not rename this workspace"]': () => `Не удалось переименовать это рабочее пространство`,
     '["Could not resolve shorthand. Paste its underlying command."]': () =>
       `Не удалось распознать сокращение. Вставьте полную команду.`,
     '["Could not save command; max 2048 bytes."]': () => `Не удалось сохранить команду; максимум 2048 байт.`,
     '["Could not save. Check folder or capacity."]': () => `Не удалось сохранить. Проверьте папку и свободное место.`,
+    '["Could not stop startup"]': () => `Не удалось остановить запуск`,
     '["Could not watch viewer.json for shortcut changes."]': () =>
       `Не удалось отслеживать изменения сочетаний в viewer.json.`,
     '["Couldn\'t read its panes or tabs"]': () => `Не удалось прочитать панели или вкладки`,
@@ -4785,6 +5275,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Couldn\'t read this source. R retries."]': () => `Не удалось прочитать источник. R — повторить.`,
     '["Couldn\'t save the pasted image"]': () => `Не удалось сохранить вставленное изображение`,
     '["Create "]': () => `Создать `,
+    '["Create workspace"]': () => `Создать пространство`,
     '["Creating workspaces and shells"]': () => `Создание пространств и оболочек`,
     '["Custom agent"]': () => `Свой агент`,
     '["Custom command"]': () => `Своя команда`,
@@ -4794,8 +5285,8 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["DETACH"]': () => `ОТКЛЮЧИТЬСЯ`,
     '["Default"]': () => `По умолчанию`,
     '["Default ",""]': v0 => `По умолчанию ${v0}`,
+    '["Default (",")"]': v0 => `По умолчанию (${v0})`,
     '["Default account · unavailable"]': () => `Основной аккаунт · недоступен`,
-    '["Default model"]': () => `Модель по умолчанию`,
     '["Deleted the note on ","."]': v0 => `Заметка к ${v0} удалена.`,
     '["Deletes the saved command"]': () => `Удаляет сохранённую команду`,
     '["Deletes this configuration; keeps the account"]': () => `Удаляет эту конфигурацию; сохраняет аккаунт`,
@@ -4804,9 +5295,12 @@ profile/ID, имя копии или command/N — как в выводе launch
       `Обнаруженные возможности терминала, а не настройки.`,
     '["Didn\'t say its name"]': () => `Не сообщил своё имя`,
     '["Digs up likely HTTP links ↗"]': () => `Находит возможные HTTP-ссылки ↗`,
+    '["Discovering ","…"]': v0 => `Поиск ${v0}…`,
     '["Discovering worktrees…"]': () => `Поиск рабочих деревьев…`,
+    '["Discovering…"]': () => `Поиск…`,
     '["Done"]': () => `Готово`,
     '["Down"]': () => `Вниз`,
+    '["Download and apply an update"]': () => `Скачать и применить обновление`,
     '["Download: "]': () => `Скачать: `,
     '["Drop an agent here"]': () => `Перетащите агента сюда`,
     '["Duplicate variable: ",""]': v0 => `Повторяющаяся переменная: ${v0}`,
@@ -4815,6 +5309,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Edit ",""]': v0 => `Изменить ${v0}`,
     '["Edit agent"]': () => `Изменить агента`,
     '["Edit workspace"]': () => `Изменить пространство`,
+    '["Edit ›"]': () => `Изменить ›`,
     '["Edit, delete"]': () => `Изменить, удалить`,
     '["Ended"]': () => `Завершён`,
     '["Enter a command."]': () => `Введите команду.`,
@@ -4828,11 +5323,13 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Escape is reserved for canceling Corgi controls"]': () => `Escape зарезервирован для отмены действий в Corgi`,
     '["Expand lines"]': () => `Развернуть строки`,
     '["Extra flags"]': () => `Дополнительные флаги`,
-    '["Fetching models…"]': () => `Загрузка моделей…`,
     '["File list"]': () => `Список файлов`,
     '["File navigation"]': () => `Переход по файлам`,
     '["Find"]': () => `Найти`,
     '["Find agent"]': () => `Найти агента`,
+    '["Find agents"]': () => `Найти агентов`,
+    '["Find it in the sidebar"]': () => `Оно появится в боковой панели`,
+    '["Finding ","…"]': v0 => `Поиск ${v0}…`,
     '["Finished"]': () => `Завершено`,
     '["Focus"]': () => `Перейти`,
     '["Focus a pane to review its checkout."]': () => `Выберите панель, чтобы просмотреть её изменения.`,
@@ -4845,7 +5342,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Folded lines take no notes; → opens them."]': () =>
       `К свёрнутым строкам нельзя добавить заметку; → разворачивает их.`,
     '["Folder"]': () => `Папка`,
-    '["Follow "," · ",""]': (v0, v1) => `Выбирать по ${v0} · ${v1}`,
+    '["Follow ",""]': v0 => `Следовать за ${v0}`,
     '["Follow the agents you run"]': () => `Выбирать по запущенным агентам`,
     '["Follow your agents"]': () => `Выбирать по вашим агентам`,
     '["Follow your system language"]': () => `Использовать язык системы`,
@@ -4858,7 +5355,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["From"]': () => `Из`,
     '["GPU use from device totals"]': () => `Загрузка GPU по данным устройства`,
     '["GPU use shared out by memory"]': () => `Загрузка GPU распределена по использованию памяти`,
-    '["Gathering details about this machine…"]': () => `Сбор сведений об этом компьютере…`,
+    '["Gathering bug report info…"]': () => `Собираем сведения для отчёта…`,
     '["Generated file · +"," −",""]': (v0, v1) => `Сгенерированный файл · +${v0} −${v1}`,
     '["Generated file · enter loads its diff"]': () => `Сгенерированный файл · Enter загружает изменения`,
     '["Ghostty is set to refuse clipboard reads."]': () => `В Ghostty запрещено чтение буфера обмена.`,
@@ -4871,7 +5368,10 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Half page"]': () => `Полстраницы`,
     '["Handing off to Corgi"]': () => `Передача в Corgi`,
     '["Handoff processes"]': () => `Передать процессы`,
+    '["Happy helper for your terminal."]': () => `Весёлый помощник для вашего терминала.`,
     '["Help needs 32 × 12"]': () => `Для справки нужно окно 32 × 12`,
+    '["Hibernate pane"]': () => `Перевести панель в спящий режим`,
+    '["Hibernated"]': () => `В спящем режиме`,
     '["Hidden"]': () => `Скрытые`,
     '["Hide, resize"]': () => `Скрыть, изменить размер`,
     '["Hold with the action key."]': () => `Удерживайте вместе с клавишей действия.`,
@@ -4879,6 +5379,8 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Home row"]': () => `Основной ряд`,
     '["I\'ll bring over what I can."]': () => `Перенесу всё, что смогу.`,
     '["I\'m confused by this cmux version."]': () => `Эта версия cmux мне незнакома.`,
+    '["IDs come from list; current means CORGI_PANE, never UI focus."]': () =>
+      `ID берутся из list; current означает CORGI_PANE, а не выбранную в интерфейсе панель.`,
     '["Idle"]': () => `Бездействует`,
     '["Image paste"]': () => `Вставка изображений`,
     '["Images over 32 MB don\'t paste"]': () => `Изображения больше 32 MB не вставляются`,
@@ -4890,6 +5392,8 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["In Ghostty only, these keys drive Corgi:"]': () => `Только в Ghostty эти клавиши управляют Corgi:`,
     '["In the list"]': () => `В списке`,
     '["Including subagents"]': () => `Включая субагентов`,
+    '["Installing ","…"]': v0 => `Установка ${v0}…`,
+    '["Installs on use"]': () => `Установится при запуске`,
     '["Intensity"]': () => `Яркость`,
     '["Invalid viewer.json; keeping the working shortcuts."]': () =>
       `Ошибка в viewer.json; сохранены работающие сочетания.`,
@@ -4897,6 +5401,7 @@ profile/ID, имя копии или command/N — как в выводе launch
       `Ошибка в viewer.json; до исправления файла используются настройки по умолчанию.`,
     '["It runs in a background session, outside any pane"]': () => `Работает в фоновом сеансе, вне панелей`,
     '["Its diff starts collapsed. Enter loads it."]': () => `Изменения изначально свёрнуты. Enter загружает их.`,
+    '["Join our Discord community:"]': () => `Наше сообщество в Discord:`,
     '["Jump to attention"]': () => `Перейти к требующему внимания`,
     '["Jump to who needs you"]': () => `Перейти к тому, кому вы нужны`,
     '["Keep"]': () => `Оставить`,
@@ -4907,6 +5412,8 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Keyboard shortcuts"]': () => `Сочетания клавиш`,
     '["Keymap"]': () => `Раскладка клавиш`,
     '["Keys"]': () => `Клавиши`,
+    '["Keys: Ctrl+B opens a clickable command menu; `corgi keys` lists every shortcut."]': () =>
+      `Клавиши: Ctrl+B открывает меню команд с поддержкой мыши; \`corgi keys\` показывает все сочетания.`,
     '["Kill "," with SIGKILL?"]': v0 => `Принудительно завершить ${v0} сигналом SIGKILL?`,
     '["Kitty graphics"]': () => `Графика Kitty`,
     '["Language"]': () => `Язык`,
@@ -4917,14 +5424,20 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Last visited agent"]': () => `Последний выбранный агент`,
     '["Last visited tab"]': () => `Последняя выбранная вкладка`,
     '["Last visited workspace"]': () => `Последнее выбранное пространство`,
-    '["Launch inside a pane:"]': () => `Запустить внутри панели:`,
+    '["Layout"]': () => `Расположение`,
+    '["Layout changes preserve processes and do not select another pane in a viewer."]': () =>
+      `Изменение расположения сохраняет процессы и не переключает панель клиента.`,
+    '["Learn more about Corgi:"]': () => `Подробнее о Corgi:`,
     '["Leave"]': () => `Выйти`,
     '["Limits"]': () => `Лимиты`,
     '["Links · Esc to close"]': () => `Ссылки · Esc закрыть`,
     '["List"]': () => `Список`,
+    '["List shortcuts; Ctrl+B opens the menu"]': () => `Сочетания клавиш; Ctrl+B — меню`,
     '["List, diff"]': () => `Список, изменения`,
     '["Live handoff unavailable for this session; turn it off to copy."]': () =>
       `Передача процессов для этого сеанса недоступна; отключите её для копирования.`,
+    '["Loading pane…"]': () => `Загрузка панели…`,
+    '["Loading tabs…"]': () => `Загрузка вкладок…`,
     '["Looking for running sessions…"]': () => `Поиск запущенных сеансов…`,
     '["MATCHING SHORTCUTS"]': () => `ПОДХОДЯЩИЕ СОЧЕТАНИЯ`,
     '["MODIFIER"]': () => `МОДИФИКАТОР`,
@@ -4952,9 +5465,12 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Move tab right"]': () => `Переместить вкладку вправо`,
     '["Move tab to workspace…"]': () => `Переместить вкладку в рабочее пространство…`,
     '["Move to new tab"]': () => `В новую вкладку`,
+    '["Move without a position appends. Env replaces overrides, e.g. \'{\\"KEY\\":\\"value\\"}\'."]': () =>
+      `Перемещение без позиции добавляет в конец. Env заменяет переопределения, например '{"KEY":"value"}'.`,
     '["Mute / unmute"]': () => `Включить / выключить звук`,
     '["Mute / unmute sounds"]': () => `Включить / выключить звуки`,
     '["Name"]': () => `Имя`,
+    '["Name it and pick a folder"]': () => `Назовите и выберите папку`,
     '["Name tab"]': () => `Имя вкладки`,
     '["Names fit in 80 characters"]': () => `Имя должно быть не длиннее 80 символов`,
     '["Navigate"]': () => `Переход`,
@@ -4972,6 +5488,8 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["New tab"]': () => `Новая вкладка`,
     '["New tab (agent picker)"]': () => `Новая вкладка (выбор агента)`,
     '["New tab → agent picker"]': () => `Новая вкладка → выбор агента`,
+    '["New tabs and launcher mutations outside Corgi require --workspace."]': () =>
+      `Для новых вкладок и изменения списка запуска вне Corgi нужен --workspace.`,
     '["New terminal"]': () => `Новый терминал`,
     '["New workspace"]': () => `Новое пространство`,
     '["Next / previous"]': () => `Следующий / предыдущий`,
@@ -4980,7 +5498,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Next pane"]': () => `Следующая панель`,
     '["Next tab"]': () => `Следующая вкладка`,
     '["Next workspace"]': () => `Следующее пространство`,
-    '["No agents yet"]': () => `Агентов пока нет`,
+    '["No active agents or processes."]': () => `Нет активных агентов или процессов.`,
     '["No agents yet this session; using your last one"]': () =>
       `В этом сеансе ещё нет агентов; используется последний`,
     '["No available sessions found."]': () => `Доступных сеансов не найдено.`,
@@ -4990,21 +5508,25 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["No commit picked yet. g opens the menu."]': () => `Коммит ещё не выбран. g открывает меню.`,
     '["No commits since ",""]': v0 => `Нет коммитов после ${v0}`,
     '["No commits yet"]': () => `Коммитов пока нет`,
+    '["No daemon connection"]': () => `Нет связи с демоном`,
     '["No executable shell there."]': () => `Здесь нет исполняемой оболочки.`,
     '["No folders"]': () => `Нет папок`,
     '["No folders match"]': () => `Подходящих папок нет`,
+    '["No image on the clipboard"]': () => `В буфере обмена нет изображения`,
     '["No lines changed"]': () => `Строки не изменены`,
     '["No linked worktrees"]': () => `Нет связанных рабочих деревьев`,
     '["No matches."]': () => `Совпадений нет.`,
     '["No matching actions."]': () => `Подходящих действий нет.`,
     '["No matching agents"]': () => `Подходящих агентов нет`,
-    '["No matching models"]': () => `Подходящих моделей нет`,
+    '["No models"]': () => `Нет моделей`,
+    '["No models match"]': () => `Нет подходящих моделей`,
     '["No notes yet."]': () => `Заметок пока нет.`,
     '["No notes yet. v selects lines, c comments."]': () =>
       `Заметок пока нет. v — выделить строки, c — комментировать.`,
     '["No overrides; inherits your environment."]': () => `Нет переопределений; используется ваше окружение.`,
+    '["No processes"]': () => `Нет процессов`,
     '["No shortcuts"]': () => `Нет сочетаний`,
-    '["No signed-in models"]': () => `Нет моделей с выполненным входом`,
+    '["No such workspace"]': () => `Нет такого пространства`,
     '["No summaries, plain links"]': () => `Без описаний, обычные ссылки`,
     '["No text diff and no line notes."]': () => `Нет текстовых изменений и заметок к строкам.`,
     '["No uncommitted changes."]': () => `Нет незакоммиченных изменений.`,
@@ -5012,6 +5534,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["No workspaces could be recovered yet."]': () => `Пока не удалось восстановить пространства.`,
     '["None"]': () => `Нет`,
     '["None late enough to hold frames."]': () => `Ни один кадр не задержан ожиданием.`,
+    '["Not enough room for this split"]': () => `Недостаточно места для разделения`,
     '["Not in a git checkout:"]': () => `Не в рабочей копии git:`,
     '["Not installed"]': () => `Не установлен`,
     '["Not signed in"]': () => `Вход не выполнен`,
@@ -5019,6 +5542,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Nothing beyond main"]': () => `Нет изменений относительно main`,
     '["Nothing changed on "," yet."]': v0 => `В ${v0} пока нет изменений.`,
     '["Nothing closed here. Tab widens the scope."]': () => `Здесь нет закрытых агентов. Tab расширяет область поиска.`,
+    '["Nothing is waiting"]': () => `Нет ожидающих задач`,
     '["Observed tokens"]': () => `Учтённые токены`,
     '["Off"]': () => `Выкл.`,
     '["On"]': () => `Вкл.`,
@@ -5031,10 +5555,13 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Open folder as workspace"]': () => `Открыть папку как пространство`,
     '["Open the agent picker"]': () => `Открыть выбор агента`,
     '["Open · jumps to its tab"]': () => `Открытые · переход на их вкладку`,
+    '["Operations never auto-start a server."]': () => `Операции не запускают сервер автоматически.`,
     '["Ordered key sets belong to an indexed action, such as tab"]': () =>
       `Упорядоченные наборы клавиш нужны действию с индексом, например tab`,
     '["Other agents"]': () => `Другие агенты`,
     '["Other…"]': () => `Другое…`,
+    '["Over SSH, images paste only from terminals that send them"]': () =>
+      `Через SSH вставка изображений доступна только из терминалов, которые их отправляют`,
     '["P  Continue with portable Herdr keys"]': () => `P  Использовать переносимые клавиши Herdr`,
     '["P = prefix · Cmd = hold"]': () => `P = префикс · Cmd = удерживать`,
     '["P prefix"]': () => `P префикс`,
@@ -5043,6 +5570,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["PROCESS"]': () => `ПРОЦЕСС`,
     '["Page"]': () => `Страница`,
     '["Partial process coverage"]': () => `Неполные данные о процессах`,
+    '["Past conversations, newest first"]': () => `Прошлые диалоги, сначала новые`,
     '["Paste (host terminal)"]': () => `Вставить (терминал)`,
     '["Paste a command…"]': () => `Вставьте команду…`,
     '["Paste copied text"]': () => `Вставить скопированный текст`,
@@ -5074,15 +5602,23 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Previous pane"]': () => `Предыдущая панель`,
     '["Previous tab"]': () => `Предыдущая вкладка`,
     '["Previous workspace"]': () => `Предыдущее пространство`,
+    '["Process counts unavailable"]': () => `Число процессов неизвестно`,
+    '["Process information unavailable"]': () => `Информация о процессах недоступна`,
+    '["Process list may be incomplete"]': () => `Список процессов может быть неполным`,
+    '["Processes"]': () => `Процессы`,
+    '["Prompt an agent through its own channel"]': () => `Запрос через собственный канал агента`,
     '["Push failed"]': () => `Не удалось отправить`,
     '["Reading branches…"]': () => `Чтение веток…`,
     '["Reading default account…"]': () => `Чтение основного аккаунта…`,
     '["Reading git…"]': () => `Чтение git…`,
+    '["Reading models…"]': () => `Загрузка моделей…`,
     '["Reading the diff…"]': () => `Чтение изменений…`,
+    '["Reading workspace activity…"]': () => `Чтение активности рабочего пространства…`,
     '["Reading…"]': () => `Чтение…`,
     '["Receiving live terminals"]': () => `Приём работающих терминалов`,
     '["Record Enter"]': () => `Записать Enter`,
     '["Record a sequence…"]': () => `Записать последовательность…`,
+    '["Redo layout change"]': () => `Повторить изменение раскладки`,
     '["Relaunch viewer"]': () => `Перезапустить клиент`,
     '["Release notes"]': () => `Что нового`,
     '["Release, then press a key."]': () => `Отпустите, затем нажмите клавишу.`,
@@ -5094,7 +5630,6 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Reload Ghostty: Cmd+Shift+, to apply Command keys."]': () =>
       `Перезагрузите Ghostty: Cmd+Shift+, — чтобы применить клавиши Command.`,
     '["Remove"]': () => `Удалить`,
-    '["Removed"]': () => `Удалён`,
     '["Removing"]': () => `Удаление`,
     '["Rename"]': () => `Переименовать`,
     '["Rename agent"]': () => `Переименовать агента`,
@@ -5102,6 +5637,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Rename tab"]': () => `Переименовать вкладку`,
     '["Rename workspace"]': () => `Переименовать пространство`,
     '["Reopen"]': () => `Открыть снова`,
+    '["Reopen a past conversation"]': () => `Снова открыть прошлый диалог`,
     '["Reopen directly"]': () => `Открыть снова напрямую`,
     '["Reopen last closed agent"]': () => `Открыть последнего закрытого агента`,
     '["Reopen tab"]': () => `Открыть вкладку снова`,
@@ -5118,6 +5654,11 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Resources"]': () => `Ресурсы`,
     '["Restoring…"]': () => `Восстановление…`,
     '["Resume"]': () => `Возобновить`,
+    '["Resume pane"]': () => `Возобновить панель`,
+    '["Resume with corgi pane wake ",""]': v0 => `Возобновить: corgi pane wake ${v0}`,
+    '["Retries Codex at capacity; Esc stops it."]': () => `Повторяет Codex при перегрузке; Esc отменяет.`,
+    '["Retrying in ",""]': v0 => `Повтор через ${v0}`,
+    '["Retrying…"]': () => `Повторная попытка…`,
     '["Return in each pane restarts its command"]': () => `Enter в каждой панели перезапускает её команду`,
     '["Review"]': () => `Просмотр`,
     '["Review changes"]': () => `Просмотр изменений`,
@@ -5140,7 +5681,9 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Scroll / copy"]': () => `Прокрутка / копирование`,
     '["Scroll / copy mode"]': () => `Режим прокрутки / копирования`,
     '["Search"]': () => `Поиск`,
+    '["Search conversation text"]': () => `Поиск по тексту диалогов`,
     '["Search models"]': () => `Поиск моделей`,
+    '["Search models, agents and accounts"]': () => `Поиск моделей, агентов и аккаунтов`,
     '["Select"]': () => `Выбрать`,
     '["Select tab"]': () => `Выбрать вкладку`,
     '["Select workspace"]': () => `Выбрать пространство`,
@@ -5174,6 +5717,8 @@ profile/ID, имя копии или command/N — как в выводе launch
       }
     },
     '["Sent "," to ",""]': (v0, v1) => `Сигнал ${v0} отправлен: ${v1}`,
+    '["Served links"]': () => `Обслуживаемые ссылки`,
+    '["Served links will go offline."]': () => `Обслуживаемые ссылки станут недоступны.`,
     '["Servers"]': () => `Серверы`,
     '["Session ended"]': () => `Сеанс завершён`,
     '["Set clipboard-read = ask to enable paste with ","."]': v0 =>
@@ -5193,14 +5738,13 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Shortcuts reloaded; could not update the Ghostty integration."]': () =>
       `Сочетания перечитаны; не удалось обновить интеграцию с Ghostty.`,
     '["Show"]': () => `Показать`,
-    '["Show "," more"]': v0 => `Показать ещё ${v0}`,
-    '["Show fewer"]': () => `Показать меньше`,
+    '["Show a folder\'s workspace, or add one"]': () => `Пространство папки; создать, если нет`,
     '["Show less"]': () => `Свернуть`,
     '["Show resources"]': () => `Показать ресурсы`,
+    '["Show startup waits"]': () => `Показать ожидающие запуски`,
     '["Show worktrees"]': () => `Показать рабочие деревья`,
     '["Sidebar corgi brightness."]': () => `Яркость корги в боковой панели.`,
     '["Sign in"]': () => `Войти`,
-    '["Sign in first"]': () => `Сначала войдите`,
     '["Sign in to a model provider through ",""]': v0 => `Войдите в аккаунт провайдера через ${v0}`,
     '["Signed out"]': () => `Выход выполнен`,
     '["Signs out and deletes its folder"]': () => `Выходит из аккаунта и удаляет его папку`,
@@ -5217,10 +5761,14 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Star"]': () => `В избранное`,
     '["Star / unstar agent"]': () => `Добавить / убрать агента из избранного`,
     '["Star / unstar headless agent"]': () => `Добавить / убрать фонового агента из избранного`,
+    '["Start"]': () => `Запуск`,
+    '["Start Corgi or attach to it"]': () => `Запустить Corgi или подключиться`,
     '["Starting"]': () => `Запуск`,
     '["Starting session"]': () => `Запуск сеанса`,
+    '["Startup waits: enlarge terminal · Esc to close"]': () => `Ожидание запуска: увеличьте терминал · Esc — закрыть`,
     '["Still pasting the previous image"]': () => `Предыдущее изображение ещё вставляется`,
     '["Stop "," with SIGTERM?"]': v0 => `Остановить ${v0} сигналом SIGTERM?`,
+    '["Stopping ","…"]': v0 => `Остановка ${v0}…`,
     '["Suggested automatically"]': () => `Предлагается автоматически`,
     '["Swap"]': () => `Поменять местами`,
     '["Swap down"]': () => `Поменять с нижней`,
@@ -5241,11 +5789,10 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["That pane would run the notes as commands; copied them instead."]': () =>
       `Эта панель выполнила бы заметки как команды; они скопированы вместо отправки.`,
     '["That\'s a file, not a folder."]': () => `Это файл, а не папка.`,
+    '["The Farm"]': () => `Ферма`,
     '["The clipboard image was damaged"]': () => `Изображение в буфере обмена повреждено`,
     '["The commits to push changed. Review them and push again."]': () =>
       `Коммиты для отправки изменились. Просмотрите их и повторите отправку.`,
-    '["The issue starts with these details. Nothing is sent until you submit it on GitHub."]': () =>
-      `Эти сведения будут в обращении. Ничего не отправится, пока вы не опубликуете его на GitHub.`,
     '["The limit is 2 MB or 50,000 lines."]': () => `Ограничение: 2 MB или 50 000 строк.`,
     '["The notes hold an end-of-paste marker; they\'re kept."]': () =>
       `Заметки содержат маркер конца вставки; они сохранены.`,
@@ -5283,11 +5830,13 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Type a folder, such as ",""]': v0 => `Введите папку, например ${v0}`,
     '["Type a path"]': () => `Введите путь`,
     '["UNCOMMITTED CHANGES"]': () => `НЕЗАКОММИЧЕННЫЕ ИЗМЕНЕНИЯ`,
+    '["Unarchive workspace"]': () => `Разархивировать рабочее пространство`,
     '["Unavailable"]': () => `Недоступно`,
     '["Unavailable · ",""]': v0 => `Недоступно · ${v0}`,
     '["Unavailable · server returned 429"]': () => `Недоступно · сервер вернул 429`,
     '["Uncommitted"]': () => `Незакоммичено`,
     '["Undo"]': () => `Отменить`,
+    '["Undo layout change"]': () => `Отменить изменение раскладки`,
     '["Unfold"]': () => `Развернуть`,
     '["Unified / split diff"]': () => `Единый / раздельный diff`,
     '["Unknown"]': () => `Неизвестно`,
@@ -5330,7 +5879,7 @@ ${v1}, чтобы использовать этот аккаунт.
 во всех известных Corgi аккаунтах; --account выбирает один аккаунт (default — основной).
 `,
     '["Use"]': () => `Применить`,
-    '["Use "," · ",""]': (v0, v1) => `Использовать ${v0} · ${v1}`,
+    '["Use ",""]': v0 => `Использовать ${v0}`,
     '["Use "," to enable paste with ","."]': (v0, v1) => `Используйте ${v0} для вставки через ${v1}.`,
     '["Use a nonblank name up to 160 bytes, without control characters."]': () =>
       `Укажите непустое имя до 160 байт без управляющих символов.`,
@@ -5355,7 +5904,11 @@ ${v1}, чтобы использовать этот аккаунт.
     '["Visual flourishes"]': () => `Визуальные эффекты`,
     '["WORKSPACES"]': () => `ПРОСТРАНСТВА`,
     '["WORKTREE"]': () => `РАБОЧЕЕ ДЕРЕВО`,
+    '["Waiting for "," service…"]': v0 => `Ожидание службы ${v0}…`,
+    '["Waiting for "," session…"]': v0 => `Ожидание сеанса ${v0}…`,
+    '["Waiting for ","…"]': v0 => `Ожидание ${v0}…`,
     '["Waiting for Herdr ownership confirmation"]': () => `Ожидание подтверждения передачи от Herdr`,
+    '["Waiting for a response"]': () => `Ожидание ответа`,
     '["Waiting for activity"]': () => `Ожидание активности`,
     '["Waiting on agents"]': () => `Ожидание агентов`,
     '["Waiting on subagents"]': () => `Ожидание субагентов`,
@@ -5369,6 +5922,7 @@ ${v1}, чтобы использовать этот аккаунт.
     '["Working"]': () => `Работает`,
     '["Workspace / all"]': () => `Рабочее пространство / все`,
     '["Workspace only · opens a new shell"]': () => `Только пространство · открывает новую оболочку`,
+    '["Workspaces, tabs, panes and agents"]': () => `Пространства, вкладки, панели, агенты`,
     '["Worktree briefs"]': () => `Описания рабочих деревьев`,
     '["Worktree folder"]': () => `Папка рабочего дерева`,
     '["Worktrees: enlarge terminal · Esc to close"]': () => `Рабочие деревья: увеличьте терминал · Esc закрыть`,
@@ -5408,6 +5962,7 @@ ${v1}, чтобы использовать этот аккаунт.
     '["[Save]"]': () => `[Сохранить]`,
     '["[Show alts Ctrl+L]"]': () => `[Показать варианты Ctrl+L]`,
     '["[Show command]"]': () => `[Показать команду]`,
+    '["[x Kill]"]': () => `[x Прервать]`,
     '["[···] Working"]': () => `[···] Выполняется`,
     '["[✓] Complete"]': () => `[✓] Готово`,
     '["^C Clear"]': () => `^C Очистить`,
@@ -5420,7 +5975,7 @@ ${v1}, чтобы использовать этот аккаунт.
     '["a workspace is open in it"]': () => `в нём открыто пространство`,
     '["accounts"]': () => `аккаунты`,
     '["activate"]': () => `включить`,
-    '["add back to the list"]': () => `вернуть в список`,
+    '["add to the list"]': () => `добавить в список`,
     '["adding ","…"]': v0 => `добавление ${v0}…`,
     '["adjust"]': () => `настроить`,
     '["age"]': () => `возраст`,
@@ -5431,6 +5986,7 @@ ${v1}, чтобы использовать этот аккаунт.
     '["an update"]': () => `обновление`,
     '["another one is being removed"]': () => `уже удаляется другое дерево`,
     '["as dragged"]': () => `как при перетаскивании`,
+    '["auto"]': () => `авто`,
     '["back"]': () => `назад`,
     '["background session"]': () => `фоновый сеанс`,
     '["bin"]': () => `двоич.`,
@@ -5439,6 +5995,7 @@ ${v1}, чтобы использовать этот аккаунт.
     '["change"]': () => `изменить`,
     '["checking…"]': () => `проверка…`,
     '["choose"]': () => `выбрать`,
+    '["choose effort"]': () => `выбрать усилие`,
     '["chosen"]': () => `выбрано`,
     '["clean"]': () => `без изменений`,
     '["clear"]': () => `очистить`,
@@ -5480,61 +6037,23 @@ ${v1}, чтобы использовать этот аккаунт.
     '["commits "," ",""]': (v0, v1) => `коммиты ${v0} ${v1}`,
     '["committed"]': () => `закоммичено`,
     '["committed + working copy"]': () => `коммиты + рабочая копия`,
+    '["connecting"]': () => `подключение`,
     '["context "]': () => `контекст `,
+    '["copy details"]': () => `скопировать сведения`,
     '["copy link"]': () => `скопировать ссылку`,
-    "[\"corgi — a small Ghostty-powered agent terminal\\n\\n  corgi                         start / attach\\n  corgi open DIR                show DIR's workspace; add one if none\\n  corgi onboard                 open onboarding, even after setup\\n  corgi dev                     reload if changed; attach or relaunch viewer\\n  corgi --no-update             attach without activating a staged update\\n  corgi update                  download and safely apply an update\\n  corgi update status           show update status\\n  corgi update rollback         return to the previous release\\n  corgi update --check|--download-only\\n  corgi update auto on|off      control automatic updates\\n  corgi start                   start detached runtime\\n  corgi action NAME [VALUE]     run a viewer action, named below\\n  corgi agent claude|codex ...   optional discovered-binary launcher\\n  corgi hooks claude|codex       print hook configuration\\n  corgi integration COMMAND     status, install, uninstall hooks\\n  corgi account COMMAND         list, add, login, remove provider accounts\\n  corgi which claude|codex      show automatically selected executable\\n  corgi keys [PRESET]           list shortcuts: corgi, tmux, herdr, cmux\\n  corgi headless start PROVIDER PROMPT [--workspace ID]\\n  corgi headless list              list headless sessions\\n  corgi headless send PROVIDER SESSION JSON   prompt, answer or interrupt\\n  corgi headless events PROVIDER SESSION [SEQ]   journal + pending requests\\n  corgi headless stop PROVIDER SESSION        stop headless session\\n  corgi rpc JSON                local JSON control protocol\\n  corgi reload [ABSOLUTE_EXE]    replace daemon, preserve live processes\\n  corgi checkpoint               save recovery context now\\n  corgi shutdown                terminate runtime and its panes\\n  corgi bugreport [--full]      details for a bug report, and a link to file it\\n  corgi licenses                Corgi's license and the software it includes\\n  corgi help [COMMAND ...]      show help for a command or group\\n  corgi --help                  list all commands (also -h)\\n  corgi --version               print the version and commit\\n\\nKeys: Ctrl+B opens a clickable command menu; `corgi keys` lists every shortcut.\\n\\n\\n\\n\\nCORGI_SOCKET selects a runtime. Workspaces group tabs and panes; no worktrees.\\nCommands print text; --json prints the daemon's reply as JSON instead.\\n\"]":
-      () => `corgi — небольшой терминал для агентов на базе Ghostty
-
-  corgi                         запустить / подключиться
-  corgi open DIR                показать пространство DIR; создать, если нет
-  corgi onboard                 открыть первоначальную настройку повторно
-  corgi dev                     перезагрузить при изменениях; подключить или перезапустить клиент
-  corgi --no-update             подключиться без применения подготовленного обновления
-  corgi update                  скачать и безопасно применить обновление
-  corgi update status           показать состояние обновления
-  corgi update rollback         вернуться к предыдущей версии
-  corgi update --check|--download-only
-  corgi update auto on|off      настроить автообновления
-  corgi start                   запустить сервер в фоне
-  corgi action NAME [VALUE]     выполнить действие клиента из списка ниже
-  corgi agent claude|codex ...   запустить найденный исполняемый файл агента
-  corgi hooks claude|codex       вывести настройки хуков
-  corgi integration COMMAND     состояние, установка и удаление хуков
-  corgi account COMMAND         список, добавление, вход и удаление аккаунтов провайдеров
-  corgi which claude|codex      показать автоматически выбранный исполняемый файл
-  corgi keys [PRESET]           список сочетаний: corgi, tmux, herdr, cmux
-  corgi headless start PROVIDER PROMPT [--workspace ID]
-  corgi headless list              список фоновых сеансов
-  corgi headless send PROVIDER SESSION JSON   запрос, ответ или прерывание
-  corgi headless events PROVIDER SESSION [SEQ]   журнал + ожидающие запросы
-  corgi headless stop PROVIDER SESSION        остановить фоновый сеанс
-  corgi rpc JSON                локальный протокол управления JSON
-  corgi reload [ABSOLUTE_EXE]    заменить сервер, сохранив работающие процессы
-  corgi checkpoint               сохранить данные восстановления сейчас
-  corgi shutdown                остановить сервер и его панели
-  corgi bugreport [--full]      сведения об ошибке и ссылка для отправки обращения
-  corgi licenses                лицензия Corgi и входящего в него ПО
-  corgi help [COMMAND ...]      справка по команде или группе
-  corgi --help                  список всех команд (также -h)
-  corgi --version               вывести версию и коммит
-
-Клавиши: Ctrl+B открывает меню команд с поддержкой мыши; \`corgi keys\` показывает все сочетания.
-
-
-
-
-CORGI_SOCKET выбирает сервер. Пространства объединяют вкладки и панели, но не рабочие деревья.
-Команды выводят текст; --json выводит ответ сервера в формате JSON.
-`,
+    '["corgi — a small Ghostty-powered agent terminal"]': () =>
+      `corgi — небольшой терминал для агентов на базе Ghostty`,
     '["create"]': () => `создать`,
     '["critical"]': () => `критическая нагрузка`,
     '["custom"]': () => `свой`,
+    '["default"]': () => `по умолчанию`,
     '["delete"]': () => `удалить`,
     '["detach"]': () => `отключиться`,
     '["done"]': () => `готово`,
     '["e.g. --verbose"]': () => `например --verbose`,
     '["edit"]': () => `изменить`,
     '["edit note"]': () => `изменить заметку`,
+    '["effort"]': () => `усилие`,
     '["esc Cancel"]': () => `esc Отмена`,
     '["everywhere"]': () => `везде`,
     '["exited"]': () => `завершён`,
@@ -5560,10 +6079,10 @@ CORGI_SOCKET выбирает сервер. Пространства объед�
     '["handoff"]': () => `передача`,
     '["hide"]': () => `скрыть`,
     '["hide the row"]': () => `скрыть строку`,
-    '["hold ↵ to create"]': () => `удерживать ↵ для создания`,
     '["hunk"]': () => `блок`,
     '["idle"]': () => `бездействует`,
     '["import ",""]': v0 => `импорт: ${v0}`,
+    '["incompatible"]': () => `несовместимо`,
     '["inspiration and sound cues"]': () => `вдохновение и звуки`,
     '["it\'s already gone"]': () => `оно уже удалено`,
     '["it\'s locked"]': () => `оно заблокировано`,
@@ -5602,14 +6121,16 @@ CORGI_SOCKET выбирает сервер. Пространства объед�
     '["now"]': () => `сейчас`,
     '["off"]': () => `выкл.`,
     '["open"]': () => `открыть`,
-    '["or  ",""]': v0 => `или  ${v0}`,
     '["our TypeScript runtime"]': () => `наша среда TypeScript`,
     '["our terminal engine"]': () => `наш движок терминала`,
     '["out / in"]': () => `выход / вход`,
+    '["paused"]': () => `пауза`,
     '["pick"]': () => `выбрать`,
     '["pin"]': () => `закрепить`,
     '["play"]': () => `играть`,
+    '["rate limited"]': () => `лимит запросов`,
     '["ready"]': () => `готово`,
+    '["reconnecting"]': () => `переподключение`,
     '["refresh"]': () => `обновить`,
     '["reload Corgi\'s daemon first"]': () => `сначала перезагрузите сервер Corgi`,
     '["remaining surfaces in additional tabs"]': () => `оставшиеся панели в дополнительных вкладках`,
@@ -5618,6 +6139,7 @@ CORGI_SOCKET выбирает сервер. Пространства объед�
     '["resolved at launch"]': () => `определяется при запуске`,
     '["resume"]': () => `возобновить`,
     '["resume agents"]': () => `возобновить агентов`,
+    '["retry in"]': () => `повтор через`,
     '["review it alone"]': () => `показать отдельно`,
     '["review panel design"]': () => `дизайн панели просмотра`,
     '["save"]': () => `сохранить`,
@@ -5631,6 +6153,7 @@ CORGI_SOCKET выбирает сервер. Пространства объед�
     '["send "," to ",""]': (v0, v1) => `отправить ${v0} агенту ${v1}`,
     '["send prefix"]': () => `передать префикс`,
     '["send to ",""]': v0 => `отправить агенту ${v0}`,
+    '["shell at ",""]': v0 => `оболочка в ${v0}`,
     '["shortcuts"]': () => `сочетания`,
     '["show all"]': () => `показать всё`,
     '["show the readings row"]': () => `показать строку данных`,
@@ -5638,6 +6161,7 @@ CORGI_SOCKET выбирает сервер. Пространства объед�
     '["sign in to a new "," account"]': v0 => `войти в новый аккаунт ${v0}`,
     '["split"]': () => `разделить`,
     '["stale"]': () => `устарело`,
+    '["stalled"]': () => `нет ответа`,
     '["starred"]': () => `в избранном`,
     '["switch to ",""]': v0 => `переключить на ${v0}`,
     '["tab"]': () => `вкладка`,
@@ -5677,6 +6201,7 @@ CORGI_SOCKET выбирает сервер. Пространства объед�
     '["— tokens"]': () => `— токенов`,
     '["… "," done"]': v0 => `… выполнено: ${v0}`,
     '["…"," more"]': v0 => `…ещё ${v0}`,
+    '["‹ "," · Effort"]': v0 => `‹ ${v0} · Усилие`,
     '["← keys"]': () => `← клавиши`,
     '["←→ sources · ↑↓ choose · PgUp/PgDn scroll · R refresh · S skip"]': () =>
       `←→ источники · ↑↓ выбор · PgUp/PgDn прокрутка · R обновить · S пропустить`,
@@ -5711,7 +6236,10 @@ CORGI_SOCKET выбирает сервер. Пространства объед�
     '["↑ Update "," ready · relaunch Corgi"]': v0 => `↑ Обновление ${v0} готово · перезапустите Corgi`,
     '["↑ Update ready"]': () => `↑ Обновление готово`,
     '["↑ Update ready · relaunch Corgi"]': () => `↑ Обновление готово · перезапустите Corgi`,
+    '["↑ ↓ Scroll to see all activity"]': () => `↑ ↓ Прокрутка всей активности`,
     '["↑↓  ↵ jump  Esc back"]': () => `↑↓  ↵ перейти  Esc назад`,
+    '["↑↓ Preview agents · PgUp/PgDn Scroll"]': () => `↑↓ Просмотр агентов · PgUp/PgDn Прокрутка`,
+    '["↑↓ Select · Enter Open · Tab Actions"]': () => `↑↓ Выбрать · Enter Открыть · Tab Действия`,
     '["↑↓ browse · Enter "," · e review · hold ⌫ remove · Esc close"]': v0 =>
       `↑↓ выбор · Enter ${v0} · e изменения · удерживать ⌫ удалить · Esc закрыть`,
     '["↑↓ browse · Enter "," · e review · hold ⌫ remove · r refresh · Esc close"]': v0 =>
@@ -5725,6 +6253,8 @@ CORGI_SOCKET выбирает сервер. Пространства объед�
     '["↗ Browser link"]': () => `↗ Ссылка для браузера`,
     '["↗ open in a tab"]': () => `↗ открыто во вкладке`,
     '["↵ Create Fork"]': () => `↵ Ответвить диалог`,
+    '["↵ Show pane · Esc Close"]': () => `↵ Открыть панель · Esc Закрыть`,
+    '["↵ create"]': () => `↵ создать`,
     '["↵ switch"]': () => `↵ переключить`,
     '["↵ use branch"]': () => `↵ выбрать ветку`,
     '["↻ Resume available"]': () => `↻ Доступно возобновление`,
@@ -5733,6 +6263,7 @@ CORGI_SOCKET выбирает сервер. Пространства объед�
     '["◇ Prefix = ",""]': v0 => `◇ Префикс = ${v0}`,
     '["○ Corgi (Activity summarizer)"]': () => `○ Corgi (Описания действий)`,
     '["● Jump to who needs you"]': () => `● Перейти к тому, кому вы нужны`,
+    '["✓ Copied"]': () => `✓ Скопировано`,
     '["🐕 badge; animations stay still."]': () => `🐕 значок; без анимаций.`,
   },
 };

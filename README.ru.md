@@ -39,7 +39,7 @@ Corgi автоматически обнаружит их и установит �
 | ------------------------------------------ | :---------: | :---: | :-: | :------: | :------: |
 | Статус: ▶ работает ● ждёт вас ● готово     |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | Сводки активности                          |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
-| Субагенты                                  |      ✓      |   ✓   |     |    ✓     |    ✓     |
+| Субагенты                                  |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | Контекст, токены и лимиты запросов         |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | Переименование и ответвление сеанса        |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | Восстановление после сбоя или перезагрузки |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
@@ -54,11 +54,11 @@ Corgi автоматически обнаружит их и установит �
 corgi list
 corgi tab new --workspace 1 --command 'bun run dev'
 corgi pane split current --right --command codex
-corgi pane send 3 'run the tests' --enter
+corgi message 3 'run the tests'
 corgi pane read 3 --lines 50
 ```
 
-`corgi --help` выводит список команд, а `corgi --skill` — инструкции для агентов.
+`corgi --help` выводит основные команды, `corgi help --all` — все команды, а `corgi --skill` — инструкции для агентов.
 
 ## Удаление
 
@@ -88,7 +88,7 @@ curl -fsSL https://corgi.computer/install.sh | bash -s uninstall
   [pi-tui](https://github.com/earendil-works/pi/tree/main/packages/tui).
 - [Bun](https://bun.sh) — среда выполнения TypeScript, на которой работает Corgi.
 
-Спасибо первым тестировщикам за предложения и отзывы:
+Без поддержки первых тестировщиков и контрибьюторов Corgi бы не появился:
 [Max Bittker](https://x.com/MaxBittker),
 [Aaron Blakeman](https://github.com/ablakeman),
 [Kai Johnson](https://github.com/sirkaiserkai),

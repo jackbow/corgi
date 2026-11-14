@@ -36,7 +36,7 @@ OpenCode 无需额外设置。Codex 会在 `/hooks` 中要求你信任这些钩�
 | ---------------------------------- | :---------: | :---: | :-: | :------: | :------: |
 | 状态：▶ 工作中 ● 等待处理 ● 已完成 |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | 活动摘要                           |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
-| 子智能体                           |      ✓      |   ✓   |     |    ✓     |    ✓     |
+| 子智能体                           |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | 上下文、Token 用量和速率限制       |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | 重命名和派生会话                   |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | 崩溃或重启后恢复会话               |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
@@ -51,11 +51,11 @@ OpenCode 无需额外设置。Codex 会在 `/hooks` 中要求你信任这些钩�
 corgi list
 corgi tab new --workspace 1 --command 'bun run dev'
 corgi pane split current --right --command codex
-corgi pane send 3 'run the tests' --enter
+corgi message 3 'run the tests'
 corgi pane read 3 --lines 50
 ```
 
-`corgi --help` 列出可用命令；`corgi --skill` 输出供智能体使用的操作说明。
+`corgi --help` 列出常用命令，`corgi help --all` 列出全部命令；`corgi --skill` 输出供智能体使用的操作说明。
 
 ## 卸载
 
@@ -85,7 +85,7 @@ curl -fsSL https://corgi.computer/install.sh | bash -s uninstall
   [pi-tui](https://github.com/earendil-works/pi/tree/main/packages/tui) 库。
 - [Bun](https://bun.sh)：Corgi 的 TypeScript 运行时。
 
-感谢早期测试者提出的建议和反馈：
+没有早期测试者和贡献者的支持，就不会有 Corgi：
 [Max Bittker](https://x.com/MaxBittker)、
 [Aaron Blakeman](https://github.com/ablakeman)、
 [Kai Johnson](https://github.com/sirkaiserkai)、

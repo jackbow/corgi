@@ -1,5 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { Frame, cursorBytes, same, type Cursor } from "./composition";
+import { State as PasteProgress } from "./paste_progress";
 import { Differ } from "./frame_diff";
 import { Model, Rect, Selection, View } from "./layout";
 import * as mirror from "./mirror";
@@ -201,7 +202,8 @@ test("retained hyperlink groups stay distinct across panes, fallback transitions
     f.present(hovered);
     groups();
     const lines = f.result.surface(0).surface.lines;
-    expect(lines.join("").match(/\x1b\[4m/g)).toHaveLength(2);
+    const content = lines.filter((_, y) => rects.some(r => y >= r.y && y < r.y + r.h));
+    expect(content.join("").match(/\x1b\[4m/g)).toHaveLength(2);
     f.present(f.compose());
     f.present(f.compose());
     expect(groups()).toEqual(retainedIds);
@@ -240,6 +242,41 @@ test("cursor position and visibility stay outside chrome and survive prefixed fu
       expect(current.frame.text()).toBe(prefix + current.text + suffix);
       f.present({ frame: current.frame, text: prefix + current.text + suffix });
     }
+  } finally {
+    f.close();
+  }
+});
+
+test("the focused pane's cursor shape reaches the host when it changes", () => {
+  const f = fixture(false);
+  const shapes = (bytes: string) => [...bytes.matchAll(/\x1b\[(\d) q/g)].map(match => match[1]);
+  const program = (control: string) => {
+    f.sources[0].feed(control);
+    f.panes[0].terminal.receive(f.sources[0].surface(f.panes[0].id));
+  };
+  try {
+    f.update(0, "shape");
+    // A new differ hands the host its own shape.
+    expect(shapes(f.present(f.compose()))).toEqual(["0"]);
+    program("\x1b[6 q");
+    const bar = f.compose();
+    expect(bar.frame.cursor_style).toBe("steady_bar");
+    expect(same(f.compose().frame, bar.frame)).toBe(true);
+    const compose = spyOn(n, "frame_diff_compose");
+    try {
+      expect(shapes(f.present(bar))).toEqual(["6"]);
+      expect(compose).toHaveBeenCalled();
+    } finally {
+      compose.mockRestore();
+    }
+    program("\x1b[?25l");
+    expect(shapes(f.present(f.compose()))).toEqual([]);
+    program("\x1b[?25h\x1b[5 q");
+    expect(shapes(f.present(f.compose()))).toEqual(["5"]);
+    // The review panel takes the keyboard and its caret is the host's own.
+    const review = f.compose({ review_width: 8, review_focused: true });
+    expect(review.frame.cursor_style).toBe("default");
+    expect(shapes(f.differ.diff(review.frame).toString())).toEqual(["0"]);
   } finally {
     f.close();
   }
@@ -515,8 +552,8 @@ test("a rejected retained batch retries with fresh chrome", () => {
       original = n.frame_diff_compose,
       modes: number[] = [];
     const reject = ((...args: Parameters<typeof original>) => {
-      modes.push(Number(args[9]));
-      return args[9] === 1 ? -2 : original(...args);
+      modes.push(Number(args[10]));
+      return args[10] === 1 ? -2 : original(...args);
     }) as typeof original;
     const batch = spyOn(n, "frame_diff_compose").mockImplementation(reject),
       replay = spyOn(n, "frame_diff_diff");
@@ -532,6 +569,24 @@ test("a rejected retained batch retries with fresh chrome", () => {
     }
     f.update(0, "AFTER FALLBACK");
     f.present(f.compose());
+  } finally {
+    f.close();
+  }
+});
+
+test("image upload progress stays above panes with retained rendering enabled", () => {
+  const f = fixture(false);
+  try {
+    f.update(0, "Ready");
+    f.present(f.compose());
+    const progress = new PasteProgress(f.panes[0].id);
+    progress.update(50, 100);
+    const drawn = f.compose({ paste_progress: progress });
+    expect(drawn.frame.panes).toHaveLength(0);
+    f.present(drawn);
+    expect(f.result.text()).toContain("50%");
+    f.present(f.compose());
+    expect(f.result.text()).not.toContain("50%");
   } finally {
     f.close();
   }

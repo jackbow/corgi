@@ -295,26 +295,26 @@ test("a snapshot shows an agent's new section with its place at the top of it", 
     r.destroy();
   }
 });
-test("new agents lead manual order without moving tabs or following activity changes", async () => {
+test("new agents follow tab order without following activity changes", async () => {
   const { r, ws, opts } = fixture();
   try {
     const a = await r.create(opts),
       b = await r.create(opts);
     for (const id of [a, b]) r.pane(id)!.agent().provider = "claude";
     expect(r.raiseEntered()).toBe(true);
-    expect(ws.agent_order.slice()).toEqual([{ pane: b }, { pane: a }]);
+    expect(ws.agent_order.slice()).toEqual([{ pane: a }, { pane: b }]);
     ws.agent_order.move(r.agentTargets(ws), { pane: a }, { pane: b });
     const c = await r.create(opts);
     r.pane(c)!.agent().provider = "claude";
     const snapshot = session.snapshot(r);
-    expect(snapshot.workspaces[0].agent_order).toEqual([{ pane: c }, { pane: a }, { pane: b }]);
+    expect(snapshot.workspaces[0].agent_order).toEqual([{ pane: a }, { pane: b }, { pane: c }]);
     expect([a, b, c].map(id => ws.model.tabForPane(id))).toEqual([0, 1, 2]);
     r.pane(b)!.agent().state = "working";
     r.raiseEntered();
-    expect(ws.agent_order.slice()).toEqual([{ pane: c }, { pane: a }, { pane: b }]);
+    expect(ws.agent_order.slice()).toEqual([{ pane: a }, { pane: b }, { pane: c }]);
     restore(ws);
     expect(r.raiseEntered()).toBe(false);
-    expect(ws.agent_order.slice()).toEqual([{ pane: c }, { pane: a }, { pane: b }]);
+    expect(ws.agent_order.slice()).toEqual([{ pane: a }, { pane: b }, { pane: c }]);
   } finally {
     r.destroy();
   }
@@ -335,7 +335,7 @@ test("an existing shell goes first when it becomes an agent", async () => {
     r.destroy();
   }
 });
-test("new agents lead the first matching worktree group, keeping that group in place", async () => {
+test("worktree activity preserves the numbered tab order for new agents", async () => {
   const { r, ws, opts } = fixture();
   ws.worktrees = {
     common_dir: "/repo/.git",
@@ -358,21 +358,21 @@ test("new agents lead the first matching worktree group, keeping that group in p
       later = await add("/repo/one");
     ws.agent_order.items = [main, one, middle, later];
     r.raiseEntered();
-    // The first matching run wins, including agents associated by writes.
+    // Worktree association does not reorder tabs or their agent rows.
     r.pane(one.pane)!.cwd = "/repo";
     ws.worktrees.agents = [{ target: one, path: "/repo/one", source: "write", stale: false }];
     const added = await add("/repo/one/src");
     r.raiseEntered();
-    expect(ws.agent_order.slice()).toEqual([main, added, one, middle, later]);
-    // A new worktree goes first; several arrivals in one snapshot stay together.
+    expect(ws.agent_order.slice()).toEqual([main, one, middle, later, added]);
+    // New worktree agents follow their new tabs.
     const two = await add("/repo/two"),
       newer = await add("/repo/two/src");
     r.raiseEntered();
-    expect(ws.agent_order.slice()).toEqual([newer, two, main, added, one, middle, later]);
-    // The main checkout does not pull new agents below linked worktrees.
+    expect(ws.agent_order.slice()).toEqual([main, one, middle, later, added, two, newer]);
+    // The same order applies to the main checkout.
     const direct = await add("/repo");
     r.raiseEntered();
-    expect(ws.agent_order.slice()).toEqual([direct, newer, two, main, added, one, middle, later]);
+    expect(ws.agent_order.slice()).toEqual([main, one, middle, later, added, two, newer, direct]);
   } finally {
     r.destroy();
   }
@@ -388,7 +388,7 @@ test("a fork keeps its explicit place below its source in manual order", async (
     r.raiseEntered();
     const fork = await r.forkAgent(opts, source, null);
     r.raiseEntered();
-    expect(ws.agent_order.slice()).toEqual([{ pane: other }, { pane: source }, { pane: fork }]);
+    expect(ws.agent_order.slice()).toEqual([{ pane: source }, { pane: fork }, { pane: other }]);
   } finally {
     r.destroy();
   }

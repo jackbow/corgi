@@ -1,6 +1,8 @@
 //! A viewer's private projection of shared session organization and pane
 //! surfaces. These terminals are framebuffers: no child process or PTY is
 //! created here. Mirrors mirror.zig.
+import * as startup from "./startup";
+import type * as rpc_http from "./rpc_http";
 import { Terminal as NativeTerminal } from "./pane/terminal";
 import * as viewerNative from "./viewer_native";
 import { Model, max_workspaces } from "./layout";
@@ -18,7 +20,10 @@ import { Provider, byProvider, adapter } from "./providers";
 import { type Conversation, conversation, usageView } from "./subagent_tooltip";
 import { View as UsageView } from "./usage/live";
 import * as errors from "./errors";
+import * as effort from "./providers/effort";
+import type { Effort } from "./providers/effort";
 import * as processName from "./process_name";
+import * as archiveSummary from "./archive_summary";
 import type { GitCommit, GitDiff } from "./sidebar";
 import {
   snapshot as worktreeSnapshot,
@@ -27,12 +32,18 @@ import {
   type Removal,
   type Snapshot as Worktrees,
 } from "./worktrees";
+import type { Progress as ImageProgress } from "./image_upload";
 
 export interface Transport {
-  socket?: string;
+  /** The daemon over HTTP, for a request that may outlast this connection. */
+  daemon?: rpc_http.Client;
   onEvent?(listener: (event: protocol.Event) => void): () => void;
+  /** Called when the viewer is back after a reload, with none of its subscriptions. */
+  onResume?(listener: () => void): () => void;
   /** Whether the daemon sends this viewer `viewer.wake`. */
   watches?(): boolean;
+  remote?: boolean;
+  image?: (path: string, mime: string, progress?: ImageProgress) => Promise<string>;
   request<K extends protocol.Op>(op: K, ...args: protocol.Arguments<K>): Promise<protocol.Response<K>>;
 }
 /** An RPC call that throws the daemon's error name, as Zig's `call` does. */
@@ -42,7 +53,7 @@ export async function call<K extends protocol.Op>(
   ...args: protocol.Arguments<K>
 ): Promise<protocol.Reply<K>> {
   const reply = await conn.request(op, ...args);
-  if ("err" in reply) throw Error(reply.err);
+  if ("err" in reply) throw errors.fromReply(reply);
   // Before the payload, whose shape may differ between viewer protocols.
   if (protocol.check(op) === "viewer") viewerVersion.require(reply);
   return reply;
@@ -83,8 +94,22 @@ export class Terminal {
   images: surface.ImagePlacement[] = [];
   render_dirty = true;
   render_revision = 0;
-  /** Bytes for the program, sent with the next sync. */
+  /** Bytes for the program, sent once its machine is reachable. */
   pending: number[] = [];
+  /** The pointer move that ends `pending`, while it does: where it starts,
+   * its button code, and the buffer and length it was left at. */
+  private motion: { at: number; code: number; buffer: number[]; end: number } | null = null;
+  /** The paste on its way, if any: open while it arrives, `paste_in` the
+   * buffer holding it while it waits there (from `paste_at`), and how many
+   * sends carrying it are unanswered. See `pasting`. */
+  private paste_open = false;
+  private paste_in: number[] | null = null;
+  private paste_at = 0;
+  private paste_sending = 0;
+  /** Part of the open paste has already gone. */
+  private paste_split = false;
+  /** Keys sent and not yet answered. */
+  private sending = 0;
   private links: Link[] | null = null;
   private installed: surface.View | null = null;
   private changed_rows = new Uint16Array(0);
@@ -116,6 +141,9 @@ export class Terminal {
       native.destroy();
       throw error;
     }
+  }
+  get loaded(): boolean {
+    return this.installed !== null;
   }
   get inner(): NativeTerminal {
     return this.ensure();
@@ -246,17 +274,105 @@ export class Terminal {
   send(bytes: string | Uint8Array | number[]): void {
     const data = typeof bytes === "string" ? Buffer.from(bytes) : bytes;
     if (this.pending.length + data.length > 1024 * 1024) throw Error("InputBackpressure");
+    this.motion = null;
     for (const byte of data) this.pending.push(byte);
   }
-  async flush(): Promise<void> {
+  /** Whether a paste is on its way: arriving, waiting to be sent, or sent
+   * and unanswered. A pane takes one paste at a time, so what waits for a
+   * slow daemon stays small and plain to see. */
+  pasting(): boolean {
+    return this.paste_open || this.paste_in === this.pending || this.paste_sending > 0;
+  }
+  /** Starts a paste; false, and the caller drops it, while one is on its way.
+   * With `restart`, it's the host terminal's, which can't nest: one still
+   * open lost its end, and is closed first. */
+  pasteStart(restart = false): boolean {
+    if (restart && this.paste_open) this.pasteAbort();
+    if (this.pasting()) return false;
+    this.paste_open = true;
+    this.paste_in = this.pending;
+    this.paste_at = this.pending.length;
+    this.paste_split = false;
+    return true;
+  }
+  /** Ends the paste `pasteStart` began. */
+  pasteEnd(): void {
+    if (!this.paste_open) return;
+    this.paste_open = false;
+    // An empty paste, or one already sent whole, leaves nothing waiting.
+    if (this.paste_in !== this.pending || this.pending.length === this.paste_at) this.paste_in = null;
+  }
+  /** Ends a paste cut short. One that hasn't begun to go goes not at all;
+   * once part of it has, a program that asked for bracketed pastes is sent
+   * the end marker, so it isn't left in the middle of one. */
+  pasteAbort(): void {
+    if (!this.paste_open) return;
+    this.motion = null;
+    if (this.paste_split) {
+      if (this.bracketedPaste()) for (const byte of Buffer.from("\x1b[201~")) this.pending.push(byte);
+    } else if (this.paste_in === this.pending) this.pending.length = this.paste_at;
+    this.pasteEnd();
+  }
+  /** Counts a paste sent apart from `pending`, as `pane.paste` is, as on
+   * its way until the returned function runs. */
+  pasteOut(): () => void {
+    this.paste_sending++;
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      this.paste_sending--;
+    };
+  }
+  /** A hover, with button code `code`. A program wants where the pointer
+   * is, not each cell it crossed while its input waited: a hover still
+   * waiting with nothing after it gives way to this one. Everything else
+   * goes through `send` and is never dropped. */
+  move(bytes: string, code: number): void {
+    const last = this.motion;
+    if (last && last.code === code && last.buffer === this.pending && last.end === this.pending.length)
+      this.pending.length = last.at;
+    const at = this.pending.length;
+    this.send(bytes);
+    this.motion = { at, code, buffer: this.pending, end: this.pending.length };
+  }
+  /** Sends what's pending, at most `limit` bytes of it, cut between
+   * characters; the rest waits for the next flush. */
+  async flush(limit = Infinity): Promise<void> {
     if (this.pending.length === 0) return;
-    const data = Buffer.from(this.pending).toString();
+    let end = Math.min(this.pending.length, limit);
+    while (end > 0 && end < this.pending.length && (this.pending[end] & 0xc0) === 0x80) end--;
+    if (end === 0) end = this.pending.length;
+    const sent = end === this.pending.length ? this.pending : this.pending.slice(0, end),
+      data = Buffer.from(sent).toString();
+    // Over a link the input lands once, even across a reconnect; without one
+    // its delivery is uncertain after a disconnect, so it's never sent again.
+    const keys = keyCount(sent),
+      waiting = this.paste_in === this.pending,
+      carried = waiting && end > this.paste_at;
+    this.pending = this.pending.slice(end);
+    if (waiting) {
+      // The rest of the paste, and any still arriving, waits in the next buffer.
+      this.paste_in = this.paste_open || this.pending.length > 0 ? this.pending : null;
+      this.paste_at = Math.max(0, this.paste_at - end);
+    }
+    if (carried) {
+      this.paste_sending++;
+      this.paste_split ||= this.paste_open;
+    }
+    this.sending += keys;
     try {
       await call(this.conn, "session.command", { command: { "pane.input": { target: this.id, data } } });
     } catch (error) {
       if (!errors.is(error, "NoPane")) throw error;
+    } finally {
+      this.sending -= keys;
+      if (carried) this.paste_sending--;
     }
-    this.pending = [];
+  }
+  /** Keys typed here that the program hasn't been given yet. */
+  waiting(): number {
+    return keyCount(this.pending) + this.sending;
   }
   receive(value: protocol.Reply<"viewer.sync">["surfaces"][number]): void {
     if (this.closed) throw Error("TerminalClosed");
@@ -290,6 +406,7 @@ export class Terminal {
       changed.length > 0 ||
       previous?.surface.cursor?.x !== frame.cursor?.x ||
       previous?.surface.cursor?.y !== frame.cursor?.y ||
+      previous?.surface.cursor_style !== frame.cursor_style ||
       (previous?.surface.images?.length ?? 0) > 0 ||
       (frame.images?.length ?? 0) > 0;
     viewerNative.receiveFrame(inner.handle, view, changed);
@@ -324,6 +441,10 @@ export class Terminal {
   /** The render state's cursor in the viewport, when visible. */
   cursor(): { x: number; y: number } | null {
     return viewerNative.cursor(this.handle, true);
+  }
+  /** The cursor shape its program asked for. */
+  cursorStyle(): surface.CursorStyle {
+    return this.installed?.surface.cursor_style ?? "default";
   }
   /** The render state's cursor in the viewport, shown or not. */
   caret(): { x: number; y: number } | null {
@@ -374,6 +495,8 @@ export interface Agent {
   /** When its current compaction began, in µs; 0 when not compacting. */
   compacting_since: number;
   paused: boolean;
+  /** When Corgi starts its failed turn again, in ms on the daemon's clock; 0 when it won't. */
+  retry_at: number;
 }
 export function agent(value: any = {}): Agent {
   return {
@@ -399,6 +522,7 @@ export function agent(value: any = {}): Agent {
     compacting: value.compacting === true,
     compacting_since: Number(value.compacting_since ?? 0),
     paused: value.paused === true,
+    retry_at: Number(value.retry_at ?? 0),
   };
 }
 export function providerName(a: Agent): string {
@@ -429,6 +553,8 @@ export interface Pane {
 /** protocol.zig's `Workspace`, with its model parsed. */
 export interface Workspace {
   id: number;
+  archived: boolean;
+  archive_summary: archiveSummary.Summary | null;
   name: string;
   cwd: string;
   model: Model;
@@ -465,6 +591,8 @@ function starredSessions(value: unknown): StarredSession[] {
 function workspace(value: any): Workspace {
   return {
     id: value.id,
+    archived: value.archived === true,
+    archive_summary: archiveSummary.restore(value.archive_summary),
     name: value.name ?? "",
     cwd: value.cwd ?? "",
     model: Model.fromData(value.model),
@@ -530,6 +658,15 @@ export interface Headless {
   workspace: number;
   provider: Provider;
   cwd: string;
+  /** The Corgi prompt's own conversation. */
+  corgi: boolean;
+  /** What it started with: "" for the default account or model. */
+  account: string;
+  model: string;
+  effort: Effort | null;
+  persist: boolean;
+  /** The pane whose Corgi chat holds it; null while the prompt card does. */
+  pane: number | null;
   ready: boolean;
   exited: boolean;
   state: string;
@@ -546,6 +683,12 @@ function headless(value: any): Headless {
     workspace: value.workspace,
     provider: value.provider,
     cwd: value.cwd ?? "",
+    corgi: value.corgi === true,
+    account: typeof value.account === "string" ? value.account : "",
+    model: typeof value.model === "string" ? value.model : "",
+    effort: effort.parse(value.effort),
+    persist: value.persist !== false,
+    pane: typeof value.pane === "number" ? value.pane : null,
     ready: value.ready === true,
     exited: value.exited === true,
     state: value.state ?? "unknown",
@@ -555,7 +698,12 @@ function headless(value: any): Headless {
   };
 }
 export class Workspaces {
+  /** A daemon snapshot has confirmed this catalog, including removals. */
+  loaded = false;
   items: Workspace[] = [];
+  /** What stands for the current workspace once every one is closed: no
+   * tabs, and no folder for anything to start in. */
+  readonly none: Workspace = workspace({ id: 0, model: new Model() });
   index(id: number): number | null {
     const i = this.items.findIndex(ws => ws.id === id);
     return i < 0 ? null : i;
@@ -566,11 +714,16 @@ export class Workspaces {
 }
 
 export class Runtime {
+  startup_waits: startup.Wait[] = [];
   snapshot: any = null;
   snapshot_hash: bigint | null = null;
+  snapshot_epoch = 0;
   workspaces = new Workspaces();
   panes: Pane[] = [];
+  /** Headless agents, besides the Corgi prompt's. */
   sessions: Headless[] = [];
+  /** The Corgi prompt's own sessions, which no agent list shows. */
+  corgi_sessions: Headless[] = [];
   conversations: Conversation[] = [];
   system_model = "";
   system_model_name = "";
@@ -581,6 +734,7 @@ export class Runtime {
   shell: ShellStatus = shellStatus();
   system_working = false;
   smart_links = true;
+  auto_retry = true;
   system_usage = new UsageView();
   ports: any = { workspaces: [] };
   resources = new resources.Snapshot();
@@ -588,12 +742,29 @@ export class Runtime {
   last_agent: Provider = Provider.first;
   agent_yolo = byProvider(() => false);
   agent_hidden = byProvider(() => false);
+  launcher_added: string[] = [];
   /** The accounts whose rows have their own YOLO on, and those the picker hides. */
   account_yolo: string[] = [];
   account_hidden: string[] = [];
   agent_commands: CommandEntry[] = Array.from({ length: 6 }, () => commandEntry());
   /** The accounts Corgi knows besides each provider's default. */
   accounts: Account[] = [];
+  /** Commands shown before their daemon answers; see optimistic.ts. */
+  private assumed = new Set<(runtime: Runtime) => void>();
+  /** Makes `edit` now and again after every snapshot, until the returned
+   * function drops it. An edit that no longer applies drops itself. */
+  assume(edit: (runtime: Runtime) => void): () => void {
+    this.assumed.add(edit);
+    this.make(edit);
+    return () => void this.assumed.delete(edit);
+  }
+  private make(edit: (runtime: Runtime) => void): void {
+    try {
+      edit(this);
+    } catch {
+      this.assumed.delete(edit);
+    }
+  }
   pane(id: number): Pane | null {
     return this.panes.find(p => p.id === id) ?? null;
   }
@@ -606,12 +777,13 @@ export class Runtime {
     this.resources = resources.fromJSON(value);
   }
   receive(conn: Transport, value: any): void {
+    this.snapshot_epoch++;
     // Own the decoded snapshot. Metadata is used directly; only terminal
     // surfaces and interaction state survive independently between snapshots.
     const snapshot = value;
     const workspaces = snapshot?.workspaces ?? [];
     const infos = snapshot?.panes ?? [];
-    if (workspaces.length === 0 || workspaces.length > max_workspaces) throw Error("InvalidSnapshot");
+    if (workspaces.length > max_workspaces) throw Error("InvalidSnapshot");
     const parsed = workspaces.map(workspace);
     const created: Terminal[] = [];
     const panes: Pane[] = [];
@@ -650,7 +822,12 @@ export class Runtime {
     this.snapshot_hash = null;
     this.panes = panes;
     this.workspaces.items = parsed;
-    this.sessions = (snapshot.headless_sessions ?? []).filter((s: any) => Provider.parse(s?.provider)).map(headless);
+    this.workspaces.loaded = true;
+    const sessions: Headless[] = (snapshot.headless_sessions ?? [])
+      .filter((s: any) => Provider.parse(s?.provider))
+      .map(headless);
+    this.sessions = sessions.filter(s => !s.corgi);
+    this.corgi_sessions = sessions.filter(s => s.corgi);
     this.conversations = (snapshot.conversations ?? []).map(conversation);
     this.system_model = snapshot.system_model ?? "";
     this.system_model_name = snapshot.system_model_name ?? "";
@@ -661,15 +838,19 @@ export class Runtime {
     this.shell = shellStatus(snapshot.shell);
     this.system_usage = usageView(snapshot.system_usage);
     this.system_working = snapshot.system_working === true;
+    this.startup_waits = startup.decode(snapshot.startup_waits);
     this.smart_links = snapshot.smart_links !== false;
+    this.auto_retry = snapshot.auto_retry !== false;
     this.ports = snapshot.ports ?? { workspaces: [] };
     this.last_agent = Provider.parse(snapshot.last_agent) ?? Provider.first;
     this.agent_yolo = byProvider(p => snapshot.agent_yolo?.[p] === true);
     this.agent_hidden = byProvider(p => snapshot.agent_hidden?.[p] === true);
+    this.launcher_added = strings(snapshot.launcher_added);
     this.account_yolo = strings(snapshot.account_yolo);
     this.account_hidden = strings(snapshot.account_hidden);
     this.agent_commands = Array.from({ length: 6 }, (_, i) => commandEntry(snapshot.agent_commands?.[i]));
     this.accounts = (Array.isArray(snapshot.accounts) ? snapshot.accounts : []).flatMap(account);
+    for (const edit of this.assumed) this.make(edit);
   }
   /** What `provider`'s `account` is called, "" for the default. */
   accountName(provider: Provider | null, account: string): string {
@@ -690,4 +871,17 @@ function account(value: any): Account[] {
   const provider = Provider.parse(value?.provider);
   if (!provider || typeof value.account !== "string" || !value.account || typeof value.name !== "string") return [];
   return [{ provider, account: value.account, name: value.name, managed: value.managed === true }];
+}
+/** Keys in typed bytes: each character or escape sequence is one. */
+export function keyCount(bytes: number[]): number {
+  let keys = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    // UTF-8 continuation bytes belong to the character before.
+    if ((bytes[i] & 0xc0) === 0x80) continue;
+    keys++;
+    if (bytes[i] !== 0x1b || (bytes[i + 1] !== 0x5b && bytes[i + 1] !== 0x4f)) continue;
+    i += 2;
+    while (i < bytes.length && (bytes[i] < 0x40 || bytes[i] > 0x7e)) i++;
+  }
+  return keys;
 }

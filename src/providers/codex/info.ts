@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Caps, Info, Login } from "../adapter";
 import type { Keeping, Vocabulary } from "../command_line";
 import { cached } from "../command_line";
+import { str } from "../common";
 export const info: Info = {
   id: "codex",
   label: "Codex",
@@ -47,9 +50,19 @@ export function identity(root: string): Login | null {
     const claims = JSON.parse(Buffer.from(auth.tokens?.id_token?.split(".")[1] ?? "", "base64url").toString()),
       email = claims.email,
       workspace = auth.tokens?.account_id || claims["https://api.openai.com/auth"]?.chatgpt_account_id || "";
-    return typeof email === "string" && email ? { email, id: `${claims.sub || email}/${workspace}` } : null;
+    return typeof email === "string" && email
+      ? { email, id: `${claims.sub || email}/${workspace}`, service: "chatgpt", workspace }
+      : null;
   } catch {
     return null;
+  }
+}
+/** A user-selected model also covers local and custom endpoints without a login. */
+export function configured(root: string): boolean {
+  try {
+    return !!str(Bun.TOML.parse(readFileSync(join(root, "config.toml"), "utf8")), "model");
+  } catch {
+    return false;
   }
 }
 /** What a resume or fork keeps of a typed `codex` command. Approval and

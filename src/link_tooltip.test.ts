@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Signin } from "./signin";
 import { Terminal } from "./pane/terminal";
+import { Menu } from "./corgi_setup";
 const source = { updateRender() {}, hyperlinks: () => [] };
 test("the resource card opens and wakes the viewer after 150 ms", () => {
   const s = new State(),
@@ -106,7 +107,6 @@ test("both link popover labels keep the right border aligned and stay inside the
 const url = "https://example.com/docs";
 function linkViewer(output = url, host: "pane" | "signin" = "pane") {
   const s = new Controller({
-    socket: "",
     request: transport(async () => {
       throw Error("UnexpectedRequest");
     }).request,
@@ -144,7 +144,15 @@ function linkViewer(output = url, host: "pane" | "signin" = "pane") {
     signin.resize(s.width, s.height);
     signin.child.feed(output);
     s.signin = signin;
-  } else s.runtime.pane(1)!.terminal.inner.feed(output);
+  } else {
+    const source = new Terminal(100, 29);
+    try {
+      source.feed(output);
+      s.runtime.pane(1)!.terminal.receive(source.surface(1));
+    } finally {
+      source.destroy();
+    }
+  }
   s.frame();
   return s;
 }
@@ -306,7 +314,7 @@ test("the sign-in copies the whole wrapped URL from a continuation row", async (
 
 test("sign-in selections and dialogs hide the link card and never target the pane behind them", async () => {
   const s = linkViewer(url, "signin");
-  const signin = s.signin!;
+  const signin = s.signin! as Signin;
   s.runtime.pane(1)!.terminal.inner.feed(url);
   s.runtime.pane(1)!.terminal.render_dirty = true;
   const show = async (now: number) => {
@@ -453,4 +461,52 @@ test("an arrow over the resource card selects its top row first, or else moves f
   s.resource_card.selected = s.resource_card.order[1];
   await s.input(Buffer.from("\x1b[B"));
   expect([s.resource_card.pinned, s.resource_card.selected?.pid]).toEqual([true, 12]);
+});
+
+test("setup's issue link shows the link card, which copies it", async () => {
+  const s = linkViewer("");
+  const setup = Menu.open();
+  setup.item = "report_bug";
+  // Already under way, so drawing doesn't ask the real daemon.
+  (setup as unknown as { gathering: boolean }).gathering = true;
+  setup.report = {
+    corgi: "1.2.3 (abc1234), linux-x64",
+    install: { path: "/usr/bin/corgi", auto_update: null },
+    system: {
+      os: "Ubuntu 24.04.1 LTS",
+      os_timed_out: false,
+      kernel: "Linux 6.8.0",
+      locale: "C.UTF-8",
+      shell: { path: "/usr/bin/fish", version: "fish, version 3.7.1" },
+      agents: [],
+    },
+    daemon: null,
+    slow: { daemon: false, sessions: false, report: false },
+    terminal: null,
+    overrides: [],
+    logs: { server: "/tmp/server.log", crashes: 0 },
+    warnings: [],
+    hook_trouble: null,
+    inference: null,
+  };
+  s.corgi_setup = setup;
+  try {
+    setSystemTime(new Date(1000));
+    s.frame();
+    const [link] = setup.hyperlinks();
+    expect(link.uri).toContain("https://github.com/tals/corgi/issues/new?body=");
+    await s.input(mouse(35, link.start + 2, link.row));
+    s.frame();
+    setSystemTime(new Date(1150));
+    await s.expireInput();
+    expect(s.frame()).toContain("Copy link");
+    await s.input(mouse(35, link.start + 4, link.row + 2));
+    await s.input(mouse(0, link.start + 4, link.row + 2));
+    await s.input(mouse(0, link.start + 4, link.row + 2, true));
+    expect(s.clipboard).toBe(link.uri);
+    expect(s.frame()).toContain("✓  Copied");
+  } finally {
+    setSystemTime();
+    close(s);
+  }
 });

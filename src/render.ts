@@ -1,10 +1,15 @@
+import type * as workspaceArchive from "./workspace_archive";
 import * as i18n from "./i18n";
 //! One complete frame of the viewer: tabs, panes, sidebar and overlays.
 //! Mirrors render.zig.
 import * as palette from "./palette";
+import * as docking from "./docking";
+import * as dockingGrip from "./docking_grip";
+import type { DockDrop } from "./protocol";
 import * as composition from "./composition";
+import type { CursorStyle } from "./pane/surface";
 import { Style, keycap } from "./palette";
-import { Rect, View as LayoutView, cleanLabel, type Axis, type Border } from "./layout";
+import { Rect, View as LayoutView, Model, Selection, cleanLabel, type Axis, type Border } from "./layout";
 import * as sidebar from "./sidebar";
 import {
   View as SidebarView,
@@ -16,16 +21,25 @@ import {
   type Search,
   type Scope,
   type Section,
+  type RenameState,
 } from "./sidebar";
 import { ResizeView, TabMenu } from "./commands";
 import { Dialog, View as NameView, printable } from "./name_dialog";
 import type { Menu as LauncherMenu } from "./agent_launcher";
 import { Menu as SetupMenu, status as setupStatus, type Status as SetupStatus } from "./corgi_setup";
 import * as corgiBadge from "./corgi_badge";
+import * as noWorkspace from "./no_workspace";
 import * as rowGlide from "./row_glide";
 import type { Cell } from "./fork_hero";
 import * as pasteCard from "./paste_card";
+import * as startupCard from "./startup_card";
+import type { Wait as StartupWait } from "./startup";
+import * as pasteProgress from "./paste_progress";
 import * as resourceTooltip from "./resource_tooltip";
+import * as connectivityCard from "./connectivity_card";
+import * as syncNotice from "./sync_notice";
+import type { Images as SignalBars } from "./signal_bars";
+import type { Quality } from "./connection_stats";
 import * as gitTooltip from "./git_tooltip";
 import * as linkTooltip from "./link_tooltip";
 import * as linkThumbnail from "./link_thumbnail";
@@ -75,6 +89,7 @@ let tab_active: string,
   button: string,
   button_edge: string,
   chip: string,
+  cue_mark: Record<Cue["tone"], string>,
   hint_key: string,
   hint_label: string,
   bar: string,
@@ -103,6 +118,10 @@ palette.derived(() => {
   button = new Style({ fg: "strong", bg: "surface", bold: true }).sgr();
   button_edge = new Style({ fg: "surface", bg: "bg" }).sgr();
   chip = new Style({ fg: "text", bg: "selected" }).sgr();
+  cue_mark = {
+    warm: new Style({ fg: "warm", bg: "selected", bold: true }).sgr(),
+    accent: new Style({ fg: "accent", bg: "selected", bold: true }).sgr(),
+  };
   hint_key = new Style({ fg: "strong", bg: "surface", bold: true }).sgr();
   hint_label = new Style({ fg: "faint", bg: "surface" }).sgr();
   bar = new Style({ bg: "surface" }).sgr();
@@ -120,6 +139,8 @@ export interface Ghost {
   /** The pane area once entered. */
   area: Rect;
 }
+/** What the status line says about the Corgi prompt while it is put away. */
+export type Cue = { text: string; tone: "warm" | "accent" };
 /** The workspace under the sidebar's cursor, as switching to it would show it. */
 export interface WorkspaceGhost {
   name: string;
@@ -127,7 +148,69 @@ export interface WorkspaceGhost {
   view: LayoutView;
 }
 
+export interface Docking {
+  plan: docking.Plan | null;
+  drop: DockDrop | null;
+  dragging: boolean;
+  cwd: string | null;
+  reason: string | null;
+}
+function drawDocking(w: Writer, state: Docking, panes: Pane[], area: Rect): Rect[] {
+  const covered: Rect[] = [],
+    style = new Style({ fg: "faint", bg: "bg" }).sgr();
+  const plan = state.plan;
+  if (plan && state.drop?.kind !== "tab") {
+    const ids = [...plan.moved, ...(state.drop?.kind === "swap" ? [state.drop.pane] : [])],
+      preview = docking.view(plan),
+      inset = preview.hasFrame(area) ? 0 : 1;
+    for (const place of preview.placements(area).filter(p => ids.includes(p.id))) {
+      // A single-pane tab needs room for the preview's border inside its area.
+      const r = new Rect(
+          place.rect.x + inset,
+          place.rect.y + inset,
+          place.rect.w - 2 * inset,
+          place.rect.h - 2 * inset,
+        ),
+        pane = panes.find(p => p.id === place.id);
+      const border = new Rect(r.x - 1, r.y - 1, r.w + 2, r.h + 2);
+      if (border.w < 2 || border.h < 2) continue;
+      const cwd = directoryLabel(state.cwd ?? "", null, 256);
+      const label =
+        place.id === plan.shell
+          ? i18n.t`shell at ${cwd}`
+          : pane?.label || pane?.agent.name || pane?.command || i18n.t`Shell`;
+      covered.push(border);
+      for (let y = r.y; y < r.y + r.h; y++) {
+        w.write(w.cup(y + 1, r.x + 1) + ghost_band);
+        w.splat(" ", r.w);
+      }
+      if (pane && place.id !== plan.shell && r.w > 0 && r.h > 0) {
+        pane.terminal.updateRender();
+        w.write(pane.terminal.rows(pane.id, r.x, r.y, r.w, r.h, true, null));
+      }
+      w.write(w.cup(border.y + 1, border.x + 1) + style + "╭" + "┄".repeat(border.w - 2) + "╮");
+      w.write(w.cup(border.y + border.h, border.x + 1) + style + "╰" + "┄".repeat(border.w - 2) + "╯");
+      for (let y = r.y; y < r.y + r.h; y++)
+        w.write(w.cup(y + 1, border.x + 1) + style + "┊" + w.cup(y + 1, border.x + border.w) + "┊");
+      if (border.w >= 6) {
+        w.write(w.cup(border.y + 1, border.x + 3) + style + " ");
+        writeEllipsis(w, printable(label), border.w - 6);
+        w.write(" ");
+      }
+    }
+  }
+  if (state.reason) {
+    const r = new Rect(area.x, area.y + area.h - 2, area.w, 1);
+    covered.push(r);
+    w.write(w.cup(r.y + 1, r.x + 1) + new Style({ fg: "warm", bg: "surface" }).sgr());
+    writeEllipsis(w, state.reason, r.w);
+  }
+  w.write("\x1b[0m");
+  return covered;
+}
+
 export interface Ui {
+  docking: Docking | null;
   prefs: Preferences;
   pointer: Pointer | null;
   iterm2_pointer: boolean;
@@ -136,10 +219,21 @@ export interface Ui {
   resources: any;
   resource_hover: number | null;
   resource_card: resourceTooltip.State | null;
+  startup_waits: StartupWait[];
+  startup_card: startupCard.State | null;
+  connection_card: connectivityCard.Card | null;
+  sync_notice: syncNotice.State | null;
+  /** A pane an action is opening has the keyboard: no pane shows focus. */
+  pane_opening: boolean;
+  signal_bars: SignalBars | null;
   git_hover: number | null;
+  /** Panes whose grips showed last frame. */
+  grip_hover: readonly number[];
   /** The push card, shown or held open, with the row whose review shows dimmed. */
   git_card: gitTooltip.State | null;
   worktree_card: worktreeTooltip.State | null;
+  /** The sidebar row of a shown machine's workspace, which the cards name by its own id. */
+  row_key: (id: number) => number;
   /** The worktree browsed in the overview, or the checkout the launcher
    * starts agents in, whose rows stay lit while the rest of the agent list dims. */
   worktree_spotlight: sidebar.Spotlight | null;
@@ -149,6 +243,7 @@ export interface Ui {
    * click copied its link. */
   paste_card: Notice | null;
   paste_copied: boolean;
+  paste_progress: pasteProgress.State | null;
   inference: SetupStatus;
   message: string;
   copy_mode: boolean;
@@ -167,9 +262,13 @@ export interface Ui {
   port_menu: PortMenu | null;
   scope_menu: ScopeMenu | null;
   scope_label: string;
+  workspace_scope: string;
   agent_search: Search | null;
   tab_drop_x: number | null;
   dialog: Dialog | null;
+  archive_dialog: workspaceArchive.Dialog | null;
+  /** The sidebar row being renamed in place. */
+  inline_rename: RenameState | null;
   sidebar_open: boolean;
   /** The folded sidebar's list that shows as a drawer over the panes. */
   sidebar_drawer: Section | null;
@@ -195,6 +294,10 @@ export interface Ui {
   accounts: subagentTooltip.Accounts;
   workspaces: WorkspaceEntry[];
   workspace_offset: number;
+  archived_workspaces: sidebar.ArchivedWorkspace[];
+  archived_expanded: boolean;
+  archived_offset: number;
+  archived_focused: boolean;
   /** Columns the review panel takes at the right edge; 0 while it is closed. */
   review_width: number;
   review_fullscreen: boolean;
@@ -210,6 +313,13 @@ export interface Ui {
   review_ghost: { width: number; draw: (w: Writer) => void } | null;
   /** Draws an account's sign-in over the whole screen, its cursor included. */
   signin_draw: ((w: Writer, pointer: Pointer | null) => linkTooltip.Link | null) | null;
+  /** With every workspace closed, the button that creates one. */
+  no_workspace: noWorkspace.State | null;
+  workspace_loading: boolean;
+  /** Draws the Corgi prompt over everything, placing brand marks where it can. */
+  /** Draws the prompt and returns the boxes it drew over. */
+  prompt_draw: ((w: Writer, marks: Marks | null) => Rect[]) | null;
+  prompt_cue: Cue | null;
 }
 export function ui(fields: Partial<Ui> & { message: string; copy_mode: boolean }): Ui {
   return {
@@ -221,14 +331,23 @@ export function ui(fields: Partial<Ui> & { message: string; copy_mode: boolean }
     resources: { workspaces: [] },
     resource_hover: null,
     resource_card: null,
+    startup_waits: [],
+    startup_card: null,
+    connection_card: null,
+    sync_notice: null,
+    pane_opening: false,
+    signal_bars: null,
     git_hover: null,
+    grip_hover: [],
     git_card: null,
     worktree_card: null,
+    row_key: id => id,
     worktree_spotlight: null,
     agent_launcher: null,
     corgi_setup: null,
     paste_card: null,
     paste_copied: false,
+    paste_progress: null,
     inference: setupStatus(),
     copy_feedback: false,
     added_feedback: "",
@@ -242,9 +361,13 @@ export function ui(fields: Partial<Ui> & { message: string; copy_mode: boolean }
     port_menu: null,
     scope_menu: null,
     scope_label: "",
+    workspace_scope: "",
     agent_search: null,
     tab_drop_x: null,
+    docking: null,
     dialog: null,
+    archive_dialog: null,
+    inline_rename: null,
     sidebar_open: true,
     sidebar_drawer: null,
     corgi_badge: "none",
@@ -266,6 +389,10 @@ export function ui(fields: Partial<Ui> & { message: string; copy_mode: boolean }
     accounts: new subagentTooltip.Accounts(),
     workspaces: [],
     workspace_offset: 0,
+    archived_workspaces: [],
+    archived_expanded: false,
+    archived_offset: 0,
+    archived_focused: false,
     review_width: 0,
     review_fullscreen: false,
     review_split: null,
@@ -274,6 +401,10 @@ export function ui(fields: Partial<Ui> & { message: string; copy_mode: boolean }
     review_draw: null,
     review_ghost: null,
     signin_draw: null,
+    no_workspace: null,
+    workspace_loading: false,
+    prompt_draw: null,
+    prompt_cue: null,
     ...fields,
   };
 }
@@ -444,7 +575,12 @@ function placeCard(view: LayoutView, panes: Pane[], area: Rect, notice: Notice, 
 }
 /** No modal overlay, menu, or dialog is covering the panes. */
 function noOverlay(u: Ui): boolean {
+  return noPopup(u) && !u.sidebar_focus && !u.docking?.dragging && !u.docking?.plan;
+}
+/** Nothing open over the screen, though the sidebar may have the keyboard. */
+function noPopup(u: Ui): boolean {
   return (
+    u.startup_card === null &&
     u.scope_menu === null &&
     u.agent_launcher === null &&
     u.corgi_setup === null &&
@@ -454,9 +590,23 @@ function noOverlay(u: Ui): boolean {
     u.port_menu === null &&
     u.worktree_card === null &&
     u.dialog === null &&
+    u.archive_dialog === null &&
+    u.inline_rename === null &&
     u.signin_draw === null &&
     u.signin_exit === null &&
-    !u.sidebar_focus
+    u.prompt_draw === null
+  );
+}
+/** Dialogs, the launcher, Corgi setup, the prompt, the workspace drawer and the review panel's keys dim the panes behind them. */
+function dimsPanes(u: Ui): boolean {
+  return (
+    u.dialog !== null ||
+    u.archive_dialog !== null ||
+    u.agent_launcher !== null ||
+    u.corgi_setup !== null ||
+    u.prompt_draw !== null ||
+    u.sidebar_drawer !== null ||
+    u.review_keys
   );
 }
 /** Whether a pane's cells can stay in its native surface. The viewer's own
@@ -466,9 +616,12 @@ function noOverlay(u: Ui): boolean {
 function retainable(u: Ui, p: Pane, r: Rect, dim: boolean, hovered: bigint | null): boolean {
   return (
     noOverlay(u) &&
+    u.paste_progress === null &&
+    u.sync_notice === null &&
     !dim &&
     hovered === null &&
     p.restoring.length === 0 &&
+    !p.dormant &&
     !p.terminal.selection &&
     p.terminal.images.length === 0 &&
     r.w === p.terminal.inner.cols &&
@@ -476,8 +629,9 @@ function retainable(u: Ui, p: Pane, r: Rect, dim: boolean, hovered: bigint | nul
   );
 }
 /** The open menus that can reach past the sidebar. */
-function menuBoxes(u: Ui, width: number, height: number): Rect[] {
+function menuBoxes(u: Ui, width: number, height: number, area: Rect): Rect[] {
   const boxes: Rect[] = [];
+  if (u.archive_dialog) boxes.push(u.archive_dialog.view(width, height, area).box);
   if (u.menu) boxes.push(new Rect(u.menu.x, u.menu.y, u.menu.width, u.menu.rows + 3));
   if (u.tab_menu) {
     const b = u.tab_menu.bounds(width, height);
@@ -500,16 +654,20 @@ function writeChip(
   height: number,
   pointer: Pointer | null,
   left = 0,
+  /** A status dot before the text, in its color. */
+  mark: string | null = null,
 ): Rect | null {
   const text = raw.replace(/^ +/, "");
-  if (width - left < 4 || height === 0 || text.length === 0) return null;
+  const lead = mark ? 2 : 0;
+  if (width - left < 4 + lead || height === 0 || text.length === 0) return null;
   const clipped = new Writer();
-  writeEllipsis(clipped, text, width - left - 2);
+  writeEllipsis(clipped, text, width - left - 2 - lead);
   const body = clipped.buffered();
-  const chip_width = displayWidth(body) + 2;
+  const chip_width = displayWidth(body) + 2 + lead;
   const covered = pointer !== null && pointer.y === height - 1 && pointer.x >= left && pointer.x < left + chip_width;
   const x = covered ? width - chip_width : left;
-  w.write(`\x1b[${height};${x + 1}H\x1b]8;;\x1b\\${chip} ${body} \x1b[0m`);
+  const dot = mark ? `${mark}●${chip} ` : "";
+  w.write(`\x1b[${height};${x + 1}H\x1b]8;;\x1b\\${chip} ${dot}${body} \x1b[0m`);
   return new Rect(x, height - 1, chip_width, 1);
 }
 /** A bar over the pane area's bottom row while the prefix waits for its key.
@@ -606,19 +764,9 @@ function drawTabs(
   w.write(button_edge + "▐" + button + "+" + button_edge + "▌");
   w.write("\x1b[0m");
 }
-export function frame(
-  view: LayoutView,
-  panes: Pane[],
-  width: number,
-  height: number,
-  u: Ui,
-  retained?: composition.Frame,
-): string {
-  const model = view.model;
-  const w = new Writer();
+/** The sidebar a frame of `u` draws, so hit tests find what it shows. */
+export function sidebarView(u: Ui, width: number, height: number): SidebarView {
   const entries = u.dragged_agent ? u.dragged_agent.apply(u.agents) : u.agents;
-  const workspaces = u.dragged_workspace ? u.dragged_workspace.apply(u.workspaces) : u.workspaces;
-  const dragging = u.dragged_agent !== null || u.dragged_workspace !== null;
   let side = SidebarView.init(width, height, u.sidebar_open, u.sidebar_offset, entries.length, u.prefs.sidebar_split)
     .withSearch(u.agent_search)
     .withWidth(u.prefs.sidebar_width)
@@ -627,7 +775,17 @@ export function frame(
   side.gpus = resourceTooltip.gpuCount(u.resources) > 0;
   side.drawer = u.sidebar_drawer;
   side.focus = u.sidebar_focus;
-  side = side.withWorkspaces(u.workspaces.length, u.workspace_offset).withEntries(entries);
+  side = side.withArchives(u.archived_workspaces.length, u.archived_expanded, u.archived_offset, u.archived_focused);
+  const workspaces = u.dragged_workspace ? u.dragged_workspace.apply(u.workspaces) : u.workspaces;
+  side = side
+    .withWorkspaces(
+      workspaces.length,
+      u.workspace_offset,
+      workspaces.map(row => row.machine),
+      workspaces.map(row => row.collapsed),
+    )
+    .withEntries(entries)
+    .withRename(u.inline_rename);
   side.corgi_badge = u.corgi_badge;
   if (u.review_fullscreen) {
     side.width = 0;
@@ -636,26 +794,86 @@ export function frame(
   side.supports_kitty_graphics = u.supports_kitty_graphics;
   side.cell = u.cell_pixels;
   side.scope_label = u.scope_label;
+  const new_binding = u.prefs
+    .bindings()
+    .filter(b => b.action.name === "new" || b.action.name === "new-agent")
+    .sort(
+      (a, b) => Number(a.prefixed) - Number(b.prefixed) || bindings.format(a).length - bindings.format(b).length,
+    )[0];
+  side.new_shortcut = new_binding
+    ? `${new_binding.prefixed ? keymap.prefixName(u.prefs.prefix) + " " : ""}${bindings.format(new_binding)}`
+    : null;
+  side.workspace_scope = u.workspace_scope;
   side.resource_hover = u.resource_hover;
   side.corgi_intensity = u.corgi_setup?.previewIntensity(u.prefs) ?? u.prefs.corgi_intensity;
   side.dragged = u.dragged_agent ? u.dragged_agent.destination : null;
   side.dragged_workspace = u.dragged_workspace ? u.dragged_workspace.destination : null;
+  return side;
+}
+/** The whole screen. Without `layout`, a machine that hasn't shown its
+ * screen yet, there are no tabs or panes beside the sidebar. */
+export function frame(
+  layout: LayoutView | null,
+  panes: Pane[],
+  width: number,
+  height: number,
+  u: Ui,
+  retained?: composition.Frame,
+): string {
+  const view = layout ?? new LayoutView(new Model(), new Selection());
+  const model = view.model;
+  const w = new Writer();
+  const entries = u.dragged_agent ? u.dragged_agent.apply(u.agents) : u.agents;
+  const workspaces = u.dragged_workspace ? u.dragged_workspace.apply(u.workspaces) : u.workspaces;
+  const dragging = u.dragged_agent !== null || u.dragged_workspace !== null || u.docking?.dragging === true;
+  const side = sidebarView(u, width, height);
+  const signals: { quality: Quality; x: number; y: number }[] = [];
+  if (u.signal_bars && u.cell_pixels)
+    side.signal_marks = (quality, x, y) => {
+      signals.push({ quality, x, y });
+      return u.signal_bars!.ready(quality, u.cell_pixels!);
+    };
   // Mouse tracking modes replace one another. Disabling first makes the host
   // briefly switch to a text pointer on every redraw.
   w.write("\x1b[?1003h");
   // Erase from home to the end, preserving Kitty image storage. ED 2
   // deletes cached images in Ghostty, even those without a placement.
   w.write("\x1b[?2026h\x1b[?25l\x1b[0m\x1b[H\x1b[J");
-  const tab_space = sat(width - side.tabX() - side.panel, 3);
+  const tab_end = width - side.panel;
+  const tab_space = sat(tab_end - side.tabX(), 3);
   // The scrollbar shows while the pointer is where the wheel scrolls the tabs.
   const over_tabs = u.pointer !== null && u.pointer.y === 0 && u.pointer.x >= side.tabX() && noOverlay(u);
-  const thumb = over_tabs ? tabThumb(view, width - side.tabX() - side.panel) : null;
+  const thumb = over_tabs ? tabThumb(view, tab_end - side.tabX()) : null;
   // Marks take room in their tabs only where the host can show them.
   const marks: TabMark[] | null = u.tab_icons && u.cell_pixels ? [] : null;
-  drawTabs(w, view, panes, u.prefs.preset, side.tabX(), tab_space, thumb, marks);
+  // With every workspace closed, all but the way to create one steps back.
+  const none = layout && !u.workspace_loading ? u.no_workspace : null;
+  const on_none =
+    none !== null && u.pointer !== null && noPopup(u) ? noWorkspace.hit(side.area(), u.pointer.x, u.pointer.y) : null;
+  const on_create =
+    on_none === "create" ||
+    (none !== null && u.pointer !== null && noPopup(u) && side.hit(u.pointer.x, u.pointer.y).tag === "workspace_new");
+  const create_lit = none !== null && (none.focused || on_create);
+  if (none) {
+    const tabs = new Writer();
+    drawTabs(tabs, view, panes, u.prefs.preset, side.tabX(), tab_space, thumb, marks);
+    sidebar.writeExit(w, tabs.buffered(), noWorkspace.dim);
+  } else if (u.workspace_loading && model.count === 0) {
+    w.write(`\x1b[1;${side.tabX() + 1}H` + palette.fg("faint"));
+    writeEllipsis(w, " ▰▰▰▰▰▰▰▰   ▰▰▰▰▰▰   ▰▰▰▰▰▰▰▰ ", tab_space);
+    w.write(`\x1b[3;${side.area().x + 2}H` + palette.fg("muted"));
+    writeEllipsis(w, i18n.t`Loading tabs…`, Math.max(0, side.area().w - 2));
+    w.write("\x1b[0m");
+  } else if (layout) drawTabs(w, view, panes, u.prefs.preset, side.tabX(), tab_space, thumb, marks);
   if (u.tab_drop_x !== null)
     w.write(`\x1b[1;${side.tabX() + u.tab_drop_x + 1}H\x1b[1m` + palette.fg("strong") + "│\x1b[0m");
-  if (model.count === 0) {
+  if (none) {
+    const button = new Writer();
+    noWorkspace.draw(button, side.area(), create_lit);
+    // Behind a dialog, like the panes.
+    if (dimsPanes(u)) sidebar.writeExit(w, button.buffered(), sidebar.spotlight_dim);
+    else w.write(button.buffered());
+  } else if (layout && model.count === 0 && !u.workspace_loading) {
     const prefix_key = keymap.prefixName(u.prefs.prefix);
     const hint = (name: string, label: string) => {
       const binding =
@@ -691,7 +909,7 @@ export function frame(
         : null;
   const git_ws =
     u.git_card && u.agent_launcher === null && u.corgi_setup === null
-      ? (u.workspaces.find(ws => ws.id === u.git_card!.workspace) ?? null)
+      ? (u.workspaces.find(ws => u.git_card!.workspace !== null && ws.id === u.row_key(u.git_card!.workspace)) ?? null)
       : null;
   const git_rect = git_ws
     ? gitTooltip.geometry(git_ws, width, height, u.git_card!.anchor.x, u.git_card!.anchor.y)
@@ -723,10 +941,12 @@ export function frame(
     } else if (
       u.agent_launcher === null &&
       u.corgi_setup === null &&
+      u.prompt_draw === null &&
       u.agent_search === null &&
       u.menu === null &&
       u.tab_menu === null &&
-      u.dialog === null
+      u.dialog === null &&
+      u.archive_dialog === null
     ) {
       if (u.port_menu) {
         const menu = u.port_menu;
@@ -745,10 +965,13 @@ export function frame(
         switch (found.tag) {
           case "toggle":
           case "workspace_new":
+          case "workspace_scope":
           case "agent_scope":
           case "agent_new":
           case "agent_options":
           case "active":
+          case "archives":
+          case "archived_workspace":
             link_pointer = true;
             break;
           case "workspace":
@@ -760,7 +983,8 @@ export function frame(
         // Pushing and just-pushed badges ignore clicks, so only Push and Retry point.
         const git = sidebar.gitActionWorkspace(side, u.workspaces, u.git_hover, pointer.x, pointer.y);
         if (git) link_pointer = link_pointer || git.git_push.phase === "idle" || git.git_push.phase === "failed";
-        if (pointer.y === 0 && pointer.x >= side.tabX()) {
+        if (on_create || on_none !== null) link_pointer = true;
+        if (layout && pointer.y === 0 && pointer.x >= side.tabX()) {
           const add_x = side.tabX() + addTabX(view, width - side.tabX() - side.panel);
           link_pointer = link_pointer || (pointer.x >= add_x && pointer.x < add_x + 3);
         }
@@ -778,7 +1002,7 @@ export function frame(
       }
     }
   }
-  if (u.corgi_setup !== null && u.pointer)
+  if (u.corgi_setup !== null && u.pointer && !on_link_card)
     link_pointer = u.corgi_setup.hit(width, height, u.pointer.x, u.pointer.y, u.inference, u.prefs) !== null;
   if (u.pointer) {
     const pointer = u.pointer;
@@ -793,6 +1017,8 @@ export function frame(
             : false;
     } else if (u.tab_menu) {
       link_pointer = u.tab_menu.hit(width, height, pointer.x, pointer.y) !== null;
+    } else if (u.archive_dialog) {
+      link_pointer = u.archive_dialog.view(width, height, area).hit(pointer.x, pointer.y) !== null;
     } else if (u.dialog) {
       const dialog_view = NameView.init(width, height, u.dialog);
       // Clicks outside the dialog also cancel; only the buttons point.
@@ -816,6 +1042,12 @@ export function frame(
     const p = panes.find(pane => pane.id === place.id);
     if (!p) continue;
     const r = place.rect;
+    if (p.terminal.loaded === false && !p.dormant && !p.restoring) {
+      w.write(w.cup(r.y + 1, r.x + 1) + palette.fg("muted"));
+      writeEllipsis(w, i18n.t`Loading pane…`, Math.max(0, r.w - 2));
+      w.write("\x1b[0m");
+      continue;
+    }
     p.terminal.updateRender();
     let hovered: bigint | null = null;
     if (u.pointer && r.contains(u.pointer.x, u.pointer.y) && !on_card && !on_link_card && noOverlay(u)) {
@@ -823,24 +1055,26 @@ export function frame(
       hovered = link?.id ?? null;
       hovered_uri = link?.uri ?? hovered_uri;
     }
-    // Dialogs, the launcher, Corgi setup, the workspace drawer and the review panel's keys dim the panes behind them.
-    const dim =
-      u.dialog !== null ||
-      u.agent_launcher !== null ||
-      u.corgi_setup !== null ||
-      u.sidebar_drawer !== null ||
-      u.review_keys;
+    const dim = dimsPanes(u);
     if (retained && retainable(u, p, r, dim, hovered)) retained.pane(w, p.terminal, p.id, r);
     else w.write(p.terminal.rows(p.id, r.x, r.y, r.w, r.h, dim, hovered));
     w.write("\x1b[0m");
-    if (p.restoring.length > 0) {
+    if (p.restoring.length > 0 || p.dormant) {
+      const id = p.id;
       drawRestoring(
         w,
         r,
         {
           command: p.restoring,
-          name: p.label.length > 0 ? p.label : p.agent.name.length > 0 ? p.agent.name : providerName(p.agent),
-          meta: restoringMeta(p, u.conversations),
+          name:
+            p.label.length > 0
+              ? p.label
+              : p.agent.name.length > 0
+                ? p.agent.name
+                : p.agent.provider
+                  ? providerName(p.agent)
+                  : i18n.t`Terminal`,
+          meta: p.dormant ? i18n.t`Resume with corgi pane wake ${id}` : restoringMeta(p, u.conversations),
           dig: p.dormant ? "asleep" : p.forking ? "forking" : "restoring",
         },
         Date.now() - p.restoring_since,
@@ -849,21 +1083,68 @@ export function frame(
     // Kitty can't dim an image, so dimmed and covered panes keep their
     // images uploaded but don't place them.
     const hidden =
-      dim || dragging || u.copy_mode || u.signin_draw !== null || u.signin_exit !== null || p.restoring.length > 0;
+      dim ||
+      dragging ||
+      u.copy_mode ||
+      u.signin_draw !== null ||
+      u.signin_exit !== null ||
+      p.restoring.length > 0 ||
+      p.dormant;
     if (u.supports_kitty_graphics) pictured.push({ pane: p, rect: r, hidden });
   }
-  drawDividers(w, view, area, !u.sidebar_focus);
+  drawDividers(w, view, area, !u.sidebar_focus && !u.pane_opening);
+  const sync_at = u.sync_notice ? syncNotice.locate(view, area, u.sync_notice.keys ? 2 : 1) : null;
+  if (sync_at) {
+    w.write(syncNotice.draw(u.sync_notice!, sync_at));
+    cover(sync_at);
+  }
   // Under the sidebar, which covers what a drawer hides.
   if (u.ghost) cover(drawGhost(w, u.ghost, side.drawer !== null ? side.width : u.ghost.area.x));
   if (u.workspace_ghost) cover(drawWorkspaceGhost(w, u.workspace_ghost, panes, side, width, u.prefs.preset));
+  const grips =
+    u.pointer && noPopup(u) && !u.copy_mode && !u.sidebar_focus
+      ? docking.hovered(docking.grips(view, side.area()), u.pointer.x, u.pointer.y, u.grip_hover)
+      : [];
+  const grip_images = u.supports_kitty_graphics && u.cell_pixels !== null;
+  if (u.supports_kitty_graphics) w.write(dockingGrip.hide);
+  for (const grip of grips) {
+    if (grip_images && grip.rect.w === 4) {
+      w.write(w.cup(grip.rect.y + 1, grip.rect.x + 1) + new Style({ fg: "faint", bg: "bg" }).sgr());
+      writeEllipsis(w, " :: ", grip.rect.w);
+    } else {
+      w.write(w.cup(grip.rect.y + 1, grip.rect.x + 1) + divider_focused);
+      writeEllipsis(w, "┤", Math.min(1, grip.rect.w));
+      if (grip.rect.w >= 3) w.write("\x1b[53;4m::\x1b[55;24m");
+      if (grip.rect.w === 4) w.write("├");
+      w.write("\x1b[0m");
+    }
+  }
+  if (u.docking) for (const rect of drawDocking(w, u.docking, panes, side.area())) cover(rect);
   // The host may leave its last mouse report at the window edge.
-  if (u.pointer && u.pointer.x > 0 && !dragging && !on_card && noOverlay(u))
+  if (u.pointer && u.pointer.x > 0 && !dragging && !on_card && noOverlay(u)) {
     side.hovered = sidebar.agentIndexAt(side, entries, u.pointer.x, u.pointer.y);
+    if (!on_link_card && !on_git && !u.connection_card?.rect.contains(u.pointer.x, u.pointer.y))
+      side.machine_hover = sidebar.machineHeaderAt(side, u.pointer.x, u.pointer.y)?.rect.y ?? null;
+  }
   side.spotlight = u.worktree_spotlight;
   // A moving row's tint and a link's thumbnail are placed again by each frame that shows them.
   if (u.supports_kitty_graphics)
     w.write(rowGlide.hide + rowGlide.hideImage(rowGlide.manager_image_id) + linkThumbnail.hide);
-  side.draw(w, entries, workspaces);
+  const archive_marks: { brand: Brand; x: number; y: number }[] = [];
+  const dim_sidebar = none !== null && u.archived_workspaces.length === 0;
+  if (!dim_sidebar && u.tab_icons && u.cell_pixels)
+    side.archive_marks = (brand, x, y) => {
+      archive_marks.push({ brand, x, y });
+    };
+  if (dim_sidebar) {
+    const dimmed = new Writer();
+    side.draw(dimmed, entries, workspaces, u.archived_workspaces);
+    sidebar.writeExit(w, dimmed.buffered(), noWorkspace.dim);
+    side.drawTitleRow(w, create_lit);
+  } else {
+    side.draw(w, entries, workspaces, u.archived_workspaces);
+    if (none) side.drawTitleRow(w, create_lit);
+  }
   if (u.git_hover !== null) sidebar.drawGitAction(w, side, u.workspaces, u.git_hover);
   if (u.review_draw) {
     u.review_draw(w);
@@ -893,26 +1174,55 @@ export function frame(
             ? i18n.t`SIDEBAR  ↑↓/j/k move  ↵ open  ${search}Esc back`
             : "");
     // Beside the sidebar while it has focus, clear of its box's bottom edge.
-    cover(writeChip(w, text, width, height, u.pointer, u.sidebar_focus ? side.width : 0));
+    const waiting =
+      noOverlay(u) && !pinned && !u.git_card?.pinned
+        ? startupCard.banner(u.startup_waits, width, height, Date.now())
+        : null;
+    const chip_width = waiting?.rect.x ?? width;
+    if (text || !u.prompt_cue)
+      cover(writeChip(w, text, chip_width, height, u.pointer, u.sidebar_focus ? side.width : 0));
+    else cover(writeChip(w, u.prompt_cue.text, chip_width, height, u.pointer, 0, cue_mark[u.prompt_cue.tone]));
+    if (waiting) {
+      startupCard.drawBanner(w, waiting);
+      cover(waiting.rect);
+      if (u.pointer && waiting.rect.contains(u.pointer.x, u.pointer.y)) link_pointer = true;
+    }
   }
   // The prefix bar covers the area's last row.
   const cursor_rows = area.y + area.h - (u.prefix && area.h > 0 ? 1 : 0);
-  const pane_cursor_owned = model.count > 0 && !u.copy_mode && !u.link_tooltip && !u.review_focused && noOverlay(u);
-  let pane_cursor: composition.Cursor = null;
+  const pane_cursor_owned =
+    model.count > 0 && !u.copy_mode && !u.link_tooltip && !u.review_focused && !u.pane_opening && noOverlay(u);
+  let pane_cursor: composition.Cursor = null,
+    cursor_style: CursorStyle = "default";
   if (pane_cursor_owned) {
     for (const place of view.placements(area)) {
       if (place.id !== view.selection.tabs[view.selection.active].focus || place.rect.h === 0) continue;
       const p = panes.find(pane => pane.id === place.id && pane.restoring.length === 0);
-      if (!p) continue;
+      if (!p || p.terminal.loaded === false) continue;
+      cursor_style = p.terminal.cursorStyle();
       const cursor = p.terminal.cursor();
       if (cursor && cursor.x < place.rect.w && cursor.y < place.rect.h && place.rect.y + cursor.y < cursor_rows) {
         pane_cursor = { x: place.rect.x + cursor.x, y: place.rect.y + cursor.y };
       }
+      if (pane_cursor && sync_at?.contains(pane_cursor.x, pane_cursor.y)) pane_cursor = null;
     }
   }
   if (paste_at) w.write(pasteCard.draw(u.paste_card!, paste_at, u.paste_copied));
+  if (
+    u.paste_progress &&
+    !u.paste_card &&
+    !u.copy_mode &&
+    !u.prefix &&
+    !u.review_focused &&
+    !u.link_tooltip &&
+    noOverlay(u)
+  ) {
+    const at = pasteProgress.locate(view, panes, area, u.paste_progress);
+    if (at) w.write(pasteProgress.draw(u.paste_progress, at));
+  }
   if (u.worktree_card) {
-    const ws = u.workspaces.find(ws => ws.id === u.worktree_card!.workspace);
+    const id = u.worktree_card.workspace,
+      ws = id === null ? undefined : u.workspaces.find(ws => ws.id === u.row_key(id));
     if (ws) {
       const badge = sidebar.worktreeBadge(side, u.workspaces, ws.id),
         now = milliTimestamp(),
@@ -935,6 +1245,12 @@ export function frame(
   } else if (git_ws && git_rect) {
     const card = u.git_card!;
     cover(sidebar.drawGitTooltip(w, git_ws, width, height, card.anchor.x, card.anchor.y, card.selected));
+  } else if (u.startup_card) {
+    const rect = startupCard.geometry(width, height, u.startup_waits.length);
+    if (rect) {
+      u.startup_card.draw(w, rect, u.startup_waits, Date.now());
+      cover(rect);
+    } else cover(writeChip(w, i18n.t`Startup waits: enlarge terminal · Esc to close`, width, height, u.pointer));
   } else if (pinned && card_rect) {
     const name = u.workspaces.find(ws => ws.id === u.resource_card!.workspace)?.name ?? "workspace";
     resourceTooltip.draw(w, card_rect, name, u.resources, u.resource_card!, u.pointer);
@@ -991,13 +1307,32 @@ export function frame(
     w.write(`\x1b[4;${toast_x}H╰─────────────────────────╯`);
     w.write("\x1b[0m\x1b8");
   }
-  covered.push(...menuBoxes(u, width, height));
+  covered.push(...menuBoxes(u, width, height, area));
   if (u.menu) u.menu.draw(w);
   if (u.tab_menu) u.tab_menu.draw(w, width, height);
   if (u.port_menu) {
     const menu = u.port_menu;
     const ws = u.workspaces.find(item => item.id === menu.workspace);
     if (ws) menu.draw(w, ws, width, height);
+  }
+  if (u.archive_dialog) {
+    const icons = u.tab_icons,
+      cell = u.cell_pixels;
+    u.archive_dialog.view(width, height, area).draw(
+      w,
+      icons && cell && !u.signin_draw && !u.signin_exit
+        ? (brand, col, row) => {
+            if (
+              u.link_card &&
+              link_rect &&
+              (link_rect.contains(col, row) || link_rect.contains(col + tabIcons.cols - 1, row))
+            )
+              return "";
+            return icons.place(brand, col, row, cell);
+          }
+        : null,
+      u.pointer,
+    );
   }
   if (u.dialog) {
     const dialog = u.dialog;
@@ -1007,7 +1342,9 @@ export function frame(
       const i = model.tabs.slice(0, model.count).findIndex(tab => tab.id === target);
       if (i >= 0) number = i + 1;
     }
-    NameView.init(width, height, dialog).draw(dialog, w, number);
+    const box = NameView.init(width, height, dialog);
+    box.draw(dialog, w, number);
+    cover(new Rect(box.x, box.y, box.width, box.height));
   }
   if (u.scope_menu) {
     u.scope_menu.draw(w, side, width, height, u.workspaces, u.prefs.agents as Scope, u.prefs.agentSort());
@@ -1022,8 +1359,8 @@ export function frame(
     managed.manager.cell = u.supports_kitty_graphics ? u.cell_pixels : null;
     managed.manager.pointer_at = u.pointer;
   }
-  // Marks sit above text: none under a sign-in drawn over them, and none
-  // under a link card.
+  // Marks sit above text: none under a sign-in drawn over them, none under
+  // a link card, and none under the prompt but its own.
   const icons = u.tab_icons,
     cell = u.cell_pixels,
     card = u.link_card && u.pointer ? link_rect : null,
@@ -1034,24 +1371,36 @@ export function frame(
             if (!brand || card?.contains(col, row) || card?.contains(col + tabIcons.cols - 1, row)) return "";
             return icons.place(brand, col, row, cell);
           }
-        : null;
+        : null,
+    menu_marks = u.prompt_draw ? null : brand_marks;
   if (u.agent_launcher) {
     // None under the setup drawn over the launcher.
-    u.agent_launcher.marks = u.corgi_setup ? null : brand_marks;
+    u.agent_launcher.marks = u.corgi_setup ? null : menu_marks;
     u.agent_launcher.draw(w, width, height, side);
+    cover(u.agent_launcher.bounds(width, height, side));
   }
-  // Settings' Manage agents wears them as the launcher's does.
-  if (u.corgi_setup?.agents) u.corgi_setup.agents.manager.marks = brand_marks;
-  if (u.corgi_setup) u.corgi_setup.draw(w, u.inference, u.prefs, width, height);
+  // Settings' Manage agents and model picker wear them as the launcher's does.
+  if (u.corgi_setup?.agents) u.corgi_setup.agents.manager.marks = menu_marks;
+  if (u.corgi_setup) {
+    u.corgi_setup.marks = menu_marks;
+    cover(u.corgi_setup.draw(w, u.inference, u.prefs, width, height));
+  }
   if (managed?.manager.last_box && !managed.transition.active)
     w.write(managed.manager.glideImage(managed.manager.last_box, managed.manageModel()));
   cover(signinExit.draw(w, u.added_feedback, width, height, u.signin_exit));
+  const prompt = u.prompt_draw ? u.prompt_draw(w, brand_marks) : [];
+  covered.push(...prompt);
+  // The badge goes once the prompt has said where it drew.
+
   // A sign-in takes the whole screen, its cursor included.
   if (u.signin_draw) {
     hovered_uri = u.signin_draw(w, on_link_card ? null : u.pointer)?.uri ?? null;
     link_pointer = on_link_card && linkTooltip.copyAt(link_rect!, u.pointer!.x, u.pointer!.y);
     resize_hover = null;
-  } else side.searchCursor(w);
+  } else {
+    side.searchCursor(w);
+    side.renameCursor(w, workspaces);
+  }
   if (u.signin_exit) w.write("\x1b[?25l");
   if (u.link_card && link_rect && u.pointer) {
     w.write("\x1b[?25l");
@@ -1059,6 +1408,11 @@ export function frame(
     linkTooltip.draw(w, link_rect, u.link_card, linkTooltip.copyAt(link_rect, u.pointer.x, u.pointer.y));
     if (u.link_card.thumbnail) w.write(linkThumbnail.place(link_rect, u.link_card.thumbnail));
     cover(link_rect);
+  }
+  if (u.connection_card && noOverlay(u)) {
+    connectivityCard.draw(w, u.connection_card);
+    cover(u.connection_card.rect);
+    pane_cursor = null;
   }
   if (u.images && u.cell_pixels) {
     const { images, cell_pixels } = u;
@@ -1068,6 +1422,24 @@ export function frame(
     }
   }
   // Like pane images, a mark goes under nothing drawn over it.
+  if (grip_images && !u.signin_draw && !u.signin_exit)
+    w.write(
+      dockingGrip.draw(
+        grips
+          .map(g => g.rect)
+          .filter(
+            r =>
+              r.w === 4 && !covered.some(b => b.x < r.x + r.w && r.x < b.x + b.w && b.y < r.y + r.h && r.y < b.y + b.h),
+          ),
+        u.cell_pixels!,
+      ),
+    );
+  if (u.signal_bars && u.cell_pixels && !u.signin_draw && !u.signin_exit)
+    for (const { quality, x, y } of signals) w.write(u.signal_bars.place(quality, x, y, u.cell_pixels, covered));
+  if (u.tab_icons && u.cell_pixels && !u.agent_launcher && !u.corgi_setup && !u.signin_draw && !u.signin_exit)
+    for (const { brand, x, y } of archive_marks)
+      if (!covered.some(box => box.y <= y && box.y + box.h > y && box.x < x + tabIcons.cols && box.x + box.w > x))
+        w.write(u.tab_icons.place(brand, x, y, u.cell_pixels));
   if (marks && u.tab_icons && u.cell_pixels && !u.agent_launcher && !u.corgi_setup && !u.signin_draw && !u.signin_exit)
     for (const { brand, x } of marks)
       if (!covered.some(box => box.y === 0 && box.h > 0 && box.x < x + tabIcons.cols && box.x + box.w > x))
@@ -1079,14 +1451,20 @@ export function frame(
   if (pane_cursor_owned) {
     if (retained?.panes.length) {
       retained.cursor = pane_cursor;
+      retained.cursor_style = cursor_style;
       retained.cursor_at = w.s.length;
-    } else w.write(composition.cursorBytes(pane_cursor));
+    } else w.write(composition.cursorBytes(pane_cursor, cursor_style));
   } else if (retained?.panes.length) retained.reusable = false;
   // Include the shape in each complete frame so reconnects and overlay changes
   // cannot leave the host pointer stuck on a previously hovered link.
   // iTerm2 has a pointing hand and an open hand, but no closed-hand shape.
   // "default" also clears its override because unrecognized names reset it.
   const axis = u.resizing ?? resize_hover;
+  const over_grip =
+    u.resizing === null &&
+    u.pointer !== null &&
+    grips.some(g => g.rect.contains(u.pointer!.x, u.pointer!.y)) &&
+    !covered.some(b => b.contains(u.pointer!.x, u.pointer!.y));
   const manager_box = managed?.manager.last_box,
     manager_shape =
       managed &&
@@ -1108,17 +1486,21 @@ export function frame(
         ? u.iterm2_pointer
           ? "fleur"
           : "grabbing"
-        : axis !== null
-          ? axis === "horizontal"
-            ? u.iterm2_pointer
-              ? "sb_h_double_arrow"
-              : "ew-resize"
-            : u.iterm2_pointer
-              ? "sb_v_double_arrow"
-              : "ns-resize"
-          : link_pointer || hovered_uri !== null
-            ? handShape(u.iterm2_pointer)
-            : "default";
+        : over_grip
+          ? u.iterm2_pointer
+            ? "fleur"
+            : "grab"
+          : axis !== null
+            ? axis === "horizontal"
+              ? u.iterm2_pointer
+                ? "sb_h_double_arrow"
+                : "ew-resize"
+              : u.iterm2_pointer
+                ? "sb_v_double_arrow"
+                : "ns-resize"
+            : link_pointer || hovered_uri !== null
+              ? handShape(u.iterm2_pointer)
+              : "default";
   w.write(`\x1b]22;${shape}\x1b\\`);
   w.write("\x1b[?2026l");
   if (retained) for (const rect of covered) retained.cover(rect);
@@ -1204,7 +1586,7 @@ export function drawRestoring(w: Writer, r: Rect, band: Restoring, shown_ms: num
   const text = Math.max(displayWidth(band.name), displayWidth(band.meta), Math.min(displayWidth(band.command) + 2, 58));
   const bw = Math.min(r.w, Math.max(text + 6, word + 2 * lead + 6));
   const inner = sat(bw, 6);
-  const lines = commandLines(units, inner);
+  const lines = band.command ? commandLines(units, inner) : [];
   // Borders and padding, the title, then a gap and the details that fit.
   let details = 2 + lines.length;
   while (details > 0 && 6 + details > r.h) details = details > 2 ? 2 : 0;
@@ -1372,6 +1754,13 @@ export function drawDividers(w: Writer, view: LayoutView, area: Rect, outline = 
           if (x + 1 < area.x + area.w && other.rect.contains(x + 1, y)) right = true;
           if (y > area.y && other.rect.contains(x, y - 1)) up = true;
           if (y + 1 < area.y + area.h && other.rect.contains(x, y + 1)) down = true;
+        }
+        // The outline turns its corners rather than run on into a plain divider.
+        if (selected) {
+          up &&= touchesPane(focused, x, y - 1);
+          down &&= touchesPane(focused, x, y + 1);
+          left &&= touchesPane(focused, x - 1, y);
+          right &&= touchesPane(focused, x + 1, y);
         }
         w.write(dividerGlyph(up, down, left, right, border.axis === "horizontal"));
       }

@@ -17,9 +17,43 @@ plan a worktree; see [Create or choose a worktree](workspaces.md#create-or-choos
 Nothing is created merely by browsing.
 
 Built-in providers appear when installed and not known to be signed out.
-An inconclusive account check does not hide them. Use `corgi which codex` or
+An inconclusive account check does not hide them. Installed agents appear automatically when Corgi finds a saved login, a model
+choice or a successful account check. Explicit additions, named accounts and
+saved profiles stay available without a detected sign-in. Discovery settles
+before automatic rows appear. If none are configured or explicitly added,
+the picker falls back to genuinely installed agents so you can choose one to
+set up. Hidden rows stay hidden, and unavailable saved accounts or profiles
+do not suppress this fallback. A failed account check does not erase local
+configuration evidence.
+
+The picker, Manage agents, `corgi launcher list` and prompt model choices share
+this policy. Explicit additions are daemon preferences and survive recovery
+and live reload. Executable discovery and account availability follow each
+workspace, including its mise configuration.
+
+Use `corgi which codex` or
 `corgi which claude` to inspect binary discovery. `CORGI_CODEX_BIN` and
 `CORGI_CLAUDE_BIN` can select explicit executables before runtime startup.
+
+**Find agents** (`f`) in Manage agents refreshes discovery for the selected
+workspace. Opening Manage agents also refreshes once per viewer.
+
+A mise shim whose tool is missing appears under Add agent as **Installs on
+use**. It can stay in the picker when configured or explicitly added, but
+never enters the fallback list of installed agents. Only starting that agent
+in a pane may run the shim; background reads and headless sessions cannot
+install it. Once the agent starts, Corgi refreshes its workspace discovery.
+
+Slow launches show a shared **waiting** count at the bottom right. Click it
+(or run `corgi action startup-waits`) for the stage, elapsed time and latest
+output. Enter shows the pane; `x` kills the selected startup. OpenCode's
+service startup has no fixed deadline, and installer output remains visible
+in the pane. Network requests retain their deadlines. Closing the pane also
+stops its startup helper.
+
+Preparation waits and cancellation survive a live daemon reload; cold
+recovery starts without active waits. Older viewers ignore startup reports.
+Older daemons do not show the Find agents button.
 
 Each provider has its own **YOLO** checkbox, initially off. Click it or press
 `y` on that row to change it; this does not launch anything. The choice is

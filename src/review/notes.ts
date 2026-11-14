@@ -2,10 +2,11 @@
 //! keeps the lines it was written on, so it still reads right after the file
 //! moves on. Mirrors herdr-reviewr's comment model and export format.
 import type { FileDiff, Row } from "./diff";
+import { revisionLabel, type Revision } from "./git";
 
 export type Side = "new" | "old";
 /** Where a note's diff came from: the working tree, or one picked commit. */
-export type Rev = { kind: "worktree" } | { kind: "commit"; hash: string };
+export type Rev = { kind: "worktree" } | Revision;
 export interface Note {
   id: number;
   path: string;
@@ -22,7 +23,9 @@ export interface Note {
   text: string;
 }
 export const sameRev = (a: Rev, b: Rev) =>
-  a.kind === "worktree" ? b.kind === "worktree" : b.kind === "commit" && a.hash === b.hash;
+  a.kind === "worktree"
+    ? b.kind === "worktree"
+    : b.kind !== "worktree" && a.kind === b.kind && revisionLabel(a) === revisionLabel(b);
 export function inFile(note: Note, path: string, rev: Rev, root?: string): boolean {
   return note.path === path && sameRev(note.rev, rev) && (!note.root || note.root === root);
 }
@@ -54,7 +57,7 @@ export function covers(note: Note, row: Row): boolean {
 }
 export function location(note: Note): string {
   const range = note.start === note.end ? `${note.start}` : `${note.start}-${note.end}`;
-  const at = note.rev.kind === "commit" ? ` in ${note.rev.hash.slice(0, 7)}` : "";
+  const at = note.rev.kind !== "worktree" ? ` in ${revisionLabel(note.rev, true)}` : "";
   const path = `${note.root ? note.root + "/" : ""}${note.path}`;
   return note.file ? `${path} (file)${at}` : `${path}:${range}${note.side === "old" ? " (removed)" : ""}${at}`;
 }

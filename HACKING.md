@@ -48,6 +48,58 @@ requested by its most recently active viewer; hidden panes retain their size.
 Background workers return observations for the daemon to validate and apply.
 Keep application policy in TypeScript and the native boundary small.
 
+Pane hibernation reuses recovery's dormant terminal and resume hint. Workspaces
+carry an optional `archived` flag and `archive_summary`, capturing agent states
+and program counts before stopping. Archived panes keep `manual_resume` so
+waking and cold recovery prefill the restore command without running it.
+A non-agent program archiving finds running is kept as `manual_command`,
+apart from the pane's launch, and is dropped once anything runs there, so an
+agent started later resumes as itself.
+Older saved state defaults these to false/null; archived panes also imply
+manual resume.
+Viewer protocol 4 requires wake-on-entry: a viewer records selection changes
+while panes are awake too, so a selected pane becoming dormant cannot wake
+itself. Older viewers must reconnect with the matching binary. The CLI and
+session commands share the same lifecycle operations; see
+[hibernation and archiving](docs/workspaces.md#hibernate-panes-and-archive-workspaces).
+
+Remote daemon connectivity lives in `daemon_transport.ts`, separate from RPC,
+session resume, and the controller's asynchronous task queues. Machine setup
+records the bundled `corgi-remote-bridge` executable's path. SSH invokes that
+native helper directly: attachments do not start Bun on the remote host. The
+helper relays stdin/stdout to the daemon's Unix socket with bounded independent
+buffers. A local socket adapter preserves the interface used by RPC and preview
+clients. Old saved profiles without a bridge path retain dedicated SSH socket forwarding;
+remove and add the machine again to discover the helper.
+
+Normal stdio attachments and CLI commands share a private Corgi OpenSSH master,
+with ten minutes of idle persistence. Bulk image uploads, explicit machine
+checks, manual retries, and recovery probes use independent connections. Closing
+an attachment closes its channel, not the shared master. A stalled remote shows
+its age and pauses input. Successful application round trips adapt the stall
+budget (4–30 seconds); a fresh connection is tested after twice that budget,
+before the old path times out. Initial SSH/hello has a separate 30-second budget. Retry and pause cancel both ordinary startup and recovery probes. Application
+health, replay, and fresh-screen fencing remain in `machine_connection.ts`; the
+render loop never awaits a remote request or SSH teardown.
+
+The optional `bridge` path is additive in the version 1 machine catalog and
+remote-info response. Runtime/viewer protocols and checkpoint/handoff formats
+are unchanged; the bridge forwards their existing bytes.
+
+Machine add/check reconcile builds before connecting. Setup installs into an
+existing canonical executable or, when absent, `~/.local/bin/corgi`. Managed
+installations keep their launcher and release history. Signed releases are fetched
+at the exact version using the local installation's update trust; development
+builds use binary/source identity and Git ancestry, never build timestamps.
+Cross-platform development setup requires a matching `dist/corgi-<target>` and
+its build metadata. Divergent development builds stop with an explicit error.
+When the remote is newer, setup upgrades the local installation and re-executes
+it to finish the command. State preflight and live handoff preserve running
+shells; setup refuses incompatible handoffs instead of restarting agents.
+Transfers and RPCs have deadlines. Upgrade work runs only in setup commands,
+not in the viewer's reconnect or render path. `__update-info` gains additive
+build metadata; wire and persisted-state versions do not change.
+
 Pane surfaces carry Kitty image placements; `viewer.image` transfers decoded
 pixels in bounded chunks. [pane_images.ts](src/pane_images.ts) gives each viewer
 its own image ids, clips pictures to their panes and frees images that leave
@@ -166,6 +218,10 @@ bun tools/site_frames.ts --all-languages
 A separate CI job runs these, the site tests and the static site build.
 Record just one locale with `--language ja` while iterating. Each built page
 contains only its own recordings; `site/.generated/` remains disposable.
+The dev server reports bundling and prerender progress on startup and saves,
+preparing up to three languages in parallel.
+Prerendering draws only the hero's opening prompt through the page's shared
+screen renderer; the other demos initialize when the browser loads the page.
 
 ## Try the UI
 
@@ -177,6 +233,27 @@ bun tools/ui_driver.ts run current -e 'key ctrl+b c; snap'
 The sandbox supplies a seeded repository and fake agents with separate HOME,
 provider configuration and state. Add a world in [tools/sandboxes/](tools/sandboxes/)
 when a feature needs repeatable setup. Sandbox `--restart` discards that world.
+
+`./go.ts --sandbox docking` opens real shells in tabs and nested splits. Drag a
+tab to dock its whole tree, or a pane's `::` grip to move just that pane. The
+grip appears when the pointer is on the pane's top border and stays until
+the pointer is more than a row away. The
+broad middle zone around the root divider docks across the whole layout;
+elsewhere an edge splits only the pane under it. Holding over another tab
+opens it after half a second. Escape, right-click and focus loss cancel.
+Dragging a tab into itself starts a shell at its focused pane's working directory.
+The dotted preview uses the terminal's actual contents.
+
+Prefix then Ctrl+Z / Ctrl+Y undo and redo docking, restoring
+arrangements without restarting processes. Undoing a shell creation moves it into
+its own tab. History belongs to the viewer and daemon lifetime; another layout
+change, including a pane closing, invalidates it. Docking commands check the
+workspace revision before committing, including after a shell finishes spawning.
+
+To watch one of the corgi's animations without setting up what triggers
+it, such as the walk-off on uninstall, play it with
+`bun tools/anim.ts farewell`. Space pauses, the arrow keys step a frame, and
+`--speed 0.25` slows it; with no name it lists the rest.
 
 The [UI driver](tools/ui_driver.ts) drives a real viewer in an isolated PTY
 and records screens. It uses `dist/corgi`, so rebuild first. Scripts live in
@@ -278,27 +355,50 @@ none, and the daemon ignores one in a per-provider record.
 
 `hello` and `server.reload` use management protocol 1, checked independently of
 the runtime version. Keep their request and reply shapes compatible so a new
-client can discover and replace an older daemon. No protocol fallback is needed.
+client can discover and replace an older daemon without speaking its runtime protocol.
 `hello` advertises the client's runtime version in `runtime_protocol`; its reply's
 `protocol` advertises the server's runtime version. Only a matching runtime
 version negotiates ordinary requests on that connection. Management requests
 always carry their own version, even on a negotiated connection.
 
-Runtime protocol 4 lets a request carry a positive safe-integer `request_id`,
-which the daemon echoes on its success or error reply. Tagged replies can
-arrive out of order: a branch listing or worktree addition answers after
-requests sent later. `rpc.Connection` tags by default and fails the
-connection on an untagged reply; subscription events remain untagged. With
-`requestIds: false` it sends one untagged request at a time, as `hello`,
-`server.reload` and the CLI do. Unversioned CLI controls such as `focus` and
-`workspace.switch` still accept replies from older daemons.
+A request may carry a positive safe-integer `request_id`, which the daemon
+echoes on its success or error reply. Tagged replies can arrive out of order: a
+branch listing or worktree addition answers after requests sent later.
+`rpc.Connection` tags by default and fails the connection on an untagged reply;
+subscription events remain untagged. With `requestIds: false` it sends one
+untagged request at a time, and those are answered in order: a slow one holds
+the connection's later ones until it replies.
 
-Each viewer keeps two daemon connections in `viewer_connection.ts`. The control
+The daemon serves its Unix socket with `Bun.serve` (`socket_server.ts`); there is
+no other endpoint or TCP listener. A one-shot request is an HTTP `POST /rpc`
+whose body is a request envelope. A client that stays connected opens a
+WebSocket with subprotocol `corgi-stream-v1`, whose binary messages carry a
+stream of JSON lines; native WS deflate is off. One-shot callers go through
+`rpc_http.ts`: `rpc.request`, CLI commands, `corgi rpc`, bug reports, update
+checks and hooks. The viewer, `corgi watch`, the prompt pane and startup
+reporters keep an `rpc.Connection` over `websocket_socket.ts`. A sender that
+hangs up mid-request counts as a closed connection, so an interrupted
+`headless.start` is cancelled. The daemon binds `<socket>.<pid>` and renames it
+over the socket path, so a reload never leaves the path without a listener.
+From a shell:
+
+```sh
+curl --unix-socket "$CORGI_SOCKET" http://localhost/rpc \
+  -H 'Content-Type: application/json' -d '{"op":"hello","protocol":1}'
+```
+
+`rpc_http.discover` sends the management `hello`, which every daemon since the
+Bun port answers whatever its runtime protocol. The reply's optional
+`transports` advertises HTTP management 1 and the WebSocket subprotocol. Only a
+missing or refused socket lets startup start a daemon; an inconclusive probe
+must not unlink a live daemon's socket. A mutation is never retried after a lost
+reply.
+
+Each viewer keeps two daemon WebSockets in `viewer_connection.ts`. The control
 connection owns the viewer, commands, pane input, metadata and launcher/history
 subscriptions. The data connection carries surfaces, images, searches and wake
-notifications. Both use `rpc.Connection`, which delivers untagged subscription
-events separately from correlated replies. Changing folders replaces the launcher
-subscription on the control connection and keeps the history subscription.
+notifications. Changing folders replaces the launcher subscription on the
+control connection and keeps the history subscription.
 
 The control connection sends `viewer.sync` with `surfaces: false`; after it updates
 the viewer's interests, `viewer.surfaces` reads the corresponding frames on the
@@ -306,24 +406,85 @@ data connection. `viewer.watch` associates that connection with the existing vie
 so pane sizing, focus and activity still belong to one viewer. If a watch is refused
 or the data connection closes, content reads use the control connection until a
 later sync attaches the data connection again. Interrupted content reads retry on
-control; commands are never replayed. Surface receipts and frame diffs keep their
-existing behavior.
-The new operation and defaulted `surfaces` flag are additive: runtime protocol 4
-and viewer protocol 3 are unchanged, and older callers still receive surfaces from
-`viewer.sync`. Handoff already saves
-both connections and their association; no saved-format change or migration is needed.
+control.
 
-The id is optional, so a script can speak plain JSON lines or HTTP `POST`.
-Requests without one are answered in the order they were sent; a slow request
-holds that connection's later ones until it replies. Older runtime protocols
-are rejected, without a serial fallback.
+A client may offer `accept_encoding: ["zstd"]` in its first, uncompressed
+`hello`. The daemon selects `content_encoding: "zstd"` in its plaintext reply;
+omitting it keeps the connection plain. Unknown offers are ignored, and clients
+reject an unsupported or unoffered selection. Only the first request may
+negotiate, and it must finish before another is sent. After that reply's newline,
+both directions use live-history zstd level 3 with a 1 MiB window, flushed per
+message. Queues are bounded and a codec failure closes the connection. Local
+connections stay uncompressed; remote machines opt in. `wire.compress` records
+raw and emitted bytes.
 
-Discovery and replacement use one untagged management request per connection,
-so `hello` and `server.reload` can still upgrade an older daemon. Startup probes
-with `hello` before deciding whether a daemon needs to be started. One-shot
-unversioned requests, including `ping` and `shutdown`, and bug-report queries
-also omit ids so older daemons can answer. Management protocol 1 and viewer
-protocol 3 are unchanged.
+`link.open` gives a connection a link (`link.ts`) that outlives it. Requests that
+must run once (`protocol.once`) carry a `seq`; the daemon records their replies,
+so one sent again after a reconnect is answered from the reply it had. `answered`
+confirms replies the client has. `link.resume` moves a link to a new connection,
+with the viewer it carried. Detached links last 10 minutes, at most 32 of them.
+
+The terminal viewer reaches its daemon through an endpoint
+(`machine_connection.ts`), which reconnects, resumes its link and holds typing
+across reloads. A path (`machine_path.ts`) opens the endpoint's connections.
+`viewer_data.ts` binds the pane-data connection to the control connection's
+viewer link with `viewer.data`. Commands, input, receipts and unsolicited
+`viewer.controls` stay on control. `viewer.stream.configure` sends frames,
+including streamed metadata, on data; surface, image, search and pick replies
+use data too. Local traffic stays uncompressed; remote traffic uses zstd on
+both connections. Older peers without these operations keep the
+single-connection stream.
+
+The data SSH lane has a separate ControlMaster namespace, so it cannot block
+control in a shared SSH/TCP queue. Both handshakes start together, including a
+previously attached machine reconnecting in the background. The data lane checks
+the daemon identity before binding to its viewer link. Its pending handshake has
+its own progress clock, so healthy control traffic cannot hide a stuck data dial.
+The physical link and daemon event loop remain
+shared: this is queue isolation, not a network QoS guarantee. Adaptive frame
+admission still bounds outstanding pane work. Publishing yields to the event
+loop before capturing a new frame, and a descriptor flush writes at most 64 KiB.
+
+`viewer.stream` pushes `viewer.frame`s every 16 ms at most instead of answering
+`viewer.sync` polls. With `incremental`, a stream sends full surfaces first, then
+rows changed against the last surface sent, which the receiver checks against the
+base stamp. Cumulative `viewer.receipt`s bound outstanding frames and wire bytes
+with adaptive allowances (`viewer_stream.ts`); while blocked, the daemon captures
+the latest screen after a receipt instead of queuing every screen in between.
+`remote.stream.window` records the window. `viewer.data` binds a second
+connection to the control connection's link, and `viewer.stream.configure` sends
+frames there, so pane data has its own socket and queue; commands, input and
+`viewer.controls` stay on control. These operations are additive and
+`viewer.sync` keeps working.
+
+A reload hands over no connections. Handoff format 7 carries the runtime and the
+links, so a viewer's link keeps its id, controls and counters. Once the
+candidate commits, it binds the socket and answers the reload. The old daemon
+relays that answer to its requester and forwards HTTP requests that arrived
+meanwhile to the new daemon. It then closes every WebSocket with code 1012, which
+clients see as `ServerReloading`, and from then on ignores disconnects: what its
+clients started belongs to the new daemon. A request it held but never ran isn't
+run there. The viewer reconnects, resumes its link, sends again the numbered
+requests it hadn't heard back about and repeats an unnumbered one the close cut
+off, which is safe to run twice. `corgi watch` and the launcher preview
+subscribe again.
+
+Importing format 6 from an older daemon closes its clients' JSON-line connections
+and its listener. Viewers among them hear `UnsupportedViewerProtocol` and
+reattach; the reload's requester gets its reply, as an HTTP response when it
+asked over HTTP.
+
+Older candidates reject format 7. On exactly `UnsupportedStateVersion`,
+`persist/handoff_rollback.ts` retries once in format 6: the older build adopts a
+listener that the old daemon renames over the socket after the commit, and its
+reload reply reaches the requester through a client it restores. Running
+processes survive. WebSocket clients get close code 4000 (`ServerRolledBack`),
+and the viewer and `corgi watch` ask the user to reattach with the selected
+Corgi version. This applies while the handoff/checkpoint versions are 7/6.
+
+Runtime protocol 5 dropped JSON lines on a bare connection; a client of an older
+protocol is rejected, without a serial fallback. Management protocol 1 is
+unchanged.
 
 Reload returns `ReloadBusy` while a worktree addition is still running, with
 `busy` naming it (`{"op": "worktree.add", "path": …}`). Retry
@@ -367,6 +528,26 @@ the time and scope; polling jobs keep their own `Failure` to suppress repeats.
 `CORGI_LOG_LEVEL` selects `debug`, `info` (the default), `warn` or `error` when
 the daemon starts. Activity-summary records include exact
 model inputs and outputs, so inspect and redact before sharing logs.
+
+Remote recovery traces use the existing opt-in recorder. Start a viewer with
+`CORGI_TELEMETRY_DIR=/tmp/corgi-trace CORGI_TELEMETRY_TRACE=1
+CORGI_TELEMETRY_FILTER=remote.` and send its PID `SIGUSR2` to flush. The filter
+keeps the bounded timeline focused while all aggregate counters still run.
+`remote.connection`, `remote.race`, `remote.transport`, and `remote.rpc` record
+machine name, connection generation, recovery phases, SSH child IDs and RPC
+operation/duration/outcome. They contain no input bytes, request bodies or SSH
+credentials. Trace timestamps use epoch microseconds for comparison with
+external fault events. Nothing is recorded unless telemetry is enabled.
+
+A silent remote gets a spare SSH connection beside its existing one. Primary
+request timeouts retain that spare; it can win while the endpoint reconnects or
+waits to retry. Previously connected endpoints continue probing during a hung
+reconnect, measuring silence from received traffic rather than each new dial.
+Only one spare is active. The initial race waits for two latency-adaptive stall
+budgets; during reconnect, spare attempts are spaced by one stall budget. Spare
+handshakes use the learned request timeout capped at 30 s.
+Initial connections keep their original startup budget. Successful recovery
+still resumes the numbered link, and pause, retry and close cancel both paths.
 
 Use `corgi integration status` for hook installation/trust and `corgi which codex`
 or `corgi which claude` for executable discovery. `corgi rpc` can inspect a

@@ -16,9 +16,38 @@ import { Provider, adapter, byProvider } from "./providers";
 /** The providers these tests install; the rest are listed as not installed. */
 const installed: Provider[] = ["codex", "claude", "pi"];
 const others = Provider.all.filter(p => !installed.includes(p));
+
+test.each(["configured", "added"])(
+  "%s install-on-use agents stay launchable without entering the installed fallback",
+  kind => {
+    const m = new Menu();
+    m.preview = preview({
+      pending: false,
+      installed: byProvider(p => p === "codex"),
+      configured: byProvider(() => false),
+      on_demand: byProvider(p => p === "pi"),
+      options: byProvider(() => ({ pending: false, signed_in: null })),
+    });
+    expect(m.shown("codex")).toBe(true);
+    expect(m.shown("pi")).toBe(false);
+    if (kind === "configured") m.preview = preview({ ...m.preview, configured: byProvider(p => p === "pi") });
+    else m.added = ["pi"];
+    expect(m.shown("pi")).toBe(true);
+    expect(m.shown("codex")).toBe(false);
+    expect(m.cells("pi")).toContain("Installs on use");
+    expect(m.manageModel().agents.find(a => a.provider === "pi" && !a.account)).toMatchObject({
+      available: true,
+      shown: true,
+    });
+    m.hidden.pi = true;
+    expect(m.shown("pi")).toBe(false);
+  },
+);
+
 const menu = (fields: Partial<Menu> = {}) => {
   const value = new Menu({ workspace: 1, selected: "codex", last: "codex", pinned: true, ...fields });
   value.preview.installed = byProvider(p => installed.includes(p));
+  value.preview.pending = false;
   return value;
 };
 const now = () => Math.floor(Date.now() / 1000);
@@ -73,7 +102,12 @@ function screen(m: Menu, cols: number, rows: number, side: SidebarView): string[
   return text.split("\n");
 }
 const work = Row.of("claude", "/accounts/work");
-const workAccount = (option: object = {}) => ({ provider: "claude", account: "/accounts/work", name: "work", option });
+const workAccount = (option: object = {}) => ({
+  provider: "claude",
+  account: "/accounts/work",
+  name: "work",
+  option: { signed_in: true, ...option },
+});
 
 test("Pi's default and account rows do not offer a permission bypass", () => {
   const named = Row.of("pi", "/accounts/pi"),
@@ -354,6 +388,108 @@ test("launcher hides providers that are not installed", () => {
   expect(m.first()).toBe("terminal");
 });
 
+test("first load shows discovery instead of speculative launcher or Active rows", () => {
+  const m = new Menu(),
+    side = SidebarView.init(120, 40, true, 0, 0);
+  expect(m.count()).toBe(1);
+  expect(m.first()).toBe("terminal");
+  expect(m.manager.items(m.manageModel()).have).toEqual([]);
+  expect(screen(m, 120, 40, side).join("\n")).toContain("Discovering Codex, Claude Code, Pi, OpenCode, Oh My Pi…");
+  m.preview = preview({
+    pending: true,
+    installed: { codex: true, claude: false, pi: true, opencode2: false, omp: true },
+    options: {
+      codex: { pending: false, signed_in: true, account: "me@example.com" },
+      claude: { pending: false },
+      pi: { pending: true },
+      opencode2: { pending: false },
+      omp: { pending: true },
+    },
+  });
+  expect(m.discovering()).toBe("Discovering Pi, Oh My Pi…");
+  expect(m.rows().filter(row => m.shown(row))).toEqual(["codex", "terminal"]);
+  for (const managing of [false, true]) {
+    m.managing = managing;
+    const text = screen(m, 120, 40, side).join("\n");
+    expect(text).toContain("Discovering Pi, Oh My Pi…");
+    expect(m.manager.items(m.manageModel()).have.map(item => item.kind === "agent" && item.agent.provider)).toEqual([
+      "codex",
+    ]);
+  }
+  m.preview.options.pi = { ...m.preview.options.pi, pending: false, signed_in: false };
+  expect(m.discovering()).toBe("Discovering Oh My Pi…");
+  m.preview.options.omp = { ...m.preview.options.omp, pending: false, signed_in: false };
+  m.preview.pending = false;
+  expect(m.discovering()).toBe("");
+  expect(m.rows().filter(row => m.shown(row))).toEqual(["codex", "terminal"]);
+  const model = m.manageModel();
+  expect(m.manager.items(model).have).toHaveLength(1);
+  expect(model.agents.filter(a => ["pi", "omp", "opencode2"].includes(a.provider)).every(a => !a.shown)).toBe(true);
+});
+
+test("manual removals stay removed during discovery and after a successful refresh", () => {
+  const m = new Menu();
+  m.hidden.pi = m.hidden.omp = m.hidden.opencode2 = true;
+  expect(m.discovering()).toBe("Discovering Codex, Claude Code…");
+  for (const pending of [true, false, true]) {
+    m.preview = preview({ pending, options: byProvider(() => ({ pending, signed_in: true })) });
+    for (const p of ["pi", "omp", "opencode2"] as const) {
+      expect(m.shown(p)).toBe(false);
+      expect(m.manageModel().agents.find(a => a.provider === p)?.shown).toBe(false);
+    }
+    expect(m.manager.items(m.manageModel()).have.map(item => item.kind === "agent" && item.agent.provider)).toEqual([
+      "codex",
+      "claude",
+    ]);
+  }
+});
+
+test("discovery restores the remembered agent unless the user moves to another row", () => {
+  for (const moved of [false, true]) {
+    const m = new Menu({ selected: "claude" });
+    m.normalize();
+    expect(m.selected).toBe("terminal");
+    if (moved) m.move(true, false);
+    m.preview = preview({ pending: false });
+    m.normalize();
+    expect(m.selected).toBe(moved ? "terminal" : "claude");
+  }
+});
+
+test.each(["pi", "omp"] as const)("an explicit %s addition stays listed without sign-in", provider => {
+  const m = new Menu();
+  m.preview = preview({ pending: false, options: { [provider]: { signed_in: false } } });
+  expect(m.shown(provider)).toBe(false);
+  let model = m.manageModel();
+  expect(model.agents.find(a => a.provider === provider)).toMatchObject({
+    available: true,
+    shown: false,
+    who: "Not signed in",
+  });
+  m.manager.open(`found:${provider}:`);
+  expect(m.manager.key(13, model)).toMatchObject({ kind: "show", agent: { provider } });
+  m.added = [provider];
+  expect(m.shown(provider)).toBe(true);
+  expect(m.cells(provider)[3]).toBe("Not signed in");
+  expect(m.cells(provider)[4]).toBe("—");
+  model = m.manageModel();
+  expect(m.manager.items(model).have.some(i => i.kind === "agent" && i.agent.provider === provider)).toBe(true);
+  m.preview = preview({ pending: true });
+  expect(m.shown(provider)).toBe(true);
+  expect(m.manageModel().agents.find(a => a.provider === provider)?.shown).toBe(true);
+  m.hidden[provider] = true;
+  expect(m.shown(provider)).toBe(false);
+  expect(m.manageModel().agents.find(a => a.provider === provider)?.shown).toBe(false);
+});
+
+test("an absent executable is not offered as an explicit addition", () => {
+  const m = menu(),
+    model = m.manageModel();
+  m.manager.open("found:opencode2:");
+  expect(model.agents.find(a => a.provider === "opencode2")).toMatchObject({ available: false, shown: false });
+  expect(m.manager.key(13, model)).toBeNull();
+});
+
 test("Manage agents lists the signed-out and hidden agents the picker leaves out", () => {
   const m = menu();
   m.preview.pending = false;
@@ -365,10 +501,10 @@ test("Manage agents lists the signed-out and hidden agents the picker leaves out
   expect(m.selected).toBe("terminal");
   expect(!m.shown("codex") && !m.shown("claude")).toBe(true);
   expect(m.manageModel().agents.map(a => [a.label, a.who, a.shown, a.signed_out])).toEqual([
-    ["Codex", "Not signed in", true, true],
+    ["Codex", "Not signed in", false, true],
     ["Claude Code", "me@example.com", false, false],
     ["Pi", "Pi provider selection", false, false],
-    ...others.map(p => [adapter(p).label, "Not installed", true, false]),
+    ...others.map(p => [adapter(p).label, "Not installed", false, false]),
   ]);
   m.commands[0].set("FOO=123 claude --whatever");
   m.commands[0].hidden = true;
@@ -520,7 +656,7 @@ test("the title names the worktree once, on a button that drops the checkouts an
   bx = m.worktreeBox(100, 30, side)!;
   text = render();
   expect(text).toContain("+ Create “top”");
-  expect(text).toContain("hold ↵ to create");
+  expect(text).toContain(" ↵ create ");
   expect(text.split("\n")[bx.from]).toContain("From    main");
   expect(text.split("\n")[bx.folder]).toContain("Folder  ./.worktrees/top");
   expect(m.worktreeHit(100, 30, side, bx.field_x, bx.from)).toBe("from");
@@ -561,10 +697,8 @@ test("narrow worktree creation footers leave the translated action intact", () =
         box = m.worktreeBox(width, 30, side)!;
       expect(box).not.toBeNull();
       const row = screen(m, width, 30, side)[box.footer];
-      expect(row).toContain(i18n.t`hold ↵ to create`);
-      expect(row.includes(i18n.t`↑↓ choose`)).toBe(width === 100);
-      const inside = row.slice(box.rect.x + 1, box.rect.x + box.rect.w - 1).trim();
-      if (width === 40) expect(inside).toBe(i18n.t`hold ↵ to create`);
+      expect(row).toContain(i18n.t`↵ create`);
+      expect(row).toContain(i18n.t`↑↓ choose`);
     }
   } finally {
     i18n.setLanguage(previous);
@@ -657,10 +791,80 @@ test("a signed-out account's row stays listed and offers to sign in", () => {
   expect(m.shown(work)).toBe(false);
 });
 
+test("a signed-out account behind an install-on-use shim launches before signing in", () => {
+  const m = menu({ selected: work });
+  m.preview = preview({
+    pending: false,
+    installed: byProvider(() => false),
+    on_demand: byProvider(p => p === "claude"),
+    accounts: [workAccount({ pending: false, signed_in: false })],
+  });
+  expect(m.shown(work)).toBe(true);
+  expect(m.signsIn(work)).toBeNull();
+  expect(m.cells(work).slice(3)).toEqual(["Installs on use", "—"]);
+  expect(m.usageCell(work).fallback).toBe("—");
+  m.preview.installed.claude = true;
+  m.preview.on_demand.claude = false;
+  expect(m.signsIn(work)?.name).toBe("work");
+  m.preview.accounts[0].option.signed_in = null;
+  expect(m.signsIn(work)).toBeNull();
+});
+
+test.each(["claude", "codex", "pi"] as const)(
+  "%s offers new accounts only after installation while saved shim accounts stay launchable",
+  provider => {
+    const m = menu(),
+      account = "/accounts/work",
+      row = Row.of(provider, account);
+    m.preview = preview({
+      pending: false,
+      installed: byProvider(() => false),
+      on_demand: byProvider(p => p === provider),
+      accounts: [{ provider, account, name: "work", option: { pending: false, signed_in: false } }],
+    });
+    m.manager.open(`tile:${provider}`);
+    let model = m.manageModel();
+    expect(m.manager.items(model).add.some(item => item.kind === "add")).toBe(false);
+    expect(model.agents.find(a => a.account === account)).toMatchObject({ available: true, shown: true });
+    expect(m.shown(row)).toBe(true);
+    expect(m.signsIn(row)).toBeNull();
+    m.preview.installed[provider] = true;
+    m.preview.on_demand[provider] = false;
+    model = m.manageModel();
+    expect(m.manager.items(model).add).toContainEqual({ kind: "add", provider });
+    m.manager.open(`add:${provider}`);
+    expect(m.manager.key(13, model)).toEqual({ kind: "add", provider });
+  },
+);
+
+test("signed-out named accounts stay in Manage agents with their workspace visibility", () => {
+  const m = menu();
+  m.preview = preview({ pending: false, accounts: [workAccount({ signed_in: false })] });
+  for (const here of [true, false]) {
+    m.workspace_hidden = here ? [] : [work];
+    const model = m.manageModel();
+    expect(m.shown(work)).toBe(here);
+    expect(model.agents.find(a => a.account === "/accounts/work")).toMatchObject({
+      shown: true,
+      here,
+      signed_out: true,
+    });
+    const items = m.manager.items(model);
+    expect(
+      (here ? items.have : items.hidden).some(i => i.kind === "agent" && i.agent.account === "/accounts/work"),
+    ).toBe(true);
+  }
+  m.account_hidden = ["/accounts/work"];
+  expect(m.manageModel().agents.find(a => a.account === "/accounts/work")?.shown).toBe(false);
+});
+
 test("digits count account rows like the agents'", () => {
   const m = menu();
   const side = Row.of("codex", "/accounts/side");
-  m.preview = preview({ accounts: [workAccount(), { provider: "codex", account: "/accounts/side", name: "side" }] });
+  m.preview = preview({
+    pending: false,
+    accounts: [workAccount(), { provider: "codex", account: "/accounts/side", name: "side" }],
+  });
   m.commands[0].set("claude --model opus");
   const c = (s: string) => s.charCodeAt(0);
   const rows: Row[] = ["codex", side, "claude", work, ...Provider.all.slice(2), "custom0"];
@@ -693,7 +897,7 @@ test("a row whose account went away leaves its provider's selected", () => {
   m.preview = preview({ accounts: [workAccount()] });
   m.normalize();
   expect(m.selected).toBe(work);
-  m.preview = preview();
+  m.preview = preview({ pending: false });
   m.normalize();
   expect(m.selected).toBe("claude");
   m.selected = work;
@@ -833,6 +1037,7 @@ test("both cards keep their bounds and columns as account details and usage arri
     const m = menu(),
       side = SidebarView.init(cols, 40, true, 0, 0);
     m.preview = preview({ accounts: [workAccount()] });
+    for (const provider of Provider.all) m.preview.options[provider].signed_in = true;
     const before = m.bounds(cols, 40, side),
       widths = m.columns(before.w);
     m.manage();
@@ -920,6 +1125,59 @@ function conversations(cwd: string, n: number) {
     starred: false,
   }));
 }
+
+test("the launcher grows down when its conversations expand, then keeps its size and place until it closes", () => {
+  for (const [cols, rows] of [
+    [120, 40],
+    [90, 30],
+    [200, 50],
+  ])
+    for (const count of [2, 40]) {
+      const side = SidebarView.init(cols, rows, true, 0, 0),
+        m = menu({ cwd: "/w", workspace_cwd: "/w" });
+      m.history = { pending: false, entries: conversations("/w", count) };
+      const opened = m.bounds(cols, rows, side);
+      m.resume_view.focused = true;
+      m.resume_view.startSearch();
+      // A table's height or the screen's, its top kept while there's room below.
+      const grown = m.bounds(cols, rows, side),
+        same = () => expect(m.bounds(cols, rows, side)).toEqual(grown);
+      expect(grown.h).toBe(Math.min(rows, Math.max(30, opened.h)));
+      expect(grown.y).toBe(Math.min(opened.y, rows - grown.h));
+      for (const ch of "conv 1") m.resume_view.query.key(ch.charCodeAt(0));
+      same();
+      m.resume_view.leaveSearch();
+      same();
+      m.resume_view.expand();
+      same();
+      m.resume_view.nextScope(true);
+      same();
+      m.resume_view.collapse();
+      same();
+      // And it draws inside those bounds every time.
+      m.resume_view.startSearch();
+      const lines = screen(m, cols, rows, side);
+      expect(lines[grown.y]).toContain("╭");
+      expect(lines[grown.y + grown.h - 1]).toContain("╰");
+    }
+});
+
+test("the launcher's search looks like the picker's: the / field, the query and how many match", () => {
+  const side = SidebarView.init(120, 40, true, 0, 0),
+    m = menu({ cwd: "/w", workspace_cwd: "/w" });
+  m.history = { pending: false, entries: conversations("/w", 12) };
+  m.resume_view.focused = true;
+  m.resume_view.startSearch();
+  const b = m.bounds(120, 40, side),
+    search = b.y + 3 + m.count();
+  let lines = screen(m, 120, 40, side);
+  expect(lines[search]).toMatch(/│ +\/ +search titles, branches and messages +tab +this workspace +│/);
+  for (const ch of "conversation 1") m.resume_view.query.key(ch.charCodeAt(0));
+  lines = screen(m, 120, 40, side);
+  // "Conversation 1", 10 and 11 match.
+  expect(lines[search]).toMatch(/│ +\/ +conversation 1 +3 of 12 +tab +this workspace +│/);
+  expect(lines.slice(search + 2, b.y + b.h - 2).filter(l => /Conversation 1\d?\b/.test(l)).length).toBe(3);
+});
 
 test("each agent and conversation row leads with its brand mark", () => {
   const side = SidebarView.init(120, 40, true, 0, 0),

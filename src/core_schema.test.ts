@@ -12,8 +12,11 @@ import { Workspace } from "./workspace";
 import { Terminal } from "./pane/terminal";
 import { Worker, Request, Result, Slot } from "./activity/worker";
 import { Worker as UsageWorker, Tail } from "./usage/worker";
+import { Tokens } from "./usage/live";
+import { Call } from "./activity/tools";
 import { parseLabel } from "./activity/summary";
 import { captureManifest } from "./persist/handoff";
+import * as link from "./link";
 import { checkpoint_version, handoff_version } from "./persist/migrations";
 import { validateCheckpoint } from "./persist/schema";
 import { Preview } from "./launch/preview";
@@ -113,10 +116,8 @@ function fixture() {
   actor.workspace = 1;
   actor.model.price = { label: "catalog", input: 1250n, output: 5000n };
   pane.attachment.select(actor);
-  const loop = (server as any).loop;
   const client = new Client(
-    -1,
-    loop,
+    null,
     () => {},
     () => {},
     false,
@@ -124,6 +125,7 @@ function fixture() {
   server.clients.push(client);
   const preview = new Preview();
   preview.options.claude.limits = "metered";
+  preview.options.claude.login = { id: "user/org", email: "me@work.dev", service: "claude", workspace: "org" };
   preview.options.claude.spend = {
     used_minor: 59,
     limit_minor: null,
@@ -132,6 +134,10 @@ function fixture() {
     period_start: 1790812800,
     reset_at: 1793491200,
   };
+  preview.options.claude.spend_daily = [
+    { day: 1790726400, period_start: 1788220800, used_minor: 12000 },
+    { day: 1790812800, period_start: 1790812800, used_minor: 59 },
+  ];
   preview.options.codex.limits = "metered";
   preview.options.codex.spend = {
     used_minor: 38820,
@@ -154,17 +160,17 @@ function fixture() {
     client,
     dispose() {
       server.runtime.destroy();
-      loop.close();
+      (server as any).loop.close();
     },
   };
 }
 
 test("the runtime wire matches protocol.version", () => {
-  expect(protocol.version).toBe(4);
+  expect(protocol.version).toBe(5);
   // `hello` and `server.reload` stay on 1 so new clients find old daemons; see HACKING.md.
   expect(protocol.management_version).toBe(1);
   expect(createHash("sha256").update(schemas.protocol).digest("hex")).toBe(
-    "22599b4f1aa0d2fe274247b75b78447d96b6ec2b51294819816a08fa003b70e1",
+    "7c4518415ac6f2914537b37685c263644bc5260cee4ed0521f48bd314227584b",
   );
   const { server, client, dispose } = fixture();
   try {
@@ -173,8 +179,17 @@ test("the runtime wire matches protocol.version", () => {
     validate(schemas.protocol, { snapshot });
     const preview = json.parse(json.stringify(client.launch_preview!.preview));
     validate(schemas.protocol, { launch_preview: preview });
+    expect(restorePreview(preview).on_demand.pi).toBe(false);
     expect(restorePreview(preview).options.claude.spend).toEqual(client.launch_preview!.preview.options.claude.spend);
     expect(restorePreview(preview).options.codex.spend).toEqual(client.launch_preview!.preview.options.codex.spend);
+    expect(restorePreview(preview).options.claude.login).toEqual(client.launch_preview!.preview.options.claude.login);
+    delete preview.options.claude.login;
+    expect(restorePreview(preview).options.claude.login).toBeNull();
+    expect(restorePreview(preview).options.claude.spend_daily).toEqual(
+      client.launch_preview!.preview.options.claude.spend_daily,
+    );
+    delete preview.options.claude.spend_daily;
+    expect(restorePreview(preview).options.claude.spend_daily).toEqual([]);
     delete preview.options.claude.spend;
     expect(restorePreview(preview).options.claude.spend).toBeNull();
     expect(snapshot.panes[0].agent.session).toBe("schema-session");
@@ -196,8 +211,29 @@ test("the runtime wire matches protocol.version", () => {
   }
 });
 
+test("every agent view a snapshot carries lists the same fields", () => {
+  const fields = (prefix: string) =>
+    schemas.protocol
+      .split("\n")
+      .filter(line => line.startsWith(prefix))
+      .map(line => line.slice(prefix.length));
+  const listed = fields("$.snapshot.panes[].agent.");
+  // One function builds the views of panes, conversations and headless sessions.
+  expect(fields("$.snapshot.conversations[].agent.")).toEqual(listed);
+  expect(fields("$.snapshot.headless_sessions[].agent?.")).toEqual(listed);
+  const { server, dispose } = fixture();
+  try {
+    const snapshot = json.parse(json.stringify(session.snapshot(server.runtime)));
+    expect(Object.keys(snapshot.panes[0].agent).sort()).toEqual(
+      [...new Set(listed.map(field => field.split(/[.?:]/)[0]))].sort(),
+    );
+  } finally {
+    dispose();
+  }
+});
+
 test("the viewer wire matches viewer_version.version", async () => {
-  expect(protocol.viewer_version).toBe(3);
+  expect(protocol.viewer_version).toBe(4);
   expect(createHash("sha256").update(schemas.viewer).digest("hex")).toBe(
     "731d5fb92a069d858b2929b7aa34dbd2f13504277f017d2c7388a87917970295",
   );
@@ -237,10 +273,10 @@ test("the viewer wire matches viewer_version.version", async () => {
 });
 
 test("saved handoff format matches its version", async () => {
-  expect(handoff_version).toBe(6);
+  expect(handoff_version).toBe(7);
   expect(checkpoint_version).toBe(6);
   expect(createHash("sha256").update(schemas.handoff).digest("hex")).toBe(
-    "c3778d5c13b7a1e10bf65cb689d9be6c045f4b2ba26fed01a35be9e453834a22",
+    "604dd831e85c62f06210ade2d85d2356e75cd58182f1a982ec69a4e62c9f88a2",
   );
   const { server, client, dispose } = fixture();
   const summaries = new Worker();
@@ -251,19 +287,41 @@ test("saved handoff format matches its version", async () => {
   (server as any).summaries = summaries;
   await summaries.pause();
   const usage = new UsageWorker(),
-    tail = Object.assign(new Tail(), { actor: 1, opened: true, inode: 7, device: 1, offset: 42 });
+    tail = Object.assign(new Tail(), { actor: 1, opened: true, inode: 7, device: 1, offset: 42 }),
+    call = new Call();
+  tail.progress.bind("turn");
+  call.id = 5n;
+  call.append("Bash: ls");
+  tail.progress.save(call, true);
+  tail.live.previous = new Tokens({ input: 10n });
+  tail.live.ordinal = 3n;
+  tail.ended.add("task");
   usage.watchers.set(1, tail);
   server.usage = usage;
+  await usage.pause();
+  // One link a connection carries, one waiting with the viewer it had.
+  const carried = new link.Link(),
+    waiting = new link.Link();
+  carried.record(1n, { ok: true, result: { pane: 1 } });
+  waiting.viewer = { viewer_id: 2, active_seq: 3, view_workspace: 1, controls: [], next_control: 1n, last_control: 0n };
+  waiting.detached_at = 1_700_000_000_000;
+  for (const l of [carried, waiting]) server.links.set(l.id, l);
+  client.link = carried;
+  Object.assign(client, { viewer: true, viewer_id: 4 });
   try {
-    const captured = json.parse(json.stringify(captureManifest(server, client)));
+    const captured = json.parse(json.stringify(captureManifest(server, 9, null, 5)));
     validate(schemas.handoff, captured);
+    expect(captured.links).toHaveLength(2);
+    expect(captured.links[0].viewer.viewer_id).toBe(4);
+    expect(captured.requester).toBe(9);
+    expect(captured.start_lock).toBe(5);
     validateCheckpoint(captured.runtime);
     expect(captured.runtime.panes[0].binding.actor).toBe(1);
-    expect(captured.clients).toHaveLength(1);
-    expect(captured.clients[0].launch_preview.preview.options.claude.spend.used_minor).toBe(59);
     expect(captured.summaries.pool.slots).toHaveLength(4);
     expect(captured.usage[0].position.offset).toBe(42);
-    expect(() => validate(schemas.handoff, { ...captured, listener: "bad" })).toThrow();
+    expect(captured.usage[0].file.offset).toBe(42);
+    expect(captured.usage[0].progress.pending[0].value).toBe("Bash: ls");
+    expect(() => validate(schemas.handoff, { ...captured, requester: "bad" })).toThrow();
   } finally {
     await summaries.stop();
     dispose();

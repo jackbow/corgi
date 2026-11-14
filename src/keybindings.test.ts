@@ -68,7 +68,7 @@ test("conflict moves are explicit and indexed sets cannot be partially stolen", 
   const newKey = custom.parseShortcut("prefix+n", false);
   expect(() => custom.change("corgi", {}, "new", 0, newKey)).toThrow("Used by");
   const moved = custom.change("corgi", {}, "new", 0, newKey, true);
-  expect(moved.next).toEqual([]);
+  expect(moved.next).toEqual(["ctrl+tab"]);
   expect(bindings.lookup(custom.resolve("corgi", moved), true, 110)).toEqual({ name: "new" });
   expect(() => custom.change("corgi", {}, "new", 0, custom.parseShortcut("prefix+1", false), true)).toThrow(
     "whole key set",

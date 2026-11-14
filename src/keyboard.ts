@@ -90,6 +90,8 @@ const tilde_keys: Record<number, number> = {
 // and application cursor mode determine their encoding, including lock bits.
 // Reject extensions we did not request instead of losing fields.
 export function decode(bytes: string): Key | null {
+  const modified = /^\x1b\[27;(\d+);(\d+)~$/.exec(bytes);
+  if (modified) return decode(`\x1b[${modified[2]};${modified[1]}u`);
   if (bytes === "\x1b[Z") return { codepoint: 9, mods: { shift: true } };
   if (bytes.length === 3 && bytes[0] === "\x1b" && (bytes[1] === "[" || bytes[1] === "O")) {
     if (bytes[2] === "R") return bytes[1] === "O" ? { codepoint: f1 + 2, mods: {} } : null;
@@ -136,8 +138,8 @@ export function decode(bytes: string): Key | null {
 }
 /** The sequence Corgi's text boxes read for a key whose legacy encoding
  * loses what they need: word and line deletion, word moves typed with alt,
- * Enter with shift or alt, and cmd's select all, copy and cut. Null for any
- * other key. */
+ * Enter with shift or alt, cmd's select all, copy and cut, and Ctrl+/,
+ * which legacy encoding sends as /. Null for any other key. */
 export function editSequence(key: Key): string | null {
   const { shift, alt, ctrl } = key.mods,
     cmd = !!key.mods.super;
@@ -154,6 +156,8 @@ export function editSequence(key: Key): string | null {
     case 99:
     case 120:
       return cmd && !alt && !ctrl && !shift ? `\x1b[${key.codepoint};9u` : null;
+    case 47:
+      return ctrl && !alt && !cmd && !shift ? "\x1f" : null;
     default:
       return null;
   }

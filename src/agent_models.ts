@@ -14,9 +14,9 @@ import * as keys from "./keys";
 import { matches } from "./search";
 
 export type Choice = { id: string; name: string; efforts?: effort.Effort[]; default_effort?: effort.Effort };
-export async function read(provider: Provider, account: string, quit: Quit): Promise<Choice[]> {
+export async function read(provider: Provider, account: string, quit: Quit, cwd = ""): Promise<Choice[]> {
   const launch = adapter(provider).launch,
-    values = (await (launch.models ?? adapter(provider).inference.models)?.(account, quit)) ?? [];
+    values = (await (launch.models ?? adapter(provider).inference.models)?.(account, quit, cwd || undefined)) ?? [];
   return values.map(m => ({
     id: m.id,
     name: m.name,
@@ -44,13 +44,16 @@ export function writeModel(
 function defaultLabel(choice: Choice): string {
   return choice.default_effort ? `Default (${effort.label(choice.default_effort)})` : "Default";
 }
-type Entry = { values: Choice[]; pending: boolean; failed: boolean; checked: number };
-/** Viewer-local catalogs survive closing a dropdown or the manager. */
+type Entry = { values: Choice[]; pending: boolean; failed: boolean; checked: number; stale: boolean };
+/** Viewer-local catalogs survive closing a dropdown or the manager. Each is
+ * read once, and again after Find agents (`expire`), a failure, or `fresh_ms`. */
 export class Cache {
-  static fresh_ms = 5 * 60_000;
   static retry_ms = 30_000;
+  /** How long a background read waits: a failed list's retry when no one is
+   * looking, and the chat pane's refresh. */
+  static background_ms = 5 * 60_000;
   private entries = new Map<string, Entry>();
-  private queue: { provider: Provider; account: string; entry: Entry }[] = [];
+  private queue: { provider: Provider; account: string; cwd: string; entry: Entry }[] = [];
   private running = 0;
   private active = new Set<Quit>();
   private closed = false;
@@ -58,24 +61,30 @@ export class Cache {
     private changed: () => void,
     private reader = read,
     private now = Date.now,
+    private fresh_ms = Infinity,
   ) {}
-  get(provider: Provider, account: string): Entry {
-    const key = `${provider}\0${account}`;
+  /** A catalog for `cwd`, the workspace's folder: read the first time it's
+   * asked for, and again once it's stale or `retry_ms` after it failed. */
+  get(provider: Provider, account: string, cwd = "", retry_ms = Cache.retry_ms): Entry {
+    const key = JSON.stringify([provider, account, cwd]);
     let entry = this.entries.get(key);
     if (!entry) {
-      entry = { values: [], pending: false, failed: false, checked: -Infinity };
+      entry = { values: [], pending: false, failed: false, checked: -Infinity, stale: true };
       this.entries.set(key, entry);
     }
-    if (
-      !this.closed &&
-      !entry.pending &&
-      this.now() - entry.checked >= (entry.failed ? Cache.retry_ms : Cache.fresh_ms)
-    ) {
+    const due = entry.stale || this.now() - entry.checked >= (entry.failed ? retry_ms : this.fresh_ms);
+    if (!this.closed && !entry.pending && due) {
       entry.pending = true;
-      this.queue.push({ provider, account, entry });
+      entry.stale = false;
+      this.queue.push({ provider, account, cwd, entry });
       this.drain();
     }
     return entry;
+  }
+  /** Reads every catalog again the next time it's asked for; until then it
+   * shows what it had. */
+  expire(): void {
+    for (const entry of this.entries.values()) entry.stale = true;
   }
   close(): void {
     this.closed = true;
@@ -84,11 +93,11 @@ export class Cache {
   }
   private drain(): void {
     while (!this.closed && this.running < 2 && this.queue.length) {
-      const { provider, account, entry } = this.queue.shift()!,
+      const { provider, account, cwd, entry } = this.queue.shift()!,
         quit = new Quit();
       this.running++;
       this.active.add(quit);
-      void this.reader(provider, account, quit)
+      void this.reader(provider, account, quit, cwd)
         .then(
           values => {
             entry.values = values;

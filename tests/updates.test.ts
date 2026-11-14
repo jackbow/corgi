@@ -1,14 +1,20 @@
-// Copies of the test binary play two releases in isolated runtimes; no host
+// Copies of the test binary play four releases in isolated runtimes; no host
 // installation is touched. A test build at releases/<v>/corgi is release <v>.
 import { beforeAll, afterAll, beforeEach, afterEach, test, expect } from "bun:test";
 import { generateKeyPairSync, sign, createHash } from "node:crypto";
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, readdir, realpath, rm, symlink } from "node:fs/promises";
+import { closeSync, openSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { EXE, Pty, deadline, versioned } from "./support";
-import { installer, manifests as releaseManifests } from "../scripts/release.ts";
+import { createServer } from "node:net";
+import { EXE, Lines, Pty, deadline, versioned } from "./support";
+import { running } from "./runtime";
+import { installer, manifests as releaseManifests } from "../scripts/publish.ts";
 import { Scope } from "../scripts/process_scope";
-const base = await mkdtemp(join(tmpdir(), "corgi-updates-"));
+import { flock } from "../src/native_bridge";
+import * as text from "../src/text";
+import * as updates from "../src/updates";
+let base: string;
 const keys = generateKeyPairSync("ed25519");
 const publicKey = Buffer.from(keys.publicKey.export({ type: "spki", format: "der" }))
   .subarray(-32)
@@ -19,6 +25,7 @@ let latest = "1.0.1",
   unavailable = false,
   badAbi = false;
 let requests = 0;
+let beforeDownload: (() => Promise<void>) | null = null;
 const binaries = new Map<string, Uint8Array>();
 const manifests = new Map<string, string>();
 // The manifest a release serves this platform, chosen as the updater does (every Mac is
@@ -30,7 +37,7 @@ const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
-  fetch(req) {
+  async fetch(req) {
     requests++;
     if (unavailable) return new Response("unavailable", { status: 503 });
     const path = new URL(req.url).pathname;
@@ -46,7 +53,10 @@ const server = Bun.serve({
       return Response.json(envelope);
     }
     const v = path.split("/")[2];
+    // A release's own manifest, which a plugin's pin names.
+    if (path === `/releases/${v}/${feed.name}` && manifests.has(v)) return new Response(manifests.get(v)!);
     if (path.endsWith("/corgi")) {
+      await beforeDownload?.();
       const binary = binaries.get(v);
       return new Response(corrupt ? new Uint8Array([0, 1]) : binary && new Uint8Array(binary));
     }
@@ -78,8 +88,9 @@ async function waitFor(fn: () => Promise<boolean>) {
   throw new Error("Timed out");
 }
 beforeAll(async () => {
+  base = await mkdtemp(join(tmpdir(), "corgi-updates-"));
   const current = await readFile(EXE);
-  for (const v of ["1.0.0", "1.0.1"]) {
+  for (const v of ["1.0.0", "1.0.1", "1.0.2", "1.0.3"]) {
     const binary = v === "1.0.0" && process.env.CORGI_OLD_EXE ? await readFile(process.env.CORGI_OLD_EXE) : current;
     await mkdir(dirname(fixture(v)), { recursive: true });
     await writeFile(fixture(v), binary, { mode: 0o755 });
@@ -108,6 +119,7 @@ beforeEach(async () => {
   latest = "1.0.1";
   invalid = corrupt = unavailable = badAbi = false;
   requests = 0;
+  beforeDownload = null;
   home = await mkdtemp("/tmp/cu-");
   root = join(home, "install");
   bin = join(home, "bin/corgi");
@@ -142,8 +154,9 @@ beforeEach(async () => {
 }, 30_000);
 afterEach(async () => {
   try {
-    await cli(["update", "auto", "off"], false);
-    await cli(["shutdown"], false);
+    // A launcher whose installation a test deleted removes itself when run.
+    for (const args of [["update", "auto", "off"], ["shutdown"]])
+      if (await Bun.file(bin).exists()) await cli(args, false);
   } finally {
     await scope.assertClean();
   }
@@ -198,7 +211,250 @@ test("explicit update preserves real pane PID and supports rollback", async () =
   const rollbackProtocol = (await rpc({ op: "hello", protocol: 1 })).protocol;
   expect((await rpc({ op: "session.snapshot", protocol: rollbackProtocol })).panes[0].pid).toBe(before.panes[0].pid);
 }, 30_000);
+/** An older updater that reloads into the staged release and stops before
+ * making it current: the daemon runs 1.0.1 while `current` still says 1.0.0. */
+async function interruptedUpdate(): Promise<number> {
+  await cli(["start"]);
+  await cli(["update", "--download-only"]);
+  // An updater holds the install's activation lock until it stops.
+  const lock = openSync(join(root, "activation.lock"), "a", 0o600);
+  try {
+    expect(flock(lock)).toBe(true);
+    await cli(["reload", join(root, "releases/1.0.1/corgi")]);
+  } finally {
+    closeSync(lock);
+  }
+  const hello = await rpc({ op: "hello" });
+  expect(hello.release_version).toBe("1.0.1");
+  expect(await readFile(join(root, "current"), "utf8")).toBe("1.0.0");
+  return hello.server_pid;
+}
+/** Whether this release's own client finds the daemon done updating. */
+async function settled(): Promise<boolean> {
+  const reply = await cli(["rpc", JSON.stringify(versioned({ op: "hello" }))], false);
+  return reply.code === 0 && JSON.parse(reply.out).type === "hello";
+}
+test.skipIf(!process.env.CORGI_OLD_EXE)(
+  "an update an older updater left unfinished says so until `corgi update` finishes it",
+  async () => {
+    const pid = await interruptedUpdate();
+    const stuck = await cli(["start"], false);
+    expect(stuck.code).not.toBe(0);
+    expect(stuck.err).toContain("still finishing an update");
+    // A command an agent runs in a pane goes on meanwhile.
+    expect((await exec([bin, "workspace", "list"], { ...env, CORGI_PANE: "1" })).code).toBe(0);
+    await cli(["update"]);
+    expect(await readFile(join(root, "current"), "utf8")).toBe("1.0.1");
+    await waitFor(settled);
+    expect((await rpc({ op: "hello" })).server_pid).toBe(pid);
+  },
+  45_000,
+);
+test.skipIf(!process.env.CORGI_OLD_EXE)(
+  "with automatic updates on, the next start finishes an update an older updater left",
+  async () => {
+    const pid = await interruptedUpdate();
+    // Not `auto on`: an older release's starts its update worker, which may hold the activation lock.
+    await rm(join(root, "auto-off"));
+    await cli(["start"]);
+    expect(await readFile(join(root, "current"), "utf8")).toBe("1.0.1");
+    await waitFor(settled);
+    expect((await rpc({ op: "hello" })).server_pid).toBe(pid);
+  },
+  30_000,
+);
+test.skipIf(!process.env.CORGI_OLD_EXE)(
+  "a reload an older updater asks for that fails leaves the update to finish",
+  async () => {
+    const pid = await interruptedUpdate();
+    const lock = openSync(join(root, "activation.lock"), "a", 0o600);
+    try {
+      expect(flock(lock)).toBe(true);
+      expect((await cli(["reload", "/bin/false"], false)).code).not.toBe(0);
+    } finally {
+      closeSync(lock);
+    }
+    expect((await rpc({ op: "hello" })).server_pid).toBe(pid);
+    await cli(["update"]);
+    expect(await readFile(join(root, "current"), "utf8")).toBe("1.0.1");
+    await waitFor(settled);
+  },
+  45_000,
+);
+test.skipIf(!process.env.CORGI_OLD_EXE)(
+  "an older build's `corgi reload` into a release has no update to finish",
+  async () => {
+    await cli(["start"]);
+    await cli(["update", "--download-only"]);
+    const release = join(root, "releases/1.0.1/corgi");
+    await cli(["reload", release]);
+    const hello = JSON.parse((await exec([release, "rpc", JSON.stringify(versioned({ op: "hello" }))])).out);
+    expect(hello.release_version).toBe("1.0.1");
+    // `current` still runs 1.0.0, which no longer reaches it.
+    await exec([release, "shutdown"]);
+  },
+  30_000,
+);
+test.skipIf(!process.env.CORGI_OLD_EXE)(
+  "an older updater that reloads an unfinished update into a newer release finishes there",
+  async () => {
+    const pid = await interruptedUpdate();
+    latest = "1.0.2";
+    await cli(["update"]);
+    expect(await readFile(join(root, "current"), "utf8")).toBe("1.0.2");
+    await waitFor(settled);
+    const hello = await rpc({ op: "hello" });
+    expect(hello.release_version).toBe("1.0.2");
+    expect(hello.server_pid).not.toBe(pid);
+  },
+  45_000,
+);
+test.skipIf(!process.env.CORGI_OLD_EXE)(
+  "an unfinished update stops waiting once another runtime moves the install on",
+  async () => {
+    const pid = await interruptedUpdate();
+    latest = "1.0.2";
+    await cli(["update", "--download-only"]);
+    // Another runtime's updater made 1.0.2 current.
+    await writeFile(join(root, "current"), "1.0.2");
+    await waitFor(settled);
+    expect((await rpc({ op: "hello" })).server_pid).toBe(pid);
+  },
+  30_000,
+);
+test("a newer download replaces the update waiting before it", async () => {
+  await cli(["update", "--download-only"]);
+  latest = "1.0.2";
+  await cli(["update", "--download-only"]);
+  expect(await readFile(join(root, "staged"), "utf8")).toBe("1.0.2");
+  expect((await readdir(join(root, "releases"))).sort()).toEqual(["1.0.0", "1.0.2"]);
+  // A stale feed doesn't take it back.
+  latest = "1.0.1";
+  await cli(["update", "--download-only"]);
+  expect(await readFile(join(root, "staged"), "utf8")).toBe("1.0.2");
+  expect((await readdir(join(root, "releases"))).sort()).toEqual(["1.0.0", "1.0.2"]);
+}, 30_000);
+test("an installer staging a newer release during a download keeps its update", async () => {
+  latest = "1.0.2";
+  beforeDownload = async () => {
+    const manifest = join(home, "newer-manifest.json");
+    await writeFile(manifest, manifests.get("1.0.3")!);
+    await exec([fixture("1.0.3"), "__install", root, manifest]);
+  };
+  await cli(["update", "--download-only"]);
+  expect(await readFile(join(root, "staged"), "utf8")).toBe("1.0.3");
+  expect((await readdir(join(root, "releases"))).sort()).toEqual(["1.0.0", "1.0.3"]);
+}, 30_000);
+test("a newer activation can supersede a download without deleting files it is writing", async () => {
+  latest = "1.0.2";
+  beforeDownload = async () => {
+    expect(await readdir(join(root, "releases"))).not.toContain("1.0.2");
+    const manifest = join(home, "newer-manifest.json");
+    await writeFile(manifest, manifests.get("1.0.3")!);
+    await exec([fixture("1.0.3"), "__install", root, manifest]);
+    await rm(join(root, "auto-off"));
+    await cli(["start"]);
+    await cli(["update", "auto", "off"]);
+  };
+  await cli(["update", "--download-only"]);
+  expect(await readFile(join(root, "current"), "utf8")).toBe("1.0.3");
+  expect((await readdir(join(root, "releases"))).sort()).toEqual(["1.0.0", "1.0.3"]);
+  expect(await Bun.file(join(root, "staged")).exists()).toBe(false);
+}, 30_000);
+test("runtime registration and release cleanup share a guard", async () => {
+  const manifest = join(home, "newer-manifest.json");
+  await writeFile(manifest, manifests.get("1.0.2")!);
+  await exec([fixture("1.0.2"), "__install", root, manifest]);
+  await writeFile(join(root, "current"), "1.0.2");
+  const exe = join(root, "releases/1.0.0/corgi"),
+    guard = openSync(join(root, "releases.lock"), "a"),
+    source = `
+      import * as updates from ${JSON.stringify(join(import.meta.dir, "../src/updates.ts"))};
+      const pending = updates.hold(${JSON.stringify(exe)});
+      console.log("registering");
+      await pending;
+      console.log("held");
+      await Bun.stdin.text();
+    `;
+  expect(flock(guard)).toBe(true);
+  const runtime = Bun.spawn([process.execPath, "-e", source], {
+      env,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    }),
+    lines = new Lines(),
+    output = (async () => {
+      for await (const chunk of runtime.stdout) lines.feed(Buffer.from(chunk).toString());
+      lines.end();
+    })();
+  try {
+    expect(await lines.next()).toBe("registering");
+    expect((await readdir(dirname(exe))).filter(name => name.startsWith("runtime-"))).toEqual([]);
+    flock(guard, false);
+    expect(await lines.next()).toBe("held");
+    updates.prune(root);
+    expect(await Bun.file(exe).exists()).toBe(true);
+  } finally {
+    closeSync(guard);
+    runtime.stdin.end();
+    await deadline(runtime.exited, 5000);
+    await output;
+  }
+  updates.prune(root);
+  expect(await Bun.file(exe).exists()).toBe(false);
+  const missing = await exec([process.execPath, "-e", source], env, false);
+  expect(missing.code).not.toBe(0);
+  expect(missing.err).toContain("MissingInstalledVersion");
+}, 30_000);
+test("pane commands use their socket's release through the stable launcher", async () => {
+  await cli(["update", "--download-only"]);
+  await writeFile(join(root, "current"), "1.0.1");
+  const target = join(root, "releases/1.0.0/corgi"),
+    asked: unknown[] = [],
+    daemon = createServer(peer => {
+      let input = "";
+      peer.on("data", chunk => {
+        input += chunk;
+        const head = input.indexOf("\r\n\r\n"),
+          length = Number(/content-length: (\d+)/i.exec(input)?.[1]);
+        if (head < 0 || input.length < head + 4 + length) return;
+        asked.push(JSON.parse(input.slice(head + 4)));
+        // A retained runtime can speak an older protocol and reply without request ids.
+        const reply = JSON.stringify({ type: "hello", protocol: 3, executable: target });
+        peer.end(`HTTP/1.1 200 OK\r\nContent-Length: ${text.byteLength(reply)}\r\nConnection: close\r\n\r\n${reply}`);
+      });
+    });
+  await mkdir(dirname(socket), { recursive: true });
+  await new Promise<void>(resolve => daemon.listen(socket, resolve));
+  await writeFile(target, `#!/bin/sh\nprintf '%s\\n' "$CORGI_APP_EXE" "$@"\n`, { mode: 0o700 });
+  try {
+    const launcher = join(root, "bin/corgi");
+    // Asking for hook snippets creates the same launcher that panes inherit.
+    await cli(["hooks", "claude"]);
+    const paneEnv = { ...env, CORGI_PANE: "1" };
+    for (const args of [["list"], ["--no-agent", "list"], ["pane", "read", "--contains", "a b"]]) {
+      const result = await exec([launcher, ...args], paneEnv);
+      expect(result.out).toBe([target, ...args, ""].join("\n"));
+    }
+    expect(asked).toEqual([versioned({ op: "hello" }), versioned({ op: "hello" }), versioned({ op: "hello" })]);
+  } finally {
+    await new Promise<void>(resolve => daemon.close(() => resolve()));
+  }
+}, 30_000);
+test("reload from a pane uses the selected executable as its default target", async () => {
+  await cli(["start"]);
+  await cli(["update", "--download-only"]);
+  const target = join(root, "releases/1.0.1/corgi");
+  await exec([target, "reload"], { ...env, CORGI_PANE: "1" });
+  // `current` still names the older release, whose CLI may not reach a newer daemon; ask the target's.
+  const hello = JSON.parse((await exec([target, "rpc", JSON.stringify(versioned({ op: "hello" }))])).out);
+  expect(hello.executable).toBe(await realpath(target));
+  await exec([target, "shutdown"]);
+}, 30_000);
 test("background download stages without activating, next start works offline", async () => {
+  // The runtime's next check, not an hour away, sees automatic updates on.
+  env.CORGI_TEST_UPDATE_CHECK_MS = "200";
   await cli(["start"]);
   const old = await rpc({ op: "hello" });
   await cli(["update", "auto", "on"]);
@@ -238,7 +494,64 @@ test("signature and checksum failures leave installation and runtime untouched",
   expect(await readFile(join(root, "current"), "utf8")).toBe("1.0.0");
   expect((await rpc({ op: "hello" })).server_pid).toBe(before.server_pid);
   expect(await Bun.file(join(root, "staged")).exists()).toBe(false);
+  expect(await Bun.file(join(root, "download.tmp")).exists()).toBe(false);
 }, 30_000);
+test("a runtime keeps looking for newer releases, also after an update", async () => {
+  const staged = () =>
+    Bun.file(join(root, "staged"))
+      .text()
+      .catch(() => "");
+  env.CORGI_TEST_UPDATE_CHECK_MS = "200";
+  await rm(join(root, "auto-off"));
+  await cli(["start"]);
+  await waitFor(async () => (await staged()) === "1.0.1");
+  // With CORGI_OLD_EXE, an older release hands over to this one.
+  await cli(["update"]);
+  expect(await readFile(join(root, "current"), "utf8")).toBe("1.0.1");
+  latest = "1.0.2";
+  await waitFor(async () => (await staged()) === "1.0.2");
+  expect(await readFile(join(root, "current"), "utf8")).toBe("1.0.1");
+}, 30_000);
+// CORGI_OLD_EXE makes 1.0.0, whose update worker downloads instead, the older release.
+test.skipIf(!!process.env.CORGI_OLD_EXE)(
+  "a runtime that stops mid-download gives it up",
+  async () => {
+    let release = () => {};
+    const held = new Promise<void>(resolve => (release = resolve));
+    let asked = false;
+    beforeDownload = async () => {
+      asked = true;
+      await held;
+    };
+    try {
+      await rm(join(root, "auto-off"));
+      await cli(["start"]);
+      const pid = (await rpc({ op: "hello" })).server_pid;
+      await waitFor(async () => asked);
+      await cli(["shutdown"]);
+      // It exits rather than wait out the download, keeping its locks and file.
+      await waitFor(async () => {
+        try {
+          process.kill(pid, 0);
+          return false;
+        } catch {
+          return true;
+        }
+      });
+      const lock = openSync(join(root, "download.lock"), "a", 0o600);
+      try {
+        expect(flock(lock)).toBe(true);
+      } finally {
+        closeSync(lock);
+      }
+      expect(await Bun.file(join(root, "download.tmp")).exists()).toBe(false);
+      expect(await Bun.file(join(root, "last-error")).exists()).toBe(false);
+    } finally {
+      release();
+    }
+  },
+  30_000,
+);
 test("incompatible update defers noninteractively and keeps running executable", async () => {
   await cli(["start"]);
   const before = await rpc({ op: "hello" });
@@ -312,6 +625,83 @@ test.skipIf(!!process.env.CORGI_OLD_EXE)(
   },
   30_000,
 );
+test("deleting the installation sends the corgi off in viewers and stops the runtime", async () => {
+  const terminal = await Pty.spawn([bin], { env });
+  try {
+    await terminal.waitFor("\x1b[?1049h", 15_000);
+    await waitFor(async () => (await rpc({ op: "hello" })).server_pid > 0);
+    // The notice goes to viewers already attached.
+    await waitFor(async () => ((await rpc({ op: "viewer.list" })).viewers ?? []).length > 0);
+    await rm(root, { recursive: true, force: true });
+    await terminal.waitFor("Corgi was uninstalled.", 10_000);
+    expect(await deadline(terminal.proc.exited, 10_000, "the viewer kept running")).toBe(0);
+  } finally {
+    await terminal.close();
+  }
+  const hello = await exec([fixture("1.0.1"), "rpc", JSON.stringify(versioned({ op: "hello" }))], env, false);
+  expect(hello.code).not.toBe(0);
+  // Saved sessions stay, as an uninstall keeps them.
+  expect(
+    await Bun.file(
+      join(home, "state/corgi/recovery", `runtime-${Bun.hash.wyhash(socket, 0n).toString(16)}.json`),
+    ).exists(),
+  ).toBe(true);
+}, 40_000);
+test("removing the Omarchy plugin that installed Corgi uninstalls it, viewers and all", async () => {
+  const plugin = join(home, "plugins", "corgi.computer"),
+    script = join(plugin, "install.sh"),
+    alias = join(home, "install-alias"),
+    other = join(home, ".local/share/corgi"),
+    otherBin = join(home, ".local/bin/corgi"),
+    otherLauncher = `#!/bin/sh\nroot='${other}'\nexec "$root/releases/$v/corgi" "$@"\n`;
+  await mkdir(plugin, { recursive: true });
+  await writeFile(join(plugin, "manifest.json"), "{}");
+  await mkdir(other, { recursive: true });
+  await mkdir(dirname(otherBin), { recursive: true });
+  await writeFile(join(other, "current"), "another-install");
+  await writeFile(otherBin, otherLauncher);
+  const body = installer(url, "1.0.0", {
+    "macos-aarch64": { sha256: "", size: 1 },
+    "linux-x86_64": { sha256: "", size: 1 },
+    "linux-aarch64": { sha256: "", size: 1 },
+  });
+  await writeFile(script, body);
+  // The executable resolves the alias, as macOS resolves /tmp to /private/tmp.
+  await symlink(root, alias, "dir");
+  // Only the install sees these overrides; the daemon starts without them.
+  await exec(["/bin/sh", "-c", body.replace(/\nmain "\$@"\n$/, "\nwrite_launcher\nremember_plugin\n"), script], {
+    ...env,
+    CORGI_INSTALL_ROOT: alias,
+    CORGI_INSTALL_BIN: bin,
+    CORGI_INSTALL_PLUGIN: plugin,
+  });
+  expect((await cli(["update", "status"])).err).toContain(`Installed by the Omarchy plugin in ${plugin}`);
+  const terminal = await Pty.spawn([bin], { env });
+  try {
+    await terminal.waitFor("\x1b[?1049h", 15_000);
+    await waitFor(async () => ((await rpc({ op: "viewer.list" })).viewers ?? []).length > 0);
+    // `omarchy plugin remove`.
+    await rm(plugin, { recursive: true, force: true });
+    await terminal.waitFor("Corgi was uninstalled.", 10_000);
+    expect(await deadline(terminal.proc.exited, 10_000, "the viewer kept running")).toBe(0);
+  } finally {
+    await terminal.close();
+  }
+  // The saved installer removes its original paths, leaving the default install alone.
+  await waitFor(async () => !(await Bun.file(join(root, "current")).exists()));
+  expect(await Bun.file(bin).exists()).toBe(false);
+  expect(await readFile(join(other, "current"), "utf8")).toBe("another-install");
+  expect(await readFile(otherBin, "utf8")).toBe(otherLauncher);
+  const hello = await exec([fixture("1.0.1"), "rpc", JSON.stringify(versioned({ op: "hello" }))], env, false);
+  expect(hello.code).not.toBe(0);
+}, 40_000);
+test("a plugin removed while Corgi wasn't running leaves Corgi installed", async () => {
+  await writeFile(join(root, "plugin"), join(home, "plugins", "corgi.computer") + "\n");
+  await cli(["start"]);
+  await waitFor(async () => !(await Bun.file(join(root, "plugin")).exists()));
+  expect((await rpc({ op: "hello" })).server_pid).toBeGreaterThan(0);
+  expect(await Bun.file(join(root, "current")).exists()).toBe(true);
+}, 40_000);
 test("two simultaneous starts activate once; a second runtime catches up later", async () => {
   await cli(["start"]);
   const secondEnv = { ...env, CORGI_SOCKET: join(home, "second/control.sock") };
@@ -330,3 +720,104 @@ test("two simultaneous starts activate once; a second runtime catches up later",
     await exec([bin, "shutdown"], secondEnv, false);
   }
 }, 30_000);
+test("updates remove releases two behind, except one another runtime runs", async () => {
+  const secondEnv = { ...env, CORGI_SOCKET: join(home, "second/control.sock") },
+    installed = async () => (await readdir(join(root, "releases"))).sort(),
+    hello = async (e: Record<string, string>) =>
+      JSON.parse((await exec([bin, "rpc", JSON.stringify(versioned({ op: "hello" }))], e)).out);
+  // Waits for the runtime it replaced to exit, letting go of its release.
+  async function update(e: Record<string, string>, ...args: string[]) {
+    const old = (await hello(e)).server_pid;
+    await exec([bin, "update", ...args], e);
+    await waitFor(async () => !running(old));
+  }
+  await cli(["start"]);
+  await exec([bin, "start"], secondEnv);
+  try {
+    await update(env);
+    await update(secondEnv);
+    const session = await rpc({ op: "session.snapshot" });
+    await rpc({
+      op: "session.command",
+      command: { "pane.create": { workspace: session.workspaces[0].id, cwd: home, command: "exec /bin/sh" } },
+    });
+    const pane = (await rpc({ op: "session.snapshot" })).panes[0].id;
+    latest = "1.0.2";
+    await update(env);
+    expect(await installed()).toEqual(["1.0.1", "1.0.2"]);
+    latest = "1.0.3";
+    await update(env);
+    expect(await installed()).toEqual(["1.0.1", "1.0.2", "1.0.3"]);
+    const second = (await hello(secondEnv)).server_pid;
+    await exec([bin, "shutdown"], secondEnv);
+    await waitFor(async () => !running(second));
+    await update(env, "rollback");
+    expect(await installed()).toEqual(["1.0.2", "1.0.3"]);
+    // The pane opened under 1.0.1 still finds the CLI, as do hooks. Corgi
+    // resolves its own path, and macOS's /tmp is a link to /private/tmp.
+    const launcher = join(await realpath(root), "bin/corgi");
+    await rpc({
+      op: "session.command",
+      command: {
+        "pane.input": {
+          target: pane,
+          data: `corgi --version >/dev/null && printf 'CLI_%s\\n' "$(command -v corgi)"\r`,
+        },
+      },
+    });
+    await waitFor(async () =>
+      (
+        await rpc({ op: "session.command", command: { "pane.read": { target: pane, view: "screen" } } })
+      ).result.text.includes(`CLI_${launcher}`),
+    );
+    expect((await cli(["hooks", "claude"])).out).toContain(launcher);
+  } finally {
+    await exec([bin, "shutdown"], secondEnv, false);
+  }
+}, 120_000);
+
+// Setup installs this build over release 1.0.0, which must speak its protocol.
+test.skipIf(!!process.env.CORGI_OLD_EXE)(
+  "machine setup activates the canonical installation and preserves live shells",
+  async () => {
+    await cli(["start"]);
+    const session = await rpc({ op: "session.snapshot" });
+    await rpc({
+      op: "session.command",
+      command: { "pane.create": { workspace: session.workspaces[0].id, cwd: home, command: "exec /bin/sh" } },
+    });
+    const before = await rpc({ op: "session.snapshot" });
+    const old = join(root, "releases/1.0.0/corgi");
+    const expected = sha(await readFile(old));
+    const manifest = join(home, "incoming.json");
+    await writeFile(manifest, manifests.get("1.0.1")!);
+    const result = await exec([fixture("1.0.1"), "__machine-install", old, expected, manifest]);
+    expect(JSON.parse(result.out).executable).toBe(await realpath(join(root, "releases/1.0.1/corgi")));
+    expect(await readFile(join(root, "current"), "utf8")).toBe("1.0.1");
+    expect(await readFile(join(root, "previous"), "utf8")).toBe("1.0.0");
+    expect((await rpc({ op: "session.snapshot" })).panes[0].pid).toBe(before.panes[0].pid);
+    expect((await rpc({ op: "hello" })).executable).toBe(await realpath(join(root, "releases/1.0.1/corgi")));
+  },
+  30_000,
+);
+
+test("machine setup refuses an installation changed since discovery", async () => {
+  const old = join(root, "releases/1.0.0/corgi");
+  const manifest = join(home, "incoming.json");
+  await writeFile(manifest, manifests.get("1.0.1")!);
+  const result = await exec([fixture("1.0.1"), "__machine-install", old, "0".repeat(64), manifest], env, false);
+  expect(result.code).not.toBe(0);
+  expect(result.err).toContain("InstallationChanged");
+  expect((await readFile(join(root, "current"), "utf8")).trim()).toBe("1.0.0");
+});
+
+test("machine setup bootstraps a single standalone command and refuses wrappers", async () => {
+  const destination = join(home, "standalone/corgi");
+  const result = await exec([EXE, "__machine-install", destination, "", ""]);
+  expect(JSON.parse(result.out).executable).toBe(destination);
+  expect(sha(await readFile(destination))).toBe(sha(await readFile(EXE)));
+  await writeFile(destination, "#!/bin/sh\nexit 0\n");
+  const refused = await exec([EXE, "__machine-install", destination, sha(await readFile(destination)), ""], env, false);
+  expect(refused.err).toContain("CannotReplaceCorgiWrapper");
+  expect(await readFile(destination, "utf8")).toBe("#!/bin/sh\nexit 0\n");
+});

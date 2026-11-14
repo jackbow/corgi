@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import {
   deadline,
   EXE,
-  JsonSocket,
+  lines,
   Pty,
   ROOT,
   TestCase,
@@ -18,6 +18,7 @@ import {
   writeExecutable,
 } from "./support";
 import { FAKE, PALETTE, Runtime } from "./runtime";
+import * as websocket_socket from "../src/websocket_socket";
 import { CodexObserver, write_codex_terminal } from "./provider_sim";
 
 const file = (path: string) => readFileSync(path, "utf8");
@@ -107,7 +108,9 @@ process.stdin.on("data", () => process.stdout.write("\\x1b_Ga=d,d=I,i=730140,q=2
     this.assertIn(">_", pty.output);
     this.assertNotIn("\x1b_Ga=t,", pty.output);
     pty.write("\x1b[6;18;9t");
-    await pty.waitFor(`\x1b[0;38;2;${PALETTE.accent};48;2;${PALETTE.selected}m▌`);
+    // The focused row's bar, with its colors in one SGR or, from a cell diff, two.
+    const bar = new RegExp(String.raw`\x1b\[(0;)?38;2;${PALETTE.accent}(;|m\x1b\[)48;2;${PALETTE.selected}m▌`);
+    await pty.waitFor(output => bar.test(output));
     pty.write("mark-input-ok\r");
     await this.until(() => existsSync(received) && file(received).length > 0);
     this.assertEqual(file(received), "mark-input-ok");
@@ -492,10 +495,10 @@ createInterface({input:process.stdin}).on('line', line => {
     this.assertEqual((await this.panes())[0].attention, "none");
   }
   async test_slow_and_malformed_clients_do_not_block_runtime() {
-    const bad = await JsonSocket.connect(this.path);
-    bad.socket.write("{incomplete");
+    const bad = new websocket_socket.Socket(this.path);
+    bad.write("{incomplete");
     this.assertTrue((await this.rpc({ op: "ping" })).ok);
-    bad.close();
+    bad.destroy();
     const pane = (
       await this.open_pane({
         cwd: this.temp.name,
@@ -507,10 +510,11 @@ createInterface({input:process.stdin}).on('line', line => {
     await this.until(async () =>
       (await this.command("pane.read", { target: pane, view: "screen" })).text.includes("OUT"),
     );
-    const malformed = await JsonSocket.connect(this.path);
-    malformed.socket.write("[]\n");
-    this.assertIn("UnknownOperation", JSON.stringify(await malformed.read()));
-    malformed.close();
+    const malformed = new websocket_socket.Socket(this.path),
+      replies = lines(malformed);
+    malformed.write("[]\n");
+    this.assertIn("UnknownOperation", await replies.next());
+    malformed.destroy();
     this.assertTrue((await this.rpc({ op: "ping" })).ok);
   }
   async test_hook_binary_silent_and_configuration_valid() {
@@ -783,28 +787,33 @@ createInterface({input:process.stdin}).on('line', line => {
     this.assertIn("\x1b[<u", collected);
     this.assertLess(collected.indexOf("\x1b[<u"), collected.indexOf("\x1b[?1049l"));
     this.assertIn("\x1b[?1049l", collected);
-    if (this.env.CORGI_CURSOR_BLINK === "1") {
-      for (const mode of ["\x1b[?12s", "\x1b[?12l", "\x1b[?12r"]) this.assertNotIn(mode, collected);
-    } else {
-      this.assertEqual(collected.split("\x1b[?12s\x1b[?12l").length - 1, 1);
-      this.assertLess(collected.indexOf("\x1b[?12l"), collected.indexOf("\x1b[?2026h"));
-      this.assertEqual(collected.split("\x1b[?12r").length - 1, 1);
-      this.assertLess(collected.indexOf("\x1b[?1049l"), collected.indexOf("\x1b[?12r"));
-    }
+    // The host keeps its own blinking, and gets its own cursor shape back.
+    for (const mode of ["\x1b[?12s", "\x1b[?12l", "\x1b[?12r"]) this.assertNotIn(mode, collected);
+    this.assertLess(collected.lastIndexOf("\x1b[?1049l"), collected.lastIndexOf("\x1b[0 q"));
     this.assertEqual(await pty.settings(), before);
     this.assertEqual((await this.panes()).length, remainingPanes);
     return collected;
   }
   async test_real_client_restores_terminal_on_detach() {
-    delete this.env.CORGI_CURSOR_BLINK;
-    await this.checkRealClientExit("\x02q", 1);
+    const output = await this.checkRealClientExit("\x02q", 1);
+    // Corgi's theme paints the terminal's margins, and gives them back on detach.
+    this.assertIn("\x1b]11;#", output);
+    this.assertLess(output.indexOf("\x1b]11;#"), output.lastIndexOf("\x1b]111\x1b\\"));
   }
-  async test_real_client_can_keep_host_cursor_blink() {
-    this.env.CORGI_CURSOR_BLINK = "1";
-    await this.checkRealClientExit("\x02q", 1);
+  async test_real_client_passes_the_pane_cursor_shape_to_the_host() {
+    const pane = (await this.open_pane({ command: "printf '\\033[6 qBAR_CURSOR'; sleep 30" })).pane;
+    await this.until(async () =>
+      (await this.command("pane.read", { target: pane, view: "screen" })).text.includes("BAR_CURSOR"),
+    );
+    // The sidebar can show before the pane's first frame; detach once the pane has drawn.
+    const output = await this.checkRealClientExit(async pty => {
+      await pty.waitFor("BAR_CURSOR", 4000);
+      pty.write("\x02q");
+    }, 1);
+    this.assertIn("\x1b[6 q", output);
+    this.assertLess(output.indexOf("\x1b[6 q"), output.lastIndexOf("\x1b[0 q"));
   }
-  async test_real_client_steady_cursor_still_honors_hidden_cursor() {
-    delete this.env.CORGI_CURSOR_BLINK;
+  async test_real_client_honors_hidden_cursor() {
     const pane = (
       await this.open_pane({
         command: "printf '\\033[?25lCURSOR_HIDDEN'; sleep 30",

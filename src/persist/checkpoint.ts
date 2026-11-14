@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { Runtime, Pane, ClosedAgent, Launch, closed_per_workspace } from "../runtime";
 import * as workspace from "../workspace";
+import * as archiveSummary from "../archive_summary";
 import { Model, Tab, max_workspaces } from "../layout";
 import { Order, Pins, key as agentKey } from "../agent_order";
 import { Stars } from "../agent_stars";
@@ -11,13 +12,16 @@ import { Terminal } from "../pane/terminal";
 import { Tracker } from "../detection";
 import { Cache } from "../trackers/link_labels";
 import { Conversation } from "../activity/summary";
+import { Timeline, max_points } from "../activity/timeline";
 import { decodeChecklist } from "../protocol";
 import { Entry } from "../launch/command";
-import { Meter, Tokens } from "../usage/live";
+import { Meter, Tokens, View } from "../usage/live";
+import * as common from "../providers/common";
 import * as binary from "../base64";
 import * as json from "../json";
 import * as worktrees from "../worktrees";
 import * as breadcrumbs from "../breadcrumbs";
+import * as agentEffort from "../agent_effort";
 import { validateCheckpoint } from "./schema";
 import { testBuild } from "../build_assets";
 
@@ -116,18 +120,7 @@ export class Screen {
   }
 }
 export function historicalAgent(value: Agent): Agent {
-  const result = value.snapshot();
-  result.state = result.state === "done" ? "done" : "unknown";
-  result.attention = result.observation.unread() ? "finished" : "none";
-  result.last_seq = 0n;
-  result.metadata_protocol_at = result.metadata_at = result.working_since = 0;
-  result.tool_active = result.compacting = false;
-  result.compacting_since = 0;
-  result.permission_review = null;
-  result.subagents = { running: 0, blocked: 0, waiting: false };
-  result.observation.pending_stop = false;
-  result.transcript = new (result.transcript.constructor as any)();
-  return result;
+  return value.historical();
 }
 export function captureBinding(binding: Attachment, live: boolean) {
   return {
@@ -166,6 +159,19 @@ export function restoreBinding(registry: Registry, value: any, live: boolean, ho
   }
   return binding;
 }
+/** The activity timeline a live checkpoint kept, measured against the conversation's usage. */
+function timeline(saved: any) {
+  const t = new Timeline();
+  t.points = (saved.points ?? []).map((point: any) => ({
+    at: hydrate(0, point.at),
+    label: hydrate(new common.Text(), point.label),
+    usage: hydrate(new View(), point.usage),
+  }));
+  t.baseline = hydrate(t.baseline, saved.baseline);
+  t.turn = hydrate(t.turn, saved.turn);
+  t.open = hydrate(t.open, saved.open);
+  return t;
+}
 export function capture(r: Runtime, live: boolean) {
   const state = {
     version,
@@ -181,6 +187,7 @@ export function capture(r: Runtime, live: boolean) {
     last_agent: r.last_agent,
     agent_yolo: r.agent_yolo,
     agent_hidden: r.agent_hidden,
+    launcher_added: r.launcher_added,
     account_yolo: r.account_yolo,
     account_hidden: r.account_hidden,
     agent_commands: r.agent_commands,
@@ -205,6 +212,8 @@ export function capture(r: Runtime, live: boolean) {
       launcher_hidden: w.launcher_hidden,
       launcher_order: w.launcher_order,
       focus: w.focus,
+      archived: w.archived,
+      archive_summary: w.archive_summary,
     })),
     panes: r.panes.map(p => {
       p.refreshCwd();
@@ -224,6 +233,9 @@ export function capture(r: Runtime, live: boolean) {
         resume_hint: p.resume_hint,
         launch: p.launch,
         dormant: p.dormant,
+        manual_resume: p.manual_resume,
+        effort: live ? agentEffort.save(r, p) : null,
+        manual_command: p.manual_command,
       };
     }),
     closed: r.closed.map(p => ({
@@ -254,6 +266,9 @@ export function capture(r: Runtime, live: boolean) {
         live && actor.headless_usage
           ? { meter: actor.headless_meter.meter, previous: actor.headless_meter.previous }
           : null,
+      // Cold saves leave both out: recovered agents count their usage over.
+      activity_timeline: live ? actor.activity_timeline : undefined,
+      live_usage: live ? actor.live_usage : undefined,
     })),
     sessions: r.sessions.map(s => s.capture(live)),
     breadcrumbs: breadcrumbs.capture(),
@@ -291,8 +306,8 @@ export async function restore(
   );
   check(!Array.isArray(state.sessions), () => "sessions isn't a list");
   check(
-    !state.workspaces.length || state.workspaces.length > max_workspaces,
-    () => `${state.workspaces.length} workspaces, outside 1–${max_workspaces}`,
+    state.workspaces.length > max_workspaces,
+    () => `${state.workspaces.length} workspaces, over ${max_workspaces}`,
   );
   check(
     state.closed.length > closed_per_workspace * max_workspaces,
@@ -352,6 +367,8 @@ export async function restore(
     item.launcher_hidden = w.launcher_hidden ?? [];
     item.launcher_order = w.launcher_order ?? [];
     item.focus = w.focus ?? 0;
+    item.archived = w.archived === true;
+    item.archive_summary = archiveSummary.restore(w.archive_summary);
     item.away = hydrate(item.away, w.away);
     for (const tab of item.model.tabs)
       check(
@@ -368,6 +385,7 @@ export async function restore(
   r.last_agent = state.last_agent ?? Provider.first;
   r.agent_yolo = hydrate(r.agent_yolo, state.agent_yolo);
   r.agent_hidden = hydrate(r.agent_hidden, state.agent_hidden);
+  r.launcher_added = hydrate(r.launcher_added, state.launcher_added);
   r.account_yolo = hydrate(r.account_yolo, state.account_yolo);
   r.account_hidden = hydrate(r.account_hidden, state.account_hidden);
   r.agent_commands = (state.agent_commands ?? r.agent_commands).map((entry: any) => hydrate(new Entry(), entry));
@@ -397,6 +415,9 @@ export async function restore(
       (saved.status_inference?.phases_len ?? 0) > (saved.status_inference?.phases?.length ?? 4)
     )
       invalid(`conversation ${saved.id}'s status inference is out of range`);
+    const phases = saved.activity_timeline?.points ?? [];
+    if (!Array.isArray(phases) || phases.length > max_points)
+      invalid(`conversation ${saved.id}'s activity timeline has more than ${max_points} phases`);
     const actor = r.conversations.get(agent.provider!, agent.sessionId());
     actor.id = saved.id;
     actor.state = live ? agent : historicalAgent(agent);
@@ -415,6 +436,8 @@ export async function restore(
       if (saved.headless_meter.previous)
         actor.headless_meter.previous = hydrate(new Tokens(), saved.headless_meter.previous);
     }
+    if (live && saved.activity_timeline) actor.activity_timeline = timeline(saved.activity_timeline);
+    if (live && saved.live_usage) actor.live_usage = hydrate(new View(), saved.live_usage);
     if (live) actor.restoreCompaction(saved.screen_compacting ?? null, Date.now() * 1000);
   }
   r.conversations.next_id = state.next_conversation ?? 1;
@@ -436,8 +459,11 @@ export async function restore(
     pane.detection = live ? hydrate(new Tracker(), p.detection) : new Tracker();
     pane.resume_hint = hydrate(new ResumeHint(), p.resume_hint);
     pane.launch = p.launch ? Launch.from(p.launch) : null;
-    pane.dormant = live && p.dormant === true;
+    pane.dormant = p.dormant === true;
+    pane.manual_resume = p.manual_resume === true || r.workspaces.owner(p.id)!.archived;
+    pane.manual_command = pane.manual_resume && typeof p.manual_command === "string" ? p.manual_command : null;
     r.panes.push(pane);
+    if (live) agentEffort.restore(r, pane, p.effort);
   }
   for (const w of r.workspaces.items)
     for (const node of w.model.nodes)
@@ -462,8 +488,10 @@ export async function restore(
     r.closed.push(closed);
   }
   if (state.sessions.length) {
-    const { Session } = await import("../headless");
+    const { Session, corgiHost } = await import("../headless");
     for (const saved of state.sessions) {
+      // The Corgi prompt's conversations end with the daemon that ran them.
+      if (!live && saved.corgi === true) continue;
       const tracker = saved.usage_tracker;
       check(
         !r.workspaces.get(saved.workspace_id),
@@ -474,14 +502,18 @@ export async function restore(
           (tracker?.next_tool ?? 0) >= (tracker?.tools?.length ?? 256),
         () => `native session ${saved.id}'s usage tracker is out of range`,
       );
-      r.sessions.push(await Session.restore(saved, r.conversations, live, { repairs, strict }));
+      const session = await Session.restore(saved, r.conversations, live, { repairs, strict });
+      // The prompt's own tools run in this daemon now.
+      if (session.corgi && !session.exited)
+        session.client.serve?.(corgiHost(socket, executable, session.id, session.persist, session.cwd));
+      r.sessions.push(session);
     }
   }
   // `recover` false only checks the checkpoint: no shells start.
   if (!live && recover) {
     for (const p of r.panes) await recoverPane(p, socket, executable);
     for (const n of state.sessions) {
-      if (n.exited) continue;
+      if (n.exited || n.corgi === true) continue;
       const cwd = await safeDirectory(n.cwd);
       const id = await r.create({
         workspace: n.workspace_id,
@@ -519,7 +551,11 @@ async function safeDirectory(cwd: string): Promise<string> {
 }
 async function recoverPane(p: Pane, socket: string, executable: string): Promise<void> {
   p.cwd = await safeDirectory(p.cwd);
-  if (p.resume_hint.args() !== null) return p.sleep();
+  if (p.dormant) {
+    p.sleep();
+    return;
+  }
+  if (p.resume_hint.args() !== null || (p.manual_resume && (p.launch || p.manual_command !== null))) return p.sleep();
   p.terminal.feed("\x1b[0m\r\n\r\n# Recovered saved output; new shell.\r\n");
   await p.terminal.spawn(p.cwd, socket, p.id, executable, null, false);
 }

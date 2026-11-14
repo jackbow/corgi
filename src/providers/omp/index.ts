@@ -1,14 +1,14 @@
 import * as effort from "../effort";
 import path from "node:path";
 import type { Adapter } from "../adapter";
-import { field, Hooks, str, type Hook, type Outcome } from "../common";
+import { field, Hooks, str, type Hook } from "../common";
 import { ScreenWatcher } from "../watcher";
 import * as commandLine from "../command_line";
 import { decode as decodePi } from "../pi";
 import { Omp, summaryArgs, nativeIntent } from "./headless";
 import { directory, extension, source } from "./integration";
 import { transcript } from "./transcript";
-import { sockets } from "../pi/rename";
+import { sockets } from "../pi/socket";
 import { info } from "./info";
 import { accounts, identity } from "./accounts";
 import * as locations from "./locations";
@@ -26,24 +26,6 @@ export function decode(v: unknown): Hook {
     if (hook) hook.checklist = todos.parse(value, Number.isSafeInteger(ms) && ms > 0 ? ms * 1000 : 0);
     return hook;
   }
-  if (event === "SubagentStart" || event === "SubagentStop") {
-    const hook = hooks.decode({
-      hook_event_name: event,
-      session_id: str(v, "session"),
-      agent_id: str(v, "subagent"),
-      agent_type: str(v, "subagent_type"),
-    });
-    if (!hook) return null;
-    hook.independent_child = true;
-    hook.subagent_name = str(v, "subagent_name");
-    hook.description = str(v, "description");
-    hook.child_transcript = str(v, "child_transcript");
-    hook.model = str(v, "model");
-    const outcome = str(v, "outcome");
-    if (event === "SubagentStop" && ["completed", "interrupted", "failed"].includes(outcome))
-      hook.outcome = outcome as Outcome;
-    return hook;
-  }
   const hook = decodePi(v);
   if (hook && (hook.kind === "activity" || hook.kind === "tool_start")) {
     const intent = nativeIntent(str(v, "intent"));
@@ -57,7 +39,7 @@ export function decode(v: unknown): Hook {
     hook.awaiting_async_work = hook.outcome === "completed" && field(v, "awaiting_async_work") === true;
   return hook;
 }
-const rename = sockets("omp", directory);
+const socket = sockets("omp", directory);
 export const adapter: Adapter = {
   ...info,
   caps: {
@@ -73,6 +55,7 @@ export const adapter: Adapter = {
     ...["/opt/homebrew/bin/omp", "/usr/local/bin/omp"].map(p => root + p),
   ],
   version: v => /^omp\/\d+\.\d+\.\d+/.test(v.trim()),
+  distribution: { packages: ["@oh-my-pi/pi-coding-agent"], version: v => `omp/${v}` },
   inspect(c) {
     const result = commandLine.inspect(c, {
       config_env: "PI_CODING_AGENT_DIR",
@@ -168,25 +151,28 @@ export const adapter: Adapter = {
         env: /^(?:HOME|PI_.+|OMP_.+|.+_API_KEY|.+_AUTH_TOKEN|.+_OAUTH_TOKEN|.+_BASE_URL)$/,
       }),
   },
-  rename: { channel: rename.channel },
+  rename: { channel: socket.channel },
+  message: { channel: socket.message },
   headless: { start: at => Omp.start(at), restore: (saved, live) => Omp.restore(saved, live) },
   inference: {
     model: "openai-codex/gpt-6-luna",
-    models: (account, quit) => import("./models").then(m => m.read(account, quit)),
+    models: (account, quit, cwd) => import("./models").then(m => m.read(account, quit, cwd)),
     start: (r, at) => Omp.start({ ...at, cwd: "/tmp" }, summaryArgs(r)),
     restore: (saved, live) => Omp.restore(saved, live),
   },
   launcher: account => import("./launcher").then(m => m.open(account)),
   history: account => import("./history").then(m => m.open(account)),
+  search: () => import("./search").then(m => m.conversations),
   transcript,
   conversation,
   integration: {
     directory,
+    prepare_on_launch: true,
     install: async account => [extension("install", account)],
     status: async account => [extension("status", account)],
     uninstall: async account => [extension("uninstall", account)],
-    startup: async account => {
-      if (!(await import("../../discovery")).installed("omp")) return;
+    startup: async (account, _handoff, cwd) => {
+      if (!(await import("../../discovery")).installed("omp", cwd)) return;
       const r = extension("install", account);
       if (r.outcome === "failed") console.error("hook setup:", r.error);
     },

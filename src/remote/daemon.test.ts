@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { createServer } from "node:net";
+import { version } from "../protocol";
+import { createServer } from "../fixtures/websocket_server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,7 +27,7 @@ test("adapter negotiates the existing daemon protocol and rejects input to a cha
           request = json.parse(buffer.slice(0, end));
         buffer = buffer.slice(end + 1);
         if (request.op === "hello")
-          client.write(json.stringify({ request_id: request.request_id, type: "hello", protocol: 4 }) + "\n");
+          client.write(json.stringify({ request_id: request.request_id, type: "hello", protocol: version }) + "\n");
         else if (request.op === "session.snapshot")
           client.write(json.stringify({ request_id: request.request_id, ...state }) + "\n");
         else if (request.op === "session.command") {
@@ -129,7 +130,7 @@ test("surface and conversation reads are bound before and after, and launches us
         let result: unknown = { ok: true };
         switch (r.op) {
           case "hello":
-            result = { type: "hello", protocol: 4 };
+            result = { type: "hello", protocol: version };
             break;
           case "session.snapshot":
             result = state;

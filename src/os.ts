@@ -378,16 +378,17 @@ export function privateDirectory(parent: string) {
   try {
     stat = lstat(parent);
   } catch {
-    mkdirSync(parent, { recursive: true });
+    // Created ancestors are private too; one may later be another file's parent.
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
     chmodSync(parent, 0o700);
     try {
       stat = lstat(parent);
     } catch {
-      throw Error("UnsafeSocketDirectory");
+      throw Error("UnsafeDirectory");
     }
   }
   if (stat.uid !== (process.getuid?.() ?? userInfo().uid) || !stat.isDir() || (stat.mode & 0o077) !== 0)
-    throw Error("UnsafeSocketDirectory");
+    throw Error("UnsafeDirectory");
 }
 export function unixAddress(path: string) {
   if (Buffer.byteLength(path) >= (process.platform === "darwin" ? 104 : 108) || path.includes("\0"))
@@ -400,5 +401,6 @@ export function listen(path: string): number {
   unixAddress(path);
   const fd = n.probe_listen(Buffer.from(path + "\0"));
   if (fd < 0) throw Error(fd === -98 || fd === -48 ? "AddressInUse" : fd === -13 ? "AccessDenied" : "BindFailed");
+  chmodSync(path, 0o600);
   return fd;
 }

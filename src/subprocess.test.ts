@@ -59,12 +59,53 @@ test("stdout past the cap fails, stderr keeps its tail", async () => {
   const out = await sh("printf 123456789 >&2", { max_output: 5, stderr: true });
   expect(out.stderr.toString()).toBe("56789");
 });
+test("a cut run keeps the head of its output and ends the process", async () => {
+  const begin = Date.now(),
+    out = await sh("printf 123456789; sleep 5", { max_output: 5, cut: true });
+  expect(out.cut).toBe(true);
+  expect(out.stdout.toString()).toBe("12345");
+  expect(Date.now() - begin).toBeLessThan(1000);
+  const whole = await sh("printf 12345", { max_output: 5, cut: true });
+  expect([whole.cut, whole.ok(), whole.stdout.toString()]).toEqual([false, true, "12345"]);
+});
 test("output written just before exit is kept, past a full pipe", async () => {
   const out = await sh("head -c 100000 /dev/zero", { max_output: 200000 });
   expect(out.stdout.length).toBe(100000);
 });
 test("input reaches the child", async () => {
   expect((await sh("cat", { input: "input" })).stdout.toString()).toBe("input");
+});
+test("an unlimited run streams output without accumulating it and cancellation kills its children", async () => {
+  const quit = new Quit(),
+    chunks: string[] = [];
+  const run = sh("sleep 20 & printf '%s\\n' $!; printf installing >&2; wait", {
+    timeout_ms: null,
+    capture: false,
+    stderr: true,
+    quit,
+    on_output: (bytes: Buffer, stream: string) => {
+      chunks.push(stream + ":" + bytes.toString());
+      if (chunks.some(c => c.startsWith("stdout:")) && chunks.some(c => c.startsWith("stderr:"))) quit.signal();
+    },
+  });
+  await expect(run).rejects.toThrow("Cancelled");
+  expect(chunks.some(c => c === "stderr:installing")).toBe(true);
+  const out = await sh("printf 123456789", {
+    timeout_ms: null,
+    capture: false,
+    max_output: 2,
+    on_output: (b: Buffer) => chunks.push(b.toString()),
+  });
+  expect(out.stdout.length).toBe(0);
+  expect(chunks.at(-1)).toBe("123456789");
+});
+test("cancellation ends an unlimited run even when its exit notification is lost", async () => {
+  await lostExit(null, async () => {
+    const quit = new Quit(),
+      pending = sh("sleep 20", { timeout_ms: null, quit });
+    setTimeout(() => quit.signal(), 20);
+    await expect(pending).rejects.toThrow("Cancelled");
+  });
 });
 
 import { readdirSync } from "node:fs";

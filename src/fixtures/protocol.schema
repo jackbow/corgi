@@ -1,8 +1,24 @@
 $.envelope.request_id: optional
 $.envelope.request_id?: u64
 $.requests: one of
-$.requests|hello: {}
+$.requests|hello.accept_encoding: optional
+$.requests|hello.accept_encoding?[]: string
 $.requests|session.command.command: one of
+$.requests|session.command.command|layout.dock.workspace: u32
+$.requests|session.command.command|layout.dock.viewer: u32
+$.requests|session.command.command|layout.dock.expected: u64
+$.requests|session.command.command|layout.dock.source: one of
+$.requests|session.command.command|layout.dock.source|tab: u32
+$.requests|session.command.command|layout.dock.source|pane: u32
+$.requests|session.command.command|layout.dock.drop: custom protocol.DockDrop
+$.requests|session.command.command|layout.dock.focus: u32
+$.requests|session.command.command|layout.dock.selected: u32
+$.requests|session.command.command|layout.dock.cols: u16
+$.requests|session.command.command|layout.dock.rows: u16
+$.requests|session.command.command|layout.history.workspace: u32
+$.requests|session.command.command|layout.history.viewer: u32
+$.requests|session.command.command|layout.history.expected: u64
+$.requests|session.command.command|layout.history.direction: enum undo redo
 $.requests|session.command.command|agent.move.workspace: u32
 $.requests|session.command.command|agent.move.target: one of
 $.requests|session.command.command|agent.move.target|pane: u32
@@ -28,6 +44,10 @@ $.requests|session.command.command|agent.place.before: optional
 $.requests|session.command.command|agent.place.before?: one of
 $.requests|session.command.command|agent.place.before?|pane: u32
 $.requests|session.command.command|agent.place.before?|headless: u32
+$.requests|session.command.command|agent.message.target: one of
+$.requests|session.command.command|agent.message.target|pane: u32
+$.requests|session.command.command|agent.message.target|headless: u32
+$.requests|session.command.command|agent.message.text: string
 $.requests|session.command.command|agent.command.index: usize
 $.requests|session.command.command|agent.command.command: string
 $.requests|session.command.command|agent.command.hidden: bool
@@ -123,6 +143,7 @@ $.requests|session.command.command|tab.close.target: u32
 $.requests|session.command.command|pane.restore.workspace: u32
 $.requests|session.command.command|pane.wake.target: u32
 $.requests|session.command.command|pane.wake.shell: bool
+$.requests|session.command.command|pane.hibernate.targets[]: u32
 $.requests|session.command.command|workspace.create.name: string
 $.requests|session.command.command|workspace.create.cwd: string
 $.requests|session.command.command|workspace.edit.target: u32
@@ -132,6 +153,8 @@ $.requests|session.command.command|workspace.edit.cwd: optional
 $.requests|session.command.command|workspace.edit.cwd?: string
 $.requests|session.command.command|workspace.close.target: u32
 $.requests|session.command.command|workspace.close.close_contents: bool
+$.requests|session.command.command|workspace.archive.target: u32
+$.requests|session.command.command|workspace.unarchive.target: u32
 $.requests|session.command.command|workspace.move.target: u32
 $.requests|session.command.command|workspace.move.before: u32
 $.requests|session.command.command|pane.rename.target: u32
@@ -172,10 +195,37 @@ $.requests|session.command.command|pane.keys.target: u32
 $.requests|session.command.command|pane.keys.text: string
 $.requests|session.command.command|pane.input.target: u32
 $.requests|session.command.command|pane.input.data: string
+$.requests|workspace.archive.preview.target: u32
+$.requests|workspace.archive.preview.remote: bool
 $.requests|session.locate.pane: u32
 $.requests|session.list: {}
-$.requests|launcher.catalog: {}
+$.requests|launcher.catalog.workspace: u32
+$.requests|launcher.catalog.cwd: string
+$.requests|launcher.catalog.preview: bool
+$.requests|account.restore.provider: enum claude codex pi omp opencode2
+$.requests|account.restore.account: string
+$.requests|account.remove.provider: enum claude codex pi omp opencode2
+$.requests|account.remove.account: string
+$.requests|account.signin.open.id: string
+$.requests|account.signin.open.provider: enum claude codex pi omp opencode2
+$.requests|account.signin.open.account: string
+$.requests|account.signin.open.add: bool
+$.requests|account.signin.open.cwd: string
+$.requests|account.signin.open.cols: u32
+$.requests|account.signin.open.rows: u32
+$.requests|account.signin.sync.id: string
+$.requests|account.signin.sync.cols: u32
+$.requests|account.signin.sync.rows: u32
+$.requests|account.signin.sync.revision: u32
+$.requests|account.signin.sync.input_seq: u32
+$.requests|account.signin.sync.input: string
+$.requests|account.signin.sync.raw: bool
+$.requests|account.signin.sync.x: i32
+$.requests|account.signin.sync.y: i32
+$.requests|account.signin.close.id: string
 $.requests|launcher.models.row: string
+$.requests|launcher.models.workspace: u32
+$.requests|launcher.models.cwd: string
 $.requests|session.snapshot: {}
 $.requests|session.subscribe: {}
 $.requests|viewer.watch.viewer: u32
@@ -238,6 +288,8 @@ $.requests|inference.configure.worktrees: optional
 $.requests|inference.configure.worktrees?: bool
 $.requests|shell.configure.shell: string
 $.requests|smart_links.configure.enabled: bool
+$.requests|retry.configure.enabled: bool
+$.requests|retry.cancel.pane: u32
 $.requests|git.push.workspace: u32
 $.requests|git.push.ref.root: string
 $.requests|git.push.ref.head: string
@@ -319,8 +371,13 @@ $.requests|agent.command.preview.request: u64
 $.requests|agent.command.preview.command: string
 $.requests|agent.preview.workspace: u32
 $.requests|agent.preview.cwd: string
+$.requests|agent.preview.cached.workspace: u32
+$.requests|agent.preview.cached.cwd: string
 $.requests|agent.track_usage.workspace: u32
 $.requests|agent.track_usage.cwd: string
+$.requests|agent.discover.provider: optional
+$.requests|agent.discover.provider?: provider
+$.requests|agent.discover.cwd: string
 $.requests|agent.history.follow: bool
 $.requests|viewer.list: {}
 $.requests|action.name: string
@@ -340,6 +397,12 @@ $.requests|headless.start.prompt: string
 $.requests|headless.start.cwd: string
 $.requests|headless.start.workspace: optional
 $.requests|headless.start.workspace?: u32
+$.requests|headless.start.account: string
+$.requests|headless.start.model: string
+$.requests|headless.start.effort: string
+$.requests|headless.start.instructions: string
+$.requests|headless.start.persist: bool
+$.requests|headless.start.corgi: bool
 $.requests|headless.list: {}
 $.requests|headless.stop.provider: provider
 $.requests|headless.stop.session: string
@@ -349,6 +412,15 @@ $.requests|headless.send.input: any
 $.requests|headless.events.provider: provider
 $.requests|headless.events.session: string
 $.requests|headless.events.after: u64
+$.requests|headless.events.pane: optional
+$.requests|headless.events.pane?: u32
+$.requests|headless.search.id: u32
+$.requests|headless.search.search: any
+$.requests|headless.memory.id: u32
+$.requests|headless.memory.file: string
+$.requests|headless.memory.line: string
+$.requests|headless.memory.was_file: string
+$.requests|headless.memory.was_line: string
 $.requests|theme.theme: optional
 $.requests|theme.theme?.foreground: optional
 $.requests|theme.theme?.foreground?.r: u8
@@ -362,6 +434,13 @@ $.requests|theme.theme?.palette[16]: optional
 $.requests|theme.theme?.palette[16]?.r: u8
 $.requests|theme.theme?.palette[16]?.g: u8
 $.requests|theme.theme?.palette[16]?.b: u8
+$.requests|startup.id: string
+$.requests|startup.pane: u32
+$.requests|startup.provider: provider
+$.requests|startup.phase: enum discovering service session installing agent
+$.requests|startup.detail: string
+$.requests|startup.started_at: i64
+$.requests|startup.kill.id: string
 $.requests|hook.provider: provider
 $.requests|hook.event: any
 $.requests|hook.pane: u32
@@ -412,6 +491,7 @@ $.snapshot.shell.source: enum setting env account fallback
 $.snapshot.shell.default: string
 $.snapshot.shell.default_source: enum env account fallback
 $.snapshot.smart_links: bool
+$.snapshot.auto_retry: bool
 $.snapshot.system_working: bool
 $.snapshot.system_usage.tokens.input: u64
 $.snapshot.system_usage.tokens.cached_input: u64
@@ -425,6 +505,7 @@ $.snapshot.system_usage.recent_tokens: u64
 $.snapshot.last_agent: provider
 $.snapshot.agent_yolo{provider}: bool
 $.snapshot.agent_hidden{provider}: bool
+$.snapshot.launcher_added[]: string
 $.snapshot.account_yolo[]: string
 $.snapshot.account_hidden[]: string
 $.snapshot.agent_commands[6].command: custom bounded_text.BoundedText(2048)
@@ -527,6 +608,7 @@ $.snapshot.conversations[].agent.tool_active: bool
 $.snapshot.conversations[].agent.compacting: bool
 $.snapshot.conversations[].agent.compacting_since: i64
 $.snapshot.conversations[].agent.paused: bool
+$.snapshot.conversations[].agent.retry_at: i64
 $.snapshot.ports.processes_available: bool
 $.snapshot.ports.ports_available: bool
 $.snapshot.ports.workspaces[].id: u32
@@ -652,6 +734,18 @@ $.snapshot.revision: u64
 $.snapshot.workspaces[].id: u32
 $.snapshot.workspaces[].name: string
 $.snapshot.workspaces[].cwd: string
+$.snapshot.workspaces[].archived: bool
+$.snapshot.workspaces[].archive_summary: optional
+$.snapshot.workspaces[].archive_summary?.agents: u32
+$.snapshot.workspaces[].archive_summary?.running: u32
+$.snapshot.workspaces[].archive_summary?.waiting: u32
+$.snapshot.workspaces[].archive_summary?.unread: u32
+$.snapshot.workspaces[].archive_summary?.idle: u32
+$.snapshot.workspaces[].archive_summary?.unknown: u32
+$.snapshot.workspaces[].archive_summary?.programs[].name: string
+$.snapshot.workspaces[].archive_summary?.programs[].brand: optional
+$.snapshot.workspaces[].archive_summary?.programs[].brand?: string
+$.snapshot.workspaces[].archive_summary?.programs[].count: u32
 $.snapshot.workspaces[].model: custom layout.Model
 $.snapshot.workspaces[].agent_order[]: one of
 $.snapshot.workspaces[].agent_order[]|pane: u32
@@ -787,6 +881,7 @@ $.snapshot.panes[].agent.tool_active: bool
 $.snapshot.panes[].agent.compacting: bool
 $.snapshot.panes[].agent.compacting_since: i64
 $.snapshot.panes[].agent.paused: bool
+$.snapshot.panes[].agent.retry_at: i64
 $.snapshot.panes[].account: string
 $.snapshot.panes[].restoring: string
 $.snapshot.panes[].forking: bool
@@ -817,6 +912,7 @@ $.snapshot.headless_sessions[].agent?.tool_active: bool
 $.snapshot.headless_sessions[].agent?.compacting: bool
 $.snapshot.headless_sessions[].agent?.compacting_since: i64
 $.snapshot.headless_sessions[].agent?.paused: bool
+$.snapshot.headless_sessions[].agent?.retry_at: i64
 $.snapshot.headless_sessions[].observation.source: enum unknown screen hook transcript protocol
 $.snapshot.headless_sessions[].observation.pending_stop: bool
 $.snapshot.headless_sessions[].observation.completed: u64
@@ -827,6 +923,14 @@ $.snapshot.headless_sessions[].session: string
 $.snapshot.headless_sessions[].workspace: u32
 $.snapshot.headless_sessions[].provider: provider
 $.snapshot.headless_sessions[].cwd: string
+$.snapshot.headless_sessions[].corgi: bool
+$.snapshot.headless_sessions[].account: string
+$.snapshot.headless_sessions[].model: string
+$.snapshot.headless_sessions[].effort: optional
+$.snapshot.headless_sessions[].effort?: string
+$.snapshot.headless_sessions[].persist: bool
+$.snapshot.headless_sessions[].pane: optional
+$.snapshot.headless_sessions[].pane?: u32
 $.snapshot.headless_sessions[].ready: bool
 $.snapshot.headless_sessions[].exited: bool
 $.snapshot.headless_sessions[].state: enum unknown initializing idle working blocked done
@@ -842,18 +946,45 @@ $.replies.hello.build_id: string
 $.replies.hello.executable: string
 $.replies.hello.release_version: string
 $.replies.hello.update_abi: string
+$.replies.hello.content_encoding: optional
+$.replies.hello.content_encoding?: enum zstd
 $.replies.session.command.result.pane: u32
 $.replies.session.command.result.tab: u32
 $.replies.session.command.result.workspace: u32
 $.replies.session.command.result.text: optional
 $.replies.session.command.result.text?: string
 $.replies.session.command.result.closed_panes[]: u32
+$.replies.session.command.result.delivery: optional
+$.replies.session.command.result.delivery?: enum message typed
+$.replies.session.command.result.queued: optional
+$.replies.session.command.result.queued?: bool
 $.replies.session.locate.result.pane: u32
 $.replies.session.locate.result.tab: u32
 $.replies.session.locate.result.workspace: u32
 $.replies.session.locate.result.text: optional
 $.replies.session.locate.result.text?: string
 $.replies.session.locate.result.closed_panes[]: u32
+$.replies.workspace.archive.preview.preview.workspace: u32
+$.replies.workspace.archive.preview.preview.name: string
+$.replies.workspace.archive.preview.preview.agents[].target: one of
+$.replies.workspace.archive.preview.preview.agents[].target|pane: u32
+$.replies.workspace.archive.preview.preview.agents[].target|headless: u32
+$.replies.workspace.archive.preview.preview.agents[].name: string
+$.replies.workspace.archive.preview.preview.agents[].provider: string
+$.replies.workspace.archive.preview.preview.agents[].activity: string
+$.replies.workspace.archive.preview.preview.agents[].running: bool
+$.replies.workspace.archive.preview.preview.agents[].state: enum unknown initializing idle working blocked done
+$.replies.workspace.archive.preview.preview.agents[].attention: enum none finished needs_input
+$.replies.workspace.archive.preview.preview.agents[].paused: bool
+$.replies.workspace.archive.preview.preview.agents[].unread: bool
+$.replies.workspace.archive.preview.preview.processes[].pid: u32
+$.replies.workspace.archive.preview.preview.processes[].name: string
+$.replies.workspace.archive.preview.preview.processes[].brand: optional
+$.replies.workspace.archive.preview.preview.processes[].brand?: string
+$.replies.workspace.archive.preview.preview.processes_available: bool
+$.replies.workspace.archive.preview.preview.processes_partial: bool
+$.replies.workspace.archive.preview.preview.links[]: string
+$.replies.workspace.archive.preview.preview.links_available: bool
 $.replies.session.snapshot: any
 $.replies.viewer.open: versioned protocol.Opened
 $.replies.viewer.sync: versioned protocol.View(json.dynamic.Value,json.dynamic.Value)
@@ -950,6 +1081,11 @@ $.launch_preview.options{provider}.model_name: custom bounded_text.BoundedText(1
 $.launch_preview.options{provider}.source: custom bounded_text.BoundedText(160)
 $.launch_preview.options{provider}.account: custom bounded_text.BoundedText(160)
 $.launch_preview.options{provider}.plan: custom bounded_text.BoundedText(160)
+$.launch_preview.options{provider}.login: optional
+$.launch_preview.options{provider}.login?.id: string
+$.launch_preview.options{provider}.login?.email: string
+$.launch_preview.options{provider}.login?.service: enum chatgpt claude
+$.launch_preview.options{provider}.login?.workspace: string
 $.launch_preview.options{provider}.limits: one of
 $.launch_preview.options{provider}.limits|none: {}
 $.launch_preview.options{provider}.limits|metered: {}
@@ -977,8 +1113,13 @@ $.launch_preview.options{provider}.history[2][14]?: u8
 $.launch_preview.options{provider}.spend_history[14].minor: optional
 $.launch_preview.options{provider}.spend_history[14].minor?: f64
 $.launch_preview.options{provider}.spend_history[14].earlier: bool
+$.launch_preview.options{provider}.spend_daily[].day: i64
+$.launch_preview.options{provider}.spend_daily[].period_start: i64
+$.launch_preview.options{provider}.spend_daily[].used_minor: f64
 $.launch_preview.installed{provider}: bool
+$.launch_preview.configured{provider}: bool
 $.launch_preview.outdated{provider}: string
+$.launch_preview.on_demand{provider}: bool
 $.launch_history.epoch: u64
 $.launch_history.revision: u64
 $.launch_history.full: bool
@@ -995,3 +1136,13 @@ $.launch_history.removed[].provider: provider
 $.launch_history.removed[].session: string
 $.replies.viewer.image.data: optional
 $.replies.viewer.image.data?: string
+$.snapshot.startup_waits: array
+$.snapshot.startup_waits[].id: string
+$.snapshot.startup_waits[].pane: u32
+$.snapshot.startup_waits[].provider: enum claude codex pi omp opencode2
+$.snapshot.startup_waits[].phase: enum discovering service session installing agent
+$.snapshot.startup_waits[].detail: string
+$.snapshot.startup_waits[].started_at: i64
+$.snapshot.startup_waits[].cancelled: bool
+$.requests|viewer.stream: versioned protocol.Request.Sync
+$.requests|viewer.stream.sequence: u32

@@ -1,10 +1,11 @@
 import * as json from "./json";
 import { Theme } from "./theme";
-import type { View as SurfaceView } from "./pane/surface";
+import type { View as SurfaceView, Patch as SurfacePatch } from "./pane/surface";
 import { Provider, type ByProvider } from "./providers";
 import type { Target } from "./agent_order";
 import * as checklist from "./activity/checklist";
 import * as text from "./text";
+import * as wire_websocket from "./wire_websocket";
 
 /** Decode Corgi's own checklist, as the daemon sends or saves it, without provider cleanup. */
 export function decodeChecklist(value: unknown): checklist.List {
@@ -60,6 +61,7 @@ export interface View<Session = unknown, Resources = unknown> {
   resources: Resources | null;
   resources_hash: bigint;
   surfaces: SurfaceView[];
+  patches?: SurfacePatch[];
   bell_seq: bigint;
   bell_kind: "none" | "finished" | "needs_input";
   bell_target?: AttentionTarget | null;
@@ -68,9 +70,16 @@ export interface View<Session = unknown, Resources = unknown> {
   /** Always false; retained for older viewers. Detach uses an action control. */
   detach: boolean;
 }
-export const version = 4;
+export const version = 5;
 export const management_version = 1;
-export const viewer_version = 3;
+export const viewer_version = 4;
+/** HTTP management v1 includes a committed reload reply across handoff. */
+export const transports = { http: 1, websocket: wire_websocket.protocol } as const;
+export const encodings = ["zstd"] as const;
+export type Encoding = (typeof encodings)[number];
+export function encoding(value: unknown): Encoding | null {
+  return encodings.find(encoding => encoding === value) ?? null;
+}
 export type Op = (typeof operations)[number];
 type PaneDestination = { new_tab: string } | { beside: Normalized<typeof structures.beside> };
 type TabDestination = { workspace: number } | { before: number } | { after: number };
@@ -84,15 +93,35 @@ export function command(value: Command): DecodedCommand {
   const op = Object.keys(value)[0] as CommandName;
   return { op, payload: (value as Record<string, unknown>)[op] } as DecodedCommand;
 }
-export type Result = { pane: number; tab: number; workspace: number; text: string | null; closed_panes: number[] };
+/** How `agent.message` reached its agent: its provider's channel, or the
+ * pane's keyboard. */
+export type Delivery = "message" | "typed";
+export type Result = {
+  pane: number;
+  tab: number;
+  workspace: number;
+  text: string | null;
+  closed_panes: number[];
+  /** How `agent.message` reached its agent. */
+  delivery?: Delivery;
+  queued?: boolean;
+};
 export const emptyResult = (): Result => ({ pane: 0, tab: 0, workspace: 0, text: null, closed_panes: [] });
 export const operations = [
   "hello",
+  "link.open",
+  "link.resume",
   "session.command",
   "session.locate",
+  "workspace.archive.preview",
   "session.list",
   "launcher.catalog",
   "launcher.models",
+  "account.signin.open",
+  "account.signin.sync",
+  "account.signin.close",
+  "account.restore",
+  "account.remove",
   "session.snapshot",
   "session.subscribe",
   "viewer.watch",
@@ -100,6 +129,10 @@ export const operations = [
   "viewer.open",
   "viewer.sync",
   "viewer.surfaces",
+  "viewer.stream",
+  "viewer.stream.configure",
+  "viewer.data",
+  "viewer.receipt",
   "viewer.search",
   "viewer.pick",
   "viewer.image",
@@ -116,6 +149,8 @@ export const operations = [
   "inference.configure",
   "shell.configure",
   "smart_links.configure",
+  "retry.configure",
+  "retry.cancel",
   "git.push",
   "worktree.remove",
   "worktree.stop",
@@ -128,7 +163,9 @@ export const operations = [
   "onboarding.copy",
   "agent.command.preview",
   "agent.preview",
+  "agent.preview.cached",
   "agent.track_usage",
+  "agent.discover",
   "agent.history",
   "viewer.list",
   "action",
@@ -139,16 +176,23 @@ export const operations = [
   "headless.stop",
   "headless.send",
   "headless.events",
+  "headless.search",
+  "headless.memory",
   "theme",
   "viewer.terminal",
   "bugreport",
   "hook",
+  "startup",
+  "startup.kill",
   "ping",
   "shutdown",
   "test.settle",
   "test.advance",
 ] as const;
 const local = new Set([
+  // Local progress callbacks, like provider hooks; no native CLI imports needed.
+  "headless.search",
+  "headless.memory",
   "viewer.list",
   "action",
   "focus",
@@ -157,6 +201,7 @@ const local = new Set([
   "viewer.terminal",
   "bugreport",
   "hook",
+  "startup",
   "ping",
   "shutdown",
   "test.settle",
@@ -164,7 +209,15 @@ const local = new Set([
 ]);
 export function check(op: string): "none" | "management" | "runtime" | "viewer" {
   if (op === "hello" || op === "server.reload") return "management";
-  if (op === "viewer.open" || op === "viewer.sync") return "viewer";
+  if (
+    op === "viewer.open" ||
+    op === "viewer.sync" ||
+    op === "viewer.stream" ||
+    op === "viewer.stream.configure" ||
+    op === "viewer.data" ||
+    op === "viewer.receipt"
+  )
+    return "viewer";
   return local.has(op) ? "none" : "runtime";
 }
 export const capabilities = operations.filter(op => op !== "hello" && check(op) !== "none");
@@ -175,6 +228,32 @@ export function versions(op: string): { protocol?: number; runtime_protocol?: nu
     ...(op === "hello" ? { runtime_protocol: version } : {}),
     ...(check(op) === "viewer" ? { viewer_protocol: viewer_version } : {}),
   };
+}
+/** Requests a client numbers over a link, so each runs once even when it's
+ * sent again after a reconnect. Reads, and requests the daemon can safely
+ * take twice, go unnumbered. Deferred checkouts use a separate connection
+ * and report a lost result rather than replaying before completion. */
+export function once(op: Op): boolean {
+  switch (op) {
+    case "account.restore":
+    case "account.remove":
+    case "session.command":
+    case "pane.paste":
+    case "pane.mark_unread":
+    case "git.push":
+    case "worktree.remove":
+    case "worktree.stop":
+    case "worktree.brief":
+    case "inference.configure":
+    case "shell.configure":
+    case "smart_links.configure":
+    case "agent.track_usage":
+    case "onboarding.copy":
+    case "onboarding.handoff":
+      return true;
+    default:
+      return false;
+  }
 }
 export function envelope(op: string, payload: Record<string, unknown> = {}): object {
   const fields = op === "viewer.open" ? { cwd: "", onboarding: false, theme: null, ...payload } : payload;
@@ -216,10 +295,28 @@ export function exclusion(op: string): "none" | "layout" | "import" | "push" | "
   if (op === "shutdown") return "shutdown";
   return "none";
 }
+export type DockSource = { tab: number } | { pane: number };
+export type DockDrop =
+  | { kind: "beside"; pane: number; direction: "left" | "right" | "up" | "down"; whole: boolean }
+  | { kind: "swap"; pane: number }
+  | { kind: "tab"; index: number };
 const commands = {
+  "layout.dock": {
+    workspace: "u32",
+    viewer: "u32",
+    expected: "u64",
+    source: "dockSource",
+    drop: "dockDrop",
+    focus: "u32",
+    selected: "u32",
+    cols: "u16",
+    rows: "u16",
+  },
+  "layout.history": { workspace: "u32", viewer: "u32", expected: "u64", direction: "undo|redo" },
   "agent.move": { workspace: "u32", target: "target", before: ["?target", null] },
   "agent.pin": { workspace: "u32", target: "target", before: ["?target", null], pinned: ["bool", true] },
   "agent.place": { workspace: "u32", target: "target", before: ["?target", null] },
+  "agent.message": { target: "target", text: "string" },
   "agent.command": {
     index: "u64",
     command: "string",
@@ -284,9 +381,12 @@ const commands = {
   "tab.close": { target: "u32" },
   "pane.restore": { workspace: "u32" },
   "pane.wake": { target: "u32", shell: ["bool", false] },
+  "pane.hibernate": { targets: "[]u32" },
   "workspace.create": { name: ["string", ""], cwd: "string" },
   "workspace.edit": { target: "u32", name: ["?string", null], cwd: ["?string", null] },
   "workspace.close": { target: "u32", close_contents: ["bool", false] },
+  "workspace.archive": { target: "u32" },
+  "workspace.unarchive": { target: "u32" },
   "workspace.move": { target: "u32", before: "u32" },
   "pane.rename": { target: "u32", name: "string" },
   "tab.rename": { target: "u32", name: "string" },
@@ -326,6 +426,8 @@ type Alternatives<T extends string> = T extends `${infer Head}|${infer Tail}`
   : Member<T>;
 // Types with hand-written validators.
 type CustomValues = {
+  dockSource: DockSource;
+  dockDrop: DockDrop;
   target: Target;
   paneDestination: PaneDestination;
   tabDestination: TabDestination;
@@ -435,6 +537,25 @@ function validate(value: any, type: string, strict = false): any {
     return value.map(v => validate(v, type.slice(2), strict));
   }
   if (type === "json") return value;
+  if (type === "dockSource") {
+    const source = json.object(value),
+      keys = Object.keys(source);
+    if (keys.length !== 1 || (keys[0] !== "tab" && keys[0] !== "pane")) throw Error("InvalidDestination");
+    return { [keys[0]]: validate(source[keys[0]], "u32") };
+  }
+  if (type === "dockDrop") {
+    const source = json.object(value);
+    switch (source.kind) {
+      case "beside":
+        return struct(source, { kind: "beside", pane: "u32", direction: "left|right|up|down", whole: "bool" }, true);
+      case "swap":
+        return struct(source, { kind: "swap", pane: "u32" }, true);
+      case "tab":
+        return struct(source, { kind: "tab", index: "u32" }, true);
+      default:
+        throw Error("InvalidDestination");
+    }
+  }
   if (type === "target") return target(value);
   if (type === "paneDestination" || type === "tabDestination") return destination(value, type === "paneDestination");
   if (type === "visibility") {
@@ -475,7 +596,7 @@ function validate(value: any, type: string, strict = false): any {
     if (n < min || n > max) throw Error("Overflow");
     return bits < 64n ? Number(n) : n;
   }
-  if (type.includes("|") || type === "provider") {
+  if (type.includes("|") || type === "provider" || type === "beside" || type === "swap" || type === "tab") {
     if (typeof value !== "string") throw Error("UnexpectedToken");
     const members = type.split("|").flatMap(m => (m === "provider" ? Provider.all : [m]));
     if (!members.includes(value)) throw Error("InvalidEnumTag");
@@ -563,14 +684,64 @@ const structures = {
   },
 } as const satisfies Record<string, Fields>;
 const launch = { workspace: "u32", cwd: ["string", ""] } as const satisfies Fields;
+const stream = {
+  sequence: "u32",
+  incremental: ["bool", false],
+  interests: "[]interest",
+  session_hash: ["?u64", null],
+  focus: ["?u32", null],
+  watched: ["bool", true],
+  workspace: ["u32", 0],
+  ack: ["u64", 0],
+  active: ["bool", false],
+  resource_detail: ["?u32", null],
+  worktree_detail: ["?u32", null],
+  resources: ["bool", true],
+  resources_hash: ["?u64", null],
+  /** How often a stream with nothing new still sends a frame, to show it's
+   * alive. A viewer slow to call a link stalled, as over SSH, asks for fewer. */
+  heartbeat_ms: ["u32", 250],
+} as const satisfies Fields;
 const requests = {
-  "launcher.models": { row: "string" },
+  hello: { accept_encoding: ["[]string", []] },
+  /** `output: false` leaves out pushes for terminal output alone, as a status display wants. */
+  "session.subscribe": { output: ["bool", true] },
+  "account.signin.open": {
+    id: "string",
+    provider: "provider",
+    account: "string",
+    add: "bool",
+    cwd: "string",
+    cols: "u32",
+    rows: "u32",
+  },
+  "account.signin.sync": {
+    id: "string",
+    cols: "u32",
+    rows: "u32",
+    revision: ["u32", 0],
+    input_seq: ["u32", 0],
+    input: ["string", ""],
+    raw: ["bool", false],
+    x: ["i32", -1],
+    y: ["i32", -1],
+  },
+  "account.signin.close": { id: "string" },
+  "account.restore": { provider: "provider", account: "string" },
+  "account.remove": { provider: "provider", account: "string" },
+  "launcher.catalog": { workspace: ["u32", 0], cwd: ["string", ""], preview: ["bool", true] },
+  "launcher.models": { row: "string", workspace: ["u32", 0], cwd: ["string", ""] },
+  "link.resume": { link: "string" },
   "session.locate": { pane: "u32" },
+  "session.snapshot": { resources: ["?bool", null] },
   "viewer.watch": { viewer: "u32" },
   "agent.subscribe": launch,
   "agent.preview": launch,
+  "agent.preview.cached": launch,
   "agent.track_usage": launch,
-  "viewer.open": { cwd: ["string", ""], onboarding: ["bool", false], theme: ["theme", null] },
+  "agent.discover": { provider: ["?provider", null], cwd: ["string", ""] },
+  /** `pid` is the viewer's process, whose terminal window a desktop can raise. */
+  "viewer.open": { cwd: ["string", ""], onboarding: ["bool", false], theme: ["theme", null], pid: ["u32", 0] },
   "viewer.sync": {
     interests: "[]interest",
     surfaces: ["bool", true],
@@ -586,6 +757,10 @@ const requests = {
     resources_hash: ["?u64", null],
   },
   "viewer.surfaces": {},
+  "viewer.stream": stream,
+  "viewer.stream.configure": stream,
+  "viewer.data": { link: "string" },
+  "viewer.receipt": { sequence: "u32", frame: "u64", active: ["bool", false] },
   "viewer.search": { pane: "u32", needle: "string", skip: ["u64", 0] },
   "viewer.pick": {
     pane: "u32",
@@ -626,9 +801,12 @@ const requests = {
   },
   "shell.configure": { shell: "string" },
   "smart_links.configure": { enabled: "bool" },
+  "retry.configure": { enabled: "bool" },
+  "retry.cancel": { pane: "u32" },
   "git.push": { workspace: "u32", ref: "ref" },
   "worktree.remove": { workspace: "u32", path: "string", locked: ["?string", null] },
   "worktree.stop": { workspace: "u32" },
+  "workspace.archive.preview": { target: "u32", remote: ["bool", false] },
   "process.signal": { workspace: "u32", pid: "u32", start: "u64", signal: "term|kill" },
   "worktree.brief": { workspace: "u32" },
   "worktree.add": { workspace: "u32", path: "string", branch: "string", base: "string" },
@@ -647,12 +825,44 @@ const requests = {
   action: { name: ["string", ""], value: ["string", ""], viewer: ["?u32", null], pane: ["?u32", null] },
   focus: { pane: "u32", viewer: ["?u32", null] },
   "workspace.switch": { workspace: "u32", viewer: ["?u32", null] },
-  "headless.start": { provider: "provider", prompt: "string", cwd: ["string", ""], workspace: ["?u32", null] },
+  "headless.start": {
+    provider: "provider",
+    prompt: "string",
+    cwd: ["string", ""],
+    workspace: ["?u32", null],
+    // An account folder Corgi knows, "" for the default; an effort `effort.parse` takes, "" for none.
+    account: ["string", ""],
+    model: ["string", ""],
+    effort: ["string", ""],
+    instructions: ["string", ""],
+    persist: ["bool", true],
+    corgi: ["bool", false],
+    // Images the first prompt carries: [{ path, mime }].
+    images: ["?json", null],
+  },
   "headless.stop": { provider: "provider", session: "string" },
   "headless.send": { provider: "provider", session: "string", input: "json" },
-  "headless.events": { provider: "provider", session: "string", after: ["u64", 0] },
+  // A reader in a pane passes its pane, which claims the session: closing the pane stops it.
+  "headless.events": { provider: "provider", session: "string", after: ["u64", 0], pane: ["?u32", null] },
+  "headless.search": { id: "u32", search: "json" },
+  "headless.memory": {
+    id: "u32",
+    file: "string",
+    line: "string",
+    was_file: ["string", ""],
+    was_line: ["string", ""],
+  },
   theme: { theme: ["theme", null] },
   "viewer.terminal": { terminal: "json" },
+  startup: {
+    id: "string",
+    pane: "u32",
+    provider: "provider",
+    phase: "discovering|service|session|installing|agent",
+    detail: ["string", ""],
+    started_at: "i64",
+  },
+  "startup.kill": { id: "string" },
   hook: {
     provider: "provider",
     event: "json",
@@ -679,7 +889,7 @@ type WireFields<T> = unknown extends T
 type SessionSnapshot = ReturnType<typeof import("./session").snapshot>;
 type ViewerSnapshot = ReturnType<typeof import("./session").viewerSnapshot>;
 type Ok = { ok: true };
-type ViewerInfo = { id: number; workspace: number; pane: number | null; watched: boolean };
+type ViewerInfo = { id: number; pid: number; active: number; workspace: number; pane: number | null; watched: boolean };
 export interface ReplyPayloads {
   hello: {
     type: "hello";
@@ -690,11 +900,28 @@ export interface ReplyPayloads {
     executable: string;
     release_version: string;
     update_abi: string;
+    transports?: { http: number; websocket: string };
+    viewer_protocol?: number;
+    instance?: string;
+    content_encoding?: Encoding;
   };
   ping: Ok & { pid: number };
+  /** From the daemon that took over, once it listens. */
+  "server.reload": Ok & { server_pid: number; panes: number };
+  "link.open": Ok & { link: string };
+  /** `viewer` when the link was a viewer's, which is now this connection's. */
+  "link.resume": Ok & { link: string; viewer: boolean };
+  startup: Ok & { cancelled: boolean };
+  "startup.kill": Ok;
   "session.command": Ok & { result: Result };
   "session.locate": Ok & { result: Result };
-  "launcher.catalog": Ok & { agents: import("./launcher_config").Agent[] };
+  "workspace.archive.preview": Ok & { preview: import("./workspace_archive").Preview };
+  "launcher.catalog": Ok & { agents: import("./launcher_config").Agent[]; data: import("./launcher_data").Data };
+  "account.signin.open": Ok;
+  "account.signin.sync": Ok & { state: import("./signin_service").Snapshot | null };
+  "account.signin.close": Ok;
+  "account.restore": Ok & { account: import("./accounts").Known };
+  "account.remove": Ok & { deleted: boolean };
   "launcher.models": Ok & { models: import("./agent_models").Choice[] };
   "session.list": Ok & { result: SessionSnapshot; viewers: ViewerInfo[] };
   "session.snapshot": SessionSnapshot;
@@ -702,6 +929,16 @@ export interface ReplyPayloads {
   "viewer.open": Ok & Opened;
   "viewer.sync": View<ViewerSnapshot, import("./trackers/resources").Snapshot>;
   "viewer.surfaces": Ok & { surfaces: SurfaceView[] };
+  "viewer.receipt": Ok & { stream: boolean };
+  "viewer.data": Ok & { viewer: number };
+  "viewer.stream.configure": Ok & { viewer_protocol: number };
+  "viewer.stream": {
+    type: "viewer.stream";
+    viewer_protocol: number;
+    sequence: number;
+    frame?: bigint;
+    view: View<ViewerSnapshot, import("./trackers/resources").Snapshot>;
+  };
   "viewer.search": Ok & {
     offset: bigint | null;
     match?: { x: number; y: number; end_x: number; end_y: number } | null;
@@ -729,6 +966,8 @@ export interface ReplyPayloads {
   "inference.configure": Ok & { saved: boolean; inference: import("./corgi_setup").Status };
   "shell.configure": Ok & { shell: import("./launch/command").ShellStatus };
   "smart_links.configure": Ok & { smart_links: boolean };
+  "retry.configure": Ok & { auto_retry: boolean };
+  "retry.cancel": Ok;
   "worktree.remove": Ok & { removal: number };
   "git.branches": Ok & { branches: Awaited<ReturnType<typeof import("./worktree_add").branches>> };
   "onboarding.status": Ok & {
@@ -736,7 +975,9 @@ export interface ReplyPayloads {
   };
   "agent.command.preview": Ok & { resolution: import("./launch/command").Resolution };
   "agent.preview": Ok & { preview: import("./launch/preview").Preview };
+  "agent.preview.cached": Ok & { preview: import("./launch/preview").Preview };
   "agent.track_usage": Ok & { preview: import("./launch/preview").Preview };
+  "agent.discover": Ok;
   "agent.subscribe": { type: "agent.preview"; cwd: string; preview: import("./launch/preview").Preview };
   /** Without history when following; updates arrive as `agent.history` events. */
   "agent.history": Ok & { history?: import("./launch/history").History };
@@ -755,6 +996,7 @@ export interface ReplyPayloads {
   "headless.list": Ok & { sessions: unknown[] };
   "headless.events": Ok & {
     events: unknown[];
+    transcript: string;
     pending_requests: unknown;
     next_seq: bigint;
     first_seq: bigint;
@@ -769,29 +1011,66 @@ export type PickUnit = Request<"viewer.pick">["unit"];
 export type PickResult = Omit<Reply<"viewer.pick">, "ok">;
 /** Unsolicited updates share a connection with correlated replies. */
 export type Event =
+  | Reply<"viewer.stream">
+  | { type: "viewer.frame"; sequence: number; frame?: Wire<bigint>; view: Reply<"viewer.sync"> }
+  | { type: "viewer.controls"; controls: Wire<Control[]> }
   | { type: "viewer.wake" }
+  /** The installation the daemon runs from was deleted, as `omarchy plugin remove` does; it's stopping. */
+  | { type: "uninstalled" }
   | Wire<SessionSnapshot>
   | Reply<"agent.subscribe">
   | { type: "agent.history"; update: Wire<import("./launch/history").Update> };
 /** What arrives without a request id; anything else untagged fails the connection. */
-export const event_types = ["viewer.wake", "session", "agent.preview", "agent.history"] as const;
+export const event_types = [
+  "viewer.stream",
+  "viewer.frame",
+  "viewer.controls",
+  "viewer.wake",
+  "uninstalled",
+  "session",
+  "agent.preview",
+  "agent.history",
+] as const;
 // Fails to compile while an `Event` type is missing from the list.
 true satisfies Exclude<Event["type"], (typeof event_types)[number]> extends never ? true : false;
 export function event(message: { type?: unknown }): Event | null {
   return (event_types as readonly unknown[]).includes(message.type) ? (message as Event) : null;
 }
+/** Events that are never a reply, so a connection without request ids can
+ * tell them from the answer it waits for. */
+export function pushed(type: unknown): boolean {
+  switch (type) {
+    case "viewer.frame":
+    case "viewer.controls":
+    case "viewer.wake":
+    case "uninstalled":
+    case "agent.history":
+      return true;
+    default:
+      return false;
+  }
+}
 /** What a `ReloadBusy` reload waits out. */
-export type Busy = { op: "worktree.add"; path: string };
+export type Busy =
+  | { op: "account.signin" | "account.remove" }
+  | { op: "worktree.add"; path: string }
+  | { op: "headless.start"; provider: Provider };
 export type ErrorReply = { err: string; viewer_protocol?: number; busy?: Busy };
 /** The `busy` of an error reply, or null when it names nothing this client knows. */
 export function busy(reply: unknown): Busy | null {
   const value = reply && typeof reply === "object" ? (reply as { busy?: unknown }).busy : null;
   if (!value || typeof value !== "object") return null;
-  const { op, path } = value as Record<string, unknown>;
-  if (typeof path !== "string") return null;
+  const { op, path, provider } = value as Record<string, unknown>;
   switch (op) {
+    case "account.signin":
+    case "account.remove":
+      return { op };
     case "worktree.add":
-      return { op, path };
+      return typeof path === "string" ? { op, path } : null;
+    case "headless.start": {
+      const id = typeof provider === "string" ? Provider.parse(provider) : null;
+      return id ? { op, provider: id } : null;
+    }
   }
   return null;
 }

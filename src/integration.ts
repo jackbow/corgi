@@ -1,3 +1,4 @@
+import { Reporter } from "./startup_reporter";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -5,10 +6,10 @@ import { Provider, adapter } from "./providers";
 import type { IntegrationStepResult } from "./providers/adapter";
 import { atomicWrite } from "./os";
 import * as discovery from "./discovery";
-import * as rpc from "./rpc";
+import type * as rpc_http from "./rpc_http";
 import * as accounts from "./accounts";
 import * as i18n from "./i18n";
-export async function hook(provider: Provider, path: string): Promise<void> {
+export async function hook(provider: Provider, daemon: rpc_http.Client): Promise<void> {
   const id = Number(process.env.CORGI_PANE);
   if (!Number.isInteger(id) || id < 0 || id > 0xffffffff) return;
   const parts: Buffer[] = [];
@@ -29,7 +30,7 @@ export async function hook(provider: Provider, path: string): Promise<void> {
     origin = a.origin ? a.origin(event) : { pid: 0, background: false };
   if (!origin) return;
   try {
-    await rpc.request(path, "hook", {
+    await daemon.call("hook", {
       provider,
       event,
       pane: id,
@@ -39,25 +40,36 @@ export async function hook(provider: Provider, path: string): Promise<void> {
     });
   } catch {}
 }
-export async function launch(provider: Provider, args: string[], _executable: string): Promise<never> {
+export async function launch(provider: Provider, args: string[], daemon: rpc_http.Client): Promise<never> {
   if (process.env.CORGI_PANE === undefined) throw Error("LaunchInsideCorgi");
-  // Like execvp: a bare name (Claude, or an override) is looked up on PATH.
-  const binary = await discovery.resolve(provider),
+  const progress = new Reporter(provider, Number(process.env.CORGI_PANE), daemon.socket);
+  let binary: string, path: string | null;
+  try {
+    // Like execvp: a bare name (Claude, or an override) is looked up on PATH.
+    // Someone started it, so a stub may install it here, where they see it.
+    binary = await discovery.resolve(provider, null, { stubs: true });
     path = binary.includes("/") ? binary : discovery.onPath(binary);
-  if (path === null) throw Error("ProviderNotFound");
-  const prepared = await adapter(provider).launch.prepare?.(args, path);
-  if (prepared) {
-    args = prepared.args;
-    for (const [key, value] of prepared.env ?? []) process.env[key] = value;
-    if (prepared.event)
-      await rpc.request(process.env.CORGI_SOCKET!, "hook", {
-        provider,
-        event: prepared.event,
-        pane: Number(process.env.CORGI_PANE),
-        seq: Date.now() * 1000,
-        background: false,
-        pid: process.pid,
-      });
+    progress.check();
+    if (path === null) throw Error("ProviderNotFound");
+    if (adapter(provider).integration.prepare_on_launch) await prepare(provider, "", false, process.cwd());
+    const prepared = await adapter(provider).launch.prepare?.(args, path, progress);
+    progress.check();
+    if (prepared) {
+      args = prepared.args;
+      for (const [key, value] of prepared.env ?? []) process.env[key] = value;
+      if (prepared.event)
+        await daemon.call("hook", {
+          provider,
+          event: prepared.event,
+          pane: Number(process.env.CORGI_PANE),
+          seq: Date.now() * 1000,
+          background: false,
+          pid: process.pid,
+        });
+    }
+    progress.check();
+  } finally {
+    progress.close();
   }
   process.execve!(path, [binary, ...args], process.env as Record<string, string>);
   throw Error("ExecFailed");
@@ -105,19 +117,23 @@ export async function startup(handoff: boolean) {
   for (const { provider, account } of everyAccount()) await prepare(provider, account, handoff);
 }
 /** Adds what an account needs before an agent starts in it, unless the
- * user took it out. Each account is set up once per process. */
-export function prepare(provider: Provider, account: string, handoff = false): Promise<void> {
-  const key = provider + "\0" + account;
+ * user took it out. Missing agents can retry once they are installed. */
+export function prepare(provider: Provider, account: string, handoff = false, cwd = process.cwd()): Promise<void> {
+  const key = [provider, account, cwd].join("\0");
   let done = prepared.get(key);
   if (!done)
     prepared.set(
       key,
       (done = (async () => {
         try {
-          if (!uninstalled(provider, account)) await adapter(provider).integration.startup(account, handoff);
+          if (!uninstalled(provider, account)) {
+            if (!discovery.installed(provider, cwd)) await discovery.resolve(provider, cwd).catch(() => {});
+            await adapter(provider).integration.startup(account, handoff, cwd);
+          }
         } catch (error) {
           console.error("hook setup:", error);
         }
+        if (!discovery.installed(provider, cwd)) prepared.delete(key);
       })()),
     );
   return done;

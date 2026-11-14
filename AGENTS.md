@@ -27,6 +27,9 @@ behavior changes, and bug fixes; keep existing entries accurate.
 - **Try a feature by hand:** `./go.ts --sandbox NAME` opens a seeded world
   with fake agents, apart from your own Corgi (`tools/sandboxes/`). Add one
   when a feature needs a particular world to poke at.
+- **Animations:** `bun tools/anim.ts NAME` plays one of
+  `src/corgi_animation.ts`'s animations, such as the uninstall `farewell`,
+  in your terminal; with no name it lists them. Add an entry there for a new one.
 - **UI driver:** `bun tools/ui_driver.ts run current -e 'key ctrl+b c; snap'` drives a
   viewer in a PTY and records its screens. See `tools/ui_driver.ts`.
 - **Screenshots:** `bun tools/ghostty_screenshot.ts --sandbox NAME -o shot.png`
@@ -35,33 +38,6 @@ behavior changes, and bug fixes; keep existing entries accurate.
   Do not repaint terminal cells into SVG, canvas or another terminal renderer.
   `serve` keeps one running for an agent to drive over its socket and capture
   on demand; see HACKING.md.
-- **Landing page:** `bun run landingpage:dev` serves `site/` and reloads on
-  save; `landingpage:build` writes self-contained pages for each locale in
-  `site/dist/` (plus English root aliases), `landingpage:start` serves them, and
-  `landingpage:publish` builds it and deploys it to corgi.computer with
-  wrangler, as an assets-only Worker routed on `/`, `/moonlander` and their
-  locale paths (`site/wrangler.jsonc`); other paths go to the release bucket.
-  Keep it script-free and narrowly routed: asset hits are free, but a
-  script runs on every request it sees and counts against the plan's
-  limit. `bun tools/site_frames.ts`
-  re-records English screens into `site/frames.json` with Corgi's renderer;
-  `--all-languages` also records `site/frames/{zh,ja,ko,ru}.json`. `--check`
-  fails on stale recordings. Site translation commands use `--site` and
-  separate caches; the app's normal i18n workflow does no site work. The page
-  imports Corgi's animation code, so keep `src/corgi_animation.ts` browser-safe. It also runs the review panel, the
-  resource card, the command menu and the worktree overview, with
-  `site/browser/` standing in for git, files, the resource sampler, ports,
-  launch commands, zlib, the native widths (package.json's `"browser"`
-  field), `process.platform` and `Buffer`; a new Node or native import under
-  `src/review/`, `src/resource_tooltip.ts`, `src/shortcut_help.ts`,
-  `src/worktree_tooltip.ts` or what it imports (the sidebar among them)
-  needs a stand-in there too.
-  The hero's first frame is prerendered from `site/main.js` on builds and
-  dev saves; `site/.generated/` is disposable. Keep its mobile breakpoint
-  and column count in `site/hero_config.ts`.
-  Wrangler's local `dev` server is incompatible with Bun (its runtime
-  dispatcher fails on reload); run that diagnostic with Node. The site
-  build and publish commands use Bun.
 
 ## Layout
 

@@ -16,11 +16,12 @@ Xcode's SDK and a persistent macOS signing identity. Keep signing keys and stora
 credentials outside the repository. Use one publishing host at a time. The host
 needs push access to `origin` on GitHub, and the release commit must already be on
 origin's `main`; both are checked before building.
+The publisher also needs push access to `tals/corgi-omarchy` (SSH by default).
 
 Create and back up the release signing key:
 
 ```sh
-./scripts/release --init-key "$HOME/.config/corgi/release-key.pem"
+bun run publish --init-key "$HOME/.config/corgi/release-key.pem"
 ```
 
 Create `~/.config/corgi/release.json` (or select it with `CORGI_RELEASE_CONFIG`):
@@ -45,7 +46,7 @@ The public URL must serve the bucket root over HTTPS without authentication.
 Honor the `no-cache` headers on `channels/*` and `install.sh`.
 Optional `notaryProfile` enables notarization. Optional `sentry` supplies `dsn`,
 `org` and `project`; publishing then needs an authenticated `sentry-cli` to upload
-debug symbols. Configuration fields live in [scripts/release.ts](../scripts/release.ts).
+debug symbols. Configuration fields live in [scripts/publish.ts](../scripts/publish.ts).
 
 ### Publishing from Linux
 
@@ -85,10 +86,10 @@ signature (and Apple's notarization), not run.
 
 1. Commit and push the changes to ship. Review compatibility changes using
    [HACKING.md](../HACKING.md).
-2. Check the selected commit and output paths with `./publish.sh --dry-run`.
-3. Run `./publish.sh`. It tests, builds, signs and verifies the public downloads
-   before advancing the stable channel, then tags the commit on GitHub. Wait for the
-   final `Published Corgi` message.
+2. Check the selected commit and output paths with `bun run publish --dry-run`.
+3. Run `bun run publish`. It tests, builds, signs and verifies the public downloads
+   before advancing the stable channel, then tags the commit on GitHub and updates
+   the Omarchy plugin when needed. Wait for the command to finish.
 4. From an installed copy, run `corgi update --check` to confirm the offered release.
 
 Versions are immutable; never reuse a version for different bytes or casually
@@ -97,7 +98,57 @@ remain available for existing installers and rollback.
 
 Local binaries and debug symbols stay under `.git/corgi-releases/` (the common
 Git directory for linked worktrees). Keep the symbols needed for crash diagnosis;
-with `sentry` configured, publishing uploads them. `./publish.sh --clean` then
+with `sentry` configured, publishing uploads them. `bun run publish --clean` then
 deletes every saved release, published or not, and the checkouts that
 interrupted runs left behind.
-For build-only and retry options, use `./publish.sh --help`.
+For build-only and retry options, use `bun run publish --help`.
+
+## Omarchy and test releases
+
+`bun run publish` first fetches `corgi-omarchy` into the saved release directory,
+before running tests or builds. Once Corgi is built, it calls the plugin's
+`tools/release-plugin` with the exact Corgi source and installer.
+The plugin owns regeneration, checks, and deciding whether anything needs pushing.
+It keeps its installer pin for binary-only Corgi releases. Plugin preparation runs
+before Corgi is published; the plugin push follows verified Corgi downloads.
+Use `--omarchy-skip` to skip both steps. No companion checkout is required.
+
+If the plugin push fails after Corgi is published, retry the saved release:
+
+```sh
+bun run publish VERSION --publish-only
+```
+
+To publish a build for your own testing:
+
+```sh
+bun run publish --test
+```
+
+This builds the same production binaries, with a separate update key and downloads
+under `https://corgi.computer/test`. The commit must be pushed to origin, but may be
+on a feature branch. Its tag is `test/VERSION`. Stable downloads, channels, and the
+plugin's `main` branch stay untouched. Test builds do not send crash reports.
+The output includes both installation paths:
+
+```sh
+curl -fsSL https://corgi.computer/test/install.sh | bash
+omarchy plugin add https://corgi.computer/test/corgi.computer.git --enable
+```
+
+The normal installer also selects the test plugin when it detects Omarchy.
+The test plugin points to this exact build. Subsequent test releases advance that
+channel; use `corgi update` and `omarchy plugin update corgi.computer` in the sandbox.
+To resume a failed test publication, add `--test` to `VERSION --publish-only`.
+
+Test artifacts live under `.git/corgi-test-releases/`. The persistent test signing
+key is `.git/corgi-test-signing.pem`; `--clean` removes artifacts but keeps this key.
+Back it up if you want existing test installations to keep accepting new updates.
+
+For plugin-only changes, run `./tools/release-plugin` in `corgi-omarchy`, or add
+`--test` to publish its test version. It fetches the Corgi sources it needs without
+building Corgi. See that repository's HACKING.md for the plugin's release policy.
+
+`CORGI_OMARCHY_REMOTE` overrides the plugin Git remote for development or another
+authentication method. `--dry-run` describes the selected destination without
+building, generating keys, cloning, or changing remotes.
