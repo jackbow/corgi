@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { createServer } from "node:net";
+import { version } from "../protocol";
+import { createServer } from "../fixtures/websocket_server";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,8 +36,10 @@ test("live subscriptions sanitize snapshots and close on background cancellation
         buffer = buffer.slice(end + 1);
         if (r.op === "session.subscribe") subscribed = true;
         client.write(
-          json.stringify({ request_id: r.request_id, ...(r.op === "hello" ? { type: "hello", protocol: 4 } : state) }) +
-            "\n",
+          json.stringify({
+            request_id: r.request_id,
+            ...(r.op === "hello" ? { type: "hello", protocol: version } : state),
+          }) + "\n",
         );
         if (r.op === "session.subscribe") client.write(json.stringify({ ...state, panes: [] }) + "\n");
       }
@@ -90,7 +93,7 @@ test("management rechecks pane bindings and questions reject stale or duplicate 
         let result: object = { ok: true };
         switch (r.op) {
           case "hello":
-            result = { type: "hello", protocol: 4 };
+            result = { type: "hello", protocol: version };
             break;
           case "session.snapshot":
             result = state;

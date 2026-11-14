@@ -2,7 +2,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Runtime, EXE, PALETTE, screen_text, scrollbar, layout_tree, tab_row } from "./runtime";
-import { registerCase, run, sleep, quote, shellJoin, writeExecutable, JsonSocket, versioned } from "./support";
+import { registerCase, run, sleep, quote, shellJoin, writeExecutable, Events, lines, versioned } from "./support";
+import * as rpc from "../src/rpc";
+import * as websocket_socket from "../src/websocket_socket";
 import * as protocol from "../src/protocol";
 
 class Smoke extends Runtime {
@@ -49,19 +51,22 @@ class Smoke extends Runtime {
       );
     this.assertEqual((await this.raw_rpc({ op: "session.snapshot", protocol: undefined })).err, "ProtocolRequired");
     this.assertEqual((await this.session()).panes, []);
-    const socket = await JsonSocket.connect(this.path);
+    const socket = new websocket_socket.Socket(this.path),
+      replies = lines(socket);
+    // One untagged request at a time, written as is.
+    const request = async (value: unknown) => {
+      socket.write(JSON.stringify(value) + "\n");
+      return JSON.parse(await replies.next());
+    };
     try {
-      this.assertEqual((await socket.request(versioned({ op: "hello" }))).protocol, protocol.version);
-      this.assertEqual((await socket.request({ op: "session.snapshot" })).type, "session");
+      this.assertEqual((await request(versioned({ op: "hello" }))).protocol, protocol.version);
+      this.assertEqual((await request({ op: "session.snapshot" })).type, "session");
       for (const runtime_protocol of [1, 999, undefined]) {
-        this.assertEqual(
-          (await socket.request(versioned({ op: "hello", runtime_protocol }))).protocol,
-          protocol.version,
-        );
-        this.assertEqual((await socket.request({ op: "session.snapshot" })).err, "ProtocolRequired");
+        this.assertEqual((await request(versioned({ op: "hello", runtime_protocol }))).protocol, protocol.version);
+        this.assertEqual((await request({ op: "session.snapshot" })).err, "ProtocolRequired");
         this.assertEqual(
           (
-            await socket.request({
+            await request({
               op: "session.command",
               command: { "pane.create": { workspace: ws } },
             })
@@ -71,7 +76,7 @@ class Smoke extends Runtime {
       }
       this.assertEqual((await this.session()).panes, []);
     } finally {
-      socket.close();
+      socket.destroy();
     }
   }
   async test_runtime_operations_target_ids_without_changing_selection() {
@@ -184,15 +189,16 @@ class Smoke extends Runtime {
   }
   async test_runtime_subscription_survives_idle_and_receives_changes() {
     await this.open_pane({ command: "sleep 30" });
-    const socket = await JsonSocket.connect(this.path);
+    const socket = new rpc.Connection(this.path),
+      events = new Events(socket);
     try {
-      const initial = await socket.request(versioned({ op: "session.subscribe" }));
+      const initial: any = await socket.rawRequest(versioned({ op: "session.subscribe" }));
       this.assertEqual(initial.type, "session");
       await sleep(5.2);
       const pane = (await this.open_pane({ command: "sleep 30" })).pane;
       let update: any;
       for (let i = 0; i < 20; i++) {
-        update = await socket.read();
+        update = await events.next();
         if (update.panes.some((p: any) => p.id === pane)) break;
       }
       this.assertTrue(
@@ -364,7 +370,7 @@ class Smoke extends Runtime {
     await this.frame_with("New workspace");
     await this.input("Project\r");
     await this.until(async () => (await this.workspaces()).length === 2);
-    await this.frame_with("No agents yet");
+    await this.frame_with("Ctrl+T");
     const ws = (await this.workspaces()).find((w: any) => w.active);
     this.assertEqual([ws.name, ws.cwd], ["Project", realpathSync(this.temp.name)]);
     await this.click(4, 3);
@@ -372,16 +378,39 @@ class Smoke extends Runtime {
     this.assertEqual((await this.focused()).id, first);
     await this.input("\x1b[<2;4;6M\x1b[<2;4;6m");
     await this.click_text(await this.frame_with("r  Rename"), "Rename");
-    await this.frame_with("Rename workspace");
-    await this.input("Edited\r");
+    // The menu's Rename opens the field on the row, prefilled with "Project".
+    this.assertTrue(this.client!.state.renaming);
+    this.assertFalse(this.client!.state.dialog);
+    await this.input("\x03Edited\r");
     screen = await this.frame_with("Edited");
     this.assertNotIn("workspace: default folder", screen.join("\n"));
     this.assertNotIn("Rename workspace", screen.join("\n"));
     const edited = (await this.workspaces()).find((w: any) => w.id === ws.id);
     this.assertEqual([edited.name, edited.cwd], ["Edited", realpathSync(this.temp.name)]);
     await this.input("\x02}");
-    await this.frame_with("No agents yet");
+    await this.frame_with("Ctrl+T");
     this.assertEqual((await this.workspaces()).find((w: any) => w.active).id, ws.id);
+  }
+  async test_double_click_on_a_workspace_row_renames_it_inline() {
+    await this.open_pane({ cwd: this.temp.name, command: "sleep 30" });
+    await this.attach();
+    const screen = await this.frame_with("workspaces");
+    this.assertTrue(screen[0].startsWith("  workspaces"));
+    // Two left presses on the first workspace's name cell within the
+    // double-click interval: the first switches to it as before, the second
+    // puts the field on its row instead of the centered dialog.
+    await this.click(4, 3);
+    await this.click(4, 3);
+    this.assertTrue(this.client!.state.renaming);
+    this.assertFalse(this.client!.state.dialog);
+    // The field holds the custom name (empty: the name follows the folder)
+    // with nothing selected, so ctrl-c clears it before the new name.
+    await this.input("\x03Edited\r");
+    const renamed = await this.frame_with("Edited");
+    this.assertIn("Edited", renamed[2]);
+    this.assertNotIn("Rename workspace", renamed.join("\n"));
+    await this.until(async () => (await this.workspaces())[0].name === "Edited");
+    this.assertFalse(this.client!.state.renaming);
   }
   async test_workspace_and_agent_lists_scroll_independently() {
     await this.open_pane({ cwd: this.temp.name, command: "sleep 30" });
@@ -425,7 +454,7 @@ class Smoke extends Runtime {
       "Group-1",
     );
     this.assertEqual((await this.workspaces()).find((w: any) => w.active).name, "Group-1");
-    await this.frame_with("No agents yet");
+    await this.frame_with("Ctrl+T");
   }
   async test_headless_sessions_belong_to_their_workspace() {
     await this.open_pane({ cwd: this.temp.name, command: "sleep 30" });
@@ -439,7 +468,7 @@ class Smoke extends Runtime {
     await this.attach();
     await this.agent_frame("codex", "○");
     await this.new_workspace({ name: "Other", cwd: this.temp.name });
-    await this.frame_with("No agents yet");
+    await this.frame_with("Ctrl+T");
     await this.rpc({ op: "workspace.switch", workspace: original });
     await this.agent_frame("codex", "○");
   }
@@ -717,10 +746,26 @@ process.stdin.on('data',data=>appendFileSync(log,data));process.stdin.resume();`
     await other.request({ op: "input", data: "\x02n" });
     this.assertEqual(other.state.pane, panes[1]);
     this.assertEqual(this.client!.state.pane, panes[0]);
+    // A possible terminator waits for the next read, even past the real Escape timeout.
     await this.input("\x1b[");
-    await this.until(() => readFileSync(logs[0], "utf8") === "\x1b[200~\x1b[");
-    await this.input("PASTED_TEXT\x1b[201~");
-    await this.until(() => readFileSync(logs[0], "utf8") === "\x1b[200~\x1b[PASTED_TEXT\x1b[201~");
+    await sleep(0.1);
+    await this.settle();
+    this.assertEqual(readFileSync(logs[0], "utf8"), "\x1b[200~");
+    await this.input("PASTED_TEXT");
+    const pasted = "\x1b[200~\x1b[PASTED_TEXT";
+    await this.until(() => readFileSync(logs[0], "utf8") === pasted);
+    // An incomplete sequence that cannot end the paste still expires to its owner.
+    await this.input("\x1b[9");
+    await sleep(0.1);
+    await this.until(() => readFileSync(logs[0], "utf8") === pasted + "\x1b[9");
+    await this.input("\x1b[20");
+    await sleep(0.1);
+    await this.settle();
+    this.assertEqual(readFileSync(logs[0], "utf8"), pasted + "\x1b[9");
+    await this.input("1~");
+    await this.until(() => readFileSync(logs[0], "utf8") === pasted + "\x1b[9\x1b[201~");
+    await this.input("\x02n");
+    this.assertEqual(this.client!.state.pane, panes[1]);
     this.assertEqual(readFileSync(logs[1], "utf8"), "");
   }
   async test_paused_viewer_receives_latest_state_on_next_sync() {
@@ -745,8 +790,10 @@ process.stdin.on('data',data=>appendFileSync(log,data));process.stdin.resume();`
     this.assertFalse(menu.some(row => row.includes("n  New tab")));
     this.assertEqual((await this.workspaces()).find((w: any) => w.active).id, first);
     await this.click_text(menu, "Rename");
-    await this.frame_with("Rename workspace");
-    await this.input("Renamed\r");
+    // The field opens on "Target"'s row, prefilled with its name.
+    this.assertTrue(this.client!.state.renaming);
+    this.assertFalse(this.client!.state.dialog);
+    await this.input("\x03Renamed\r");
     await this.frame_with("Renamed");
     this.assertEqual((await this.workspaces()).find((w: any) => w.id === second).name, "Renamed");
     await this.input("\x1b[<2;5;6M\x1b[<2;5;6m");
@@ -757,13 +804,41 @@ process.stdin.on('data',data=>appendFileSync(log,data));process.stdin.resume();`
       [pane],
     );
     await this.input("\x1b[<2;5;3M\x1b[<2;5;3m");
-    await this.frame_with("r  Rename");
-    await this.input("\x1b[B\r");
-    await this.frame_with("Cannot close the last workspace");
-    this.assertEqual(
-      (await this.panes()).map((p: any) => p.id),
-      [pane],
-    );
+    await this.click_text(await this.frame_with("x  Close"), "Close");
+    // The last one closes too, leaving the button that creates the next.
+    await this.frame_with("Create workspace");
+    this.assertEqual(await this.workspaces(), []);
+    this.assertEqual(await this.panes(), []);
+    await this.input("\r");
+    await this.frame_with("New workspace");
+    await this.input("\r");
+    await this.until(async () => (await this.workspaces()).length === 1);
+    this.assertEqual((await this.panes()).length, 1);
+  }
+  async test_viewer_attaches_with_every_workspace_closed() {
+    const first = (await this.workspaces())[0].id;
+    await this.command("workspace.close", { target: first, close_contents: true });
+    this.assertEqual(await this.workspaces(), []);
+    await this.attach();
+    await this.frame_with("Create workspace");
+    this.assertEqual(await this.panes(), []);
+    await this.input("\r");
+    await this.frame_with("New workspace");
+  }
+  async test_every_workspace_stays_closed_through_restart_and_reload() {
+    const first = (await this.workspaces())[0].id;
+    await this.command("workspace.close", { target: first, close_contents: true });
+    // A cold start keeps none open rather than making a starter in its folder.
+    await this.restart_runtime();
+    this.assertEqual(await this.workspaces(), []);
+    await this.attach();
+    await this.frame_with("Create workspace");
+    this.assertEqual(await this.panes(), []);
+    await this.rpc({ op: "server.reload", executable: EXE });
+    this.assertEqual(await this.workspaces(), []);
+    const [viewer] = await this.viewer();
+    await this.viewer_frame(viewer, "Create workspace");
+    this.assertEqual(await this.panes(), []);
   }
   async test_tab_context_menu_targets_clicked_tab_for_rename_and_new() {
     const one = this.folder("one"),

@@ -3,8 +3,43 @@ import { Controller } from "./controller";
 import { Picker } from "./agent_navigation";
 import { transport } from "./fixtures/transport";
 import { Rect } from "./layout";
-import { View, type Section } from "./sidebar";
+import { View, workspaceEntry, resourceAt, type Section } from "./sidebar";
+import { Writer } from "./text";
 import * as sidebarFocus from "./sidebar_focus";
+
+test("archived workspaces fold at the bottom, scroll independently, and do not overlap active rows", () => {
+  const active = Array.from({ length: 20 }, (_, i) =>
+    workspaceEntry({ id: i + 1, name: `Active ${i}`, cwd: "", active: i === 0 }),
+  );
+  const archived = Array.from({ length: 32 }, (_, i) => ({ id: i + 100, name: `Archive ${i}`, active: false }));
+  for (const rows of [13, 16, 24, 50])
+    for (const enabled of [true, false]) {
+      let v = View.init(100, rows, true, 0, 0);
+      v.resources = { enabled };
+      v = v.withArchives(archived.length, false, 0).withWorkspaces(active.length, 0);
+      expect(v.archivedHeader()).toBe(v.middle() - 2);
+      expect(v.hit(3, v.archivedHeader()!)).toEqual({ tag: "archives" });
+      const closed = new Writer();
+      v.draw(closed, [], active, archived);
+      expect(closed.buffered()).toContain("▸ 32 archived");
+      expect(closed.buffered()).not.toContain("Archive 0");
+      v = v.withArchives(archived.length, true, 100).withWorkspaces(active.length, 0);
+      const header = v.archivedHeader()!;
+      for (let slot = 0; slot < v.workspaceCapacity(); slot++)
+        expect(2 + slot * v.workspaceRows() + 1).toBeLessThan(header);
+      for (let row = 0; row < v.archivedCapacity() * 3; row++) {
+        const y = header + 1 + row;
+        expect(v.hit(3, y)).toEqual({ tag: "archived_workspace", workspace: v.archived_offset + Math.floor(row / 3) });
+        expect(resourceAt(v, active, 3, y)).toBeNull();
+        expect(v.workspaceDrop(3, y)).toBeNull();
+        expect(y).toBeLessThan(v.middle() - 1);
+      }
+      const expanded = new Writer();
+      v.draw(expanded, [], active, archived);
+      expect(expanded.buffered()).toContain("▾ 32 archived");
+      expect(expanded.buffered()).toContain("Archive 31");
+    }
+});
 
 test("sidebar geometry preserves compact, search, width, panel and drawer boundaries", () => {
   for (const cols of [0, 19, 39, 40, 47, 63, 64, 80, 160])
@@ -72,5 +107,36 @@ test("controller pane geometry agrees with its complete sidebar without construc
     }
   } finally {
     view.runtime.destroy();
+  }
+});
+
+test("machine headers share geometry with workspace hits, drops and scrolling", () => {
+  const machines = ["local", "local", "work", "local", "work"];
+  const view = View.init(100, 50, true, 0, 0, 24).withWorkspaces(5, 0, machines);
+  expect(machines.map((_, i) => view.workspaceY(i))).toEqual([3, 6, 10, 14, 18]);
+  for (let i = 0; i < machines.length; i++) {
+    const y = view.workspaceY(i);
+    expect(view.hit(3, y)).toEqual({ tag: "workspace", workspace: i });
+    expect(view.workspaceAt(y + 2, 2)).toBe(i);
+    if (view.workspaceHeader(i)) expect(view.hit(3, y - 1)).toEqual({ tag: "none" });
+    expect(view.workspaceDrop(3, y)?.index).toBe(i);
+  }
+  const scrolled = View.init(100, 24, true, 0, 0, 24).withWorkspaces(5, 1, machines);
+  expect(scrolled.workspaceHeader(1)).toBe(true);
+  expect(scrolled.workspaceY(1)).toBe(3);
+  expect(scrolled.hit(3, 3)).toEqual({ tag: "workspace", workspace: 1 });
+});
+
+test("workspace reveal and scroll limits account for each machine header", () => {
+  const machines = ["local", "local", "local", "work", "local", "work", "work"];
+  for (const rows of [13, 16, 24, 30, 50]) {
+    const view = View.init(100, rows, true, 0, 0, 24).withWorkspaces(machines.length, 0, machines);
+    const end = view.withWorkspaces(machines.length, 999, machines);
+    expect(end.workspace_offset + end.workspaceCapacity()).toBe(machines.length);
+    for (let i = 0; i < machines.length; i++) {
+      const shown = view.withWorkspaces(machines.length, view.workspaceReveal(i), machines);
+      expect(i).toBeGreaterThanOrEqual(shown.workspace_offset);
+      expect(i).toBeLessThan(shown.workspace_offset + shown.workspaceCapacity());
+    }
   }
 });

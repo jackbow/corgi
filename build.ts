@@ -107,7 +107,13 @@ if (process.argv.includes("--native-only")) process.exit(0);
 const webAssets = await remoteWeb.build();
 mkdirSync(`${root}/dist`, { recursive: true });
 const suffix = platform === "darwin" ? "dylib" : "so";
-const files = [`lib/libcorgi_term.${suffix}`, `lib/libcorgi_system.${suffix}`, "bin/pty-exec", "bin/corgi-hook"];
+const files = [
+  `lib/libcorgi_term.${suffix}`,
+  `lib/libcorgi_system.${suffix}`,
+  "bin/pty-exec",
+  "bin/corgi-hook",
+  "bin/corgi-remote-bridge",
+];
 if (platform === "darwin")
   files.push(
     ...["Info.plist", "MacOS/corgi-notify", "Resources/corgi.icns", "_CodeSignature/CodeResources"].map(
@@ -133,9 +139,19 @@ const outfile = option(
   `${root}/dist/${buildTarget === `${process.platform}-${process.arch}` ? "corgi" : `corgi-${buildTarget}`}${process.argv.includes("--test") ? "-test" : ""}`,
 );
 const sourceHash = createHash("sha256");
-for (const path of [...new Bun.Glob("{src,assets}/**/*").scanSync({ cwd: root, onlyFiles: true })].sort())
-  if (!path.startsWith("src/remote/web/node_modules/") && !path.startsWith("src/remote/web/dist/"))
-    sourceHash.update(path).update(new Uint8Array(await Bun.file(`${root}/${path}`).arrayBuffer()));
+for (const path of [
+  ...new Bun.Glob("{src,assets}/**/*").scanSync({ cwd: root, onlyFiles: true }),
+  ...new Bun.Glob("native/**/*.{c,h,zig,zon}").scanSync({ cwd: root, onlyFiles: true }),
+]
+  .filter(
+    path =>
+      !path.includes("zig-cache") &&
+      !path.includes("zig-out") &&
+      !path.startsWith("src/remote/web/node_modules/") &&
+      !path.startsWith("src/remote/web/dist/"),
+  )
+  .sort())
+  sourceHash.update(path).update(new Uint8Array(await Bun.file(`${root}/${path}`).arrayBuffer()));
 const sourceSHA256 = sourceHash.digest("hex");
 // The same inputs keep their first build's time, so the binary and the daemon's build id stay put.
 const inputsSHA256 = createHash("sha256")
@@ -148,7 +164,7 @@ const builtAt =
   previous?.inputsSHA256 === inputsSHA256 && typeof previous.builtAt === "string"
     ? previous.builtAt
     : new Date().toISOString();
-const configSource = Object.entries({ ...config, builtAt })
+const configSource = Object.entries({ ...config, builtAt, sourceHash: sourceSHA256 })
   .map(([key, value]) => `export const ${key}=${JSON.stringify(value)};`)
   .join("\n");
 const result = await Bun.build({

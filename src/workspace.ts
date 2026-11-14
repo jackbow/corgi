@@ -4,11 +4,19 @@ import { Model, boundLabel, max_label, max_workspaces } from "./layout";
 import * as migrations from "./persist/migrations";
 import { Order, Pins, key as agentKey, type Section } from "./agent_order";
 import * as errors from "./errors";
+import * as archiveSummary from "./archive_summary";
 import { Stars, type Session as StarredSession } from "./agent_stars";
 import { Ref, State } from "./trackers/git_push";
 import { Commits } from "./trackers/git_status";
 import { Window } from "./usage/tokens";
 import type { Snapshot as Worktrees } from "./worktrees";
+/** Moves workspace `id` above `before`, or last when `before` is itself. */
+export function moveBefore(items: { id: number }[], id: number, before: number): void {
+  const from = items.findIndex(w => w.id === id);
+  if (from < 0 || !items.some(w => w.id === before)) throw Error("NoWorkspace");
+  const [w] = items.splice(from, 1);
+  items.splice(before === id ? items.length : items.findIndex(w => w.id === before), 0, w);
+}
 export class Workspace {
   static Id = { none: 0, first: 1, next: (id: number) => id + 1 };
   private title: string;
@@ -36,6 +44,8 @@ export class Workspace {
   launcher_order: string[] = [];
   /** The pane a viewer last used here, for the next viewer to open on. */
   focus = 0;
+  archived = false;
+  archive_summary: archiveSummary.Summary | null = null;
   git_ahead: bigint | null = null;
   git_ref = new Ref();
   git_push = new State();
@@ -113,6 +123,8 @@ export class Store {
               id: w.id,
               name: w.name(),
               cwd: w.cwd,
+              archived: w.archived,
+              archive_summary: w.archive_summary,
             })),
           },
           null,
@@ -145,7 +157,7 @@ export class Store {
       if (errors.is(error, "InvalidCheckpoint")) invalid();
       throw error;
     }
-    if (!Array.isArray(d.workspaces) || !d.workspaces.length || d.workspaces.length > max_workspaces) invalid();
+    if (!Array.isArray(d.workspaces) || d.workspaces.length > max_workspaces) invalid();
     const items: Workspace[] = [];
     for (const x of d.workspaces) {
       if (
@@ -159,9 +171,14 @@ export class Store {
         !isAbsolute(x.cwd)
       )
         invalid();
-      items.push(new Workspace(x.id, x.cwd, x.name));
+      if (x.archived !== undefined && typeof x.archived !== "boolean") invalid();
+      const item = new Workspace(x.id, x.cwd, x.name);
+      item.archived = x.archived === true;
+      item.archive_summary = archiveSummary.restore(x.archive_summary);
+      items.push(item);
     }
-    if (!items.some(w => w.id === d.active)) invalid();
+    // With every workspace closed or archived, none is active.
+    if (d.active === Workspace.Id.none ? items.some(w => !w.archived) : !items.some(w => w.id === d.active)) invalid();
     this.items = items;
     this.next_id = d.next_id;
     return d.active as number;
@@ -177,10 +194,7 @@ export class Store {
     return this.items.find(w => w.model.tabForPane(pane) !== null) ?? null;
   }
   moveBefore(id: number, before: number) {
-    const from = this.index(id);
-    if (from === null || this.index(before) === null) throw Error("NoWorkspace");
-    const [w] = this.items.splice(from, 1);
-    this.items.splice(before === id ? this.items.length : this.index(before)!, 0, w);
+    moveBefore(this.items, id, before);
   }
   static async directory(path: string) {
     const home = process.env.HOME ?? ".",

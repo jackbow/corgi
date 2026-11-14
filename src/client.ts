@@ -1,14 +1,16 @@
 //! Attaching a terminal to the daemon. Mirrors client.zig.
 import { Connection } from "./viewer_connection";
-import { run, writeAll, Stdin } from "./viewer";
+import { writeAll, Stdin } from "./viewer";
+import { run, type Options } from "./machine_viewer";
 import { runTest } from "./viewer_test";
 import * as terminal_info from "./terminal_info";
 import * as keyboard from "./keyboard";
 import * as hostBackground from "./host_background";
 import * as crash from "./crash";
+import * as errors from "./errors";
+import * as i18n from "./i18n";
 
 let keyboard_enabled = false;
-let cursor_blink_saved = false;
 let restore = false;
 export function cleanup(): void {
   if (!restore) return;
@@ -22,18 +24,10 @@ export function cleanup(): void {
     }
     writeAll(
       hostBackground.release() +
-        "\x1b[?2026l\x1b[0m\x1b[?25h\x1b[?1003l\x1b[?1002l\x1b[?1006l\x1b[?1004l\x1b[?2031l\x1b[?5522l\x1b[?2004l\x1b[?1049l\x1b]22;default\x1b\\",
+        "\x1b[?2026l\x1b[0m\x1b[?25h\x1b[?1003l\x1b[?1002l\x1b[?1006l\x1b[?1004l\x1b[?2031l\x1b[?5522l\x1b[?2004l\x1b[?1049l\x1b[0 q\x1b]22;default\x1b\\",
     );
-    if (cursor_blink_saved) {
-      writeAll("\x1b[?12r");
-      cursor_blink_saved = false;
-    }
   } catch {}
   restore = false;
-}
-function signalHandler(): void {
-  cleanup();
-  process.exit(0);
 }
 /** A crash gives the terminal back before its error prints, which the
  * viewer's own screen would otherwise swallow. Bun prints a thrown error
@@ -45,29 +39,55 @@ function rejected(reason: unknown): void {
   console.error(reason);
   process.exit(1);
 }
-/** Opens on the workspace for `folder` when one is given. */
-export async function attach(path: string, folder: string | null = null): Promise<void> {
-  return attachMode(path, false, folder);
+/** Opens on the workspace for `folder` when one is given. The local daemon
+ * is running; `start_local` starts it again if it goes. */
+export async function attach(
+  path: string,
+  folder: string | null = null,
+  start_local?: () => Promise<void>,
+): Promise<void> {
+  return attachMode(path, "local", { folder, start_local, local_running: true });
 }
-export async function onboard(path: string): Promise<void> {
-  return attachMode(path, true);
+/** Opens on `selected`, another machine's daemon or the local one. */
+export async function attachMachines(
+  path: string,
+  selected = "local",
+  folder: string | null = null,
+  start_local?: () => Promise<void>,
+): Promise<void> {
+  return attachMode(path, selected, { folder, start_local });
 }
-async function attachMode(path: string, start_onboarding: boolean, folder: string | null = null): Promise<void> {
-  const executable = await attachOnce(path, start_onboarding, folder);
+/** The local viewer alone, without the saved machines. */
+export async function attachLocal(path: string, start_local?: () => Promise<void>): Promise<void> {
+  return attachMode(path, "local", { machines: false, start_local, local_running: true });
+}
+export async function onboard(path: string, start_local?: () => Promise<void>): Promise<void> {
+  return attachMode(path, "local", { onboarding: true, start_local, local_running: true });
+}
+async function attachMode(path: string, selected: string, options: Options): Promise<void> {
+  let executable: string | null;
+  try {
+    executable = await attachOnce(path, selected, options);
+  } catch (error) {
+    if (!errors.is(error, "Uninstalled")) throw error;
+    console.log(i18n.t`Corgi was uninstalled.`);
+    return;
+  }
   if (executable) {
     process.execve!(executable, [executable, "attach"], process.env as Record<string, string>);
     throw Error("ExecFailed");
   }
 }
-async function attachOnce(path: string, start_onboarding: boolean, folder: string | null): Promise<string | null> {
+async function attachOnce(path: string, selected: string, options: Options): Promise<string | null> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw Error("TerminalRequired");
-  const conn = new Connection(path);
   restore = true;
-  process.on("SIGTERM", signalHandler);
-  process.on("SIGHUP", signalHandler);
   process.on("uncaughtExceptionMonitor", cleanup);
   process.on("unhandledRejection", rejected);
   const stdin = new Stdin();
+  // The loop closes its connections on the way out.
+  const stop = () => stdin.end();
+  process.on("SIGTERM", stop);
+  process.on("SIGHUP", stop);
   try {
     process.stdin.setRawMode(true);
     const input: number[] = [];
@@ -86,27 +106,25 @@ async function attachOnce(path: string, start_onboarding: boolean, folder: strin
     // Mode 2031: the terminal says when it switches themes, and the viewer asks for its colors again.
     writeAll("\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[?2031h" + keyboard.enable);
     keyboard_enabled = true;
-    if (process.env.CORGI_CURSOR_BLINK !== "1") {
-      // Save and disable only blinking: retain the host's cursor shape and
-      // let each rendered frame continue to control cursor visibility.
-      writeAll("\x1b[?12s\x1b[?12l");
-      cursor_blink_saved = true;
-    }
-    return await run(conn, path, probe, input, start_onboarding, stdin, folder);
+    return await run(path, selected, probe, input, stdin, options);
   } finally {
     stdin.close();
     cleanup();
-    process.off("SIGTERM", signalHandler);
-    process.off("SIGHUP", signalHandler);
     process.off("uncaughtExceptionMonitor", cleanup);
     process.off("unhandledRejection", rejected);
-    conn.close();
+    process.off("SIGTERM", stop);
+    process.off("SIGHUP", stop);
   }
 }
 export async function test(path: string): Promise<void> {
   const conn = new Connection(path);
   try {
+    // The test viewer reconnects through reloads, as a machine's endpoint does.
     await runTest(conn, process.cwd());
+  } catch (error) {
+    // Tests read why a viewer gave up, where the name alone says too little.
+    if (error instanceof Error && error.cause !== undefined) process.stderr.write(`cause: ${String(error.cause)}\n`);
+    throw error;
   } finally {
     conn.close();
   }

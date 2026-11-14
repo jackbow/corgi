@@ -19,12 +19,33 @@ export interface ImagePlacement {
   source_height: number;
   z: number;
 }
+/** DECSCUSR's cursor shapes, each at its `Ps`. `default` is the host's own cursor. */
+const cursor_styles = [
+  "default",
+  "blinking_block",
+  "steady_block",
+  "blinking_underline",
+  "steady_underline",
+  "blinking_bar",
+  "steady_bar",
+] as const;
+export type CursorStyle = (typeof cursor_styles)[number];
+/** The shape a daemon sent. A missing or unknown one is the host's own. */
+export function cursorStyle(value: unknown): CursorStyle {
+  return cursor_styles.find(style => style === value) ?? "default";
+}
+/** The `Ps` that selects `style` with `CSI Ps SP q`. */
+export function decscusr(style: CursorStyle): number {
+  return cursor_styles.indexOf(style);
+}
 export interface Surface {
   pane: number;
   cols: number;
   rows: number;
   lines: string[];
   cursor: { x: number; y: number } | null;
+  /** The shape the program asked for, kept while the cursor is hidden. */
+  cursor_style: CursorStyle;
   images?: ImagePlacement[];
 }
 export interface Modes {
@@ -52,6 +73,40 @@ export interface View {
   modes: Modes;
   stamp: Stamp;
 }
+/** Changed rows relative to the preceding frame on an ordered stream. */
+export interface Patch extends Omit<View, "surface"> {
+  base: Stamp;
+  surface: Omit<Surface, "lines"> & { lines: { row: number; line: string }[] };
+}
+export function difference(before: View, after: View): Patch | null {
+  const a = before.surface,
+    b = after.surface;
+  if (before.stamp.identity !== after.stamp.identity || a.cols !== b.cols || a.rows !== b.rows) return null;
+  const lines = b.lines.flatMap((line, row) => (line === a.lines[row] ? [] : [{ row, line }]));
+  return { ...after, base: before.stamp, surface: { ...b, lines } };
+}
+export function apply(before: View | undefined, patch: Wire<Patch>): View {
+  if (
+    !before ||
+    before.surface.pane !== patch.surface.pane ||
+    before.surface.cols !== patch.surface.cols ||
+    before.surface.rows !== patch.surface.rows ||
+    before.stamp.identity !== BigInt(patch.base.identity) ||
+    before.stamp.revision !== BigInt(patch.base.revision) ||
+    before.stamp.offset !== patch.base.offset
+  )
+    throw Error("InvalidSurfaceBase");
+  const lines = [...before.surface.lines];
+  const changed = new Set<number>();
+  for (const { row, line } of patch.surface.lines) {
+    if (!Number.isInteger(row) || row < 0 || row >= lines.length || changed.has(row) || typeof line !== "string")
+      throw Error("InvalidSurfaceRow");
+    changed.add(row);
+    lines[row] = line;
+  }
+  const { base: _, ...next } = patch;
+  return view({ ...next, surface: { ...patch.surface, lines } });
+}
 export function captureView(id: number, t: Terminal, offset: number | null = null): View {
   return t.surface(id, offset);
 }
@@ -72,6 +127,7 @@ type NativeView = Omit<View, "stamp"> & {
 export function view(value: Wire<View> | NativeView): View {
   return {
     ...value,
+    surface: value.surface && { ...value.surface, cursor_style: cursorStyle(value.surface.cursor_style) },
     stamp: {
       ...value.stamp,
       identity: BigInt(value.stamp.identity),

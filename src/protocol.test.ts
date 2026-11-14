@@ -71,6 +71,14 @@ test("every op decodes a sample request", () => {
     expect(() => protocol.decode(op, samples[op])).not.toThrow();
   }
 });
+test("hello offers optional encodings and tolerates names a peer does not support", () => {
+  expect(protocol.decode("hello", {}).accept_encoding).toEqual([]);
+  expect(protocol.decode("hello", { accept_encoding: ["future", "zstd"] }).accept_encoding).toEqual(["future", "zstd"]);
+  expect(() => protocol.decode("hello", { accept_encoding: "zstd" })).toThrow("UnexpectedToken");
+  expect(() => protocol.decode("hello", { accept_encoding: [1] })).toThrow("UnexpectedToken");
+  expect(protocol.encoding("zstd")).toBe("zstd");
+  expect(protocol.encoding("future")).toBeNull();
+});
 test("a client's envelope writes what the hand-written requests did", () => {
   for (const [op, payload, expected] of [
     ["hello", {}, { op: "hello", protocol: protocol.management_version, runtime_protocol: protocol.version }],
@@ -396,4 +404,40 @@ test("headless commands require provider session IDs and a first prompt", () => 
     provider: "codex",
     session: "t",
   });
+});
+test("a headless start defaults to an ordinary session the provider keeps", () => {
+  expect(protocol.decode("headless.start", { provider: "pi", prompt: "hi" })).toEqual({
+    provider: "pi",
+    prompt: "hi",
+    cwd: "",
+    workspace: null,
+    account: "",
+    model: "",
+    effort: "",
+    instructions: "",
+    persist: true,
+    corgi: false,
+    images: null,
+  });
+  expect(() => protocol.decode("headless.start", { provider: "pi", prompt: "hi", persist: "no" })).toThrow(
+    "UnexpectedToken",
+  );
+  expect(() => protocol.decode("headless.start", { provider: "pi", prompt: "hi", effort: 3 })).toThrow(
+    "UnexpectedToken",
+  );
+});
+
+test("sign-in input has its own sequence and account mutations use the connection's sequence", () => {
+  const request = protocol.envelope("account.signin.sync", {
+    id: "test",
+    cols: 80,
+    rows: 24,
+    input_seq: 1,
+    input: "DQ==",
+  });
+  expect(request).not.toHaveProperty("seq");
+  expect(protocol.decode("account.signin.sync", request).input_seq).toBe(1);
+  expect(protocol.once("account.signin.sync")).toBe(false);
+  expect(protocol.once("account.restore")).toBe(true);
+  expect(protocol.once("account.remove")).toBe(true);
 });

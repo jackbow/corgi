@@ -1,33 +1,43 @@
-import { createConnection, createServer, type Server, type Socket } from "node:net";
+import * as websocket_socket from "../src/websocket_socket";
+import type { Duplex } from "node:stream";
+import * as websocket_server from "../src/fixtures/websocket_server";
+import * as errors from "../src/errors";
+import * as wire_websocket from "../src/wire_websocket";
 import { join } from "node:path";
 import { Runtime } from "./runtime";
 import { Viewer } from "./viewer_client";
-import { EXE, JsonSocket, Lines, Pty, registerCase, run, versioned } from "./support";
+import { EXE, Lines, Pty, registerCase, run, shellJoin, versioned } from "./support";
+import * as rpc from "../src/rpc";
 import * as protocol from "../src/protocol";
+import * as rpc_http from "../src/rpc_http";
 
 const current = protocol.viewer_version,
   newer = current + 1;
 
 class ReplyProxy {
-  server: Server;
-  connections: Socket[] = [];
+  server: websocket_server.Server;
+  connections: Duplex[] = [];
   sync_reply: any = null;
   open_reply: any = null;
+  uninstall_on_sync = false;
   synced = false;
   constructor(
     public path: string,
     public upstream: string,
   ) {
-    this.server = createServer(client => this.forward(client));
+    const daemon = new rpc_http.Client(upstream);
+    this.server = websocket_server.createServer(
+      client => this.forward(client),
+      // Discovery and other one-shot requests pass through unchanged.
+      async request => Response.json(await daemon.post(await request.json())),
+    );
   }
   async start() {
-    await new Promise<void>((resolve, reject) => {
-      this.server.once("error", reject);
-      this.server.listen(this.path, resolve);
-    });
+    await new Promise<void>(resolve => this.server.listen(this.path, resolve));
   }
-  forward(client: Socket) {
-    const server = createConnection(this.upstream);
+  /** Relays the viewer's WebSocket to the daemon's, a line at a time. */
+  forward(client: websocket_server.Socket) {
+    const server = new websocket_socket.Socket(this.upstream);
     this.connections.push(client, server);
     const requests = new Lines(),
       replies = new Lines();
@@ -38,6 +48,10 @@ class ReplyProxy {
     client.on("close", () => {
       server.destroy();
       requests.end();
+    });
+    // A reload closes the daemon's side; the viewer hears it the same way and reconnects.
+    server.on("error", error => {
+      if (errors.is(error, "ServerReloading")) client.close(wire_websocket.reloading);
     });
     server.on("close", () => {
       client.destroy();
@@ -61,9 +75,22 @@ class ReplyProxy {
         if (id !== null) pending.delete(id);
         let replacement: object | null = null;
         if (op === "viewer.open") replacement = this.open_reply;
-        if (op === "viewer.sync") {
-          replacement = this.sync_reply;
+        // A viewer with a data connection configures its stream on this one,
+        // and while nothing changes, only sends receipts.
+        if (
+          op === "viewer.sync" ||
+          op === "viewer.stream" ||
+          op === "viewer.stream.configure" ||
+          op === "viewer.receipt"
+        ) {
+          if (op !== "viewer.receipt") replacement = this.sync_reply;
           this.synced = true;
+          if (this.uninstall_on_sync) {
+            this.uninstall_on_sync = false;
+            // Deliver the uninstall event, then close without answering the pending sync.
+            client.end(JSON.stringify({ type: "uninstalled" }) + "\n");
+            return;
+          }
         }
         const reply = replacement === null ? line : JSON.stringify({ ...replacement, request_id: id });
         client.write(reply + "\n");
@@ -109,15 +136,20 @@ class ViewerCompatibility extends Runtime {
     this.assertEqual((await this.session()).panes, []);
     this.assertEqual((await this.raw_rpc({ op: "viewer.list" })).viewers, []);
   }
-  async test_server_rechecks_sync_on_inherited_connection() {
-    const client = await JsonSocket.connect(this.path);
+  async test_server_rechecks_sync_after_a_viewer_resumes() {
+    let client = new rpc.Connection(this.path);
     try {
-      const call = (request: { op: string; [field: string]: unknown }) => client.request(versioned(request));
+      const call = (request: { op: string; [field: string]: unknown }): Promise<any> =>
+        client.rawRequest(versioned(request));
+      const { link } = await call({ op: "link.open" });
       const opened = await call({ op: "viewer.open", onboarding: true });
       this.assertEqual(opened.viewer_protocol, current);
       const oldPid = (await this.session()).server_pid;
       await this.run_cli("reload", EXE);
       this.assertNotEqual((await this.session()).server_pid, oldPid);
+      await this.until(() => client.disconnected);
+      client = new rpc.Connection(this.path);
+      this.assertTrue((await call({ op: "link.resume", link })).viewer);
       const rejected = await call({
         op: "viewer.sync",
         viewer_protocol: newer,
@@ -188,6 +220,26 @@ class ViewerCompatibility extends Runtime {
       check: false,
     });
     this.assert_explanation(process.code, process.stderr);
+  }
+  async test_uninstall_during_a_pending_sync_shows_farewell_and_exits_successfully() {
+    const [proxy, env] = await this.proxy(),
+      pty = new Pty(80, 24);
+    this.addCleanup(() => pty.close());
+    const before = await pty.settings();
+    const shell = `${shellJoin([EXE, "--no-update"])}; viewer_status=$?; printf 'AFTER_FAREWELL_READY\n'; IFS= read -r line; printf 'AFTER_FAREWELL:%s\n' "$line"; exit "$viewer_status"`;
+    pty.start(["/bin/sh", "-c", shell], { env, cwd: this.temp.name });
+    await this.until(() => proxy.synced);
+    proxy.uninstall_on_sync = true;
+    await pty.waitFor("The Farm", 10_000);
+    pty.write("ignored-during-farewell\n");
+    await pty.waitFor("Corgi was uninstalled.", 10_000);
+    await pty.waitFor("AFTER_FAREWELL_READY");
+    pty.write("after-farewell\n");
+    await pty.waitFor("AFTER_FAREWELL:after-farewell");
+    this.assertEqual(await pty.proc.exited, 0);
+    this.assertIn("The Farm", pty.output);
+    this.assertNotIn("ConnectionClosed", pty.output);
+    this.assertEqual(await pty.settings(), before);
   }
 }
 registerCase("ViewerCompatibility", ViewerCompatibility, { inherited: false });

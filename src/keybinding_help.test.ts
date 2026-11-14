@@ -278,7 +278,7 @@ test("moving a conflicting key requires choosing the labelled Move control", () 
   expect(screen(s).join("\n")).toContain("Used by Next tab");
   const moved = click(s, "Move");
   if (moved?.name !== "save") throw Error("Expected move");
-  expect(moved.config.next).toEqual([]);
+  expect(moved.config.next).toEqual(["ctrl+tab"]);
   expect(bindings.lookup(model.resolve("corgi", moved.config), true, 110)).toEqual({ name: "new" });
 });
 
@@ -304,18 +304,19 @@ test.each([148, 100, 60])("vertical navigation visits adjacent rows at %i column
     const actions = [
       "new",
       "next",
+      ...(alternatives ? ["prev", "prev"] : []),
       "tab",
       "rename-tab",
       "close-tab",
       ...(cols >= 64 ? ["new-workspace", "edit-workspace", "workspace-next", "choose-workspace", "attention"] : []),
     ];
-    for (const id of actions.slice(1)) {
+    for (const [index, id] of actions.slice(1).entries()) {
       s.event(keys.parseChord("down")!);
-      expect(s.selected).toEqual({ id, index: 0 });
+      expect(s.selected).toEqual({ id, index: alternatives && index === 2 ? 1 : 0 });
     }
-    for (const id of actions.slice(0, -1).reverse()) {
+    for (const [index, id] of actions.slice(0, -1).entries().toArray().reverse()) {
       s.event(keys.parseChord("up")!);
-      expect(s.selected).toEqual({ id, index: 0 });
+      expect(s.selected).toEqual({ id, index: alternatives && (index === 0 || index === 1 || index === 3) ? 1 : 0 });
     }
   }
 });
@@ -326,9 +327,16 @@ test("moving down from an alternate still visits rows that only have a primary",
   screen(s);
   s.event(keys.parseChord("right")!);
   expect(s.selected).toEqual({ id: "new", index: 1 });
-  for (const id of ["prev", "tab", "rename-tab", "close-tab"]) {
+  for (const [id, index] of [
+    ["next", 1],
+    ["prev", 0],
+    ["prev", 1],
+    ["tab", 0],
+    ["rename-tab", 0],
+    ["close-tab", 0],
+  ] as const) {
     s.event(keys.parseChord("down")!);
-    expect(s.selected).toEqual({ id, index: 0 });
+    expect(s.selected).toEqual({ id, index });
   }
 });
 
@@ -489,6 +497,17 @@ test("help uses aligned prefix, chord and alternative columns", () => {
   const tab = lines.find(line => line.includes("◇ Tab"))!;
   const find = lines.find(line => line.includes("◇ g"))!;
   expect(tab.indexOf("◇ Tab")).toBe(find.indexOf("◇ g"));
+});
+
+test("help pictures the Corgi prompt's input under its row, and a click on it opens the prompt", () => {
+  const s = new State(),
+    lines = screen(s, 148, 60),
+    heading = lines.findIndex(line => line.includes("CORGI ─"));
+  expect(lines[heading + 1]).toContain("Corgi prompt");
+  expect(lines[heading + 2]).toContain(" › Ask Corgi anything…");
+  expect(lines.slice(heading + 3).join("\n")).not.toContain("Corgi prompt");
+  for (const text of ["›", "Ask Corgi"])
+    expect(click(s, text, 148, 60)).toEqual({ name: "action", action: { name: "prompt" } });
 });
 
 test("range modifiers toggle independently and stay open", () => {

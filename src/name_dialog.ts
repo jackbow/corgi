@@ -5,7 +5,7 @@ import * as i18n from "./i18n";
 import { basename } from "node:path";
 import * as agentName from "./agent_name";
 import * as palette from "./palette";
-import { Style, keycap, fgRgb, bgRgb, mix, colors, selection } from "./palette";
+import { Style, keycap, selection } from "./palette";
 export { selection } from "./palette";
 import * as keys from "./keys";
 import * as forkHero from "./fork_hero";
@@ -42,14 +42,12 @@ export type Result = "none" | "save" | "cancel";
 /** The longest name, in bytes, outside launch commands. */
 export const name_limit = 80;
 const max_length = 2048;
-/** C0 and C1 controls and DEL, which a folder's name may hold and the
- * terminal would act on. */
+/** C0 and C1 controls and DEL, which a folder's or an agent's name may hold
+ * and the terminal would act on. */
 const controls = /[\x00-\x1f\x7f-\x9f]/g;
-/** The columns `cp` takes in `t`'s field, where the controls it shows take one. */
-function fieldWidth(t: Target, cp: number): number {
-  return ("agent_command" in t && cp < 32) || ("folder" in t && (cp < 32 || (cp >= 127 && cp <= 159)))
-    ? 1
-    : codepointWidth(cp);
+/** The columns `cp` takes in a field, where each control it shows takes one. */
+function fieldWidth(cp: number): number {
+  return cp < 32 || (cp >= 127 && cp <= 159) ? 1 : codepointWidth(cp);
 }
 /** `text` with each control shown as "?", one column wide. */
 export function printable(text: string): string {
@@ -82,7 +80,7 @@ export function writeField(
     w.write((chosen ? selection : plain) + (caret && from === at ? "\x1b[7m" : "") + d.shown(from, to) + "\x1b[27m");
   }
   let column = 0;
-  for (const ch of d.bytes(offset, Math.min(at, end))) column += fieldWidth(d.target, ch.codePointAt(0)!);
+  for (const ch of d.bytes(offset, Math.min(at, end))) column += fieldWidth(ch.codePointAt(0)!);
   if (caret && at >= end && column < columns) w.write(plain + "\x1b[7m \x1b[27m");
   return column;
 }
@@ -120,6 +118,8 @@ export class Dialog {
   /** What's typed: its text, caret and selection, edited as every text box is. */
   area = new TextArea("", false);
   failed = false;
+  /** Saved, and the daemon hasn't answered yet; another Enter waits for it. */
+  saving = false;
   overflow = false;
   /** Whether the fork card's hero draws the host's branch glyphs. */
   branch_glyphs = false;
@@ -277,7 +277,7 @@ export class Dialog {
       const piece = text.subarray(pos, pos + n);
       if (!validUtf8(piece)) break;
       const cp = Buffer.from(piece).toString().codePointAt(0)!;
-      used += fieldWidth(this.target, cp);
+      used += fieldWidth(cp);
       if (used > columns) break;
       pos += n;
     }
@@ -287,7 +287,7 @@ export class Dialog {
    * as spaces, or as "?" for a folder. */
   shown(from: number, to: number): string {
     const s = this.bytes(from, to);
-    return "folder" in this.target ? printable(s) : s.replace(/[\x00-\x1f\x7f]/g, " ");
+    return "folder" in this.target ? printable(s) : s.replace(controls, " ");
   }
   sequence(seq: string): void {
     const key = keys.parse(seq),
@@ -358,13 +358,6 @@ export type KeySpec = { key: string; label: string; hit: Hit; split?: boolean };
 /** The columns a key's caps take; a split key's stand a column apart. */
 export const capped = (k: { key: string; split?: boolean }) => (k.split ? k.key.length * 4 - 1 : k.key.length + 2);
 export const labelled = (k: { key: string; label: string; split?: boolean }) => capped(k) + 1 + displayWidth(k.label);
-/** The fork card's call to action: a tint of the accent, not its full
- * strength, so it doesn't glare on the panel. */
-let create_fill: string, create_label: string;
-palette.derived(() => {
-  create_fill = "\x1b[0m" + bgRgb(mix(colors.surface, colors.accent, 22));
-  create_label = create_fill + "\x1b[1m" + fgRgb(colors.accent);
-});
 export class View {
   x = 0;
   y = 0;
@@ -567,27 +560,35 @@ export class View {
       }
     }
   }
+  /** The dialog's title, from what it names. */
+  protected title(d: Dialog): string {
+    const kind = targetKind(d.target);
+    switch (kind) {
+      case "agent_command":
+        return i18n.t`Agent launch command`;
+      case "rename":
+        return i18n.t`Rename tab`;
+      case "pane":
+        return i18n.t`Rename pane`;
+      case "agent":
+      case "agent_name":
+        return i18n.t`Rename agent`;
+      case "fork":
+        return i18n.t`Fork this agent`;
+      case "shell":
+        return i18n.t`Shell for new panes`;
+      default:
+        return (d.target as { workspace_name: number | null }).workspace_name === null
+          ? i18n.t`New workspace`
+          : i18n.t`Rename workspace`;
+    }
+  }
   /** The title, a line about it, and the field. Returns where text starts,
    * lined up with the field's fill, and the columns it has. */
   protected heading(d: Dialog, w: Writer, number: number): { left: number; room: number } {
     const v = this;
     const kind = targetKind(d.target);
-    const title =
-      kind === "agent_command"
-        ? i18n.t`Agent launch command`
-        : kind === "rename"
-          ? i18n.t`Rename tab`
-          : kind === "pane"
-            ? i18n.t`Rename pane`
-            : kind === "agent" || kind === "agent_name"
-              ? i18n.t`Rename agent`
-              : kind === "fork"
-                ? i18n.t`Fork this agent`
-                : kind === "shell"
-                  ? i18n.t`Shell for new panes`
-                  : (d.target as { workspace_name: number | null }).workspace_name === null
-                    ? i18n.t`New workspace`
-                    : i18n.t`Rename workspace`;
+    const title = v.title(d);
     const left = v.text_x - (v.padded ? 1 : 0);
     const room = v.x + v.width - 1 - left - (v.padded ? 1 : 0);
     w.write(
@@ -657,7 +658,7 @@ export class View {
     let cursor_width = 0;
     for (const ch of d.bytes(offset, d.cursor)) {
       const cp = ch.codePointAt(0)!;
-      cursor_width += fieldWidth(d.target, cp);
+      cursor_width += fieldWidth(cp);
     }
     w.write(`\x1b[0m\x1b[${y + 1};${this.text_x + 1 + cursor_width}H\x1b[?25h`);
   }
@@ -687,7 +688,7 @@ export class View {
     w.write(`\x1b[${v.field_y + 1};${v.text_x + 1}H`);
     writeField(w, d, v.offset, v.text_width, new Style({ fg: "text", bg: "selected" }).sgr());
     v.cardButtons().forEach((b, i) => {
-      const fill = i === 0 ? create_fill : new Style({ bg: "selected" }).sgr();
+      const fill = i === 0 ? palette.call_to_action : new Style({ bg: "selected" }).sgr();
       for (let row = 0; row < 3; row++) {
         w.write(`\x1b[${v.buttons_y + row};${b.x + 1}H${fill}`);
         w.splat(" ", b.width);
@@ -695,7 +696,7 @@ export class View {
       const key_end = b.label.indexOf(" ");
       const pad = Math.floor((b.width - displayWidth(b.label)) / 2);
       w.write(`\x1b[${v.buttons_y + 1};${b.x + 1 + pad}H`);
-      if (i === 0) w.write(create_label + i18n.t`↵ Create Fork`);
+      if (i === 0) w.write(palette.call_to_action + i18n.t`↵ Create Fork`);
       else
         w.write(
           new Style({ fg: "muted", bg: "selected" }).sgr() +

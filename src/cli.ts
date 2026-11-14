@@ -1,5 +1,5 @@
 import { realpathSync, statSync } from "node:fs";
-import { Connection } from "./rpc";
+import * as rpc_http from "./rpc_http";
 import { stringify } from "./json";
 import { logicalKey } from "./keys";
 import { Provider, adapter } from "./providers";
@@ -9,15 +9,35 @@ import * as launcherOrder from "./launch/order";
 import * as effort from "./providers/effort";
 import { Row } from "./launch/row";
 import { Entry as CommandEntry } from "./launch/command";
+import type { History } from "./launch/history";
+import * as memoryCommand from "./memory_command";
+import { Memory, type Change } from "./prompt_memory";
 import helpText from "../assets/cli-help.txt" with { type: "text" };
 import * as i18n from "./i18n";
+import * as cli_help from "./cli_help";
+import * as agentOrder from "./agent_order";
 import skill from "../assets/corgi-skill.md" with { type: "text" };
 export const help = helpText;
 export function localizedHelp(): string {
-  return i18n.document(helpText);
+  return cli_help.commands();
 }
-const groups = new Set(["tab", "pane", "workspace", "launcher", "claim", "current", "list", "focus", "--skill"]);
-const nested = new Set(["tab", "pane", "workspace", "launcher"]);
+const groups = new Set([
+  "tab",
+  "pane",
+  "workspace",
+  "launcher",
+  "claim",
+  "current",
+  "list",
+  "focus",
+  "message",
+  "grep",
+  "history",
+  "resume",
+  "memory",
+  "--skill",
+]);
+const nested = new Set(["tab", "pane", "workspace", "launcher", "memory"]);
 const flags = new Set(["json", "clear", "stdin", "enter", "new-tab", "first", "left", "right", "up", "down"]);
 const options = new Set([
   ...flags,
@@ -39,6 +59,7 @@ const options = new Set([
   "width",
   "height",
   "lines",
+  "limit",
   "left-of",
   "right-of",
   "above",
@@ -48,6 +69,8 @@ const actions = new Set([
   "list",
   "current",
   "focus",
+  "history",
+  "resume",
   "tab.new",
   "tab.rename",
   "tab.move",
@@ -58,14 +81,19 @@ const actions = new Set([
   "pane.swap",
   "pane.resize",
   "pane.close",
+  "pane.hibernate",
+  "pane.wake",
   "pane.read",
   "pane.send",
   "pane.keys",
   "pane.idle",
   "claim",
+  "message",
   "workspace.new",
   "workspace.edit",
   "workspace.close",
+  "workspace.archive",
+  "workspace.unarchive",
   "workspace.switch",
   "launcher.edit",
   "launcher.clone",
@@ -83,6 +111,7 @@ export function handles(args: string[]): boolean {
 }
 /** Help flags in a full command line before `--`, excluding its option values. */
 export function asksHelp(args: string[]): boolean {
+  if (args[0] === "grep") return false; // grep parses regex option values itself.
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--") return false;
@@ -128,6 +157,22 @@ export function helpFor(text: string, args: string[], agent = false): string {
   const lines = usage(text, args);
   const label = agent ? "Usage:" : i18n.t`Usage:`;
   return lines.length ? `${label}\n${lines.join("\n")}\n` : text;
+}
+/** The agent a command line names: a pane by ID or `current`, or `pane:ID`
+ * or `headless:ID` as Tricks name agents. */
+export function agentTarget(value: string, caller: number): agentOrder.Target {
+  if (value === "current") {
+    if (!caller) throw Error("NoCallerPane");
+    return { pane: caller };
+  }
+  return agentOrder.parse(value) ?? { pane: id(value) };
+}
+/** The text argument, or standard input with `--stdin`. */
+async function typed(args: Args, input?: () => Promise<string>): Promise<string> {
+  if (!args.flag("stdin")) return args.next();
+  const text = await (input ? input() : Bun.stdin.text());
+  if (Buffer.byteLength(text) > 1024 * 1024) throw Error("StreamTooLong");
+  return text;
 }
 export function id(value: string): number {
   if (!/^\+?\d+$/.test(value)) throw Error("InvalidCharacter");
@@ -216,8 +261,16 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
   const action = raw === "workspace.list" ? "list" : raw;
   if (!actions.has(action)) throw Error("Usage");
   let current = false,
-    target = 0;
-  if (group !== "launcher" && !["list", "current", "tab.new", "workspace.new", "pane.idle", "claim"].includes(action)) {
+    target = 0,
+    agent: agentOrder.Target | null = null;
+  if (action === "message") {
+    if (start === words.length) throw Error("Usage");
+    agent = agentTarget(words[start++], caller);
+    if ("pane" in agent) target = agent.pane;
+  } else if (
+    group !== "launcher" &&
+    !["list", "current", "tab.new", "workspace.new", "pane.idle", "claim", "history", "resume"].includes(action)
+  ) {
     if (start === words.length) throw Error("Usage");
     current = words[start] === "current";
     if (current && group === "workspace") throw Error("Usage");
@@ -248,7 +301,9 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
       command?: string;
       name?: string;
     } | null = null,
-    claim: { pane: number; provider: Provider | null; owner: number } | null = null;
+    claim: { pane: number; provider: Provider | null; owner: number } | null = null,
+    history: { limit: number } | null = null,
+    open: Open | null = null;
   const set = (op: string, payload: any) => {
     command = { [op]: payload };
   };
@@ -325,6 +380,23 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
       if (claim.owner <= 1 || claim.owner > 0x7fffffff) throw Error("Usage");
       break;
     }
+    case "history":
+      history = { limit: id(args.option("limit") ?? "20") };
+      break;
+    case "resume": {
+      const provider = Provider.parse(args.next()),
+        session = args.next();
+      if (!provider || !session || /[\x00-\x20\x7f]/.test(session)) throw Error("Usage");
+      const workspace = args.option("workspace"),
+        viewer = args.option("viewer");
+      open = {
+        provider,
+        session,
+        workspace: workspace === null ? null : id(workspace),
+        viewer: viewer === null ? null : id(viewer),
+      };
+      break;
+    }
     case "pane.idle":
       idle = {
         workspace: args.options.has("workspace") ? id(args.required("workspace")) : 0,
@@ -336,6 +408,8 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
       set("workspace.create", { name: args.next(), cwd: args.directory(args.option("cwd") ?? ".") });
       break;
     case "workspace.close":
+    case "workspace.archive":
+    case "workspace.unarchive":
       set(action, { target });
       break;
     case "workspace.edit":
@@ -350,7 +424,20 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
       break;
     case "tab.close":
     case "pane.close":
+    case "pane.wake":
       set(action, { target });
+      break;
+    case "pane.hibernate":
+      set(action, {
+        targets: [
+          target,
+          ...args.positional.splice(0).map(value => {
+            if (value !== "current") return id(value);
+            if (!caller) throw Error("NoCallerPane");
+            return caller;
+          }),
+        ],
+      });
       break;
     case "pane.swap":
       set(action, { target, other: id(args.next()) });
@@ -394,13 +481,13 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
       set(action, { target, lines });
       break;
     }
-    case "pane.send": {
-      let text: string;
-      if (args.flag("stdin")) {
-        text = await (input ? input() : Bun.stdin.text());
-        if (Buffer.byteLength(text) > 1024 * 1024) throw Error("StreamTooLong");
-      } else text = args.next();
-      set(action, { target, text, enter: args.flag("enter") });
+    case "pane.send":
+      set(action, { target, text: await typed(args, input), enter: args.flag("enter") });
+      break;
+    case "message": {
+      const text = await typed(args, input);
+      if (!text) throw Error("Usage");
+      set("agent.message", { target: agent, text });
       break;
     }
     case "pane.keys":
@@ -416,7 +503,108 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
   if (created?.workspace === 0 && !caller) throw Error("MissingWorkspace");
   if (launcher && action !== "launcher.list" && action !== "launcher.models" && !launcher.workspace && !caller)
     throw Error("MissingWorkspace");
-  return { action, target, current, json, viewer, command, idle, launcher, ...(claim ? { claim } : {}) };
+  return {
+    action,
+    target,
+    current,
+    json,
+    viewer,
+    command,
+    idle,
+    launcher,
+    ...(claim ? { claim } : {}),
+    ...(history ? { history } : {}),
+    ...(open ? { open } : {}),
+  };
+}
+/** `resume`'s target: a conversation, and where to show it. */
+export type Open = { provider: Provider; session: string; workspace: number | null; viewer: number | null };
+type Call = Pick<rpc_http.Client, "call">;
+/** Past conversations, newest first, once the daemon has read them. */
+export async function conversations(conn: Call, wait_ms = 5000): Promise<History["entries"]> {
+  const until = Date.now() + wait_ms;
+  for (;;) {
+    const { history } = (await conn.call("agent.history", { follow: false })) as { history: History };
+    if (!history.pending || Date.now() >= until) return history.entries;
+    await Bun.sleep(200);
+  }
+}
+/** `history`: each conversation with what `resume` takes, its title, folder and age. */
+export function historyText(entries: History["entries"], now: number): string {
+  if (!entries.length) return "no conversations\n";
+  return entries
+    .map(e => {
+      const title = e.title || e.first || e.last;
+      return `${e.provider} ${e.session}${quote(title)} ${e.cwd} ${age(e.updated_at, now)}\n`;
+    })
+    .join("");
+}
+function age(at: number, now: number): string {
+  const ms = at < 1e12 ? at * 1000 : at,
+    minutes = Math.max(0, Math.floor((now - ms) / 60000));
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 48 * 60) return `${Math.floor(minutes / 60)}h`;
+  return `${Math.floor(minutes / 1440)}d`;
+}
+/** The workspace a conversation from `cwd` belongs in: the one whose folder
+ * holds it most closely, else `fallback`. An archived one stays put away. */
+export function workspaceFor(
+  workspaces: { id: number; cwd: string; archived?: boolean }[],
+  cwd: string,
+  fallback: number | null,
+) {
+  let best: { id: number; cwd: string } | null = null;
+  for (const w of workspaces)
+    if (!w.archived && w.cwd && (cwd === w.cwd || cwd.startsWith(w.cwd.endsWith("/") ? w.cwd : w.cwd + "/")))
+      if (!best || w.cwd.length > best.cwd.length) best = w;
+  return best?.id ?? fallback;
+}
+/** Shows a conversation in a viewer: the pane already showing it, else a new
+ * tab resuming it where its folder belongs. `viewer` falls back to
+ * `default_viewer`, then to the only viewer attached. */
+export async function openConversation(conn: Call, q: Open, default_viewer: number | null) {
+  const snapshot: any = await conn.call("session.list"),
+    workspaces: any[] = snapshot.result?.workspaces ?? [],
+    viewers: any[] = snapshot.viewers ?? [],
+    viewer = q.viewer ?? default_viewer ?? (viewers.length === 1 ? viewers[0].id : null),
+    shown = viewers.find(v => v.id === viewer)?.workspace ?? null,
+    owner = (pane: number) =>
+      workspaces.find(w => (w.model?.tabs ?? []).some((t: any) => panes(w.model.nodes, t.root).includes(pane)))?.id ??
+      null;
+  const open = (snapshot.result?.panes ?? []).find(
+    (p: any) => p.agent?.provider === q.provider && p.agent?.session === q.session,
+  );
+  let pane: number, workspace: number | null, opened: boolean;
+  if (open) {
+    pane = open.id;
+    workspace = owner(pane);
+    opened = false;
+  } else {
+    const e = (await conversations(conn)).find(e => e.provider === q.provider && e.session === q.session);
+    if (!e) throw Error("NoConversation");
+    workspace = q.workspace ?? workspaceFor(workspaces, e.cwd, shown);
+    if (workspace === null) throw Error("MissingWorkspace");
+    const reply: any = await conn.call("session.command", {
+      command: {
+        "agent.resume": {
+          workspace,
+          cwd: e.cwd,
+          provider: e.provider,
+          session: e.session,
+          ...(e.account ? { account: e.account } : {}),
+        },
+      },
+    });
+    pane = Number(reply.result?.pane);
+    opened = true;
+  }
+  if (viewer !== null) await conn.call("focus", { pane, viewer });
+  return { pane, workspace, opened, viewer };
+}
+function openedText(r: { pane: number; workspace: number | null; opened: boolean; viewer: number | null }): string {
+  const where = r.workspace === null ? "" : ` in workspace ${r.workspace}`,
+    shown = r.viewer === null ? " (no viewer to show it in)" : "";
+  return `${r.opened ? "resumed in pane" : "already open in pane"} ${r.pane}${where}${shown}\n`;
 }
 /** A tab's split tree from the layout's node array, in words: `3 left of (4
  * above 5)`. */
@@ -438,13 +626,14 @@ function panes(nodes: any[], index: number): number[] {
   return [...panes(nodes, node.split.first), ...panes(nodes, node.split.second)];
 }
 const quote = (name: string) => (name ? " " + JSON.stringify(name) : "");
-/** `corgi list` as an outline: workspaces, their tabs and panes, then viewers.
- * A pane shows its cwd only where it differs from its workspace's. */
+/** `corgi list` as an outline: workspaces, their tabs and panes and headless
+ * agents other than the Corgi prompt's, then viewers. A pane shows its cwd
+ * only where it differs from its workspace's. */
 export function list(reply: any): string {
   const out: string[] = [],
     byId = new Map<number, any>((reply.result?.panes ?? []).map((p: any) => [p.id, p]));
   for (const w of reply.result?.workspaces ?? []) {
-    out.push(`workspace ${w.id}${quote(w.name)} ${w.cwd}`);
+    out.push(`workspace ${w.id}${quote(w.name)} ${w.cwd}${w.archived ? " archived" : ""}`);
     for (const t of w.model?.tabs ?? []) {
       const ids = panes(w.model.nodes, t.root);
       out.push(`  tab ${t.id}${quote(t.title)}${ids.length > 1 ? ": " + layout(w.model.nodes, t.root) : ""}`);
@@ -453,13 +642,19 @@ export function list(reply: any): string {
         if (p) out.push(`    pane ${id}${quote(p.name)}${p.cwd && p.cwd !== w.cwd ? " " + p.cwd : ""}${pane(p)}`);
       }
     }
+    for (const s of reply.result?.headless_sessions ?? [])
+      if (s.workspace === w.id && !s.corgi) {
+        // The session's state covers its subagents and startup, as `message` sees it.
+        const agent = { ...s.agent, state: s.state ?? s.agent?.state, attention: s.attention ?? s.agent?.attention };
+        out.push(`  headless:${s.id}${pane({ agent, exited: s.exited })}`);
+      }
   }
   for (const v of reply.viewers ?? []) out.push(`viewer ${v.id}: workspace ${v.workspace}, pane ${v.pane}`);
   return out.join("\n") + "\n";
 }
 function pane(p: any): string {
   const a = p.agent,
-    exited = p.exited ? " exited" : "";
+    exited = p.dormant ? " hibernated" : p.exited ? " exited" : "";
   if (!a?.provider) return exited;
   const attention = a.attention && a.attention !== "none" ? ", " + a.attention.replace("_", " ") : "",
     activity = a.activity || a.recent_activity;
@@ -586,19 +781,33 @@ export function launcherText(workspaces: LauncherWorkspace[]): string {
 }
 /** Runs `launcher list`, or `hide` or `show`, which change one workspace and
  * then read back what it shows of the agents they name. */
-async function launcherCommand(conn: Connection, inv: any, caller: number): Promise<LauncherWorkspace[]> {
+async function launcherCommand(conn: Call, inv: any, caller: number): Promise<LauncherWorkspace[]> {
   const q = inv.launcher,
-    before = (await conn.call("session.list")).result,
-    agents = (await conn.call("launcher.catalog")).agents;
+    before = (await conn.call("session.list")).result;
   const read = async (workspace: number) =>
     launcher(
-      { ...(await conn.call("session.list")).result, launcher_agents: (await conn.call("launcher.catalog")).agents },
+      {
+        ...(await conn.call("session.list")).result,
+        launcher_agents: (await conn.call("launcher.catalog", { workspace })).agents,
+      },
       workspace,
     );
-  if (inv.action === "launcher.list") return launcher({ ...before, launcher_agents: agents }, q.workspace);
+  if (inv.action === "launcher.list") {
+    const workspaces = launcher(before, q.workspace),
+      result: LauncherWorkspace[] = [];
+    for (const workspace of workspaces) result.push(...(await read(workspace.id)));
+    return result;
+  }
+  const workspace =
+      q.workspace ||
+      (inv.action === "launcher.models" && !caller
+        ? 0
+        : (await conn.call("session.locate", { pane: caller })).result.workspace),
+    context = workspace ? { workspace } : { cwd: process.cwd() },
+    agents = (await conn.call("launcher.catalog", context)).agents;
   const chosen: LauncherAgent[] = q.agents.map((name: string) => launcherAgent(agents, name));
   if (inv.action === "launcher.models") {
-    const { models } = await conn.call("launcher.models", { row: chosen[0].row });
+    const { models } = await conn.call("launcher.models", { row: chosen[0].row, ...context });
     process.stdout.write(
       inv.json
         ? stringify({ ok: true, models }) + "\n"
@@ -611,7 +820,6 @@ async function launcherCommand(conn: Connection, inv: any, caller: number): Prom
     );
     return [];
   }
-  const workspace = q.workspace || (await conn.call("session.locate", { pane: caller })).result.workspace;
   launcher(before, workspace);
   const send = (command: CommandInput) => conn.call("session.command", { command });
   switch (inv.action) {
@@ -717,6 +925,13 @@ export function words(reply: any): string {
   if (r.pane) return `pane ${r.pane} (tab ${r.tab}, workspace ${r.workspace})\n`;
   return "ok\n";
 }
+/** Where `message` went, whether it was typed for want of a channel, and
+ * whether it waits on the agent's turn. */
+export function messaged(reply: any, target: agentOrder.Target): string {
+  const r = reply.result ?? {},
+    to = r.pane ? `pane ${r.pane} (tab ${r.tab}, workspace ${r.workspace})` : agentOrder.key(target);
+  return `${r.delivery === "typed" ? "typed into" : "messaged"} ${to}${r.queued ? ", queued while it works" : ""}\n`;
+}
 /** `pane read` text for a reader that asked for `lines` lines, given up to one
  * more: the extra line only says that earlier output exists. Agent mode trims
  * line ends, shortens rules and keeps one blank line in a row. */
@@ -732,10 +947,24 @@ export function read(text: string, lines: number, agent = false): string {
     header = more ? `[corgi: last ${lines} lines shown; --lines N reads more]\n` : "";
   return header + shown + (shown ? "\n" : "");
 }
+/** Whether prompt chat `chat` keeps memory. One that ended, or a Corgi
+ * that doesn't answer, can't say it doesn't. */
+async function keepsMemory(daemon: rpc_http.Daemon, chat: number): Promise<boolean> {
+  try {
+    const reply: any = await daemon.call("headless.list");
+    return (reply.sessions ?? []).find((s: any) => s?.id === chat)?.persist !== false;
+  } catch {
+    return true;
+  }
+}
 /** Runs a control command and prints its reply in words, or with `--json` as
  * the daemon sent it. */
-export async function run(path: string, args: string[], agent = false): Promise<void> {
+export async function run(daemon: rpc_http.Daemon, args: string[], agent = false): Promise<void> {
   const group = args[0];
+  if (group === "grep") {
+    await (await import("./grep_command")).run(args.slice(1), daemon);
+    return;
+  }
   if ((nested.has(group) && args.length === 1) || asksHelp(args)) {
     process.stdout.write(helpFor(agent ? help : localizedHelp(), args, agent));
     return;
@@ -745,54 +974,91 @@ export async function run(path: string, args: string[], agent = false): Promise<
     process.stdout.write(skill);
     return;
   }
+  // Memory is files on this machine: no runtime needed. Run for a prompt
+  // chat, it tells the chat what it wrote; one that saves nothing only
+  // reads. A chat whose commands run where its environment can't reach names
+  // itself with --chat.
+  if (group === "memory") {
+    const text = args.indexOf("--"),
+      flag = args.findIndex((a, i) => a === "--chat" && (text < 0 || i < text)),
+      chat = flag > 0 ? Number(args[flag + 1]) : 0,
+      words = flag > 0 ? [...args.slice(1, flag), ...args.slice(flag + 2)] : args.slice(1);
+    if (flag > 0 && (!Number.isSafeInteger(chat) || chat <= 0)) throw Error("Usage");
+    if (
+      ["add", "forget"].includes(words[0]) &&
+      (process.env.CORGI_MEMORY === "read" || (chat && !(await keepsMemory(daemon, chat))))
+    )
+      throw Error("MemoryReadOnly");
+    const changes: Change[] = [];
+    process.stdout.write(memoryCommand.run(new Memory(Memory.root()), words, new Date(), c => changes.push(c)));
+    if (changes.length && (chat || process.env.CORGI_HEADLESS_ID)) {
+      const { Reporter } = await import("./prompt_search_report"),
+        reporter = chat ? new Reporter(process.env.CORGI_SOCKET || daemon.socket, chat) : Reporter.here();
+      for (const change of changes) await reporter?.memory(change);
+      reporter?.close();
+    }
+    return;
+  }
   const caller = Number(process.env.CORGI_PANE) || 0,
     inv = await parse(args, caller);
-  // CLI calls are serial, including unversioned controls for older daemons.
-  const conn = new Connection(path, { requestIds: false });
   const reading = inv.json ? null : inv.command?.["pane.read"],
     lines = reading?.lines;
   if (reading) reading.lines = Math.min(lines + 1, 10000);
-  try {
-    if (inv.claim) {
-      const reply = await conn.call("pane.agent", inv.claim);
-      process.stdout.write(inv.json ? stringify(reply) + "\n" : words(reply));
-      return;
-    }
-    if (inv.launcher) {
-      const workspaces = await launcherCommand(conn, inv, caller);
-      if (inv.action === "launcher.models") return;
-      process.stdout.write(inv.json ? stringify({ ok: true, workspaces }) + "\n" : launcherText(workspaces));
-      return;
-    }
-    if ((inv.current && group === "tab") || (inv.action === "tab.new" && caller)) {
-      const { result } = await conn.call("session.locate", { pane: caller });
-      const [op, q] = Object.entries(inv.command)[0] as [string, any];
-      if (op === "pane.create") {
-        q.workspace ||= result.workspace;
-        if (q.workspace === result.workspace) q.from = caller;
-      } else q.target = result.tab;
-    }
-    const reply = inv.command
-      ? await conn.call("session.command", { command: inv.command })
-      : inv.action === "list"
-        ? await conn.call("session.list")
-        : inv.action === "current"
-          ? await conn.call("session.locate", { pane: caller })
-          : inv.action === "pane.idle"
-            ? await conn.call("pane.idle", inv.idle)
-            : inv.action === "workspace.switch"
-              ? await conn.call("workspace.switch", { workspace: inv.target, viewer: inv.viewer })
-              : await conn.call("focus", { pane: inv.target, viewer: inv.viewer });
-    if (inv.json) process.stdout.write(stringify(reply) + "\n");
-    else if (reading && "result" in reply && "text" in reply.result && typeof reply.result.text === "string")
-      process.stdout.write(read(reply.result.text, lines, agent));
-    else
-      process.stdout.write(
-        inv.action === "list" ? list(reply) : inv.action === "pane.idle" ? idle(reply) : words(reply),
-      );
-  } finally {
-    conn.close();
+  if (inv.claim) {
+    const reply = await daemon.call("pane.agent", inv.claim);
+    process.stdout.write(inv.json ? stringify(reply) + "\n" : words(reply));
+    return;
   }
+  if (inv.history) {
+    const shown = (await conversations(daemon)).slice(0, inv.history.limit);
+    process.stdout.write(
+      inv.json ? stringify({ ok: true, conversations: shown }) + "\n" : historyText(shown, Date.now()),
+    );
+    return;
+  }
+  if (inv.open) {
+    const reply = await openConversation(daemon, inv.open, Number(process.env.CORGI_VIEWER) || null);
+    process.stdout.write(inv.json ? stringify({ ok: true, ...reply }) + "\n" : openedText(reply));
+    return;
+  }
+  if (inv.launcher) {
+    const workspaces = await launcherCommand(daemon, inv, caller);
+    if (inv.action === "launcher.models") return;
+    process.stdout.write(inv.json ? stringify({ ok: true, workspaces }) + "\n" : launcherText(workspaces));
+    return;
+  }
+  if ((inv.current && group === "tab") || (inv.action === "tab.new" && caller)) {
+    const { result } = await daemon.call("session.locate", { pane: caller });
+    const [op, q] = Object.entries(inv.command)[0] as [string, any];
+    if (op === "pane.create") {
+      q.workspace ||= result.workspace;
+      if (q.workspace === result.workspace) q.from = caller;
+    } else q.target = result.tab;
+  }
+  const reply = inv.command
+    ? await daemon.call("session.command", { command: inv.command })
+    : inv.action === "list"
+      ? await daemon.call("session.list")
+      : inv.action === "current"
+        ? await daemon.call("session.locate", { pane: caller })
+        : inv.action === "pane.idle"
+          ? await daemon.call("pane.idle", inv.idle)
+          : inv.action === "workspace.switch"
+            ? await daemon.call("workspace.switch", { workspace: inv.target, viewer: inv.viewer })
+            : await daemon.call("focus", { pane: inv.target, viewer: inv.viewer });
+  if (inv.json) process.stdout.write(stringify(reply) + "\n");
+  else if (reading && "result" in reply && "text" in reply.result && typeof reply.result.text === "string")
+    process.stdout.write(read(reply.result.text, lines, agent));
+  else
+    process.stdout.write(
+      inv.action === "list"
+        ? list(reply)
+        : inv.action === "pane.idle"
+          ? idle(reply)
+          : inv.action === "message"
+            ? messaged(reply, inv.command["agent.message"].target)
+            : words(reply),
+    );
 }
 /** Writes a failed command line's error, as JSON when it asked for `--json`;
  * a usage error lists the command's help lines. */

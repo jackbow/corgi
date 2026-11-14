@@ -4,7 +4,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 // Lower this when you remove a sleep.
-const budget = 77;
+// Reporter fixtures exercise overlapping tests, timeouts, and updates before exit.
+// Paste markers exercise the real Escape timeout across delayed reads.
+const budget = 102; // Includes real SSH timing and remote sandbox readiness polling.
 
 test("the suites sleep no more than the budget", () => {
   let count = 0;

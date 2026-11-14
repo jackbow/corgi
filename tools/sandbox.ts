@@ -9,6 +9,8 @@
  * `claude` and `codex` there are fakes: they take `work`, `stop`, `block` and
  * `exit`, and pasted notes that start with path:line make them "address" each
  * note by writing a comment into the file, so they have edits to show.
+ * Run headless for the Corgi prompt, `claude` answers from the world's
+ * `prompt-replies.json`.
  */
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -16,10 +18,14 @@ import { dirname, join } from "node:path";
 
 /** What `tools/sandboxes/NAME.ts` exports as `world`. */
 export interface World {
+  /** Sets this world's environment on every launch, including a seeded world's. */
+  configure?(s: Sandbox): void;
   /** Builds the world under `s.dir`: once, and again after --restart. */
   seed(s: Sandbox): void;
   /** Opens the workspaces and tabs on a runtime that has none. */
-  arrange(s: Sandbox): void;
+  arrange(s: Sandbox): void | Promise<void>;
+  /** Stops owned services before the runtime and its world are removed. */
+  shutdown?(s: Sandbox): void | Promise<void>;
   /** What to try, printed before the viewer attaches; `table` lays out keys. */
   intro(s: Sandbox): string[];
 }
@@ -43,7 +49,7 @@ export async function open(name: string, root: string, exe: string, fresh: boole
   const s = new Sandbox(name, ((await import(file)) as { world: World }).world, root, exe);
   console.error(`corgi: sandbox ${name} (${s.dir})`);
   if (fresh) {
-    s.shutdown();
+    await s.shutdown();
     rmSync(s.dir, { recursive: true, force: true });
   }
   s.prepareHome();
@@ -64,7 +70,7 @@ export async function open(name: string, root: string, exe: string, fresh: boole
     spawnSync(exe, ["start", "--update-routed"], { cwd: s.dir, env: s.env, stdio: "inherit" });
     // A runtime that was stopped comes back with its tabs; only an empty one is laid out.
     const workspaces: { model?: { tabs?: unknown[] } }[] = s.corgi(["workspace", "list"])?.workspaces ?? [];
-    if (workspaces.every(w => (w.model?.tabs?.length ?? 0) === 0)) s.world.arrange(s);
+    if (workspaces.every(w => (w.model?.tabs?.length ?? 0) === 0)) await s.world.arrange(s);
   }
   return s;
 }
@@ -119,7 +125,7 @@ export class Sandbox {
       // Corgi only uses a socket in a private directory.
       CORGI_SOCKET: join(this.dir, "run", "control.sock"),
       CORGI_ENV_DIR: join(this.dir, "env"),
-      SHELL: existsSync("/bin/zsh") ? "/bin/zsh" : "/bin/sh",
+      SHELL: existsSync("/bin/zsh") ? "/bin/zsh" : existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh",
       PATH: `${join(this.home, "bin")}:${process.env.PATH}`,
     });
   }
@@ -198,7 +204,8 @@ export class Sandbox {
   running(): boolean {
     return spawnSync(this.exe, ["ping"], { env: this.env, stdio: "ignore" }).status === 0;
   }
-  shutdown(): void {
+  async shutdown(): Promise<void> {
+    await this.world.shutdown?.(this);
     if (existsSync(this.env.CORGI_SOCKET) && this.running())
       spawnSync(this.exe, ["shutdown"], { env: this.env, stdio: "ignore" });
   }
@@ -209,7 +216,10 @@ export class Sandbox {
     mkdirSync(join(this.dir, "run"), { recursive: true, mode: 0o700 });
     chmodSync(join(this.dir, "run"), 0o700);
     for (const name of ["claude", "codex"]) {
-      writeFileSync(join(this.home, "bin", name), `#!${process.execPath}\n${agent}`);
+      writeFileSync(
+        join(this.home, "bin", name),
+        `#!${process.execPath}\nimport { Editor, Parser } from ${JSON.stringify(join(this.root, "tools/sandbox_input.ts"))};\n${agent}`,
+      );
       chmodSync(join(this.home, "bin", name), 0o700);
     }
     writeFileSync(
@@ -217,6 +227,8 @@ export class Sandbox {
       "[user]\n\tname = Sandbox\n\temail = sandbox@example.com\n[init]\n\tdefaultBranch = main\n",
     );
     writeFileSync(join(this.home, ".zshrc"), "PROMPT='%F{green}%1~%f %# '\nbindkey -e\n");
+    writeFileSync(join(this.home, ".bashrc"), "PS1='\\W $ '\n");
+    writeFileSync(join(this.home, ".sudo_as_admin_successful"), "");
     // Keep what the sandbox's viewer saved, but set the prefix for where it runs this time.
     const prefs = join(this.home, ".local/state/corgi/viewer.json");
     let saved: Record<string, unknown> = {};
@@ -224,6 +236,7 @@ export class Sandbox {
       saved = JSON.parse(readFileSync(prefs, "utf8"));
     } catch {}
     writeFileSync(prefs, JSON.stringify({ preset: "corgi", ...saved, onboarding_complete: true, prefix: this.prefix }));
+    this.world.configure?.(this);
   }
 }
 
@@ -260,6 +273,55 @@ if (provider === 'claude' && words === 'auth status --json') {
   console.log(JSON.stringify(who ? { loggedIn: true, authMethod: 'claude.ai', email: who, subscriptionType: 'max' } : { loggedIn: false, authMethod: 'none' }));
   process.exit(0);
 }
+// The Corgi prompt's headless Claude answers from $HOME/prompt-replies.json:
+// the first reply whose "when" matches the message, step by step. A "run"
+// step runs its command for real, so its output and a corgi grep's live
+// progress are genuine; a "say" step streams Markdown.
+if (provider === 'claude' && process.argv.includes('--include-partial-messages')) {
+  const session = (await import('node:crypto')).randomUUID();
+  const send = v => process.stdout.write(JSON.stringify({ session_id: session, ...v }) + '\n');
+  const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+  let replies = [], n = 0;
+  try { replies = JSON.parse(readFileSync(join(process.env.HOME, 'prompt-replies.json'), 'utf8')); } catch {}
+  const usage = { input_tokens: 2400, output_tokens: 180, cache_read_input_tokens: 18000 };
+  async function say(text) {
+    send({ type: 'stream_event', event: { type: 'content_block_start' } });
+    for (let i = 0; i < text.length; i += 20) {
+      send({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: text.slice(i, i + 20) } } });
+      await pause(12);
+    }
+    send({ type: 'assistant', message: { id: 'msg-' + ++n, content: [{ type: 'text', text }], usage } });
+  }
+  async function run(command) {
+    const id = 'tool-' + ++n;
+    send({ type: 'assistant', message: { id: 'msg-' + n, content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }], usage } });
+    const child = Bun.spawn(['/bin/sh', '-c', command], { stdout: 'pipe', stderr: 'pipe' });
+    const output = (await new Response(child.stdout).text()) + (await new Response(child.stderr).text());
+    send({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: output.slice(0, 8000) }] } });
+  }
+  send({ type: 'system', subtype: 'init', permissionMode: 'bypassPermissions' });
+  for await (const line of (await import('node:readline')).createInterface({ input: process.stdin })) {
+    let v;
+    try { v = JSON.parse(line); } catch { continue; }
+    if (v.type === 'control_request') {
+      send({ type: 'control_response', response: { subtype: 'success', request_id: v.request_id, response: {} } });
+      continue;
+    }
+    if (v.type !== 'user') continue;
+    const content = v.message?.content;
+    const text = typeof content === 'string' ? content : (content ?? []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+    const reply = replies.find(r => new RegExp(r.when, 'i').test(text));
+    send({ type: 'stream_event', event: { type: 'message_start' } });
+    const steps = reply?.steps ?? [{ say: "I'm this sandbox's stand-in for Claude, so I only know a few questions:\n\n" + replies.map(r => '- ' + r.example).join('\n') }];
+    for (const step of steps) {
+      await pause(step.pause ?? 400);
+      if (step.run) await run(step.run);
+      else await say(step.say);
+    }
+    send({ type: 'result', subtype: 'success', is_error: false, result: '', usage });
+  }
+  process.exit(0);
+}
 if (provider === 'claude' && process.argv.includes('--input-format')) {
   // Usage differs by account, so each launcher row reads its own. Resets
   // fall off the hour, as real ones do, for countdowns as wide as "13h 43m".
@@ -268,17 +330,36 @@ if (provider === 'claude' && process.argv.includes('--input-format')) {
   for await (const line of (await import('node:readline')).createInterface({ input: process.stdin })) {
     const request = JSON.parse(line);
     if (request.type !== 'control_request') continue;
+    const efforts = ['low', 'medium', 'high', 'xhigh', 'max'];
     const body = request.request.subtype === 'get_usage'
       ? { subscription_type: 'max', rate_limits_available: true, rate_limits: { five_hour: { utilization: used, resets_at: soon(4 * 3600 + 3 * 60) }, seven_day: { utilization: Math.min(99, used + 20), resets_at: soon(13 * 3600 + 43 * 60) } } }
-      : {};
+      : request.request.subtype === 'initialize'
+        ? { models: [
+            { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5-5', supportedEffortLevels: efforts },
+            { value: 'opus', displayName: 'Opus 5.5', resolvedModel: 'claude-opus-5-5', supportedEffortLevels: efforts },
+            { value: 'sonnet', displayName: 'Sonnet 5.5', resolvedModel: 'claude-sonnet-5-5', supportedEffortLevels: efforts.slice(0, 3) },
+            { value: 'haiku', displayName: 'Haiku 5.5', resolvedModel: 'claude-haiku-5-5', supportedEffortLevels: [] },
+          ] }
+        : {};
     console.log(JSON.stringify({ type: 'control_response', response: { request_id: request.request_id, subtype: 'success', response: body } }));
   }
   process.exit(0);
 }
 const hooks = provider === 'codex' ? join(process.env.CODEX_HOME, 'hooks.json') : join(process.env.CLAUDE_CONFIG_DIR, 'settings.json');
-const session = 'sandbox-' + provider + '-' + process.pid;
+const resume = process.argv.indexOf(provider === 'claude' ? '--resume' : 'resume');
+const session = resume >= 0 && process.argv[resume + 1] ? process.argv[resume + 1] : 'sandbox-' + provider + '-' + process.pid;
 const transcript = join(process.env.HOME, session + '.jsonl');
-writeFileSync(transcript, JSON.stringify({ type: 'session_meta', payload: { id: session } }) + '\n');
+if (!existsSync(transcript)) writeFileSync(transcript, JSON.stringify({ type: 'session_meta', payload: { id: session } }) + '\n');
+const option = flag => {
+  const i = process.argv.indexOf(flag);
+  return i >= 0 ? process.argv[i + 1] : '';
+};
+const task = option('--sandbox-name');
+const initial = option('--sandbox-state');
+const interval = Number(option('--sandbox-interval')) || 0;
+let progress = null;
+if (task && provider === 'claude')
+  appendFileSync(transcript, JSON.stringify({ type: 'custom-title', sessionId: session, customTitle: task }) + '\n');
 let turn = 0;
 function event(name) {
   if (!existsSync(hooks)) return;
@@ -289,16 +370,71 @@ function event(name) {
     ? { type: 'event_msg', timestamp: new Date().toISOString(), payload: { type: 'task_complete', turn_id: String(turn) } }
     : { type: 'system', subtype: 'turn_duration', sessionId: session, timestamp: new Date().toISOString() }) + '\n');
 }
-const out = s => process.stdout.write(s);
-const title = t => out('\x1b]2;' + t + '\x07');
-let line = '', pasted = '', pasting = false, busy = false;
-function prompt() { out('\r\x1b[2K› ' + (pasted ? '\x1b[33m[Pasted text #1 +' + pasted.split('\n').length + ' lines]\x1b[0m ' : '') + line); }
+const input = new Editor(), parser = new Parser();
+let history = '', ready = false, initializing = false;
+const raw = s => process.stdout.write(s);
+const out = s => {
+  if (!ready) return raw(s);
+  history = (history + s.replace(/\x1b\[2K/g, '').replace(/\r/g, '')).slice(-65536);
+  prompt();
+};
+const title = t => raw('\x1b]2;' + t + '\x07');
+let line = '', pasted = '', busy = false;
+function prompt() {
+  if (!ready || initializing) return;
+  const cols = process.stdout.columns || 80, rows = process.stdout.rows || 24;
+  const layout = input.layout(Math.max(8, cols - (provider === 'claude' ? 4 : 3)), provider);
+  const height = Math.min(layout.lines.length, Math.max(1, rows - 5));
+  const skip = Math.max(0, layout.y - height + 1);
+  const transcriptRows = history.trimEnd().split('\n');
+  const top = provider === 'claude' ? rows - height - 2 : Math.min(transcriptRows.length + 2, rows - height - 3);
+  const screen = Array.from({length: rows}, () => '');
+  const visible = transcriptRows.slice(-Math.max(0, top - 2));
+  for (let y = 0; y < visible.length; y++) screen[y] = visible[y];
+  if (provider === 'claude') {
+    screen[top - 1] = '─'.repeat(cols);
+    screen[top + height] = '─'.repeat(cols);
+  }
+  for (let y = 0; y < height; y++) screen[top + y] = (y === 0 ? (provider === 'claude' ? '❯\u00a0' : '› ') : '  ') + layout.lines[skip + y];
+  screen[top + height + 1] = (pasted ? '[Pasted text #1 +' + pasted.split('\n').length + ' lines] · ' : '') + 'shortcuts: Shift+Enter newline · Enter send';
+  let output = '\x1b[?2026h\x1b[?25l\x1b[H';
+  for (let y = 0; y < rows; y++) {
+    let row = '';
+    for (const character of screen[y]) { if (Bun.stringWidth(row + character) > cols) break; row += character; }
+    output += '\x1b[' + (y+1) + ';1H\x1b[2K' + row;
+  }
+  output += '\x1b[' + (top + layout.y - skip + 1) + ';' + (layout.x + 3) + 'H\x1b[?25h\x1b[?2026l';
+  raw(output);
+}
 function begin() {
-  out('\x1b[2J\x1b[H\x1b[?2004h');
+  raw('\x1b[2J\x1b[H\x1b[?2004h');
+  ready = true;
+  initializing = true;
   title('✳ Ready');
   event('SessionStart');
   out(provider + ' · a fake agent in a Corgi sandbox (' + process.cwd().split('/').pop() + ')\r\n');
   out('  work, stop, block, exit · or paste notes on path:line and press Enter\r\n\r\n');
+  if (initial) {
+    event('UserPromptSubmit');
+    out('› ' + task + '\r\n\r\n');
+    for (let i = 0; i < (interval ? 3 : 24); i++)
+      out('  ' + (i + 1) + '. ' + ['Inspecting the existing implementation', 'Following the affected call sites', 'Checking the behavior against tests'][i % 3] + '\r\n');
+    if (initial === 'working') {
+      title('⠋ Working');
+      out('\r\nWorking on: ' + task + '\r\n');
+      if (interval) {
+        let step = 0;
+        progress = setInterval(() => {
+          out('\r\x1b[2K  ' + ++step + '. ' + ['Inspecting a worker', 'Checking a test case', 'Verifying recovery'][step % 3] + '\r\n');
+          prompt();
+        }, Math.max(1, interval) * 1000);
+      }
+    } else {
+      event('Stop');
+      out('\r\nFinished: ' + task + '\r\nReady for review.\r\n');
+    }
+  }
+  initializing = false;
   prompt();
 }
 // Its first run in a folder no one signed in to: how, then a link.
@@ -314,16 +450,15 @@ function signinScreen() {
   else
     out(" Browser didn't open? Use the url below to sign in (c to copy)\r\n\r\nhttps://claude.com/cai/oauth/authorize?code=true&sandbox=1\r\n\r\n (In this sandbox any word is a code: it signs in as word@example.com.)\r\n Paste code here if prompted > " + line);
 }
-function signinKeys(s) {
-  for (const ch of s) {
-    if (ch === '\r' || ch === '\n') {
-      if (signing === 'method') signing = 'code';
-      else { signIn(line.trim()); signing = null; line = ''; return begin(); }
-    } else if (ch === '\x03') process.exit(0);
-    else if (ch === '\x7f') line = line.slice(0, -1);
-    else if (ch >= ' ' && ch !== '\x1b') line += ch;
-    signinScreen();
-  }
+function signinKeys(data) {
+  const result = input.key(data);
+  line = input.text;
+  if (result === 'submit') {
+    if (signing === 'method') { signing = 'code'; input.clear(); line = ''; }
+    else { signIn(line.trim()); signing = null; input.clear(); line = ''; return begin(); }
+  } else if (result === 'exit') process.exit(0);
+  signinScreen();
+  if (line.length > input.caret) raw('\x1b[' + (line.length - input.caret) + 'D');
 }
 if (signing) signinScreen();
 else begin();
@@ -346,12 +481,13 @@ function address(text) {
   return done;
 }
 function submit() {
-  const text = pasted, command = line.trim();
-  line = ''; pasted = '';
+  const text = pasted, command = input.text.trim();
+  history += '› ' + input.text + '\n';
+  input.clear(); line = ''; pasted = '';
   out('\r\n');
-  if (command === 'exit') { event('SessionEnd'); out('\x1b[?2004l'); process.exit(0); }
+  if (command === 'exit') { event('SessionEnd'); raw('\x1b[?2004l'); process.exit(0); }
   if (command === 'block') { event('PermissionRequest'); title('Action Required'); out('Needs input: type stop to answer.\r\n'); return prompt(); }
-  if (command === 'stop') { event('Stop'); title('✳ Ready'); return prompt(); }
+  if (command === 'stop') { clearInterval(progress); event('Stop'); title('✳ Ready'); return prompt(); }
   if (!text && !command) return prompt();
   event('UserPromptSubmit');
   title('⠋ Working');
@@ -369,29 +505,18 @@ function submit() {
 }
 process.stdin.setRawMode(true);
 process.stdin.on('data', data => {
-  let s = data.toString('utf8');
-  if (signing) return signinKeys(s.replace(/\x1b\[20[01]~/g, ''));
-  while (s.length) {
-    if (pasting) {
-      const end = s.indexOf('\x1b[201~');
-      pasted += (end < 0 ? s : s.slice(0, end)).replace(/\r/g, '\n');
-      if (end < 0) return;
-      s = s.slice(end + 6);
-      pasting = false;
-      prompt();
+  for (const packet of parser.read(data)) {
+    if (packet.kind === 'paste') {
+      if (signing) { input.insert(packet.data); line = input.text; signinScreen(); }
+      else { pasted += packet.data.replace(/\r/g, '\n'); prompt(); }
       continue;
     }
-    const start = s.indexOf('\x1b[200~');
-    const typed = start < 0 ? s : s.slice(0, start);
-    for (const ch of typed) {
-      if (ch === '\r' || ch === '\n') { if (!busy) submit(); }
-      else if (ch === '\x03') { event('SessionEnd'); process.exit(0); }
-      else if (ch === '\x7f') { if (line) line = line.slice(0, -1); else pasted = ''; prompt(); }
-      else if (ch >= ' ' && ch !== '\x1b') { line += ch; prompt(); }
-    }
-    if (start < 0) return;
-    s = s.slice(start + 6);
-    pasting = true;
+    if (signing) { signinKeys(packet.data); continue; }
+    const result = input.key(packet.data);
+    if (result === 'exit') { event('SessionEnd'); raw('\x1b[?2004l'); process.exit(0); }
+    if (result === 'submit') { if (!busy) submit(); }
+    else prompt();
   }
 });
+process.on('SIGWINCH', () => signing ? signinScreen() : prompt());
 `;

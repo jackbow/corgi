@@ -282,7 +282,7 @@ async function start(o: Options, prepare?: Recipe["prepare"]): Promise<Session> 
     await terminal?.exited;
     xvfb?.kill();
     await xvfb?.exited;
-    sandbox?.shutdown();
+    await sandbox?.shutdown();
     if (sandbox) rmSync(sandbox.dir, { recursive: true, force: true });
     rmSync(scratch, { recursive: true, force: true });
   };
@@ -321,7 +321,7 @@ async function start(o: Options, prepare?: Recipe["prepare"]): Promise<Session> 
         JSON.stringify({ onboarding_complete: true, preset: "corgi", prefix: "ctrl_b", corgi_intensity: 0 }),
       );
       sandbox.run([o.corgi, "start", "--update-routed"]);
-      world.arrange(sandbox);
+      await world.arrange(sandbox);
       await prepare?.(sandbox);
     }
     mkdirSync(join(scratch, "runtime"), { mode: 0o700 });

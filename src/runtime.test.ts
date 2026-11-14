@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import { Runtime, Pane, Launch, Ghost, ending } from "./runtime";
 import { program } from "./process_name";
 import { Terminal } from "./pane/terminal";
@@ -9,6 +9,7 @@ import { Attachment } from "./conversations";
 import { Agent } from "./agents";
 import { ResumeHint } from "./resume_hint";
 import type { Session } from "./headless";
+import * as session from "./session";
 function add(r: Runtime, w: Workspace, split: number | null = null) {
   w.model.next_id = r.workspaces.next_pane_id;
   const id = split === null ? w.model.newTab("") : w.model.split(split, "horizontal");
@@ -23,6 +24,28 @@ function setup() {
   r.workspaces.items = [w];
   return { r, w };
 }
+test("closing a pane drains its final output while its workspace still owns it", () => {
+  const { r, w } = setup(),
+    p = add(r, w);
+  let snapshots = 0;
+  p.terminal.on("change", () => {
+    const snapshot = session.viewerSnapshot(r);
+    expect(snapshot.panes.map(pane => pane.id)).toEqual([p.id]);
+    snapshots++;
+  });
+  const read = spyOn(p.terminal, "read").mockImplementation(() => {
+    p.terminal.feed("final output");
+    return true;
+  });
+  try {
+    r.close(p.id);
+    expect(snapshots).toBe(1);
+    expect(session.viewerSnapshot(r).panes).toEqual([]);
+  } finally {
+    read.mockRestore();
+    r.destroy();
+  }
+});
 test("agent targets follow tab order and keep creation order within split tabs", () => {
   const { r, w } = setup(),
     other = new Workspace(2, "/other");
@@ -354,6 +377,17 @@ test("a reopened agent that Claude's daemon runs shows the attach it runs", () =
     r.destroy();
   }
 });
+test("the last workspace closes with its panes", () => {
+  const { r, w } = setup();
+  try {
+    add(r, w);
+    expect(() => r.closeWorkspace(1, false)).toThrow("WorkspaceNotEmpty");
+    r.closeWorkspace(1, true);
+    expect([r.workspaces.items, r.panes]).toEqual([[], []]);
+  } finally {
+    r.destroy();
+  }
+});
 test("each workspace keeps its newest closed agents, and closing it drops them", () => {
   const { r, w } = setup();
   try {
@@ -413,7 +447,7 @@ test("a launch resumes the way it started, quoting what needs it", () => {
   expect(new Launch({ provider: "claude" }).typed(["--resume", "4ee5c02d-691c-4045-8744-930f330494fd"])).toBe(
     "claude --resume 4ee5c02d-691c-4045-8744-930f330494fd",
   );
-  expect(new Launch(undefined, "custom").run("/bin/corgi", "custom").command).toBe("custom");
+  expect(new Launch(undefined, "custom").run("/bin/corgi").command).toBe("custom");
 });
 test("a resume comes back with the agent's live settings and the options it was typed with", () => {
   const agent = new Agent({ provider: "claude", session: new Text("s1") }),
@@ -432,7 +466,7 @@ test("a resume comes back with the agent's live settings and the options it was 
   expect(launch.typed(["--resume", "s1"])).toBe(
     "claude --dangerously-skip-permissions --mcp-config a.json --resume s1",
   );
-  expect(launch.run("/bin/corgi", "claude").env).toEqual([["CLAUDE_CONFIG_DIR", "/work/.claude"]]);
+  expect(launch.run("/bin/corgi").env).toEqual([["CLAUDE_CONFIG_DIR", "/work/.claude"]]);
   hint.observe(new Agent({ provider: "claude", session: new Text("s2") }));
   expect(hint.permissions).toBeNull();
   expect(hint.model.len).toBe(0);
@@ -478,7 +512,9 @@ test("waking a dormant agent starts it in its own pane behind its old screen", a
     expect(p.ghost?.terminal.text()).toContain("OLD SCREEN");
     expect(p.restoring()).toBe("true resume agent-session");
     expect(actor.state.state).toBe("idle");
-    await expect(r.wake(p.id, wakeOptions, false)).rejects.toThrow("NotDormant");
+    const awake = p.terminal;
+    await r.wake(p.id, wakeOptions, false);
+    expect(p.terminal).toBe(awake);
   } finally {
     r.destroy();
   }
@@ -703,6 +739,36 @@ test("a new agent goes on top though another was dragged before it was seen", ()
     r.raiseEntered();
     expect(w.activity_order.slice()[0]).toEqual({ pane: created.id });
     expect(w.starting.has(`pane:${created.id}`)).toBe(true);
+  } finally {
+    r.destroy();
+  }
+});
+test("closing the pane that holds a prompt session stops it; others stay", () => {
+  const { r, w } = setup();
+  try {
+    const chat = add(r, w),
+      other = add(r, w),
+      stopped: string[] = [];
+    const held = (name: string, pane: number | null) =>
+      ({
+        pane,
+        attachment: new Attachment(),
+        members: [],
+        approvals: [],
+        destroy: () => stopped.push(name),
+      }) as unknown as Session;
+    const mine = held("mine", chat.id),
+      card = held("card", null),
+      theirs = held("theirs", other.id);
+    r.sessions.push(mine, card, theirs);
+    r.close(chat.id);
+    expect(stopped).toEqual(["mine"]);
+    expect(r.sessions).toEqual([card, theirs]);
+    // A chat whose process exited closes its pane the same way.
+    other.terminal.exited = true;
+    r.close(other.id);
+    expect(stopped).toEqual(["mine", "theirs"]);
+    expect(r.sessions).toEqual([card]);
   } finally {
     r.destroy();
   }

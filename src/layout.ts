@@ -19,6 +19,20 @@ export class Rect {
   contains(x: number, y: number) {
     return x >= this.x && y >= this.y && x < this.x + this.w && y < this.y + this.h;
   }
+  /** This rectangle without `hole`: the strips above and below it, then those beside it. */
+  cut(hole: Rect): Rect[] {
+    const top = Math.max(this.y, hole.y),
+      bottom = Math.min(this.y + this.h, hole.y + hole.h);
+    const left = Math.max(this.x, hole.x),
+      right = Math.min(this.x + this.w, hole.x + hole.w);
+    if (top >= bottom || left >= right) return [this];
+    return [
+      new Rect(this.x, this.y, this.w, top - this.y),
+      new Rect(this.x, bottom, this.w, this.y + this.h - bottom),
+      new Rect(this.x, top, left - this.x, bottom - top),
+      new Rect(right, top, this.x + this.w - right, bottom - top),
+    ].filter(piece => piece.w > 0 && piece.h > 0);
+  }
 }
 export type Split = {
   axis: Axis;
@@ -334,10 +348,13 @@ export class Selection {
       if (current) return;
     }
     const old = this.tabs.slice(),
-      active = this.active;
-    let selected = this.count ? old[active].id : 0;
-    if (selected && m.tabIndex(selected) === null) {
-      selected = 0;
+      active = this.active,
+      was = this.count ? old[active] : null;
+    let selected = was?.id ?? 0;
+    if (was && m.tabIndex(selected) === null) {
+      // A tab that's gone leads to the one its focused pane went to.
+      const moved = m.tabForPane(was.focus);
+      selected = moved === null ? 0 : m.tabs[moved].id;
       for (let i = active - 1; i >= 0 && !selected; i--) if (m.tabIndex(old[i].id) !== null) selected = old[i].id;
       for (let i = active + 1; i < this.count && !selected; i++)
         if (m.tabIndex(old[i].id) !== null) selected = old[i].id;
@@ -347,7 +364,9 @@ export class Selection {
     this.tabs = m.tabs.slice(0, m.count).map((t, i) => {
       if (t.id === selected) this.active = i;
       const s = old.find(s => s.id === t.id);
-      return s && m.contains(t.root, s.focus) ? s : { id: t.id, focus: m.firstPane(t.root), zoom: false };
+      if (s && m.contains(t.root, s.focus)) return s;
+      const focus = t.id === selected && was && m.contains(t.root, was.focus) ? was.focus : m.firstPane(t.root);
+      return { id: t.id, focus, zoom: false };
     });
   }
   focus(m: Model, id: PaneId) {

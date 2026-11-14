@@ -91,6 +91,21 @@ export class Agent {
     out.observation = new observation.State({ ...this.observation });
     return out;
   }
+  /** Saved identity and unread results, without a running process's state. */
+  historical(): Agent {
+    const result = this.snapshot();
+    result.state = result.state === "done" ? "done" : "unknown";
+    result.attention = result.observation.unread() ? "finished" : "none";
+    result.last_seq = 0n;
+    result.metadata_protocol_at = result.metadata_at = result.working_since = 0;
+    result.tool_active = result.compacting = false;
+    result.compacting_since = 0;
+    result.permission_review = null;
+    result.subagents = { running: 0, blocked: 0, waiting: false };
+    result.observation.pending_stop = false;
+    result.transcript = new Path();
+    return result;
+  }
   /** Starts or clears the work clock; blocked keeps it running. */
   trackWorking(now: number) {
     const since = this.state === "working" || this.state === "blocked" ? this.working_since || now : 0;
@@ -161,6 +176,10 @@ export class Agent {
   }
   finishedTurn(turn: string) {
     return turn ? turn === this.last_finished_turn.text() : this.finished_since_activity;
+  }
+  /** The screen saw a turn finish before any hook reported this conversation. */
+  screenFinished() {
+    return this.last_seq === 0n && this.observation.source === "screen" && this.finished_since_activity;
   }
   beginTurn(turn: string) {
     this.permission_review = null;
@@ -245,7 +264,7 @@ export class Agent {
       session = hook.session,
       start = event === "session_start",
       reported = hook.turn,
-      screen_completed = this.last_seq === 0n && this.observation.source === "screen" && this.finished_since_activity,
+      screen_completed = this.screenFinished(),
       binds_completion = screen_completed && (event === "stop" || event === "interrupt");
     if ((this.session.len && session && session !== this.sessionId()) || (this.provider && this.provider !== provider))
       return null;
@@ -308,6 +327,14 @@ export class Agent {
     this.provider = provider;
     if (session && Buffer.byteLength(session) <= 160) this.session = new Text(session);
     const old = this.state;
+    // A turn only the screen saw finish is still at work, so its Stop is no repeat.
+    if (
+      this.observation.source === "screen" &&
+      reported &&
+      this.finishedTurn(reported) &&
+      (next === "working" || next === "blocked")
+    )
+      this.last_finished_turn = new Text();
     this.observation.source = "hook";
     this.observation.pending_stop = event === "stop" && !binds_completion;
     if (binds_completion) this.last_finished_turn = Text.ascii(reported || this.turnId());

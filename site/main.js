@@ -12,6 +12,7 @@ import * as heroConfig from "./hero_config";
 import * as resourceSamples from "./resource_samples";
 import DATA from "./frames.json";
 import * as terminal from "./terminal";
+import * as footerCorgi from "./footer_corgi";
 import * as corgiAnimation from "../src/corgi_animation";
 import * as corgiFrames from "../src/corgi_frames";
 import * as corgiBadge from "../src/assets/corgi_badge";
@@ -31,11 +32,12 @@ import * as brandIcons from "../src/assets/brand_icons";
 import { Rect } from "../src/layout";
 import { Writer } from "../src/text";
 import { cpuText, memoryText } from "../src/trackers/resources";
-import CLI_HELP from "../assets/cli-help.txt" with { type: "text" };
+import * as cli_help from "../src/cli_help";
 import CLI_SKILL from "../assets/corgi-skill.md" with { type: "text" };
 
+(() => {
 language.rememberChoices();
-const helpText = i18n.html(CLI_HELP);
+const helpText = cli_help.commands();
 const WAG = corgiFrames.wag;
 const BADGE = `data:image/png;base64,${corgiBadge.png_base64}`;
 const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -175,7 +177,7 @@ function animate(g, now, dreamKey = 0) {
   const wag = WAG[still ? 0 : Math.floor(now / 200) % WAG.length];
   for (const [r, c] of bits.awake) put(out, r, c, wag);
   // One sleeper dreams per period, as corgi picks it; screens dream out of step.
-  const dream = still ? null : corgiAnimation.dreamer(bits.sleep.map((_, i) => BigInt(i)), now + dreamKey * 2300);
+  const dream = still ? null : corgiAnimation.dreamer(bits.sleep.map((_, i) => String(i)), now + dreamKey * 2300);
   if (dream) {
     const [r, c] = bits.sleep[Number(dream.key)];
     const ground = STYLES[out[r][c][1]][1] ?? "pane", grey = ground === "selected" ? "muted" : "faint";
@@ -274,6 +276,38 @@ class Screen {
 const visible = new Set();
 const watch = new IntersectionObserver((entries) => entries.forEach((e) => (e.isIntersecting ? visible.add(e.target) : visible.delete(e.target))));
 const T = { text: style("text"), strong: style("strong", null, true), muted: style("muted"), faint: style("faint"), cursor: style(null, "text") };
+const WATCH_COLS = 124, WATCH_ROWS_N = 24;
+
+function launchFrame(cols, rows, ms) {
+  const g = blank(rows, cols);
+  const typed = Math.max(0, Math.min(5, Math.floor((ms - 100) / 140)));
+  put(g, 1, 2, "~/dev", T.faint);
+  let c = put(g, 2, 2, "$ ", T.faint);
+  c = put(g, 2, c, "corgi".slice(0, typed), T.strong);
+  put(g, 2, c, " ", T.cursor);
+  return g;
+}
+
+// The prerendered container query supplies the width in the browser;
+// without it, the band's width picks the layout.
+function heroColumns(el) {
+  el.style.removeProperty("--cols");
+  const styled = +getComputedStyle(el).getPropertyValue("--cols");
+  const single = styled ? styled === heroConfig.mobile.cols : el.closest(".band").clientWidth < heroConfig.mobile.breakpoint;
+  const cols = single ? heroConfig.mobile.cols : WATCH_COLS;
+  if (!styled) el.style.setProperty("--cols", cols);
+  return cols;
+}
+
+// Only the opening prompt is saved in the HTML. The other demos start
+// when the browser loads the page.
+if (document.documentElement.dataset.prerender === "hero") {
+  const el = document.getElementById("v-sim"), cols = heroColumns(el);
+  const screen = new Screen(el, WATCH_COLS, WATCH_ROWS_N, { badge: true });
+  screen.paint(launchFrame(cols, WATCH_ROWS_N, 0));
+  screen.badge.hidden = true;
+  return;
+}
 
 // ---------------------------------------------------------------- feature screens
 // New tab: the real picker. The pointer and the arrows select, a click or
@@ -897,7 +931,7 @@ new ResizeObserver(() => requestAnimationFrame(() => {
 // visitor's own pointer takes over until 5 s after it leaves. Phones get corgi
 // as a 54-column terminal (its narrowest sidebar, shorter names, packed
 // cards) and taps: one opens an agent's card, the next only dismisses it.
-const WATCH_COLS = 124, WATCH_ROWS_N = 24, CARD_LEFT = 30, CARD_WIDTH_AT = 34;
+const CARD_LEFT = 30, CARD_WIDTH_AT = 34;
 const WIDTHS = [26, 30, 34, 38, 42];
 // The agent list starts at AGENT_TOP, two rows an agent.
 const AGENT_TOP = 13;
@@ -1706,11 +1740,118 @@ function laneNow() {
   const cell = spriteCells[0].getBoundingClientRect();
   return Math.max(10, Math.min(ROOM, Math.floor((document.documentElement.clientWidth - cell.left) / cell.width)));
 }
+// With Omarchy picked, the corgi wears corgi-omarchy's title beside it: a
+// heart that draws itself in and beats, and Omarchy's logo stroking in. A
+// throw needs their room, so they undraw quickly before the ball flies, and
+// draw back in once the corgi has settled at home.
+const HEART = "M680 1160L139.8 620.6A340 340 0 1 1 680 220A340 340 0 1 1 1220 620.6Z",
+  HEART_IN = "M680 380A160 160 0 0 1 538.8 295.3A180 180 0 1 0 252.8 507.4L680 933.9L1107 507.4A180 180 0 1 0 821.2 295.3A160 160 0 0 1 680 380Z",
+  LOGO = ["M640 1160H40V40H1160V1160H720", "M600 40V200", "M640 200H200V1000H1000V200H880", "M600 1160V1040", "M40 600H200"];
+const drawn = (cls, d) => `<path class="draw ${cls}" pathLength="1" d="${d}"/>`;
+// Laid out as the title lays them out after its corgi, in its 32px units.
+const LOVE_SVG =
+  `<svg viewBox="0 0 78.95 24.5"><g class="heart"><svg x="13.617" width="27.767" height="24.5" viewBox="0 0 1360 1200" overflow="visible" stroke-linejoin="round">` +
+  `<path class="fill" d="${HEART}"/>${drawn("outer", HEART)}<path class="outer-solid" d="${HEART}"/>${drawn("inner", HEART_IN)}<path class="inner-solid" d="${HEART_IN}"/></svg></g>` +
+  `<svg class="logo" x="54.45" width="24.5" height="24.5" viewBox="0 0 1200 1200">${LOGO.map((d, i) => drawn(`m${i + 1}`, d)).join("")}</svg></svg>`;
+// The title's timeline as [part, keyframes, start, length, easing]: the heart's
+// outline and inner line draw and go solid, then it fills; the logo's strokes
+// draw in turn, the last two from their far ends.
+const STROKE = "cubic-bezier(.45,0,.25,1)";
+const drawIn = (from) => [{ strokeDashoffset: `${from}px` }, { strokeDashoffset: "0px" }];
+const showUp = [{ opacity: 0 }, { opacity: 1 }];
+const LOVE_STEPS = [
+  [".outer", drawIn(1.05), 0, 650, STROKE],
+  [".outer-solid", showUp, 650, 10, "linear"],
+  [".inner", drawIn(1.05), 360, 470, STROKE],
+  [".inner-solid", showUp, 830, 10, "linear"],
+  [".fill", showUp, 830, 150, "ease-out"],
+  [".m1", drawIn(1.05), 0, 650, STROKE],
+  [".m2", drawIn(1.05), 250, 110, "ease-out"],
+  [".m3", drawIn(1.05), 360, 470, STROKE],
+  [".m4", drawIn(-1.05), 540, 70, STROKE],
+  [".m5", drawIn(-1.05), 600, 70, STROKE],
+];
+const BEAT = [[0, 1], [0.08, 1.12], [0.16, 1], [0.24, 1.08], [0.36, 1], [1, 1]].map(([offset, scale]) => ({ offset, transform: `scale(${scale})`, easing: "ease-in-out" }));
+// The timeline's length, when the heart starts beating, the lane the corgi
+// needs to wear them clear of the slant, and how long it rests after a fetch.
+const LOVE_END = 980, LOVE_BEAT = 900, LOVE_ROOM = 13, LOVE_REST = 300;
+// How much faster they undraw than draw: out of a throw's way, or about as
+// long as the install line's dust when Omarchy is unpicked.
+const CLEAR_RATE = 5, LEAVE_RATE = 1.5;
+const love = {
+  el: Object.assign(document.createElement("span"), { className: "love", hidden: true, innerHTML: LOVE_SVG }),
+  omarchy: false,
+  steps: null,
+  beat: null,
+  // Where the timeline is and where it's headed, in ms.
+  p: 0,
+  goal: 0,
+  rate: 1,
+  at: 0,
+  frame: 0,
+  thenThrow: false,
+  fetchedAt: -Infinity,
+};
+spriteCells[5].after(love.el);
+// They're worn with Omarchy picked, unless a throw needs their room or the lane is too narrow.
+function steerLove(now) {
+  const fetching = !still && play.tick(lane, now) !== null;
+  if (fetching) love.fetchedAt = now;
+  const room = !love.thenThrow && !fetching && now - love.fetchedAt >= LOVE_REST && lane >= LOVE_ROOM;
+  aimLove(love.omarchy && room ? LOVE_END : 0, room ? LEAVE_RATE : CLEAR_RATE);
+}
+// The timeline runs from wherever it is, so a change of mind mid-draw reverses it.
+function aimLove(goal, rate) {
+  love.rate = rate;
+  if (goal === love.goal) return;
+  love.goal = goal;
+  love.steps ??= LOVE_STEPS.map(([part, keyframes, delay, duration, easing]) => {
+    const step = love.el.querySelector(part).animate(keyframes, { delay, duration, easing, fill: "both" });
+    step.pause();
+    return step;
+  });
+  if (still) {
+    love.p = goal;
+    return paintLove();
+  }
+  beatLove(goal > 0);
+  if (!love.frame) {
+    love.at = performance.now();
+    love.frame = requestAnimationFrame(runLove);
+  }
+}
+function runLove(now) {
+  const step = Math.max(0, now - love.at) * (love.goal > love.p ? 1 : love.rate);
+  love.at = now;
+  love.p = love.goal > love.p ? Math.min(love.goal, love.p + step) : Math.max(love.goal, love.p - step);
+  paintLove();
+  love.frame = love.p === love.goal ? 0 : requestAnimationFrame(runLove);
+  if (love.frame || !love.thenThrow) return;
+  love.thenThrow = false;
+  play.throwBall(lane, now);
+}
+function paintLove() {
+  love.el.hidden = love.p === 0;
+  for (const step of love.steps) step.currentTime = love.p;
+}
+// The heart beats once it's whole. Undrawing, it finishes the beat it's in,
+// and keeps beating if it's drawn back in before that ends.
+function beatLove(on) {
+  const iteration = love.beat?.effect.getComputedTiming().currentIteration ?? null;
+  if (on && iteration !== null) love.beat.effect.updateTiming({ iterations: Infinity });
+  else if (on) love.beat = love.el.querySelector(".heart").animate(BEAT, { delay: Math.max(0, LOVE_BEAT - love.p), duration: 1200, iterations: Infinity });
+  else love.beat?.effect.updateTiming({ iterations: iteration === null ? 0 : iteration + 1 });
+}
 // A click throws a ball, unless the corgi is still fetching the last one.
 sprite.addEventListener("click", () => {
   const now = performance.now();
-  if (still || play.tick(lane, now) !== null) return;
+  if (still || love.thenThrow || play.tick(lane, now) !== null) return;
   lane = laneNow();
+  // The heart and the logo clear the ball's way first.
+  if (love.p > 0) {
+    love.thenThrow = true;
+    return aimLove(0, CLEAR_RATE);
+  }
   play.throwBall(lane, now);
 });
 function drawSprite(now) {
@@ -1728,6 +1869,7 @@ function drawSprite(now) {
     // The slant is faint, and lit while the ball shares its cell.
     cell.classList.toggle("slant", fg === "faint");
   });
+  steerLove(now);
 }
 // Reduced motion stops the animation clock, but fonts and viewport sizes
 // can still change how much room the fetch lane has.
@@ -1736,17 +1878,28 @@ spriteSize.observe(sprite.parentElement);
 spriteSize.observe(sprite.closest(".hero"));
 
 // ---------------------------------------------------------------- footer corgi
-const sleeperCells = rowOf(document.getElementById("sleeper"), 16);
-// Corgi's sleeper, dreaming as a lone sidebar sleeper does.
+const sleeper = document.getElementById("sleeper");
+const sleeperCells = rowOf(sleeper, footerCorgi.width);
+// Corgi's sleeper, dreaming as a lone sidebar sleeper does, until a tap wakes him.
+const wake = new footerCorgi.Wake();
 function drawSleeper(now) {
-  const dream = still ? null : corgiAnimation.dreamer([0n], now + 3500);
-  const cells = terminal.row(corgiAnimation.idle(16, new corgiAnimation.Sleep({ puff_ms: dream?.puff_ms ?? null })), 16);
+  const cells = terminal.row(wake.write(still ? null : now), footerCorgi.width);
   sleeperCells.forEach((s, i) => {
     const [ch, fg] = cells[i];
     if (s.textContent !== ch) s.textContent = ch;
     s.style.color = ch === " " ? "" : HEX[fg] ?? fg;
   });
 }
+// Awake, he runs at the display's rate: his scoots are quicker than the page's 50 ms frames.
+let wakeFrame = 0;
+function drawWake(now) {
+  drawSleeper(now);
+  wakeFrame = wake.awake(now) ? requestAnimationFrame(drawWake) : 0;
+}
+if (!still) sleeper.addEventListener("click", () => {
+  wake.tap(performance.now());
+  if (!wakeFrame) wakeFrame = requestAnimationFrame(drawWake);
+});
 
 // ---------------------------------------------------------------- wiring
 const started = new Map();
@@ -1763,9 +1916,127 @@ function frame(now) {
 frame(performance.now());
 if (!still) setInterval(() => frame(performance.now()), 50);
 
+// The install line's command: Corgi's installer, or on Omarchy its bar plugin.
+// Pressing Omarchy in the supported line trades one for the other: the command
+// crumbles into braille dust, as a worktree does when Corgi removes it, and the
+// new one settles out of it. Toward Omarchy the dust sweeps left to right, back
+// right to left, and the box's edge travels with it. The hero corgi puts on
+// Omarchy's heart and logo, or takes them off.
+const installCode = document.getElementById("install-cmd");
+const installs = {
+  everywhere: "curl -fsSL https://corgi.computer/install.sh | bash",
+  omarchy: "omarchy plugin add https://github.com/tals/corgi-omarchy --enable",
+};
+let install = "everywhere",
+  sweep = 0;
+const dust_ms = 650;
+// Corgi's cell hash, so a cell's dust is the same on every frame of a tick.
+const cellHash = (a, b, c) => {
+  let h = Math.imul(a, 374761393) + Math.imul(b, 668265263) + Math.imul(c, 2147483647);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+};
+const unit = (v) => Math.max(0, Math.min(1, v));
+const braille = (bits) => String.fromCharCode(0x2800 + bits);
+// A cell's braille with `n` of its 8 dots, picked by the cell.
+const dustBits = (col, n, salt) => {
+  const order = [0, 1, 2, 3, 4, 5, 6, 7].sort((a, b) => cellHash(col, a, salt) - cellHash(col, b, salt));
+  let bits = 0;
+  for (let i = 0; i < Math.round(n); i++) bits |= 1 << order[i];
+  return bits;
+};
+// A column's progress through the sweep: below 0 untouched, from 1 settled.
+const dustLocal = (col, t, w, forward) =>
+  (t - ((forward ? col : w - 1 - col) / Math.max(1, w - 1)) * 0.62 - cellHash(col, 7, 1) * 0.08) / 0.3;
+// A column's glyph and gray at `local`: the old letter crumbling, dust drifting, the new letter settling.
+function dustCell(local, col, from, to, tick) {
+  if (local < 0) return [from, "strong"];
+  if (local >= 1) return [to, "strong"];
+  if (from === " " && to === " ")
+    return local > 0.3 && local < 0.6 && cellHash(col, tick, 3) < 0.25 ? [braille(dustBits(col + tick, 1, 4)), "line"] : [" ", "line"];
+  if (local < 0.35) return [braille(dustBits(col, 8 * (1 - local / 0.35) + 1, 2)), local < 0.15 ? "muted" : "faint"];
+  if (local < 0.6)
+    return cellHash(col, tick, 5) < 0.5 ? [braille(dustBits(col + tick, 1 + cellHash(col, tick, 6) * 2, 7)), "line"] : [" ", "line"];
+  if (to === " ") return [" ", "line"];
+  if (local < 0.88) return [braille(dustBits(col, 1 + ((local - 0.6) / 0.28) * 7, 9)), local < 0.75 ? "faint" : "muted"];
+  return [to, "text"];
+}
+// The box's width in columns: a column past the shorter command's end opens
+// just before the new letters settle there, or closes as its dust clears.
+function dustWidth(t, w, from, to, forward) {
+  const shrinking = to.length < from.length;
+  let width = Math.min(from.length, to.length);
+  for (let col = width; col < w; col++) {
+    const local = dustLocal(col, t, w, forward);
+    width += shrinking ? 1 - unit((local - 0.4) / 0.25) : unit((local - 0.3) / 0.3);
+  }
+  return width;
+}
+const escapeHtml = (text) => text.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+// Runs of ASCII in one gray share a span; braille, from a fallback font, gets a one-column cell each.
+function paintInstall(cells) {
+  let html = '<span class="ps">$ </span>',
+    run = "",
+    tone = "strong";
+  const flush = () => {
+    if (run) html += tone === "strong" ? escapeHtml(run) : `<span class="t-${tone}">${escapeHtml(run)}</span>`;
+    run = "";
+  };
+  for (const [ch, t] of cells) {
+    if (ch > "~") { flush(); html += `<span class="c t-${t}">${ch}</span>`; continue; }
+    if (t !== tone) { flush(); tone = t; }
+    run += ch;
+  }
+  flush();
+  installCode.innerHTML = html;
+}
+// The box eases between the two commands' lengths ("$ " included) when it isn't sweeping.
+const sizeInstall = (columns) => { installCode.style.width = `${columns + 2}ch`; };
+const pressInstall = () => {
+  for (const button of document.querySelectorAll(".note .omarchy")) button.setAttribute("aria-pressed", String(install === "omarchy"));
+};
+function switchInstall(next) {
+  const from = installs[install], to = installs[next];
+  install = next;
+  pressInstall();
+  love.omarchy = next === "omarchy";
+  steerLove(performance.now());
+  cancelAnimationFrame(sweep);
+  installCode.style.transition = "";
+  if (!installCode.style.width) { sizeInstall(from.length); void installCode.offsetWidth; }
+  if (still) { paintInstall([...to].map((ch) => [ch, "strong"])); sizeInstall(to.length); return; }
+  const forward = next === "omarchy",
+    w = Math.max(from.length, to.length),
+    a = from.padEnd(w),
+    b = to.padEnd(w),
+    start = performance.now();
+  // The sweep sizes the box itself, every frame.
+  installCode.style.transition = "none";
+  sizeInstall(dustWidth(0, w, from, to, forward));
+  const frame = (now) => {
+    const t = unit((now - start) / dust_ms);
+    if (t >= 1) {
+      paintInstall([...to].map((ch) => [ch, "strong"]));
+      sizeInstall(to.length);
+      installCode.style.transition = "";
+      return;
+    }
+    const tick = Math.floor((now - start) / 40);
+    sizeInstall(dustWidth(t, w, from, to, forward));
+    paintInstall([...a].map((_, col) => dustCell(dustLocal(col, t, w, forward), col, a[col], b[col], tick)));
+    sweep = requestAnimationFrame(frame);
+  };
+  sweep = requestAnimationFrame(frame);
+}
+// The supported line is rewritten when the language changes, so its button is found on each press.
+document.addEventListener("click", (event) => {
+  if (event.target.closest(".note .omarchy")) switchInstall(install === "omarchy" ? "everywhere" : "omarchy");
+});
+pressInstall();
+
 const copyBtn = document.getElementById("copy");
 copyBtn.addEventListener("click", () => {
-  const text = "curl -fsSL https://corgi.computer/install.sh | bash";
+  const text = installs[install];
   const cmd = copyBtn.closest(".cmd");
   const reset = () => { copyBtn.classList.remove("copied"); copyBtn.setAttribute("aria-label", i18n.t`Copy the install command`); };
   // The check shows on the click itself; the glint runs alongside it.
@@ -1781,6 +2052,11 @@ copyBtn.addEventListener("click", () => {
   const select = () => {
     clearTimeout(copyBtn.timer);
     reset();
+    cancelAnimationFrame(sweep);
+    const text = installs[install];
+    paintInstall([...text].map((ch) => [ch, "strong"]));
+    sizeInstall(text.length);
+    installCode.style.transition = "";
     const range = document.createRange(); range.selectNodeContents(document.getElementById("install-cmd")); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
   };
   try { navigator.clipboard.writeText(text).catch(select); } catch { select(); }
@@ -2211,7 +2487,7 @@ function session(init = {}) {
     trees: null, menu: null, copiedUntil: 0, lights: null, alone: false,
     // The hackable band's terminals by pane: scrollback, the line being
     // typed, and the program holding it, if any. With `quiet`, agents show
-    // only what `corgi pane send` asked them, kept in `asked`.
+    // only what `corgi message` asked them, kept in `asked`.
     term: null, quiet: false, asked: {}, fixed: false,
     // With `idle`, the thruster tuning has finished, its pane still; with
     // `shot`, it has saved a screenshot of the game, and with `pr`, opened a
@@ -2586,27 +2862,13 @@ function drawHero(t) {
       ? i18n.t`A Corgi session. Tap an agent to see its pane.`
       : i18n.t`A Corgi session with Claude and Codex agents. Click an agent to switch to it.`);
   if (heroReady) heroScreen.paint(crop(hero.compose(t), 0, 0, ROWS, H.cols));
-  else {
-    const g = blank(ROWS, H.cols);
-    const typed = Math.max(0, Math.min(5, Math.floor((ms - 100) / 140)));
-    put(g, 1, 2, "~/dev", T.faint);
-    let c = put(g, 2, 2, "$ ", T.faint);
-    c = put(g, 2, c, "corgi".slice(0, typed), T.strong);
-    put(g, 2, c, " ", T.cursor);
-    heroScreen.paint(g);
-  }
+  else heroScreen.paint(launchFrame(H.cols, ROWS, ms));
   heroScreen.badge.hidden = !heroReady;
 }
 point(simEl, () => hero, () => [0, 0, ROWS, H.cols], { touch: "link git unread agent res ws tab pane", cards: "hover" });
-// The prerendered page's container query sets --cols, so the band has its new
-// size before the observer runs; without it (the prerender itself), the
-// band's width picks and the script sets it.
 function fitHero() {
-  simEl.style.removeProperty("--cols");
-  const styled = +getComputedStyle(simEl).getPropertyValue("--cols");
-  const single = styled ? styled === heroConfig.mobile.cols : simEl.closest(".band").clientWidth < heroConfig.mobile.breakpoint;
-  Object.assign(H, { single, cols: single ? heroConfig.mobile.cols : COLS, hover: null, card: null, res: null, resHeld: false, linkHover: false, gitHover: false });
-  if (!styled) simEl.style.setProperty("--cols", H.cols);
+  const cols = heroColumns(simEl);
+  Object.assign(H, { single: cols === heroConfig.mobile.cols, cols, hover: null, card: null, res: null, resHeld: false, linkHover: false, gitHover: false });
   drawHero(now());
 }
 new ResizeObserver(fitHero).observe(simEl.closest(".band"));
@@ -2740,7 +3002,7 @@ const layoutText = (S, node, nested) => {
   return nested ? `(${text})` : text;
 };
 // `corgi list` for moonlander: its tabs and panes, the panes it started with
-// being Claude, which works once a send asks it something.
+// being Claude, which works once `corgi message` asks it something.
 function listText(S) {
   const out = ['workspace 2 "moonlander" ~/moonlander'];
   for (const root of S.tabs.M) {
@@ -2789,6 +3051,15 @@ function interrupt(S, p, id) {
   p.rows = [...p.rows, p.program ? [["^C", A.text]] : [...(p.ps ?? prompt("~/moonlander")), [p.typed + "^C", A.text]]];
   Object.assign(p, { program: null, typed: "", scroll: 0 });
 }
+// Text typed into pane `id`: a shell at its prompt takes it, and Enter runs
+// it once the sender's command is done. A quiet agent starts on it.
+function typeInto(s, id, text, enter) {
+  const S = s.S, p = S.term[id];
+  if (p && !p.program) {
+    p.typed += text;
+    if (enter) setTimeout(() => !p.program && runLine(s, p, id, p.typed));
+  } else if (!p && S.quiet && enter) S.asked[id] = { text, at: now() };
+}
 // Whether a corgi command line asks for JSON: `--json` before any `--`.
 const wantsJson = (args) => args.slice(0, args.includes("--") ? args.indexOf("--") : args.length).includes("--json");
 // What `corgi ARGS` prints, run from the pane `from` (null outside Corgi).
@@ -2801,13 +3072,24 @@ function corgi(s, from, args) {
     return lines(r.closed_panes.length ? `closed pane ${r.closed_panes.join(", ")}` : r.pane ? `pane ${r.pane} (tab ${r.tab}, workspace ${r.workspace})` : "ok");
   };
   if (group === "--skill") return lines(CLI_SKILL);
-  if (!group || group === "help" || args.includes("--help") || args.includes("-h") || (["pane", "tab", "workspace"].includes(group) && args.length === 1)) return lines(i18n.html(CLI_HELP));
+  if (!group || group === "help" || args.includes("--help") || args.includes("-h") || (["pane", "tab", "workspace"].includes(group) && args.length === 1)) return lines(cli_help.commands());
   if (group === "current") { if (!from) throw Error("NoCallerPane"); return ok(locate(S, from)); }
   if (group === "list" || (group === "workspace" && verb === "list")) {
     if (args.slice(group === "list" ? 1 : 2).some((a) => a !== "--json")) throw Error("Usage");
     if (!wantsJson(args)) return lines(listText(S));
     const panes = S.tabs.M.flatMap((root) => leafIds(root).filter((k) => S.ids[k]).map((k) => locate(S, k)));
     return [[[JSON.stringify({ ok: true, result: { workspaces: [{ id: MOON, name: "moonlander", cwd: "~/moonlander" }], panes }, viewers: [] }), JSON_OUT]]];
+  }
+  // The panes it started with are Claude, which takes a message through its
+  // inbox; a terminal is a shell, which `pane send` types into instead.
+  if (group === "message") {
+    const { pos } = cliArgs(args.slice(1)), id = paneArg(S, from, pos[0]?.replace(/^pane:/, ""));
+    if (pos.length !== 2 || !pos[1].trim()) throw Error(pos.length === 2 ? "InvalidMessage" : "Usage");
+    if (S.term[id]) throw Error("NoAgent");
+    typeInto(s, id, pos[1], true);
+    const where = locate(S, id);
+    if (wantsJson(args)) return ok({ ...where, delivery: "message", queued: false });
+    return lines(`messaged pane ${where.pane} (tab ${where.tab}, workspace ${where.workspace})`);
   }
   const { pos, opt } = cliArgs(args.slice(2));
   switch (`${group} ${verb}`) {
@@ -2835,14 +3117,9 @@ function corgi(s, from, args) {
       return lines((all.length > Number(count) ? `[corgi: last ${count} lines shown; --lines N reads more]\n` : "") + text);
     }
     case "pane send": {
-      const id = paneArg(S, from, pos[0]), p = S.term[id];
+      const id = paneArg(S, from, pos[0]);
       if (pos.length !== 2) throw Error("Usage");
-      // A shell at its prompt takes it as typed, and Enter runs it once the
-      // sender's command is done. A quiet agent starts on it.
-      if (p && !p.program) {
-        p.typed += pos[1];
-        if (opt.enter) setTimeout(() => !p.program && runLine(s, p, id, p.typed));
-      } else if (!p && S.quiet && opt.enter) S.asked[id] = { text: pos[1], at: now() };
+      typeInto(s, id, pos[1], opt.enter);
       return ok(locate(S, id));
     }
     case "pane keys": {
@@ -2956,7 +3233,7 @@ function termKey(s, p, from, e) {
 const CLI_SCRIPT = [
   'corgi pane split 5 --right --command "bun test --watch"',
   "corgi pane read 7 | grep fail",
-  'corgi pane send 5 "fix the failing test" --enter',
+  'corgi message 5 "fix the failing test"',
   'corgi pane split 7 --down --command "bun run dev"',
 ];
 const CLI_INIT = {
@@ -2988,7 +3265,7 @@ const cliBand = (() => {
     B.s.S.recall = [...B.s.S.recall, line];
     runLine(B.s, B.term, null, line);
     B.step++;
-    B.at = at + (B.step === CLI_SCRIPT.length ? 9000 : line.includes(" send ") ? FIX_AFTER + 1500 : 1500);
+    B.at = at + (B.step === CLI_SCRIPT.length ? 9000 : line.includes(" message ") ? FIX_AFTER + 1500 : 1500);
   }
   function drawTerm(t) {
     const p = B.term, h = ROWS - 2, on = !B.taken || (document.activeElement === termEl && Math.floor(t / 530) % 2 === 0);
@@ -3728,5 +4005,6 @@ function run() {
 }
 run();
 setInterval(run, 50);
+})();
 })();
 

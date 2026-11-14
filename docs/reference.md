@@ -97,8 +97,12 @@ selection. The `last-tab` and `last-workspace` actions can also be bound in any
 preset through the shortcut editor.
 
 After a crash or reboot, Corgi restores saved layout and output. Recorded agent
-sessions return dormant and resume when their pane gets focus; other panes
-start new shells. Recovery cannot restore arbitrary process memory. See
+sessions return dormant and resume when their pane enters focus; other panes
+start new shells unless explicitly hibernated. Scripts can use `corgi pane
+hibernate ID` and `corgi pane wake ID`;
+[workspace archiving](workspaces.md#hibernate-panes-and-archive-workspaces)
+keeps a whole workspace asleep and out of the normal sidebar list.
+Recovery cannot restore arbitrary process memory. See
 [reload and recovery details](../HACKING.md).
 
 ### Customize shortcuts
@@ -199,6 +203,10 @@ tmux tab numbering starts at zero; other presets start at one.
 
 | Action | Corgi | tmux | Herdr | cmux |
 | --- | --- | --- | --- | --- |
+| Undo layout change | `prefix Ctrl+Z` | `prefix Ctrl+Z` | `prefix Ctrl+Z` | `prefix Ctrl+Z` |
+| Redo layout change | `prefix Ctrl+Y` | `prefix Ctrl+Y` | `prefix Ctrl+Y` | `prefix Ctrl+Y` |
+| Filter workspace machines | `prefix M`, `prefix Shift+M` | `prefix M`, `prefix Shift+M` | `prefix M`, `prefix Shift+M` | `prefix M`, `prefix Shift+M` |
+| Developer connectivity | `prefix ~`, `prefix Shift+`` | `prefix ~`, `prefix Shift+`` | `prefix ~`, `prefix Shift+`` | `prefix ~`, `prefix Shift+`` |
 | New tab (agent picker) | `prefix c`, `Ctrl+T` | `prefix c` | `prefix c` | `Cmd+T`, `prefix c` |
 | Next tab | `prefix n` | `prefix n` | `prefix n` | `Cmd+Shift+]`, `prefix n` |
 | Previous tab | `prefix p` | `prefix p` | `prefix p` | `Cmd+Shift+[`, `prefix p` |
@@ -249,6 +257,7 @@ tmux tab numbering starts at zero; other presets start at one.
 | Detach | `prefix q`, `prefix d` | `prefix d` | `prefix q` | `prefix q`, `prefix d` |
 | Toggle sidebar | `prefix b` | `prefix b` | `prefix b` | `Cmd+B`, `prefix b` |
 | Review changes | `prefix e` | `prefix e` | `prefix e` | `prefix e` |
+| Corgi prompt | `prefix Space`, `Ctrl+Shift+K` | `prefix Space`, `Ctrl+Shift+K` | `prefix Space`, `Ctrl+Shift+K` | `prefix Space` |
 | Setup | `prefix i`, `prefix C` | `prefix C` | `prefix s` | `Cmd+,`, `prefix i`, `prefix C` |
 | All shortcuts | `prefix ?` | `prefix ?` | `prefix ?` | `prefix ?` |
 
@@ -308,6 +317,112 @@ Fullscreen covers the panes without changing their layout. Esc returns to the
 split view and gives focus back to the agent. `Z` expands unchanged context and
 folded file headings together; pressing it again restores compact hunks.
 Generated files still require an explicit load.
+## Ask Corgi
+
+**prefix Space** opens the Corgi prompt over any pane, and closes it again.
+In the Corgi, tmux and Herdr presets, **Ctrl+Shift+K** does too, in terminals
+that report Shift with Ctrl (the Kitty keyboard protocol); plain Ctrl+K stays
+with the pane.
+It runs one of your agents without a terminal and draws the conversation
+itself. It knows the workspace, the focused agent and the others beside it.
+The conversation stays when you close the prompt; the status line says when
+it needs you or has answered, with a short yip of Corgi's own (muted with
+the other dings). Moved to a Corgi pane, it shows in the agent list as Corgi.
+
+| Task | Key |
+| --- | --- |
+| Send / new line | Enter / Shift+Enter |
+| Recall previous messages / return to draft | ↑ / ↓ |
+| Browse interactive results | Shift+Tab, then ↑↓ and Enter; Esc returns to input |
+| Pick the model and effort | Tab, then ↑↓, → for effort, `/` to search |
+| Attach an agent's screen, the selection or the diff | `@` |
+| Attach the clipboard's image | Ctrl+V, or Cmd+V with no text copied |
+| Remove the last attachment | Backspace in an empty box |
+| Steer the turn under way | Type, then Enter |
+| Stop the turn | Ctrl+C |
+| Continue in a Corgi pane of its own | Ctrl+O, or `/pane` |
+| Commands (`/new`, `/erase`, `/incognito`, `/memory`) | `/` |
+| Close | Esc |
+
+Replies can link to a commit as `[review](abc1234@/project)` or an endpoint
+comparison as `[changes](main..topic@/project)`. Hover previews the diff on the
+right; click opens the review tool. Relative folders resolve from the prompt's
+workspace, and `~/` works. Code spans such as `HEAD@.` and `abc1234@/project`
+also work. Standalone hashes and hash ranges in normal prose are recognized
+automatically in the prompt's workspace, including hashes made entirely of
+digits or letters. Git verifies bare hashes in a cached batch before making
+them interactive, so unrelated numbers stay text. Old `commits` blocks render as inline links.
+The hover preview overlays the right side; opening review makes room for it.
+In a narrow terminal,
+clicking opens review at full width. Plain ↑↓ recall messages into the input;
+modified arrows keep their text-selection behavior, and returning past the
+newest recalled message restores the draft and caret.
+
+The pane you opened it over goes with your next message, as a chip at the
+start of the input; Backspace drops it. `@` adds another agent's or shell's
+recent screen, the text selected in a pane, or the workspace's `git diff`.
+An `@` search may run to several words. `@` also offers your other
+workspaces: one attached tells the model what runs there, and its agents,
+panes and diff join what `@` offers. Type `/` in an empty box to list the
+commands.
+
+A pasted image, or a pasted or dropped image file, becomes an "Image 1" chip
+and goes to the model as an image (OpenCode 2 gets its file's path); point at
+the chip to see it. Ctrl+V reads this machine's clipboard, so over SSH an
+image pastes only from a terminal that sends paste events.
+
+Corgi remembers in Markdown files beside its settings, as OpenClaw does: a
+curated `MEMORY.md` it always starts with, a log per day of which it starts
+with the last two, and a note per workspace. What you ask it to remember goes
+to today's log; a log line its searches keep finding (three times, on two
+days) moves to `MEMORY.md` the next time a conversation starts. `/new` gives
+the conversation it ends one unseen turn to store what's worth keeping, and
+the conversation stays in Resume. `/erase` deletes it instead: its transcript
+and the memory lines it added with `corgi memory`, not ones you wrote yourself.
+Direct file edits show "Memory updated"; `/erase` leaves those edits in place.
+`/incognito` starts one that keeps neither; its `corgi memory` only reads.
+`/memory` browses the files in the card: `/` or typing searches, Enter edits
+a line, Tab adds one to its file, Backspace twice removes it, Ctrl+E opens the
+file in your editor. The model searches and
+writes the same files with `corgi memory search`, `get`, `add` and `forget`,
+which run without asking.
+
+The model drives Corgi through a `corgi` tool that only its own session
+has: each call gives a command's words, and Corgi runs that command without a
+shell. Claude Code reaches it inside its own process, Codex as a tool of
+the thread, and Pi through an extension loaded into that session alone.
+OpenCode and omp take no such tool, so their sessions run `corgi` in their
+shell and pass `--chat ID` to `corgi memory` and `corgi grep`, as their
+instructions say.
+
+A message sent while Corgi works goes to the turn under way rather than
+waiting for it, and the conversation marks it steered. Ctrl+C stops the turn,
+even one still starting; the input line says "stopping" until it ends.
+
+Ctrl+O moves the conversation to a tab of its own running the same chat, which
+goes on with the same session; before you've asked anything it opens a fresh
+one there. In the tab, Esc only backs out of menus, Ctrl+C
+stops a turn, and `/close` or Ctrl+D in an empty box ends the chat and closes
+the tab. Closing the tab stops its session.
+
+The picker opens on Auto, which runs the newest middle-tier model (Sonnet,
+Terra) of the agent you run most. Below it, models are grouped by agent, with a
+row per account or routed source giving who it's signed in as, its plan and its
+limits. The agents you run most come first, opening with the models you run and
+then the newest of their lineup; older versions wait for a search. A model's
+effort shows at its right; → or a click on Edit opens the levels. Your last pick
+is the next viewer's default.
+
+The prompt lists the agents and accounts the launcher shows, so hiding one in
+**Manage agents** takes it out of the picker too. Their model lists are read in
+the background, a few seconds after Corgi starts, once for each workspace, and
+again after **Find agents**; open the prompt before the first arrive and it
+says "Loading models…".
+
+Conversation searches show the expression and a count as results arrive. The
+latest search previews three conversation titles; earlier searches collapse to
+one line. Click a search heading for the workspace and matching excerpts, or
+click a title to open that conversation.
 
 ## Script Corgi
 
@@ -320,15 +435,32 @@ corgi tab new --workspace 1 --name Tests --command 'bun test src'
 corgi tab move 3 --workspace 2
 corgi pane split current --right
 corgi pane read 3 --lines 100
-corgi pane send 3 --stdin --enter < /path/to/prompt.txt
+corgi message 3 --stdin < /path/to/prompt.txt
 corgi pane idle --cwd /path/to/project --first
 corgi launcher hide codex claude/work --workspace 1
 corgi focus 3 --viewer 1
 ```
 
-`pane send` types literal input; `--enter` submits it. `pane close` and
+`corgi grep --max-age 7d -i 'branch|pull/[0-9]+'` searches past conversation
+text in the workspace holding the current directory, its git worktrees included,
+newest first. `--workspace` takes another workspace's name or ID, or a directory;
+use `'*'` for all workspaces, `--tools` for commands and tool results, `-C2` for
+nearby lines, or `-o` for exact matches. Narrow with `--session PROVIDER:ID`;
+`--json` returns structured provenance. Each result names the conversation's
+cached copy once indexed, one JSON message per line, and a hit numbered 18 is
+line 18 of it. The private index refreshes changed conversations automatically,
+Codex archives and OpenCode's database included. Patterns are JavaScript regular
+expressions. See `corgi grep --help`.
+
+`pane send` types literal input; `--enter` submits it. `message` prompts an
+agent through its provider's own channel where there is one (Claude Code's
+session inbox, Codex's app server, OpenCode's server, Corgi's Pi and OMP
+extension, a headless session's protocol), and otherwise types the text and presses Enter, refusing an agent
+that is waiting on a prompt or has a draft Corgi can see in its composer. It takes a pane ID,
+`current`, or `headless:ID` as `list` prints it. `pane close` and
 `tab close` terminate their target processes without prompting. Layout changes
-do not focus a viewer; `focus` requires an explicit `--viewer` from `list`.
+do not focus a viewer; `focus` requires an explicit `--viewer` from `list`,
+and `workspace switch` and `action` take one too.
 `pane idle` lists the panes whose shell waits at its prompt, by workspace then
 tab; `--cwd` and `--workspace` narrow them and `--first` stops at one.
 `launcher hide` and `launcher show` take agents out of one workspace's launcher
@@ -336,12 +468,28 @@ or put them back, as Manage agents' **Show in** column does; `launcher list`
 says what each workspace shows.
 Commands do not implicitly start a missing runtime.
 
+`corgi usage --json` returns cached usage and history once, one account per
+subscription in launcher order. With no daemon it returns
+`{"running":false,"accounts":[]}`. It uses the read-only `agent.preview.cached`
+RPC and requires a daemon running the updated binary. Each account has raw
+`limits`, `history` in the provider's window order, `spend`, `spend_history`, `usage_fetched_at` and
+`usage_error`. Limit samples divide each window evenly from its start to its
+reset; gaps stay null and decreases remain. Limit history currently retains
+14 samples per window. Spend history returns every retained daily reading,
+including prior billing periods, as `{day, period_start, used_minor}`; `day` is
+the UTC day's start in Unix seconds. The cache retains up to 32 daily readings.
+Spend amounts use `spend.exponent` minor units and `spend.currency` (null means
+provider credits). Stale readings keep their timestamp and error so consumers
+can decide freshness. Consumers choose their own range, sampling, labels and
+formatting.
+
 When a coding agent (Claude Code, Codex, Cursor, Gemini CLI, Copilot, or one
 that sets `AI_AGENT`) runs these commands through a pipe, `pane read` trims
 line ends, shortens rules and collapses blank runs. `--agent` and `--no-agent`
 force it either way, as does `CORGI_AGENT_MODE=1` or `0`.
 
-`corgi --help` always lists all commands. Use `corgi pane read --help` or
+`corgi --help` lists the common commands, and `corgi help --all` all of them;
+agent mode prints the full list either way. Use `corgi pane read --help` or
 `corgi help pane read` for a command's syntax, or `corgi --skill` for the
 [bundled scripting guide](../assets/corgi-skill.md).
 [Agent internals](agents.md) covers hooks and headless provider sessions.
@@ -375,15 +523,19 @@ commands. Clearing a
 claim or losing its owner does not complete a turn or erase existing unread
 receipts.
 
+For multiple machines, use `corgi machine add HOST` and `corgi --machine HOST list`. The terminal viewer lists all workspaces together; its **all** dropdown filters by machine and shows connection status. See [Machines over SSH](remote.md) for setup, authentication and reconnect behavior. You can also run Corgi directly through SSH (`ssh -t host corgi`); the runtime persists there when the connection drops. Corgi itself does not expose a TCP listener.
+
 ## Settings and troubleshooting
 
 Prefer **Corgi setup** for changes. **Panes → Shell** selects the shell for new
 panes; **Theme** changes appearance; **Clever Corgi** controls model-backed
-features and Smart Links. Settings and launcher commands survive restarts.
-Its Pi section shows “Auto (model name)” and five signed-in models, with “Show N
-more”. Type to search all models, including the hidden ones. Auto is resolved by
-Corgi, preferring subscription-backed access, and does not pin a model in saved
-settings; an explicit pick does. Neither changes Pi's normal chat model.
+features, Smart Links and auto-retrying capacity errors. Settings and launcher
+commands survive restarts.
+Its model picker is the prompt's: Auto first, then cheap models under each
+agent, account and routed source, with heavier ones a search away. Auto is
+resolved by Corgi, preferring subscription-backed access, and does not pin a
+model in saved settings; an explicit pick does, saved apart from the prompt's.
+Neither changes an agent's normal chat model.
 
 For a standard runtime, state lives under `$XDG_STATE_HOME/corgi`, defaulting
 to `~/.local/state/corgi`:

@@ -19,6 +19,7 @@ import {
   drawPrefixBar,
   untitledTab,
   tabBrand,
+  sidebarView,
   type Pointer,
   type Ui,
   type Restoring,
@@ -26,11 +27,13 @@ import {
 import { Model, Selection, View, Rect, type Axis } from "./layout";
 import * as palette from "./palette";
 import * as sidebar from "./sidebar";
+import * as docking from "./docking";
 import * as resourceTooltip from "./resource_tooltip";
 import * as corgiBadge from "./corgi_badge";
 import { TabMenu } from "./commands";
 import { agent, type Pane } from "./mirror";
 import { Icons } from "./tab_icons";
+import { Images as SignalBars } from "./signal_bars";
 import { Menu as LauncherMenu } from "./agent_launcher";
 import { Menu as SetupMenu } from "./corgi_setup";
 import { Writer } from "./text";
@@ -41,6 +44,108 @@ function emptyView() {
   return new View(new Model(), new Selection());
 }
 const count = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+
+test("the empty sidebar's New keycap prefers short direct bindings and falls back to the prefix", () => {
+  const u = ui({ sidebar_open: true, message: "", copy_mode: false });
+  u.prefs.prefix = "ctrl_a";
+  expect(frame(emptyView(), [], 100, 30, u)).toContain(palette.keycap + " Ctrl+T ");
+  u.prefs.keys = { new: ["Prefix+c", "Ctrl+Shift+n", "Alt+n"] };
+  expect(frame(emptyView(), [], 100, 30, u)).toContain(palette.keycap + " Opt+N ");
+  u.prefs.keys = { new: "Prefix+c" };
+  expect(frame(emptyView(), [], 100, 30, u)).toContain(palette.keycap + " Ctrl+A c ");
+});
+
+test("machine reception uses cached Kitty pixels, falls back to blocks, and yields to retry text and cards", () => {
+  const images = new SignalBars();
+  const row = sidebar.workspaceEntry({
+    id: 1,
+    name: "project",
+    cwd: "/tmp",
+    active: true,
+    machine: "atlas",
+    link_quality: 4,
+  });
+  const u = ui({
+    message: "",
+    workspaces: [row],
+    sidebar_open: true,
+    copy_mode: false,
+    signal_bars: images,
+    cell_pixels: { width: 10, height: 20 },
+  });
+  const draw = () => frame(null, [], 120, 40, u);
+  expect(draw()).toContain("█");
+  expect(images.end()).toContain("f=32");
+  const withImage = draw();
+  expect(withImage).toContain("a=p,i=730404");
+  row.connecting = true;
+  row.connection_status = { label: "connecting", seconds: 4, color: "warm" };
+  expect(draw()).toContain("connecting 4s");
+  expect(draw()).not.toContain("a=p,i=730404");
+  row.connecting = false;
+  row.connection_status = null;
+  u.connection_card = { rect: new Rect(1, 1, 70, 20), lines: [{ text: "atlas · online" }] };
+  expect(draw()).not.toContain("a=p,i=730404");
+  u.connection_card = null;
+  u.signal_bars = null;
+  expect(draw()).toContain("█");
+});
+
+test("setup clips signal bars at its border and restores them when closed", () => {
+  const images = new SignalBars(),
+    host = Terminal.create(130, 30);
+  const u = ui({
+    message: "",
+    copy_mode: false,
+    sidebar_open: true,
+    workspaces: [
+      sidebar.workspaceEntry({ id: 1, name: "project", cwd: "/tmp", active: true, machine: "atlas", link_quality: 4 }),
+    ],
+    signal_bars: images,
+    cell_pixels: { width: 8, height: 16 },
+  });
+  const draw = () => {
+    host.feed(images.begin() + frame(null, [], 130, 30, u) + images.end());
+    return host.surface(1).surface.images!.filter(p => p.image.width === 32);
+  };
+  try {
+    draw();
+    const [shown] = draw();
+    expect(shown.source_width).toBe(32);
+    u.corgi_setup = SetupMenu.open();
+    const [clipped] = draw();
+    expect(clipped.x).toBe(shown.x);
+    expect(clipped.source_width).toBe(8);
+    u.corgi_setup = null;
+    expect(draw()[0].source_width).toBe(32);
+  } finally {
+    host.destroy();
+  }
+});
+
+test("machine headers highlight only the hovered band and clear under overlays", () => {
+  const row = sidebar.workspaceEntry({ id: 1, name: "project", cwd: "/tmp", active: false, machine: "atlas" });
+  const u = ui({ message: "", workspaces: [row], sidebar_open: true, copy_mode: false });
+  const terminal = new Terminal(120, 40);
+  const draw = () => {
+    terminal.feed(frame(null, [], 120, 40, u));
+    return terminal.surface(0).surface.lines;
+  };
+  try {
+    const normal = draw();
+    u.pointer = { x: 10, y: 2 };
+    const hovered = draw();
+    expect(hovered[2]).toContain(`48;2;${palette.colors.selected.join(";")}`);
+    expect(hovered.filter((line, i) => line !== normal[i])).toHaveLength(1);
+    u.pointer.y = 3;
+    expect(draw()[2]).toBe(normal[2]);
+    u.pointer.y = 2;
+    u.scope_menu = new sidebar.ScopeMenu();
+    expect(draw()[2]).toBe(normal[2]);
+  } finally {
+    terminal.destroy();
+  }
+});
 
 test("unread pointer follows the clickable workspace and respects overlays", () => {
   const view = emptyView();
@@ -222,7 +327,13 @@ test("agent tab names preserve Unicode and clip by cells without shifting the ne
   const id = m.newTab("");
   m.newTab("next");
   selection.reconcile(m);
-  const terminal = { updateRender() {}, hyperlinks: () => [], cursor: () => null, rows: () => "" };
+  const terminal = {
+    updateRender() {},
+    hyperlinks: () => [],
+    cursor: () => null,
+    cursorStyle: () => "default",
+    rows: () => "",
+  };
   const pane = {
     id,
     label: "",
@@ -264,7 +375,13 @@ test("a tab wears its program's mark after its number, once the host holds it, a
   m.newTab("");
   m.newTab("");
   selection.reconcile(m);
-  const terminal = { updateRender() {}, hyperlinks: () => [], cursor: () => null, rows: () => "" };
+  const terminal = {
+    updateRender() {},
+    hyperlinks: () => [],
+    cursor: () => null,
+    cursorStyle: () => "default",
+    rows: () => "",
+  };
   const pane = (id: number, command: string, brand: Pane["brand"]) =>
     ({ id, label: "", cwd: "/w/corgi", command, brand, agent: agent(), restoring: "", terminal }) as unknown as Pane;
   const panes = [pane(m.firstPane(m.tabs[0].root), "node", "node"), pane(m.firstPane(m.tabs[1].root), "htop", null)];
@@ -477,7 +594,7 @@ test("focus outline includes the outer edges and corners of the focused pane", (
   );
   expect(cells[1][28].glyph).toBe("┌");
   expect(cells[29][28].glyph).toBe("└");
-  expect(cells[1][63].glyph).toBe("┬");
+  expect(cells[1][63].glyph).toBe("┐");
   const split = view.placements(area);
   expect(split[0].rect).toEqual(new Rect(29, 2, 34, 27));
   expect(split[1].rect).toEqual(new Rect(64, 2, 35, 27));
@@ -584,6 +701,21 @@ test("the sidebar mark draws as themed text without image commands", () => {
   expect(frame(view, [], 100, 30, u)).not.toContain(corgiBadge.mark);
 });
 
+test("before a machine shows its screen, the frame keeps the badge and drops the tabs", () => {
+  const u = ui({
+    message: "",
+    copy_mode: false,
+    corgi_badge: "mark",
+    workspaces: [sidebar.workspaceEntry({ id: -1, name: "work", cwd: "", active: false, connecting: true })],
+  });
+  const shown = frame(null, [], 100, 30, u);
+  expect(shown).toContain(corgiBadge.mark);
+  expect(testDrawsAt(shown, "\x1b[1;7H", "workspaces")).toBe(true);
+  expect(shown).toContain("work");
+  expect(shown).not.toContain(`\x1b[1;${sidebarView(u, 100, 30).tabX() + 1}H`);
+  expect(shown).not.toContain("No panes");
+});
+
 test("a reopened agent's card sits mid-pane: title centered, details left, command wrapped", () => {
   const band: Restoring = {
     command: "claude --dangerously-skip-permissions --resume '4ee5c02d-691c-4045-8744-930f330494fd'",
@@ -629,13 +761,13 @@ test("a reopened agent's card sits mid-pane: title centered, details left, comma
   drawRestoring(out, new Rect(0, 0, 80, 24), { ...band, dig: "forking" }, 3000);
   expect(out.buffered()).toContain(palette.fg("accent") + "Forking…");
 
-  // A dormant agent's corgi sleeps until its pane is clicked, in the same card.
+  // A dormant agent keeps the same card, with its corgi asleep.
   out = new Writer();
   drawRestoring(out, new Rect(0, 0, 80, 24), { ...band, dig: "asleep" }, 3000);
   const asleep = out.buffered();
   expect(asleep).toContain("\x1b[17;9H" + border + "╰");
   expect(asleep).toContain("~ᐯ◡ᴥ◡ᐯ");
-  expect(asleep).toContain(palette.fg("accent") + "Click to resume");
+  expect(asleep).toContain(palette.fg("accent") + "Hibernated");
   expect(asleep).not.toContain("Restoring…");
 });
 
@@ -689,6 +821,7 @@ test("the launcher dims the panes behind it", () => {
       updateRender() {},
       hyperlinks: () => [],
       cursor: () => null,
+      cursorStyle: () => "default",
       rows: (_id: number, x: number, y: number, _w: number, _h: number, dimmed: boolean) =>
         `\x1b[${y + 1};${x + 1}H${dimmed ? "dimmed" : "plain"}`,
     },
@@ -697,6 +830,45 @@ test("the launcher dims the panes behind it", () => {
   expect(frame(new View(m, selection), [pane], 100, 30, u)).toContain("plain");
   u.agent_launcher = new LauncherMenu({ workspace: 1, selected: "codex", last: "codex", pinned: true });
   expect(frame(new View(m, selection), [pane], 100, 30, u)).toContain("dimmed");
+});
+
+test("a swap preview on a single-pane tab stays below the tabs and inside the pane area", () => {
+  const model = new Model(),
+    source = model.newTab("Source");
+  model.split(source, "horizontal");
+  const target = model.newTab("Target"),
+    selection = new Selection();
+  selection.reconcile(model);
+  selection.focus(model, target);
+  const view = new View(model, selection),
+    drop = { kind: "swap" as const, pane: target },
+    plan = docking.arrange(model, { pane: source }, drop, source, model.next_id),
+    screen = new Terminal(120, 36);
+  try {
+    for (const open of [false, true]) {
+      const options = ui({ sidebar_open: open, message: "", copy_mode: false });
+      options.prefs.corgi_intensity = 0;
+      options.prefs.resources.enabled = false;
+      screen.feed(frame(view, [], 120, 36, options));
+      const before = screen.text().split("\n"),
+        area = sidebar.View.init(120, 36, open, 0, 0).area();
+      screen.feed(
+        frame(view, [], 120, 36, {
+          ...options,
+          docking: { plan, drop, dragging: true, cwd: null, reason: null },
+        }),
+      );
+      const after = screen.text().split("\n");
+      expect(after[0]).toBe(before[0]);
+      expect(after[area.y][area.x]).toBe("╭");
+      expect(after[area.y][area.x + area.w - 1]).toBe("╮");
+      expect(after[area.y + area.h - 1][area.x]).toBe("╰");
+      expect(after[area.y + area.h - 1][area.x + area.w - 1]).toBe("╯");
+      for (let y = area.y; y < area.y + area.h; y++) expect(after[y].slice(0, area.x)).toBe(before[y].slice(0, area.x));
+    }
+  } finally {
+    screen.destroy();
+  }
 });
 
 test("a ghost dims the bottom half of the pane area, each row where entering leaves it", () => {
@@ -754,6 +926,7 @@ test("Manage rows advertise grab, model-pointer and search-text cursors without 
   const view = emptyView(),
     launch = new LauncherMenu({ workspace: 1, selected: "codex", last: "codex", pinned: true });
   launch.preview.installed.codex = true;
+  launch.preview.pending = false;
   launch.manage();
   launch.transition.tick(Date.now() + 1000);
   const u = ui({ agent_launcher: launch, message: "", copy_mode: false, pointer: null });
@@ -780,6 +953,7 @@ test("the launcher places provider marks with host images and falls back to glyp
     shown = (fields: Partial<Ui> = {}) =>
       frame(emptyView(), [], 120, 40, ui({ message: "", copy_mode: false, agent_launcher: launch, ...fields }));
   // Codex's glyph stands in for its mark.
+  launch.preview.pending = false;
   expect(shown()).not.toContain("\x1b_Ga=p");
   expect(shown()).toContain("†");
   expect(launch.marks).toBeNull();
@@ -820,4 +994,96 @@ test("settings' Manage agents places the same provider marks as the launcher's",
   icons.begin();
   expect(shown(graphics)).toContain("\x1b_Ga=p");
   expect(launch.manager.marks).not.toBeNull();
+});
+
+test("the prompt draws over dimmed panes, with no pane cursor, and places brand marks", () => {
+  const m = new Model();
+  const selection = new Selection();
+  const id = m.newTab("");
+  selection.reconcile(m);
+  const pane: any = {
+    id,
+    label: "",
+    cwd: "/w/corgi",
+    command: "",
+    brand: null,
+    agent: agent({ provider: "claude" }),
+    restoring: "",
+    terminal: {
+      updateRender() {},
+      hyperlinks: () => [],
+      cursor: () => ({ x: 0, y: 0 }),
+      cursorStyle: () => "default",
+      rows: (_id: number, x: number, y: number, _w: number, _h: number, dimmed: boolean) =>
+        `\x1b[${y + 1};${x + 1}H${dimmed ? "dimmed" : "plain"}`,
+    },
+  };
+  const icons = new Icons(),
+    cell = { width: 9, height: 18 },
+    view = new View(m, selection),
+    placed: string[] = [];
+  const u = ui({ message: "", copy_mode: false, sidebar_open: false, tab_icons: icons, cell_pixels: cell });
+  // The host holds the marks once a frame has asked for them.
+  frame(view, [pane], 100, 30, u);
+  icons.end();
+  icons.begin();
+  const plain = frame(view, [pane], 100, 30, u);
+  expect(plain).toContain("plain");
+  expect(plain).toContain("\x1b[?25h");
+  expect(plain).toMatch(/\x1b\[1;\d+H\x1b_Ga=p/);
+  icons.begin();
+  u.prompt_draw = (w, marks) => {
+    w.write("\x1b[10;20HPROMPT");
+    placed.push(marks!("claude", 30, 12), marks!("pi", 30, 13));
+    return [new Rect(19, 9, 40, 6)];
+  };
+  const out = frame(view, [pane], 100, 30, u);
+  expect(out).toContain("dimmed");
+  expect(out.indexOf("PROMPT")).toBeGreaterThan(out.indexOf("dimmed"));
+  expect(out).not.toContain("\x1b[?25h");
+  // Tab marks stay up unless what the prompt drew reaches them.
+  expect(out).toMatch(/\x1b\[1;\d+H\x1b_Ga=p/);
+  expect(placed[0]).toContain("\x1b[13;31H\x1b_Ga=p");
+  // Pi has no mark: the prompt writes its glyph.
+  expect(placed[1]).toBe("");
+  icons.begin();
+  u.prompt_draw = () => [new Rect(0, 0, 100, 30)];
+  expect(frame(view, [pane], 100, 30, u)).not.toMatch(/\x1b\[1;\d+H\x1b_Ga=p/);
+});
+
+test("put away, the prompt's cue takes the status line unless something else needs it", () => {
+  const shown = (fields: Partial<Ui>) =>
+    testVisible(frame(emptyView(), [], 60, 10, ui({ sidebar_open: false, copy_mode: false, message: "", ...fields })));
+  const cue = { text: "Corgi needs you · Ctrl+B Space", tone: "warm" as const };
+  expect(shown({ prompt_cue: cue })).toContain(" ● Corgi needs you · Ctrl+B Space ");
+  expect(shown({ prompt_cue: cue, message: " Copied" })).not.toContain("Corgi needs you");
+  const waiting = shown({
+    prompt_cue: cue,
+    startup_waits: [
+      {
+        id: "install",
+        pane: 1,
+        provider: "opencode2",
+        phase: "installing",
+        detail: "Downloading",
+        started_at: Date.now() - 12000,
+        cancelled: false,
+      },
+    ],
+  });
+  expect(waiting).toContain("Corgi needs you");
+  expect(waiting).toContain("1 waiting");
+});
+
+test("setup's model picker places the same brand marks, only where the host shows images", () => {
+  const setup = SetupMenu.open(),
+    icons = new Icons(),
+    shown = (fields: Partial<Ui>) =>
+      frame(emptyView(), [], 100, 30, ui({ message: "", copy_mode: false, corgi_setup: setup, ...fields }));
+  shown({});
+  expect(setup.marks).toBeNull();
+  shown({ tab_icons: icons, cell_pixels: { width: 9, height: 18 } });
+  expect(setup.marks!("claude", 4, 4)).toBe("");
+  icons.end();
+  expect(setup.marks!("claude", 4, 4)).toContain("\x1b[5;5H\x1b_Ga=p");
 });

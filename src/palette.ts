@@ -1,3 +1,6 @@
+//! The Omarchy panel runs this in Qt's QML engine (corgi-omarchy/tools/motion-build.ts):
+//! no BigInt literals or `Intl`, and builtins Qt lacks only through
+//! the Omarchy plugin's qml_shims.js.
 import * as terminalPalette from "./terminal_palette";
 
 export type Rgb = [number, number, number];
@@ -13,6 +16,7 @@ const corgi = {
   accent: [123, 241, 168],
   warm: [229, 195, 139],
   hot: [237, 163, 152],
+  gold: [242, 196, 72],
 } satisfies Record<string, Rgb>;
 export type Token = keyof typeof corgi;
 /** Corgi keeps its own colors, on the terminal's background when that is
@@ -118,12 +122,16 @@ export class Style {
       fg?: Token;
       bg?: Token;
       bold?: boolean;
+      italic?: boolean;
+      underline?: boolean;
       strike?: boolean;
     } = {},
   ) {}
   sgr() {
     const fields = ["0"];
     if (this.value.bold) fields.push("1");
+    if (this.value.italic) fields.push("3");
+    if (this.value.underline) fields.push("4");
     if (this.value.strike) fields.push("9");
     if (this.value.fg) fields.push("38", "2", ...colors[this.value.fg].map(String));
     if (this.value.bg) fields.push(...bgFields(this.value.bg, current));
@@ -138,11 +146,17 @@ export let outline: Rgb;
  * accent on `selected`, so it doesn't glare. */
 export let selection: string;
 export let selection_bg: Rgb;
+/** A button that does what's chosen, such as creating it: bold accent on a
+ * tint of the accent, not its full strength, so it doesn't glare on `surface`. */
+export let call_to_action: string;
+export let call_to_action_bg: Rgb;
 derived(() => {
   keycap = new Style({ fg: "strong", bg: "line", bold: true }).sgr();
   outline = mix(colors.accent, colors.line, 50);
   selection_bg = mix(colors.selected, colors.accent, 30);
   selection = fgRgb(colors.strong) + bgRgb(selection_bg);
+  call_to_action_bg = mix(colors.surface, colors.accent, 22);
+  call_to_action = "\x1b[0m" + bgRgb(call_to_action_bg) + "\x1b[1m" + fgRgb(colors.accent);
 });
 
 /** Code colors, a family apart from the UI tokens: in code, green, warm and
@@ -184,7 +198,10 @@ derived(() => {
 });
 
 export function underline(token: Token) {
-  return `\x1b[58:2::${colors[token].join(":")}m`;
+  return underlineRgb(colors[token]);
+}
+export function underlineRgb(c: Rgb) {
+  return `\x1b[58:2::${c.join(":")}m`;
 }
 export function writeFg(writer: { write(value: string): unknown }, rgb: Rgb) {
   writer.write(fgRgb(rgb));

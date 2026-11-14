@@ -62,11 +62,14 @@ pub export fn frame_diff_diff(host: *Host, frame: [*]const u8, len: usize) i64 {
 }
 /// Compose fresh chrome with retained pane cells. Handles and xywh rectangles
 /// are borrowed from the caller; no terminal pointer survives this call.
-pub export fn frame_diff_compose(host: *Host, chrome: ?[*]const u8, len: usize, handles: [*]const usize, rects: [*]const u16, count: usize, cursor_x: u16, cursor_y: u16, cursor_visible: usize, chrome_mode: usize) i64 {
+/// `cursor_style` is the shape's DECSCUSR number.
+pub export fn frame_diff_compose(host: *Host, chrome: ?[*]const u8, len: usize, handles: [*]const usize, rects: [*]const u16, count: usize, cursor_x: u16, cursor_y: u16, cursor_visible: usize, cursor_style: usize, chrome_mode: usize) i64 {
     host.out.clearRetainingCapacity();
     host.panes.clearRetainingCapacity();
     defer host.panes.clearRetainingCapacity();
     if (chrome_mode > @backingInt(frame_diff.Differ.ChromeMode.reuse)) return -2;
+    if (cursor_style > @backingInt(frame_diff.Differ.CursorStyle.steady_bar)) return -2;
+    const style: frame_diff.Differ.CursorStyle = @fromBackingInt(@intCast(cursor_style));
     if (count > @as(usize, host.differ.cols) * host.differ.rows) return -2;
     host.panes.ensureTotalCapacity(a, count) catch return -1;
     for (handles[0..count], 0..) |handle, i| {
@@ -78,7 +81,7 @@ pub export fn frame_diff_compose(host: *Host, chrome: ?[*]const u8, len: usize, 
         const rect = rects[i * 4 ..][0..4];
         host.panes.appendAssumeCapacity(.{ .state = &source.render, .identity = source.surface_identity, .epochs = epochs, .x = rect[0], .y = rect[1], .w = rect[2], .h = rect[3] });
     }
-    const accepted = host.differ.compose(&host.out.writer, if (chrome) |bytes| bytes[0..len] else null, host.panes.items, .{ .x = cursor_x, .y = cursor_y, .visible = cursor_visible != 0 }, @fromBackingInt(@intCast(chrome_mode))) catch return -1;
+    const accepted = host.differ.compose(&host.out.writer, if (chrome) |bytes| bytes[0..len] else null, host.panes.items, .{ .x = cursor_x, .y = cursor_y, .visible = cursor_visible != 0, .style = style }, @fromBackingInt(@intCast(chrome_mode))) catch return -1;
     return if (accepted) @intCast(host.out.written().len) else -2;
 }
 pub export fn frame_diff_take(host: *Host, out: [*]u8, cap: usize) i64 {

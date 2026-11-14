@@ -38,11 +38,11 @@ trust the hooks once, in `/hooks`.
 | ------------------------------------ | :---------: | :---: | :-: | :------: | :------: |
 | Status: ▶ working ● needs you ● done |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | Activity summaries                   |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
-| Subagents                            |      ✓      |   ✓   |     |    ✓     |    ✓     |
+| Subagents                            |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | Context, tokens and rate limits      |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | Rename and fork                      |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
 | Resume after a crash or reboot       |      ✓      |   ✓   |  ✓  |    ✓     |    ✓     |
-| Multiple accounts                    |      ✓      |   ✓   |  ✓  |          |          |
+| Multiple accounts                    |      ✓      |   ✓   |  ✓  | Built-in | Built-in |
 
 ## Scripting
 
@@ -53,11 +53,12 @@ IDs from `corgi list` to target panes, or `current` for the pane you're in.
 corgi list
 corgi tab new --workspace 1 --command 'bun run dev'
 corgi pane split current --right --command codex
-corgi pane send 3 'run the tests' --enter
+corgi message 3 'run the tests'
 corgi pane read 3 --lines 50
 ```
 
-`corgi --help` lists the commands; `corgi --skill` prints instructions for agents.
+`corgi --help` lists the common commands and `corgi help --all` every one;
+`corgi --skill` prints instructions for agents.
 
 ## Uninstall
 
@@ -87,7 +88,8 @@ See [HACKING.md](HACKING.md) for the development workflow and architecture.
   [pi-tui](https://github.com/earendil-works/pi/tree/main/packages/tui) library.
 - [Bun](https://bun.sh): Corgi's TypeScript runtime.
 
-Thanks to our early testers for their suggestions and feedback:
+Corgi would not have been possible without the support of our early testers and
+contributors:
 [Max Bittker](https://x.com/MaxBittker),
 [Aaron Blakeman](https://github.com/ablakeman),
 [Kai Johnson](https://github.com/sirkaiserkai),

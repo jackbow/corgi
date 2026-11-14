@@ -1,6 +1,9 @@
 //! Text measurement and clipping as the Zig viewer does it: Ghostty's width
 //! per codepoint, byte lengths where Zig counts bytes. sidebar.zig keeps
 //! these helpers; the TypeScript viewer shares them from here.
+//! The Omarchy panel runs this in Qt's QML engine (corgi-omarchy/tools/motion-build.ts):
+//! no BigInt literals or `Intl`, and builtins Qt lacks only through
+//! the Omarchy plugin's qml_shims.js.
 import { codepointWidths } from "./viewer_native";
 
 /** An output buffer standing in for Zig's `*std.Io.Writer`. */
@@ -121,17 +124,26 @@ export function ellipsis(text: string, room: number): string {
   if (room <= 0) return "";
   return clipped(text, room - 1) + "…";
 }
-/** `writeEllipsis` for text from outside: control characters and invalid
- * UTF-8 show as spaces, and only the first 2 KiB is kept. */
+/** Whether a terminal would act on code point `cp` rather than draw it: a
+ * C0 or C1 control, DEL, or half of a surrogate pair standing alone. */
+export function isControl(cp: number): boolean {
+  return cp < 0x20 || (cp >= 0x7f && cp <= 0x9f) || (cp >= 0xd800 && cp <= 0xdfff);
+}
+/** `text` with each control `isControl` finds as a space. */
+export function spacedControls(text: string): string {
+  let out = "";
+  for (const ch of text) out += isControl(ch.codePointAt(0)!) ? " " : ch;
+  return out;
+}
+/** `writeEllipsis` for text from outside: controls and invalid UTF-8 (lone
+ * surrogates stand in for it) show as spaces, and only the first 2 KiB is kept. */
 export function writeSanitized(w: Writer, value: string, room: number): void {
   let clean = "";
   let n = 0;
   for (const ch of value) {
     if (n >= 2048 - 4) break;
     const cp = ch.codePointAt(0)!;
-    // Lone surrogates stand in for invalid UTF-8.
-    const invalid = cp >= 0xd800 && cp <= 0xdfff;
-    if (invalid || cp < 32 || cp === 127) {
+    if (isControl(cp)) {
       clean += " ";
       n += 1;
       continue;
@@ -193,19 +205,19 @@ export function directoryLabel(cwd: string, home: string | null = null, cap = 40
   }
   return out;
 }
+const countScales: [number, string][] = [
+  [1e18, "E"],
+  [1e15, "P"],
+  [1e12, "T"],
+  [1e9, "G"],
+  [1e6, "M"],
+  [1e3, "k"],
+];
+/** A count in four columns or so; past 2^53 only its leading digits show. */
 export function compactCount(value: number | bigint): string {
-  const v = BigInt(value);
-  if (v < 1000n) return String(v);
-  const scales: [bigint, string][] = [
-    [1_000_000_000_000_000_000n, "E"],
-    [1_000_000_000_000_000n, "P"],
-    [1_000_000_000_000n, "T"],
-    [1_000_000_000n, "G"],
-    [1_000_000n, "M"],
-    [1_000n, "k"],
-  ];
-  for (const [scale, suffix] of scales) if (v >= scale) return `${v / scale}${suffix}`;
-  return String(v);
+  const v = Number(value);
+  for (const [scale, suffix] of countScales) if (v >= scale) return `${Math.floor(v / scale)}${suffix}`;
+  return String(value);
 }
 /** Zig's saturating subtraction for unsigned values. */
 export function sat(a: number, b: number): number {

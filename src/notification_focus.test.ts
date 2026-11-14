@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { decode, matches, terminalBundle, open, type Target } from "./notification_focus";
-import { createServer } from "node:net";
+import { createServer } from "./fixtures/websocket_server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

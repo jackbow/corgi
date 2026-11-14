@@ -1,3 +1,5 @@
+import type { Wait as StartupWait } from "./startup";
+import * as json from "./json";
 import * as clock from "./clock";
 import * as telemetry from "./telemetry";
 import * as os from "./os";
@@ -6,24 +8,30 @@ import type { Axis } from "./layout";
 import { Store, Workspace } from "./workspace";
 import { Provider, byProvider, Text, validRef, adapter } from "./providers";
 import { Agent } from "./agents";
-import { Entry, capacity as command_capacity, commandLine, identify } from "./launch/command";
+import { Entry, capacity as command_capacity, commandLine, identify, max_length } from "./launch/command";
 import * as accounts from "./accounts";
 import * as agentOptions from "./agent_options";
 import { Terminal } from "./pane/terminal";
 import { Attachment, Registry, type Actor, type ActorId } from "./conversations";
 import { Tracker, locate, process_buffer, type Foreground } from "./detection";
 import type { Brand } from "./process_name";
+import * as processName from "./process_name";
+import * as archiveInventory from "./archive_inventory";
 import { ResumeHint } from "./resume_hint";
+import { byteLength } from "./text";
 import { waitpid, tcgetpgrp } from "./native_bridge";
 import * as keys from "./keys";
 import * as trackers from "./trackers";
 import { Model as AgentModel } from "./providers/model";
 import { Status as InferenceStatus } from "./inference/setup";
-import { index, key as agentKey, section, type Section, type Target } from "./agent_order";
+import { index, key as agentKey, live as liveAgents, section, type Section, type Target } from "./agent_order";
 import type { Session } from "./headless";
 import { Briefs } from "./worktree_briefs";
 import * as worktreeAgents from "./worktree_agents";
 import * as breadcrumbs from "./breadcrumbs";
+import { WantedEffort } from "./agent_effort";
+import * as effort from "./providers/effort";
+import type { HeldStop, Retry } from "./agent_retry";
 export type Create = {
   workspace: number;
   split?: { pane: number; axis: Axis; before?: boolean } | null;
@@ -35,6 +43,8 @@ export type Create = {
   title?: string;
   /** Dormant from the start: nothing runs until `Runtime.wake`. */
   asleep?: boolean;
+  /** An effort its agent's command leaves to the provider's own channel. */
+  effort?: effort.Effort | null;
   cols: number;
   rows: number;
   theme: any;
@@ -110,6 +120,9 @@ export class Launch {
       provider: Provider;
       yolo?: boolean;
       model?: string;
+      /** The effort its launcher set, which `args` carry. Only this one, and
+       * none someone wrote into its options, may move off the command. */
+      effort?: effort.Effort;
       /** Options and variables kept from a command someone typed to start it. */
       args?: string[];
       env?: [string, string][];
@@ -120,7 +133,10 @@ export class Launch {
     public command?: string,
   ) {}
   static from(value: any) {
-    return value instanceof Launch ? value : new Launch(value.agent, value.command);
+    if (value instanceof Launch) return value;
+    const { effort: saved, ...agent } = value.agent ?? {},
+      chosen = effort.parse(saved);
+    return new Launch(value.agent ? { ...agent, ...(chosen ? { effort: chosen } : {}) } : undefined, value.command);
   }
   /** Starts `provider` in `account`. */
   static in(provider: Provider, account: string, yolo = false, options = accounts.launchOptions(provider, account)) {
@@ -134,6 +150,7 @@ export class Launch {
       provider,
       yolo,
       ...(options.model ? { model: options.model } : {}),
+      ...(options.effort ? { effort: options.effort } : {}),
       ...(args.length ? { args } : {}),
       ...(env.length ? { env } : {}),
     });
@@ -157,18 +174,19 @@ export class Launch {
   /** The command that starts it, followed by `then`, with the permission
    * checks and model `live` last saw. */
   typed(then: string[] | null = null, live: ResumeHint | null = null) {
-    const { agent } = this,
-      start = agent
-        ? os.shellWords([
-            agent.provider,
-            ...adapter(agent.provider).launch.start({
-              permissions: live?.permissions ?? (agent.yolo ? "bypass" : "default"),
-              model: live ? (live.model.len ? live.model.text() : null) : agent.model || null,
-              args: agent.args ?? [],
-            }),
-          ])
-        : (this.command ?? "");
+    if (this.agent) return os.shellWords([this.agent.provider, ...this.args(this.agent, then, live)]);
+    const start = this.command ?? "";
     return then?.length ? start + " " + os.shellWords(then) : start;
+  }
+  private args(agent: NonNullable<Launch["agent"]>, then: string[] | null, live: ResumeHint | null) {
+    return [
+      ...adapter(agent.provider).launch.start({
+        permissions: live?.permissions ?? (agent.yolo ? "bypass" : "default"),
+        model: live ? (live.model.len ? live.model.text() : null) : agent.model || null,
+        args: agent.args ?? [],
+      }),
+      ...(then ?? []),
+    ];
   }
   /** How the agent at `pid`, which someone started in a pane's shell, starts again. */
   static observed(provider: Provider, pid: number) {
@@ -188,15 +206,27 @@ export class Launch {
           : null;
     return new Launch({ provider, args: kept?.args ?? [], env: kept?.env ?? [], observed: true });
   }
-  /** How a pane runs it, typed as `typed`. */
-  run(executable: string, typed: string): Pick<Create, "command" | "interactive_command" | "env"> {
-    return this.agent
-      ? {
-          command: `${os.shellQuote(executable)} agent ${typed}`,
-          interactive_command: false,
-          env: this.agent.env ?? [],
-        }
-      : { command: typed, interactive_command: true, env: [] };
+  /** How a pane runs it, as `typed` would, or as `attached`. An effort its
+   * provider sets over its own channel comes off the agent's command, for the
+   * pane to set once the agent runs. */
+  run(
+    executable: string,
+    then: string[] | null = null,
+    live: ResumeHint | null = null,
+    attached: string | null = null,
+  ): Pick<Create, "command" | "interactive_command" | "env" | "effort"> {
+    const { agent } = this;
+    if (!agent) return { command: this.typed(then, live), interactive_command: true, env: [] };
+    const args = this.args(agent, then, live),
+      found =
+        agent.effort && attached === null ? adapter(agent.provider).launch.deferred?.(args, this.account()) : null,
+      deferred = found?.effort === agent.effort ? found : null;
+    return {
+      command: `${os.shellQuote(executable)} agent ${attached ?? os.shellWords([agent.provider, ...(deferred?.args ?? args)])}`,
+      interactive_command: false,
+      env: agent.env ?? [],
+      effort: deferred?.effort ?? null,
+    };
   }
 }
 export class Pane {
@@ -220,6 +250,11 @@ export class Pane {
   ghost: Ghost | null = null;
   /** Recovered with nothing running: its old screen, faded, until `Runtime.wake`. */
   dormant = false;
+  /** Archived commands wait at the prompt, including after cold recovery. */
+  manual_resume = false;
+  /** A program archiving found running, typed at the prompt when no agent
+   * comes back. It lasts as long as `manual_resume`, apart from `launch`. */
+  manual_command: string | null = null;
   /** The account the agent a saved command started reads from its own
    * environment, which can say what the command's text can't. */
   running_account: string | null = null;
@@ -335,10 +370,12 @@ export class Pane {
    * dormant one will run. */
   restoring() {
     if (!this.ghost && !this.dormant) return "";
+    const launch = this.resumeLaunch(),
+      args = this.resume_hint.args(launch?.account());
     return (
       this.ghost?.fork ??
       this.attached ??
-      this.resumeLaunch()?.typed(this.resume_hint.args(this.resumeLaunch()?.account()), this.resume_hint) ??
+      (args ? launch?.typed(args, this.resume_hint) : (this.manual_command ?? launch?.typed())) ??
       ""
     );
   }
@@ -347,12 +384,13 @@ export class Pane {
     return this.launch ?? (this.resume_hint.provider ? new Launch({ provider: this.resume_hint.provider }) : null);
   }
   /** Shows its saved screen, faded, with nothing running until `Runtime.wake`. */
-  async sleep() {
-    const t = await Terminal.create(this.terminal.cols, this.terminal.rows);
-    t.feed(this.terminal.fadedSnapshot());
+  sleep() {
+    const t = Terminal.create(this.terminal.cols, this.terminal.rows);
+    t.feed((this.ghost?.terminal ?? this.terminal).fadedSnapshot());
     t.exited = true;
     this.terminal.destroy();
     this.terminal = t;
+    this.dropGhost();
     this.dormant = true;
     const launch = this.resumeLaunch();
     this.attached = launch?.agent ? this.resume_hint.attach(launch.account()) : null;
@@ -430,17 +468,29 @@ function clone(m: Model) {
   return next;
 }
 export class Runtime {
+  startup_waits: StartupWait[] = [];
   workspaces = new Store();
   panes: Pane[] = [];
   closed: ClosedAgent[] = [];
   stopped: number[] = [];
   sessions: Session[] = [];
+  /** When the prompt's unread sessions were last checked, so a long gap reads as the machine sleeping. */
+  sessions_retired_at = 0;
   renames: TypedRename[] = [];
   wanted_names: WantedName[] = [];
+  wanted_efforts: WantedEffort[] = [];
+  /** Whether Corgi starts a failed turn again when its condition may pass. */
+  auto_retry = true;
+  /** Conversations whose latest turn failed on a condition that may pass. */
+  retries: Retry[] = [];
+  /** Failed turns their transcripts ended, waiting on the observer. */
+  held_stops: HeldStop[] = [];
   next_session = 1;
   last_agent: Provider = Provider.first;
   agent_yolo = byProvider(() => false);
   agent_hidden = byProvider(() => false);
+  /** Native launcher rows the user explicitly added, independent of discovery. */
+  launcher_added: string[] = [];
   /** The accounts whose rows have their own YOLO on, and those the picker hides. */
   account_yolo: string[] = [];
   account_hidden: string[] = [];
@@ -590,11 +640,17 @@ export class Runtime {
     const w = this.workspaces.owner(id);
     if (w) w.last_agent = p;
   }
-  async create(opts: Create) {
+  async create(opts: Create, prepared?: { model: Model; pane: number; expected: bigint }) {
     const ws = this.getWorkspace(opts.workspace),
-      next = clone(ws.model);
-    next.next_id = this.workspaces.next_pane_id;
-    const id = opts.split ? next.split(opts.split.pane, opts.split.axis) : next.newTab(opts.title ?? "");
+      next = clone(prepared?.model ?? ws.model),
+      allocated = this.workspaces.next_pane_id;
+    if (prepared && ws.model.revision !== prepared.expected) throw Error("StaleLayout");
+    if (!prepared) next.next_id = allocated;
+    const id = prepared
+      ? prepared.pane
+      : opts.split
+        ? next.split(opts.split.pane, opts.split.axis)
+        : next.newTab(opts.title ?? "");
     if (opts.split?.before) next.swap(id, opts.split.pane);
     next.revision = BigInt.asUintN(64, next.revision + 1n);
     const dir = await Store.directory(opts.cwd),
@@ -612,13 +668,22 @@ export class Runtime {
           opts.interactive_command ?? false,
           opts.env ?? [],
         );
+      if (
+        prepared &&
+        (this.workspaces.get(ws.id) !== ws ||
+          ws.model.revision !== prepared.expected ||
+          this.workspaces.next_pane_id !== allocated)
+      )
+        throw Error("StaleLayout");
     } catch (e) {
       t.destroy();
       throw e;
     }
     const p = new Pane(id, t, dir);
     p.dormant = opts.asleep === true;
+    if (opts.effort && !p.dormant) this.wanted_efforts.push(new WantedEffort(id, t, opts.effort));
     this.panes.push(p);
+    this.unarchiveWorkspace(ws.id);
     breadcrumbs.record("opened", { owner: p });
     ws.model = next;
     this.workspaces.next_pane_id = next.next_id;
@@ -629,17 +694,20 @@ export class Runtime {
     const owner = this.workspaces.owner(id);
     if (!owner) throw Error("NoPane");
     const tab = owner.model.tabForPane(id)!,
-      previous = owner.model.tabs[tab];
-    owner.model.close(id);
-    owner.model.revision = BigInt.asUintN(64, owner.model.revision + 1n);
-    const tab_index = tab + Number(owner.model.tabIndex(previous.id) !== null),
-      i = this.panes.findIndex(p => p.id === id);
-    if (i >= 0) {
-      const p = this.panes[i];
+      previous = owner.model.tabs[tab],
+      i = this.panes.findIndex(p => p.id === id),
+      p = this.panes[i];
+    // Draining emits changes synchronously; a viewer can capture a snapshot.
+    if (p) {
       p.dropGhost();
       p.refreshCwd();
       p.terminal.read();
       p.terminal.reap();
+    }
+    owner.model.close(id);
+    owner.model.revision = BigInt.asUintN(64, owner.model.revision + 1n);
+    const tab_index = tab + Number(owner.model.tabIndex(previous.id) !== null);
+    if (p) {
       if (!p.detection.claim) p.resume_hint.observe(p.agent());
       const running = (p.dormant || !p.terminal.exited) && p.attachment.actor !== null;
       this.stopShell(p.terminal);
@@ -658,6 +726,11 @@ export class Runtime {
       this.panes.splice(i, 1);
       breadcrumbs.record("closed", { owner: p });
     }
+    // A pane's Corgi chat holds its session; the pane closing, or its chat
+    // exiting, stops it.
+    const held = this.sessions.filter(s => s.pane === id);
+    for (const s of held) s.destroy();
+    if (held.length) this.sessions = this.sessions.filter(s => !held.includes(s));
     this.changed();
   }
   closedCount(ws: number) {
@@ -675,6 +748,114 @@ export class Runtime {
   }
   reapStopped() {
     this.stopped = this.stopped.filter(pid => waitpid(pid) === 0);
+  }
+  /** Resolves the whole selection, then keeps whatever can restart each pane. */
+  hibernate(ids: number[]) {
+    const panes = [...new Set(ids)].map(id => {
+      const p = this.pane(id);
+      if (!p) throw Error("NoPane");
+      return p;
+    });
+    for (const p of panes) {
+      if (p.dormant) continue;
+      p.refreshCwd();
+      p.terminal.read();
+      if (p.detection.claim) {
+        p.resume_hint = new ResumeHint();
+        if (p.launch?.agent) p.launch = null;
+        p.releaseDetection();
+      } else {
+        const a = p.agent();
+        if (!a.session.len && !p.ghost) p.resume_hint = new ResumeHint();
+        p.resume_hint.observe(a);
+        if (a.provider) p.launch ??= Launch.observed(a.provider, p.detection.pid);
+        else if (!p.ghost && !p.manual_resume && (p.idleShell() || p.launch?.agent?.observed)) p.launch = null;
+      }
+      this.stopShell(p.terminal);
+      p.sleep();
+      const actor = p.attachment.actor;
+      if (!actor) p.attachment.provisional = p.agent().historical();
+      else if (
+        !this.panes.some(other => other.attachment.actor === actor && !other.dormant && !other.terminal.exited) &&
+        !this.sessions.some(s => !s.exited && s.members.includes(actor))
+      )
+        actor.state = actor.state.historical();
+      p.detection = new Tracker();
+      p.command = "";
+      p.brand = null;
+    }
+    this.changed();
+  }
+  archiveWorkspace(id: number) {
+    const ws = this.getWorkspace(id);
+    if (ws.archived) return;
+    if (!this.workspaces.items.some(w => w.id !== id && !w.archived)) throw Error("LastWorkspace");
+    const summary = archiveInventory.summary(this, id);
+    // The Corgi prompt's sessions belong to no workspace's agents; they stay running.
+    const sessions = this.sessions.filter(s => s.workspace_id === id && !s.exited && !s.corgi);
+    const next = clone(ws.model);
+    next.next_id = this.workspaces.next_pane_id;
+    const recovered: Pane[] = [];
+    try {
+      for (const session of sessions) {
+        const pane = next.newTab(session.agent().name.text() || session.provider);
+        const terminal = Terminal.create(100, 30);
+        terminal.exited = true;
+        const p = new Pane(pane, terminal, session.cwd);
+        recovered.push(p);
+        p.resume_hint = session.resume_hint;
+        p.resume_hint.observe(session.agent());
+        p.launch = new Launch({ provider: session.provider });
+        if (session.attachment.actor) p.attachment.select(session.attachment.actor);
+        else p.attachment.provisional = session.agent().historical();
+        for (const { event } of session.events)
+          terminal.feed(json.stringify(event).replace(/[\x00-\x1f\x7f]/g, " ") + "\r\n");
+        terminal.feed(p.resume_hint.banner(Math.trunc(Date.now() / 1000)));
+      }
+    } catch (error) {
+      for (const p of recovered) p.terminal.destroy();
+      throw error;
+    }
+    for (const session of sessions) {
+      session.destroy();
+      this.sessions.splice(this.sessions.indexOf(session), 1);
+    }
+    if (recovered.length) {
+      next.revision = BigInt.asUintN(64, next.revision + 1n);
+      ws.model = next;
+      this.workspaces.next_pane_id = next.next_id;
+      this.panes.push(...recovered);
+    }
+    const panes = this.panes.filter(p => this.workspaces.owner(p.id)?.id === id);
+    for (const p of panes) {
+      p.manual_resume = true;
+      if (!p.dormant && !p.terminal.exited && !p.agent().provider && !p.idleShell()) {
+        const pid = tcgetpgrp(p.terminal.fd);
+        const info = pid > 0 ? os.processArgs(pid, process_buffer) : null;
+        const argv = info?.complete ? info.argv : [],
+          command = os.shellWords(argv);
+        // A saved command holds what a launcher command may.
+        if (argv.length && processName.program([argv[0]]).name && byteLength(command) <= max_length)
+          p.manual_command = command;
+      }
+    }
+    this.hibernate(panes.map(p => p.id));
+    for (const session of sessions)
+      for (const actor of session.members)
+        if (
+          !this.panes.some(p => !p.dormant && !p.terminal.exited && p.attachment.actor === actor) &&
+          !this.sessions.some(s => !s.exited && s.members.includes(actor))
+        )
+          actor.state = actor.state.historical();
+    ws.archived = true;
+    ws.archive_summary = summary;
+    this.changed();
+  }
+  unarchiveWorkspace(id: number) {
+    const ws = this.getWorkspace(id);
+    if (!ws.archived) return;
+    ws.archived = false;
+    this.changed();
   }
   reopen(opts: Create) {
     const i = this.closedIndex(opts.workspace, "newest");
@@ -751,8 +932,7 @@ export class Runtime {
       this.resumed(p, opts.workspace, launch, hint, attached);
       return id;
     }
-    const typed = attached ?? launch.typed(hint.args(launch.account()), hint),
-      run = launch.run(opts.executable, typed),
+    const run = launch.run(opts.executable, hint.args(launch.account()), hint, attached),
       frozen = await this.frozenScreen(opts, old);
     let id: number;
     try {
@@ -785,15 +965,37 @@ export class Runtime {
   async wake(id: number, opts: Pick<Create, "socket" | "executable" | "theme">, shell: boolean) {
     const p = this.pane(id);
     if (!p) throw Error("NoPane");
-    if (!p.dormant) throw Error("NotDormant");
+    if (!p.dormant) return;
+    shell ||= p.manual_resume;
     const hint = p.resume_hint,
       launch = p.resumeLaunch(),
-      args = hint.args(launch?.account());
-    if (!launch || !args) throw Error("InvalidSession");
+      args = hint.args(launch?.account()),
+      staged = shell && !args ? p.manual_command : null;
+    if (!launch || staged !== null) {
+      const t = Terminal.create(p.terminal.cols, p.terminal.rows);
+      try {
+        t.applyTheme(opts.theme);
+        t.feed(p.terminal.fadedSnapshot());
+        if (staged !== null) t.feed(hint.banner(Math.trunc(Date.now() / 1000)));
+        await t.spawn(await Store.directory(p.cwd), opts.socket, id, opts.executable, null, false);
+      } catch (e) {
+        t.destroy();
+        throw e;
+      }
+      p.terminal.destroy();
+      p.terminal = t;
+      p.dormant = false;
+      if (staged !== null) t.prefill(staged);
+      else p.manual_resume = false;
+      this.unarchiveWorkspace(this.workspaces.owner(id)!.id);
+      this.changed();
+      return;
+    }
     const attached = launch.agent ? hint.attach(launch.account()) : null,
-      typed = attached ?? launch.typed(args, hint),
+      typed = attached ?? (args ? launch.typed(args, hint) : launch.typed()),
       old = p.terminal.fadedSnapshot(),
       { cols, rows } = p.terminal,
+      run = launch.run(opts.executable, args, args ? hint : null, attached),
       frozen = shell ? null : await this.frozenScreen({ cols, rows, theme: opts.theme }, old),
       t = await Terminal.create(cols, rows);
     try {
@@ -802,7 +1004,6 @@ export class Runtime {
         t.feed(old);
         t.feed(hint.banner(Math.trunc(Date.now() / 1000)));
       }
-      const run = launch.run(opts.executable, typed);
       await t.spawn(
         await Store.directory(p.cwd),
         opts.socket,
@@ -820,8 +1021,18 @@ export class Runtime {
     p.terminal.destroy();
     p.terminal = t;
     p.dormant = false;
+    this.unarchiveWorkspace(this.workspaces.owner(id)!.id);
+    if (!shell && run.effort) this.wanted_efforts.push(new WantedEffort(id, t, run.effort));
     if (frozen) {
-      this.resumed(p, this.workspaces.owner(id)!.id, launch, hint, attached);
+      if (args) this.resumed(p, this.workspaces.owner(id)!.id, launch, hint, attached);
+      else {
+        p.releaseDetection();
+        p.resume_hint = new ResumeHint();
+        p.launch = launch;
+        p.attached = null;
+        p.attachment.provisional.provider = launch.agent?.provider ?? null;
+        p.attachment.provisional.state = "initializing";
+      }
       this.haunt(p, frozen, old, null);
     } else t.prefill(typed);
     this.changed();
@@ -849,7 +1060,7 @@ export class Runtime {
       old = p.terminal.fadedSnapshot(),
       forked = {
         ...opts,
-        ...launch.run(opts.executable, typed),
+        ...launch.run(opts.executable, branch.args, p.resume_hint),
         cols: p.terminal.vt.cols,
         rows: p.terminal.vt.rows,
       },
@@ -1053,15 +1264,8 @@ export class Runtime {
     return s ? section(s.status(), s.attention()) : null;
   }
   agentTargets(ws: Workspace, out: Target[] = []) {
-    out.length = 0;
-    const tabs: Target[][] = Array.from({ length: ws.model.count }, () => []);
-    for (const p of this.panes) {
-      const tab = ws.model.tabForPane(p.id);
-      if (tab !== null) tabs[tab].push({ pane: p.id });
-    }
-    for (const targets of tabs) out.push(...targets);
-    for (const s of this.sessions) if (s.workspace_id === ws.id) out.push({ headless: s.id });
-    return out;
+    const headless = this.sessions.filter(s => s.workspace_id === ws.id && !s.corgi);
+    return liveAgents(ws.model, this.panes, headless, out);
   }
   /** Pane rows follow tabs; headless rows retain their manually chosen slots. */
   syncAgentOrder(ws: Workspace): boolean {
@@ -1102,16 +1306,18 @@ export class Runtime {
   closeWorkspace(id: number, close_contents: boolean) {
     const index = this.workspaces.index(id);
     if (index === null) throw Error("NoWorkspace");
-    if (this.workspaces.items.length === 1) throw Error("LastWorkspace");
     const ws = this.workspaces.items[index];
-    if (!close_contents && (ws.model.count > 0 || this.sessions.some(s => s.workspace_id === id)))
-      throw Error("WorkspaceNotEmpty");
+    const held = this.sessions.filter(s => s.workspace_id === id && !s.corgi);
+    if (!close_contents && (ws.model.count > 0 || held.length)) throw Error("WorkspaceNotEmpty");
     while (ws.model.count) this.close(ws.model.firstPane(ws.model.tabs[0].root));
     for (const c of this.closed.filter(c => c.workspace_id === id)) c.destroy();
     this.closed = this.closed.filter(c => c.workspace_id !== id);
-    for (const s of this.sessions.filter(s => s.workspace_id === id)) s.destroy();
-    this.sessions = this.sessions.filter(s => s.workspace_id !== id);
+    for (const s of held) s.destroy();
+    this.sessions = this.sessions.filter(s => !held.includes(s));
     this.workspaces.items.splice(index, 1);
+    // A Corgi prompt conversation goes on in another workspace.
+    const home = this.workspaces.items[0]?.id;
+    if (home !== undefined) for (const s of this.sessions) if (s.workspace_id === id) s.workspace_id = home;
     this.changed();
   }
 }

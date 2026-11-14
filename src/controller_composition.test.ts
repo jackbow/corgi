@@ -283,7 +283,7 @@ test("resources and snapshots compose current chrome without a dirty flag", () =
     expect(f.view.dirty).toBe(false);
     const sampled = retained(f.compose());
     expect(sampled.chrome).not.toBe(initial.chrome);
-    expect(sampled.chrome).toContain("CPU 182%");
+    expect(sampled.chrome).toContain("C 182%");
     expect(sampled.chrome).toContain("3.0G");
     expect(sampled.text()).toBe(f.view.frame());
     f.present(sampled);
@@ -292,7 +292,7 @@ test("resources and snapshots compose current chrome without a dirty flag", () =
     expect(f.view.dirty).toBe(false);
     const updated = retained(f.compose());
     expect(updated.chrome).not.toBe(sampled.chrome);
-    expect(updated.chrome).toContain("CPU 37%");
+    expect(updated.chrome).toContain("C 37%");
     expect(updated.chrome).toContain("512M");
     expect(updated.chrome).not.toContain("182%");
     expect(updated.text()).toBe(f.view.frame());
@@ -312,7 +312,7 @@ test("resources and snapshots compose current chrome without a dirty flag", () =
     expect(received.chrome).not.toBe(updated.chrome);
     expect(received.chrome).toContain("snapshot workspace");
     expect(received.chrome).toContain("snapshot agent");
-    expect(received.chrome).toContain("CPU 37%");
+    expect(received.chrome).toContain("C 37%");
     expect(received.text()).toBe(f.view.frame());
     f.present(received);
   } finally {
@@ -503,8 +503,13 @@ test("one retained pane among multiple visible panes never freezes the other pan
     expect(first.panes).toHaveLength(1);
     f.at(20);
     const other = f.view.runtime.panes[1].terminal;
-    other.inner.feed("SECOND PANE CHANGED");
-    other.render_dirty = true;
+    const source = new Terminal(72, 29);
+    try {
+      source.feed("SECOND PANE CHANGED");
+      other.receive(source.surface(2));
+    } finally {
+      source.destroy();
+    }
     const next = retained(f.compose());
     expect(next.chrome).toContain("SECOND PANE CHANGED");
   } finally {

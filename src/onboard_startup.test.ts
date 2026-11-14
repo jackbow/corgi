@@ -2,6 +2,7 @@ import { transport } from "./fixtures/transport";
 import { test, expect, spyOn } from "bun:test";
 import { Controller } from "./controller";
 import * as protocol from "./protocol";
+import { Host } from "./host";
 import * as viewer from "./viewer";
 
 /** One workspace with one pane, as `session.snapshot` sends it. */
@@ -28,17 +29,17 @@ const snapshot = () => ({
   headless_sessions: [],
 });
 import { run } from "./main";
-import * as rpc from "./rpc";
+import * as rpc_http from "./rpc_http";
 import * as preferences from "./preferences";
 
 test("onboard inside a pane routes the viewer action without requiring a terminal", async () => {
   const previous = process.env.CORGI_PANE;
   process.env.CORGI_PANE = "7";
-  const request = spyOn(rpc, "request").mockResolvedValue({ ok: true });
+  const request = spyOn(rpc_http.Client.prototype, "call").mockResolvedValue({ ok: true });
   const output = spyOn(process.stdout, "write").mockReturnValue(true);
   try {
     await run(["onboard"]);
-    expect(request.mock.calls[0]?.slice(1)).toEqual(["action", { name: "onboard", pane: 7 }]);
+    expect(request.mock.calls[0]).toEqual(["action", { name: "onboard", pane: 7 }]);
   } finally {
     request.mockRestore();
     output.mockRestore();
@@ -50,15 +51,16 @@ test("onboard inside a pane routes the viewer action without requiring a termina
 test("explicit onboarding opens again after preferences say it was completed", async () => {
   const prefs = new preferences.Preferences();
   prefs.onboarding_complete = true;
-  const load = spyOn(preferences, "load").mockReturnValue(prefs);
   const calls: any[] = [];
-  const view = new Controller({
-    socket: "",
-    request: transport(async (op, fields) => {
-      calls.push({ op, fields });
-      return { viewer_protocol: protocol.viewer_version, workspace: 1, bell_seq: 0 };
-    }).request,
-  });
+  const view = new Controller(
+    {
+      request: transport(async (op, fields) => {
+        calls.push({ op, fields });
+        return { viewer_protocol: protocol.viewer_version, workspace: 1, bell_seq: 0 };
+      }).request,
+    },
+    new Host(prefs),
+  );
   view.receiveSnapshot(snapshot());
   const refresh = spyOn(view, "refresh").mockResolvedValue(undefined);
   try {
@@ -67,14 +69,12 @@ test("explicit onboarding opens again after preferences say it was completed", a
     expect(view.onboarding).not.toBeNull();
   } finally {
     refresh.mockRestore();
-    load.mockRestore();
     viewer.close(view);
   }
 });
 
 test("a relaunch control exits sync with its executable before acknowledgement", async () => {
   const view = new Controller({
-    socket: "",
     request: transport(async () => ({
       viewer_protocol: protocol.viewer_version,
       session: null,
@@ -93,7 +93,7 @@ test("a relaunch control exits sync with its executable before acknowledgement",
   try {
     expect(await viewer.sync(view, { seq: 0n }, false)).toBe(false);
     expect(view.executable).toBe("/tmp/new-corgi");
-    expect(view.input_state.last_control).toBe(0n);
+    expect(view.machine.last_control).toBe(0n);
     expect(view.message).not.toBe("UnknownAction");
   } finally {
     viewer.close(view);

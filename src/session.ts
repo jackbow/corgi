@@ -1,3 +1,4 @@
+import * as accountLock from "./account_lock";
 import * as protocol from "./protocol";
 import { Runtime, Launch } from "./runtime";
 import { Store } from "./workspace";
@@ -16,6 +17,9 @@ import * as profiles from "./agent_profiles";
 import * as launcherOrder from "./launch/order";
 import * as integration from "./integration";
 import * as worktreeAgents from "./worktree_agents";
+import * as agentRetry from "./agent_retry";
+import * as agentMessage from "./agent_message";
+import * as dockingSession from "./docking_session";
 import { Row } from "./launch/row";
 import type { Provider } from "./providers";
 export type Context = { socket: string; executable: string; theme: any };
@@ -28,7 +32,9 @@ function named(provider: Provider, spelled: string) {
 /** The account a request names for `provider`, ready for an agent. */
 async function account(provider: Provider, spelled: string) {
   const account = named(provider, spelled);
+  accountLock.check(provider, account);
   if (account) await integration.prepare(provider, account);
+  accountLock.check(provider, account);
   return account;
 }
 export type Result = {
@@ -37,6 +43,8 @@ export type Result = {
   workspace?: number;
   closed_panes?: number[];
   text?: string | null;
+  delivery?: protocol.Delivery;
+  queued?: boolean;
 };
 export function location(r: Runtime, pane: number): protocol.Result {
   const ws = r.workspaces.owner(pane);
@@ -88,6 +96,10 @@ function spawnOptions(r: Runtime, ctx: Context, workspace: number, from: number 
 async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Promise<Result> {
   const request = protocol.command(cmd);
   switch (request.op) {
+    case "layout.dock":
+      return dockingSession.dock(r, ctx, request.payload);
+    case "layout.history":
+      return dockingSession.restore(r, request.payload);
     case "agent.move": {
       const ws = r.getWorkspace(request.payload.workspace),
         target = request.payload.target;
@@ -113,6 +125,12 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
       const ws = r.getWorkspace(request.payload.workspace);
       ws.activity_order.move(r.agentTargets(ws), request.payload.target, request.payload.before ?? null);
       break;
+    }
+    case "agent.message": {
+      const target = request.payload.target,
+        sent = await agentMessage.send(r, target, request.payload.text);
+      // Delivered is delivered, even if the pane closed while the channel answered.
+      return { ...("pane" in target && r.pane(target.pane) ? location(r, target.pane) : {}), ...sent };
     }
     case "agent.command": {
       if (request.payload.name !== null && request.payload.name !== undefined)
@@ -144,6 +162,7 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
     case "agent.command.create": {
       const e = r.agent_commands[Number(request.payload.index)];
       if (!e?.command) throw Error("InvalidCommand");
+      if (e.semantics.provider) accountLock.check(e.semantics.provider, e.semantics.account);
       const pane = await r.create({
         ...spawnOptions(r, ctx, request.payload.workspace, null, request.payload.cwd ?? ""),
         command: e.text(),
@@ -159,14 +178,23 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
       r.agent_hidden = { ...r.agent_hidden, ...request.payload.hidden };
       // An older viewer sends no accounts, which keeps the hidden ones.
       if (hidden) r.account_hidden = [...new Set(hidden)];
+      r.launcher_added = r.launcher_added.filter(row => {
+        const parsed = Row.parse(row),
+          launch = parsed && Row.launch(parsed);
+        return (
+          launch && !(launch.account ? r.account_hidden.includes(launch.account) : r.agent_hidden[launch.provider])
+        );
+      });
       r.changed();
       return {};
     }
     case "agent.workspace_visibility": {
       const { row, shown } = request.payload,
-        ws = r.getWorkspace(request.payload.workspace);
-      if (Row.parse(row) === null) throw Error("InvalidRow");
+        ws = r.getWorkspace(request.payload.workspace),
+        parsed = Row.parse(row);
+      if (parsed === null) throw Error("InvalidRow");
       ws.launcher_hidden = [...ws.launcher_hidden.filter(h => h !== row), ...(shown ? [] : [row])];
+      if (shown && Row.launch(parsed) && !r.launcher_added.includes(row)) r.launcher_added.push(row);
       r.changed();
       return {};
     }
@@ -183,6 +211,7 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
         before,
       );
       ws.launcher_hidden = [...ws.launcher_hidden.filter(h => h !== row), ...(q.shown ? [] : [row])];
+      if (q.shown && Row.launch(row) && !r.launcher_added.includes(row)) r.launcher_added.push(row);
       r.changed();
       return {};
     }
@@ -193,6 +222,7 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
     }
     case "agent.launcher.configure": {
       const row = launcherConfig.configure(r, request.payload);
+      if (Row.launch(row) && !r.launcher_added.includes(row)) r.launcher_added.push(row);
       r.changed();
       return { text: row };
     }
@@ -218,7 +248,7 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
         launch = Launch.in(profile.provider, chosen, profile.yolo, profile.options),
         pane = await r.create({
           ...spawnOptions(r, ctx, request.payload.workspace, null, request.payload.cwd),
-          ...launch.run(ctx.executable, launch.typed()),
+          ...launch.run(ctx.executable),
         });
       r.pane(pane)!.launch = launch;
       r.rememberAgent(pane, profile.provider);
@@ -239,7 +269,7 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
         launch = Launch.in(provider, chosen, r.yolo(provider, chosen)),
         pane = await r.create({
           ...spawnOptions(r, ctx, request.payload.workspace, null, request.payload.cwd ?? ""),
-          ...launch.run(ctx.executable, launch.typed()),
+          ...launch.run(ctx.executable),
         });
       r.pane(pane)!.launch = launch;
       r.rememberAgent(pane, provider);
@@ -332,6 +362,12 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
     case "workspace.close":
       r.closeWorkspace(request.payload.target, request.payload.close_contents);
       break;
+    case "workspace.archive":
+      r.archiveWorkspace(request.payload.target);
+      break;
+    case "workspace.unarchive":
+      r.unarchiveWorkspace(request.payload.target);
+      break;
     case "workspace.move":
       r.workspaces.moveBefore(request.payload.target, request.payload.before);
       break;
@@ -340,6 +376,9 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
     case "pane.wake":
       await r.wake(request.payload.target, ctx, request.payload.shell);
       return location(r, request.payload.target);
+    case "pane.hibernate":
+      r.hibernate(request.payload.targets);
+      break;
     case "pane.close":
       location(r, request.payload.target);
       r.close(request.payload.target);
@@ -365,13 +404,11 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
     case "pane.send": {
       const p = r.pane(request.payload.target);
       if (!p) throw Error("NoPane");
-      const bracketed = p.terminal.bracketed_paste ?? false;
-      await p.terminal.send(
-        (bracketed ? "\x1b[200~" : "") +
-          request.payload.text +
-          (bracketed ? "\x1b[201~" : "") +
-          (request.payload.enter ? viewerNative.encodeKey(p.terminal.handle, logicalKey("enter")) : ""),
-      );
+      // Nothing reads a sleeping or exited pane's input.
+      if (p.dormant) throw Error("PaneAsleep");
+      if (p.terminal.exited) throw Error("PaneExited");
+      const t = p.terminal;
+      await t.send(agentMessage.paste(t, request.payload.text) + (request.payload.enter ? agentMessage.enter(t) : ""));
       return location(r, request.payload.target);
     }
     case "pane.keys": {
@@ -552,6 +589,12 @@ function arrangeInner(r: Runtime, request: Arrangement): Result {
         dst.revision = BigInt.asUintN(64, dst.revision + 1n);
         destination.model = dst;
         r.syncAgentOrder(destination);
+        for (const [ws, model] of [
+          [source, src],
+          [destination, dst],
+        ] as const)
+          if (ws.archived && r.panes.some(p => !p.dormant && model.tabForPane(p.id) !== null))
+            r.unarchiveWorkspace(ws.id);
       }
       if (placement.kind === "new_tab") r.workspaces.next_pane_id++;
       break;
@@ -563,7 +606,7 @@ function arrangeInner(r: Runtime, request: Arrangement): Result {
   r.changed();
   return location(r, representative);
 }
-function agentView(a: any, conversation: number) {
+function agentView(r: Runtime, a: any, conversation: number) {
   return {
     conversation,
     subagents: a.subagents,
@@ -583,11 +626,12 @@ function agentView(a: any, conversation: number) {
     compacting: a.compacting,
     compacting_since: a.compacting_since,
     paused: a.paused,
+    retry_at: agentRetry.retryAt(r, a),
   };
 }
 const text = (v: any) => v?.text?.() ?? (typeof v === "string" ? v : "");
 export function snapshot(r: Runtime) {
-  return build(r, false);
+  return { ...build(r, false), resources: r.resources.current };
 }
 export function viewerSnapshot(r: Runtime) {
   return build(r, true);
@@ -627,7 +671,7 @@ function build(r: Runtime, viewer: boolean) {
             pending: a.activity_timeline?.pending?.(usage) ?? null,
           },
           children_observed_at: a.children_observed_at,
-          agent: agentView(a.state, a.id),
+          agent: agentView(r, a.state, a.id),
         };
       if (viewer) {
         out.observed_at = coarse(out.observed_at);
@@ -648,8 +692,10 @@ function build(r: Runtime, viewer: boolean) {
     inference: r.inference,
     shell: shellStatus(),
     smart_links: r.ports.enabled,
+    auto_retry: r.auto_retry,
     system_usage: r.system_usage,
     system_working: r.system_working,
+    startup_waits: r.startup_waits,
     server_pid: process.pid,
     ports: r.link_labels.snapshot?.(r.ports.current) ?? [],
     resources: viewer ? {} : (r.resources.current ?? {}),
@@ -657,6 +703,7 @@ function build(r: Runtime, viewer: boolean) {
     last_agent: r.last_agent,
     agent_yolo: r.agent_yolo,
     agent_hidden: r.agent_hidden,
+    launcher_added: r.launcher_added,
     account_yolo: r.account_yolo,
     account_hidden: r.account_hidden,
     agent_commands: r.agent_commands,
@@ -671,6 +718,8 @@ function build(r: Runtime, viewer: boolean) {
       launcher_hidden: w.launcher_hidden,
       launcher_order: w.launcher_order,
       closed_agents: r.closedCount(w.id),
+      archived: w.archived,
+      archive_summary: w.archive_summary,
       git_commits:
         w.git_commits.items?.slice(0, w.git_commits.len).map((c: any) => ({
           timestamp: c.timestamp,
@@ -705,19 +754,25 @@ function build(r: Runtime, viewer: boolean) {
       cols: p.terminal.vt.cols,
       rows: p.terminal.vt.rows,
       exited: p.terminal.exited,
-      agent: agentView(p.agent(), p.attachment.actor?.id ?? 0),
+      agent: agentView(r, p.agent(), p.attachment.actor?.id ?? 0),
       account: p.account(),
       restoring: p.restoring(),
       forking: p.ghost?.fork !== null && p.ghost !== null,
       dormant: p.dormant,
     })),
     headless_sessions: r.sessions.map(s => ({
-      agent: agentView(s.attachment.agent(), s.attachment.actor?.id ?? 0),
+      agent: agentView(r, s.attachment.agent(), s.attachment.actor?.id ?? 0),
       session: s.session,
       id: s.id,
       workspace: s.workspace_id,
       provider: s.provider,
       cwd: s.cwd,
+      corgi: s.corgi,
+      account: s.account,
+      model: s.model,
+      effort: s.effort,
+      persist: s.persist,
+      pane: s.pane,
       ready: s.ready,
       exited: s.exited,
       state: s.status(),

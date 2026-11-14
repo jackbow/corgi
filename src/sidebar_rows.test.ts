@@ -142,6 +142,19 @@ test("an agent leaving its worktree takes the emptied header with it at once", (
   expect(shown[0].moved).toEqual({ from: 3, ms: 0 });
   expect(shown[1].slide).toBe(-2);
 });
+test("a drop that empties a group takes its header at once, leaving rows where they land", () => {
+  const rows = new State(),
+    out: Entry[] = [],
+    [a, b] = [entry(1), entry(2)];
+  rows.update(1, [b, header("/wt"), under(a, "/wt")], out, 0);
+  rows.place();
+  const shown = rows.update(1, [a, b], out, 10);
+  expect(shown.map(paneOf)).toEqual([1, 2]);
+  expect(shown.map(e => [e.moved, e.slide])).toEqual([
+    [null, 0],
+    [null, 0],
+  ]);
+});
 test("an agent listed under two checkouts keeps a row under each", () => {
   const rows = new State(),
     out: Entry[] = [],
@@ -176,6 +189,34 @@ test("a row reordered within its group glides there, and rows it passes step asi
   expect(shown[0].moved).toEqual({ from: 4, ms: 0 });
   expect(shown[1].moved).toBeNull();
   expect(shown.map(e => e.slide)).toEqual([0, -2, -2]);
+});
+test("rows the user dropped land without gliding; a later move glides again", () => {
+  const rows = new State(),
+    out: Entry[] = [],
+    [a, b, c] = [entry(1), entry(2), entry(3)];
+  rows.update(1, [a, b, c], out, 0);
+  rows.place();
+  let shown = rows.update(1, [c, a, b], out, 10);
+  expect(shown.map(paneOf)).toEqual([3, 1, 2]);
+  expect(shown.map(e => e.moved)).toEqual([null, null, null]);
+  expect(shown.map(e => e.slide)).toEqual([0, 0, 0]);
+  expect(rows.moving(10)).toBe(false);
+  shown = rows.update(1, [a, b, c], out, 20);
+  expect(shown[2].moved).toEqual({ from: 0, ms: 0 });
+});
+test("a drop stops rows still gliding from an earlier move", () => {
+  const rows = new State(),
+    out: Entry[] = [],
+    [a, b, c] = [entry(1), entry(2), entry(3)];
+  rows.update(1, [a, b, c], out, 0);
+  rows.update(1, [c, a, b], out, 10);
+  expect(rows.moving(20)).toBe(true);
+  rows.place();
+  const shown = rows.update(1, [c, b, a], out, 20);
+  expect(shown.map(paneOf)).toEqual([3, 2, 1]);
+  expect(shown.map(e => e.moved)).toEqual([null, null, null]);
+  expect(shown.map(e => e.slide)).toEqual([0, 0, 0]);
+  expect(rows.moving(20)).toBe(false);
 });
 test("a row pushed one row or less just lands", () => {
   const rows = new State(),

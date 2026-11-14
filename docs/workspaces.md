@@ -8,6 +8,10 @@ tabs or deleting a linked worktree a tab is in does not change that root.
 
 **Cmd+Shift+A** toggles the agent list between this workspace and all workspaces.
 The selection is remembered across viewer restarts.
+You can close every workspace. The pane area then holds a **Create workspace**
+button, chosen from the start: Enter, a click, or the sidebar's `[ + ]` opens
+the New workspace dialog. A fresh install starts there after onboarding, and
+Corgi keeps starting there until you make one.
 
 ## Follow activity
 
@@ -38,6 +42,78 @@ activity summaries, worktree briefs and Smart Links. Auto chooses a provider
 from launch history and keeps it once it answers. These features use the
 provider login and consume model usage. Activity labels and link names are
 inferences; they do not establish agent lifecycle or verify page titles.
+
+Its **Auto-retry capacity errors** switch, on by default, starts a Codex turn
+again when the model was at capacity: after 15s, 1m, 2m, 5m and 10m, then it
+gives up. Until then the agent's row shows a yellow ‖ and the time left. A
+retry waits while you work in that pane, and Esc there calls it off. It needs
+Codex on its shared app server; a Codex with a server of its own leaves the
+failure as it is.
+
+## Hibernate panes and archive workspaces
+
+Pane hibernation is a CLI/RPC primitive for scripts and tricks. It stops the
+process even when busy, retaining the pane's identity, folder, saved output
+and position in the layout. On wake, Corgi resumes a known session; without
+a session it restarts the saved agent or launcher command. With no usable
+launch information, it starts a shell in the saved folder. Shell variables,
+jobs and unsaved interactive application state are not restored.
+
+Hibernating a selected pane leaves it selected and asleep, even with several
+viewers attached. Selecting another pane and returning wakes it once. Use
+`corgi pane wake ID` to wake it without leaving. Attaching a new viewer
+also counts as entering its initial pane. A failed resume waits for another
+entry or an explicit retry.
+
+Right-click a workspace and choose **Archive workspace** to review what will
+stop before archiving. The review lists agents with their names, status symbols and brand icons:
+running first, then unread, then the rest, newest first within each group.
+Non-agent processes use the same script and program names as tabs, ordered by
+start time; shells are omitted. Served links appear only when present.
+Use Up/Down to select an agent and preview its terminal in the bottom half,
+then Enter to open it; clicking a row opens it directly. The review stays
+above the preview and shows how many more agents are below the visible list.
+Hovering an agent previews it instead of the keyboard selection; moving off the
+list restores that selection's preview. Arrow keys take over until the mouse moves again. Previewing keeps the
+current pane focused and leaves unread agents unread. Tab returns to the actions;
+Page Up/Page Down scroll through long lists. Cancel keeps everything running; press
+`a` again or click **Archive workspace** to confirm. Archiving
+hibernates its panes and hides it from the normal sidebar list. Processes stop
+and release memory; saved output and agent sessions remain, but unsaved process
+state is lost and served links go offline. A collapsed **N archived** section
+at the bottom of the workspace pane keeps archived workspaces accessible.
+Click it, or select it with `prefix w` and press Enter or Right, to expand it.
+Each entry shows its saved agent states and program counts, largest first.
+Use the wheel or Up/Down to browse long archived lists. Opening one unarchives it;
+entering each pane opens a shell with its restore command ready for Enter.
+Agents and other programs wait for you to run those commands. Its menu's **Unarchive workspace** reveals it
+without waking any panes. Keep at least one workspace active.
+Starting new work in an archived workspace, or moving an awake pane into it,
+also makes the workspace visible again. Jump to attention, next and previous
+workspace, and last workspace pass over archived workspaces.
+
+Hibernation accepts working, blocked and newly starting agents, including
+those that have not reported a session yet. A batch checks that all pane IDs
+exist before stopping any. Archiving converts live headless agents to hibernated
+tabs, keeping their session identity and event output for later recovery.
+Saved hibernation and archive state survive daemon reloads and restarts.
+
+The CLI exposes the same operations directly, without the review window, for scripts and future parking tricks:
+
+```sh
+corgi pane hibernate 12 14 18
+corgi pane wake 14
+corgi workspace archive 3
+corgi workspace unarchive 3
+```
+
+`corgi list --json` and `corgi workspace list --json` include `dormant`
+and `archived`. The corresponding session commands are `pane.hibernate`
+with `targets`, and `pane.wake`, `workspace.archive`, `workspace.unarchive`
+with `target`. Repeating an operation is harmless. Core does not choose when
+to park idle workspaces; that policy belongs in a script or trick.
+
+Try an isolated example with `./go.ts --sandbox hibernation`.
 
 ## Inspect resource use
 
@@ -89,7 +165,8 @@ filter the checkouts. Arrows or a click fill the field with a choice; Enter
 switches to it. An empty field shows all checkouts.
 
 When the typed name has no exact match, **+ Create “name”** appears alongside
-any partial matches. Hold Enter or the **hold ↵ to create** button to plan it.
+any partial matches, lit in green while it's the selection. Enter or the
+**↵ create** button plans it.
 **From** appears for a new worktree, defaulting to the repository's local
 default branch; Tab lets you search for another base. **Folder** previews
 the destination from the configured template.

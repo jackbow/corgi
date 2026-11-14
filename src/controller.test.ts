@@ -1,13 +1,17 @@
+import { Machine } from "./machine";
+import type { Progress as ImageProgress } from "./image_upload";
 import * as protocol from "./protocol";
 import { transport } from "./fixtures/transport";
 import { expect, setSystemTime, spyOn, test } from "bun:test";
-import { Controller, agentMessage, cardEffect, pasteKey, forkName, breadcrumbs, double_click_ms } from "./controller";
+import { Controller, agentMessage, cardEffect, forkName, breadcrumbs } from "./controller";
 import * as sim from "./providers/sim";
-import { byProvider } from "./providers";
+import { Provider, byProvider } from "./providers";
 import * as preferences from "./preferences";
 import { TabMenu, type Row } from "./commands";
 import { Dialog } from "./name_dialog";
 import * as newWorkspace from "./new_workspace";
+import * as noWorkspace from "./no_workspace";
+import * as palette from "./palette";
 import * as agentLauncher from "./agent_launcher";
 import * as launcherResume from "./launcher_resume";
 import * as clock from "./clock";
@@ -15,16 +19,19 @@ import { Menu as LauncherMenu } from "./agent_launcher";
 import * as agentManager from "./agent_manager";
 import * as agentModels from "./agent_models";
 import * as accounts from "./accounts";
+import * as agentProfiles from "./agent_profiles";
 import * as signin from "./signin";
+import * as accountService from "./account_service";
+import type { Runtime } from "./runtime";
 import * as signinExit from "./signin_exit";
 import { Terminal as NativeTerminal } from "./pane/terminal";
-import { Writer } from "./text";
+import { Writer, displayWidth } from "./text";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { Menu as SetupMenu, items as setupItems } from "./corgi_setup";
 import * as hostClipboard from "./host_clipboard";
-import * as keyboard from "./keyboard";
+import * as promptAttach from "./prompt_attach";
 import * as keymap from "./keymap";
 import * as bindings from "./bindings";
 import * as viewer from "./viewer";
@@ -32,15 +39,17 @@ import { agent, type Pane } from "./mirror";
 import * as summaries from "./review/summaries";
 import * as sidebar from "./sidebar";
 import * as render from "./render";
+import * as modelPicker from "./model_picker";
+import * as subprocess from "./subprocess";
 
 /** A controller with no daemon: these tests send no requests. */
 function controller(): any {
   const s: any = new Controller({
-    socket: "",
     request: transport(async () => {
       throw Error("UnexpectedRequest");
     }).request,
   });
+  s.machine.profiles.loaded = true;
   s.model_cache = new agentModels.Cache(
     () => {},
     async () => [],
@@ -216,7 +225,8 @@ test.each([0, 50])(
   async intensity => {
     const s = controller(),
       open = spyOn(signin.Signin.prototype, "open").mockResolvedValue(undefined),
-      launch = spyOn(s, "launchAgent").mockResolvedValue(undefined);
+      launch = spyOn(s, "launchAgent").mockResolvedValue(undefined),
+      expire = spyOn(s.model_cache, "expire");
     s.receiveSnapshot(folders("/a"));
     s.prefs.corgi_intensity = intensity;
     let flow: signin.Signin | null = null;
@@ -244,6 +254,8 @@ test.each([0, 50])(
       expect(held.buffered()).toContain("Setting up Claude Code");
       current.close(0, true, "Account added");
       expect(launch).toHaveBeenCalledWith("claude", "/accounts/work", "Account added");
+      // The new login's models are read afresh.
+      expect(expire).toHaveBeenCalledTimes(1);
       expect(s.signin).toBeNull();
       expect(s.signin_frame).toBeNull();
       expect(s.added_feedback.label).toBe("Claude Code · work");
@@ -494,6 +506,41 @@ function folders(...cwds: string[]) {
   };
 }
 
+test("attention and last workspace pass over archived workspaces", async () => {
+  const s = controller(),
+    snapshot: any = folders("/a", "/b", "/c");
+  // Archived 2's agent finished first, so attention would otherwise pick it.
+  snapshot.workspaces[1].archived = true;
+  for (const [i, changed_at] of [
+    [1, 10],
+    [2, 20],
+  ])
+    Object.assign(snapshot.panes[i].agent, {
+      provider: "claude",
+      attention: "finished",
+      changed_at,
+      observation: { completed: 1, read: 0 },
+    });
+  s.receiveSnapshot(snapshot);
+  try {
+    await s.perform({ name: "attention" });
+    expect(s.focused()!.id).toBe(3);
+    snapshot.panes[2].agent.attention = "none";
+    s.receiveSnapshot(snapshot);
+    s.focusPane(1);
+    await s.perform({ name: "attention" });
+    expect([s.focused()!.id, s.message]).toEqual([1, " Nothing needs your attention"]);
+    await s.perform({ name: "last-workspace" });
+    expect(s.current().id).toBe(3);
+    snapshot.workspaces[0].archived = true;
+    s.receiveSnapshot(snapshot);
+    await s.perform({ name: "last-workspace" });
+    expect([s.current().id, s.message]).toEqual([3, " No previous workspace"]);
+  } finally {
+    viewer.close(s);
+  }
+});
+
 test("last tab follows keyboard, mouse and tab menu selection, including shell tabs", async () => {
   const s = controller(),
     snapshot = folders("/a", "/b", "/c");
@@ -601,6 +648,88 @@ test("last workspace records pane jumps and notices closed or missing history", 
   }
 });
 
+for (const archived of [false, true])
+  test(`closing the last active workspace leaves a working create button (archives: ${archived})`, async () => {
+    let snapshot: any = folders("/src/app", ...(archived ? ["/src/parked"] : []));
+    if (archived) {
+      snapshot.workspaces[1].archived = true;
+      snapshot.panes[1].dormant = true;
+    }
+    const sent: any[] = [];
+    const s: any = new Controller({
+      request: transport(async (op, fields: any) => {
+        if (op === "launcher.catalog") return { agents: [], data: { accounts: [], removed: [] } };
+        if (op !== "session.command") return snapshot;
+        sent.push(fields.command);
+        if ("workspace.close" in fields.command)
+          snapshot = { ...snapshot, workspaces: snapshot.workspaces.slice(1), panes: snapshot.panes.slice(1) };
+        return { result: {} };
+      }).request,
+    });
+    s.receiveSnapshot(snapshot);
+    s.input_state.attached = true;
+    s.start_folder = "/src/next";
+    try {
+      await s.perform({ name: "close-workspace" });
+      await s.tasks.idle();
+      expect(sent).toEqual([{ "workspace.close": { target: 1, close_contents: true } }]);
+      expect([s.runtime.workspaces.items.length, s.current().id, s.model().count]).toEqual([archived ? 1 : 0, 0, 0]);
+      expect(s.frame()).toContain("Create workspace");
+      if (archived) {
+        expect(s.frame()).toContain("1 archived");
+        await s.perform({ name: "toggle-archived-workspaces" });
+        expect(s.frame()).toContain("/src/parked");
+      }
+      // What needs a workspace asks for one, and what moves between them waits.
+      for (const name of ["workspace-next", "workspace-prev", "close-workspace", "edit-workspace", "review"])
+        await s.perform({ name });
+      expect([s.name_dialog, s.tab_menu, sent.length]).toEqual([null, null, 1]);
+      await s.perform({ name: "new" });
+      expect(s.agent_launcher).toBeNull();
+      expect(s.name_dialog).toBeInstanceOf(newWorkspace.Dialog);
+      expect(s.name_dialog.browser.folder()).toBe("/src/next");
+      s.dismissName();
+      await s.input(bytes("\r"));
+      expect(s.name_dialog).toBeInstanceOf(newWorkspace.Dialog);
+      s.dismissName();
+      const { button, steps } = noWorkspace.layout(s.area())!,
+        click = (x: number, y: number) => s.input(bytes(`\x1b[<0;${x + 1};${y + 1}M\x1b[<0;${x + 1};${y + 1}m`));
+      await click(button.x + 1, button.y + 1);
+      expect(s.name_dialog).toBeInstanceOf(newWorkspace.Dialog);
+      s.dismissName();
+      // The sketches press the button, but the example's name plays the game.
+      await click(steps!.dialog.x + 1, steps!.dialog.y + 1);
+      expect([s.name_dialog instanceof newWorkspace.Dialog, s.moonlander]).toEqual([true, null]);
+      s.dismissName();
+      await click(steps!.names[1].x, steps!.names[1].y);
+      expect([s.name_dialog, s.moonlander === null]).toEqual([null, false]);
+      s.closeMoonlander();
+    } finally {
+      viewer.close(s);
+    }
+  });
+test("the button and the sidebar's add button light together while either is chosen", async () => {
+  const s = controller();
+  s.receiveSnapshot({ workspaces: [], panes: [] });
+  s.input_state.attached = true;
+  try {
+    const lit = palette.call_to_action + "[ + ]";
+    expect(s.frame()).toContain(lit);
+    s.enterSidebar("workspaces");
+    expect(s.frame()).not.toContain(lit);
+    const button = noWorkspace.layout(s.area())!.button;
+    s.pointer = { x: button.x + 1, y: button.y + 1 };
+    expect(s.frame()).toContain(lit);
+    // → goes back to the button; Enter in the empty list adds a workspace.
+    await s.moveFocus("right");
+    expect([s.keyboard, s.name_dialog]).toEqual(["pane", null]);
+    s.enterSidebar("workspaces");
+    await s.input(bytes("\r"));
+    expect([s.keyboard, s.name_dialog instanceof newWorkspace.Dialog]).toEqual(["pane", true]);
+  } finally {
+    viewer.close(s);
+  }
+});
 test("the tab menu starts a prefix only with the configured prefix key", async () => {
   const s = controller();
   s.prefs = Object.assign(new preferences.Preferences(), { prefix: "ctrl_a" });
@@ -645,6 +774,111 @@ test("a paste goes to the field that owned the keyboard when it began", async ()
   expect(s.pasteTarget()).toBe("discard");
 });
 
+test.each([false, true])("large pane pastes arrive in chunks (bracketed: %s)", async bracketed => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  const term = s.focused().terminal,
+    sent = spyOn(term, "send"),
+    payload = "hé🐶\t\r\n\x02".repeat(8192);
+  if (bracketed) term.inner.feed("\x1b[?2004h");
+  try {
+    await s.input(bytes(`\x1b[200~${payload}\x1b[201~z`));
+    expect(Buffer.from(term.pending).toString()).toBe(bracketed ? `\x1b[200~${payload}\x1b[201~z` : payload + "z");
+    expect(sent).toHaveBeenCalledTimes(bracketed ? 4 : 2);
+    expect(s.input_state.paste).toBeNull();
+    expect(s.input_state.keybuf).toEqual([]);
+    expect(s.prefix).toBe(false);
+  } finally {
+    sent.mockRestore();
+    viewer.close(s);
+  }
+});
+
+test("paste markers and UTF-8 survive every read boundary", async () => {
+  const data = bytes("x\x1b[200~hé🐶\r\nok\x1b[201~y");
+  for (let split = 1; split < data.length; split++) {
+    const s = controller();
+    s.receiveSnapshot(folders("/a"));
+    s.input_state.attached = true;
+    try {
+      await s.perform({ name: "prompt" });
+      await s.input(data.subarray(0, split));
+      await s.input(data.subarray(split));
+      expect(s.prompt.area.text).toBe("xhé🐶\noky");
+      expect(s.input_state.paste).toBeNull();
+      expect(s.input_state.keybuf).toEqual([]);
+      expect(s.focused().terminal.pending).toEqual([]);
+    } finally {
+      viewer.close(s);
+    }
+  }
+});
+
+test("a paste terminator waits across delayed reads", async () => {
+  const s = controller();
+  s.input_state.attached = true;
+  s.name_dialog = Dialog.init({ rename: 1 }, "");
+  try {
+    setSystemTime(new Date(1000));
+    await s.input(bytes("\x1b[200~a"));
+    for (const byte of bytes("\x1b[201~")) {
+      await s.input(Uint8Array.of(byte));
+      setSystemTime(new Date(Date.now() + 2000));
+      await s.expireInput();
+    }
+    await s.input(bytes("b"));
+    expect(s.name_dialog.name()).toBe("ab");
+    expect(s.input_state.paste).toBeNull();
+    expect(s.input_state.keybuf).toEqual([]);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("paste chunks keep their pane when a dialog opens and stop if the pane closes", async () => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  const term = s.focused().terminal;
+  try {
+    await s.input(bytes("\x1b[200~first"));
+    s.name_dialog = Dialog.init({ rename: 1 }, "");
+    await s.input(bytes(" second\x1b[A\x1b[O\x1b[<0;1;1M"));
+    expect(Buffer.from(term.pending).toString()).toBe("first second\x1b[A\x1b[O\x1b[<0;1;1M");
+    expect(s.input_state.watched).toBe(true);
+    expect(s.name_dialog.name()).toBe("");
+    s.receiveSnapshot(folders());
+    s.name_dialog = Dialog.init({ rename: 2 }, "");
+    await s.input(bytes("discarded\x1b[201~typed"));
+    expect(s.name_dialog.name()).toBe("typed");
+    expect(s.input_state.paste).toBeNull();
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("discarded paste chunks cannot invoke shortcuts", async () => {
+  const s = controller();
+  s.input_state.attached = true;
+  const key = spyOn(s, "key").mockResolvedValue(undefined),
+    mouse = spyOn(s, "mouse").mockResolvedValue(undefined),
+    payload = "\x02c\r\x1b[A\x1b[O\x1b[<0;1;1Mé🐶".repeat(2048);
+  try {
+    await s.input(bytes(`\x1b[200~${payload}\x1b[201~z`));
+    expect(key.mock.calls).toEqual([[122]]);
+    expect(mouse).not.toHaveBeenCalled();
+    expect(s.input_state.watched).toBe(true);
+    expect(s.input_state.paste).toBeNull();
+    expect(s.input_state.keybuf).toEqual([]);
+  } finally {
+    key.mockRestore();
+    mouse.mockRestore();
+    viewer.close(s);
+  }
+});
+
 test("keys stay on the name while the folder field doesn't fit", async () => {
   const s = controller();
   s.input_state.attached = true;
@@ -662,7 +896,7 @@ test("keys stay on the name while the folder field doesn't fit", async () => {
 test("a paste read from the host clipboard goes where a paste would", async () => {
   const clipboard = Object.assign(new hostClipboard.State(), { support: "on" });
   const s = controller();
-  s.host_clipboard = clipboard;
+  s.host.clipboard = clipboard;
   s.name_dialog = Dialog.init({ rename: 1 }, "");
   // Text is read for the dialog; an image has nowhere to go.
   await s.pasteEvent("image/png text/plain");
@@ -680,6 +914,43 @@ test("a paste read from the host clipboard goes where a paste would", async () =
   expect(s.name_dialog.name()).toBe("a b");
 });
 
+test("an image pasted into the prompt becomes a chip, from the terminal or this machine's clipboard", async () => {
+  const clipboard = Object.assign(new hostClipboard.State(), { support: "on", folder: "/tmp/paste" });
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  s.host.clipboard = clipboard;
+  const read = spyOn(promptAttach, "clipboardImage").mockResolvedValue("/tmp/paste/a.png"),
+    dir = mkdtempSync(join(tmpdir(), "corgi-drop-"));
+  try {
+    await s.perform({ name: "prompt" });
+    // A terminal that sends paste events hands the image over.
+    await s.pasteEvent("image/png");
+    expect(s.paste_target).toBe("prompt");
+    await s.pasteResult({ path: "/tmp/paste/b.jpg" });
+    expect(s.prompt.attached()).toEqual(["shell", "Image 1"]);
+    // Ctrl+V, or the Cmd+V Ghostty passes on with no text, reads it here.
+    await s.input(bytes("\x16"));
+    expect(read).toHaveBeenCalledWith("/tmp/paste", expect.any(Number));
+    expect(s.prompt.attached()).toEqual(["shell", "Image 1", "Image 2"]);
+    read.mockResolvedValue(null);
+    await s.input(bytes("\x1b[118;9u"));
+    expect(s.message).toBe("No image on the clipboard");
+    // A dropped image file pastes its path, which goes as the image.
+    writeFileSync(join(dir, "drop.png"), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    await s.input(bytes(`\x1b[200~${join(dir, "drop.png")}\x1b[201~`));
+    expect(s.prompt.attached()).toEqual(["shell", "Image 1", "Image 2", "Image 3"]);
+    // Over SSH, this machine's clipboard isn't the user's.
+    s.remote_links = true;
+    await s.input(bytes("\x16"));
+    expect(s.message).toBe("Over SSH, images paste only from terminals that send them");
+  } finally {
+    read.mockRestore();
+    rmSync(dir, { recursive: true, force: true });
+    viewer.close(s);
+  }
+});
+
 test("esc closes the paste card and does nothing else; a click or another key also closes it", async () => {
   expect(cardEffect("\x1b[27u")).toBe("dismiss");
   expect(cardEffect("\x1b[<0;5;5M")).toBe("close");
@@ -688,28 +959,51 @@ test("esc closes the paste card and does nothing else; a click or another key al
   expect(cardEffect("\x1b[<0;5;5m")).toBe("keep");
   expect(cardEffect("\x1b[I")).toBe("keep");
   expect(cardEffect("\x1b[A")).toBe("close");
-  expect(pasteKey(keyboard.decode("\x1b[118;9u")!)).toBe("cmd");
-  expect(pasteKey(keyboard.decode("\x1b[118;6u")!)).toBe("ctrl_shift");
-  expect(pasteKey(keyboard.decode("\x1b[118;5u")!)).toBeNull();
   const s = controller();
   s.paste_card = { pane: 1, notice: {}, pressed: false, copied: false };
   await s.key(27);
   expect(s.paste_card).toBeNull();
 });
 
-test("escape in the launcher's search clears the query, then closes the launcher", async () => {
+test("Esc or Backspace with nothing typed leaves the launcher's search, then Esc closes the launcher", async () => {
   const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
   s.agent_launcher = new LauncherMenu({ workspace: 1, selected: "codex", last: "codex", pinned: true });
-  // Collapsed, so the test needs no sidebar to scroll the list.
-  Object.assign(s.agent_launcher.resume_view, {
-    focused: true,
-    searching: true,
-    query: Dialog.init({ pane: 0 }, "ab"),
-  });
+  const view = s.agent_launcher.resume_view;
+  // A conversation elsewhere: the search here finds nothing to pick.
+  s.agent_launcher.history = {
+    pending: false,
+    entries: [launcherResume.historyEntry({ provider: "claude", session: "x", title: "Elsewhere", cwd: "/b" })],
+  };
+  view.focused = true;
+  view.startSearch();
+  view.query = Dialog.init({ pane: 0 }, "ab");
   await s.key(27);
+  // Esc leaves the search, query and all, for the newest few it began from.
   expect(s.agent_launcher).not.toBeNull();
-  expect(s.agent_launcher.resume_view.searching).toBe(true);
-  expect(s.agent_launcher.resume_view.query.name()).toBe("");
+  expect([view.searching, view.expanded, view.query.name()]).toEqual([false, false, ""]);
+  // Backspace edits the query, and with nothing left leaves the search.
+  view.startSearch();
+  await s.key(120);
+  expect(view.query.name()).toBe("x");
+  await s.key(127);
+  expect(view.searching).toBe(true);
+  await s.key(127);
+  expect([view.searching, view.expanded]).toEqual([false, false]);
+  // Moving with nothing to pick keeps the keyboard in the search.
+  view.startSearch();
+  await s.input(bytes("\x1b[B"));
+  await s.input(bytes("\x1b[A"));
+  expect([view.searching, view.focused]).toEqual([true, true]);
+  await s.key(27);
+  // From the expanded list, leaving the search goes back to it.
+  view.expand();
+  view.startSearch();
+  await s.key(27);
+  expect([view.searching, view.expanded]).toEqual([false, true]);
+  await s.key(27);
+  expect(view.expanded).toBe(false);
   await s.key(27);
   expect(s.agent_launcher).toBeNull();
 });
@@ -750,6 +1044,7 @@ test.each([false, true])("a failed fallback terminal keeps the empty launcher at
       { command: { "pane.create": { workspace: 1, cwd: "/workspace", command: null, title: "" } } },
     ]);
     expect(s.agent_launcher?.pinned).toBe(true);
+    await s.tasks.idle();
     expect(s.message).toBe("ShellNotFound");
     expect(await viewer.sync(s, { seq: 0n }, false)).toBe(true);
   } finally {
@@ -778,11 +1073,12 @@ test.each([false, true])("empty viewers ignore the legacy detach flag (%s)", asy
 test("the launcher reopens on the row from before a terminal", async () => {
   const snapshot = folders("/src/app");
   const s: any = new Controller({
-    socket: "",
     request: transport(async op => (op === "session.command" ? { result: { pane: 1 } } : snapshot)).request,
   });
   s.receiveSnapshot(snapshot);
   s.input_state.attached = true;
+  s.launch_previews.preview = agentLauncher.preview({ pending: false });
+  s.launch_previews.cwd = "/src/app";
   s.openLauncher(true);
   s.agent_launcher.selected = "claude";
   s.closeLauncher();
@@ -849,6 +1145,7 @@ test("Copy details stays available before the session is identified", async () =
   try {
     expect(s.pane(1).agent.session).toBe("");
     await s.openAgentMenu(1, 0, 0);
+    await s.tasks.idle();
     expect(s.tab_menu.off.has("copy-details")).toBe(false);
     expect(breadcrumbs(s.pane(1))).toBe("harness: Claude Code\nsession: agent 1");
   } finally {
@@ -859,7 +1156,6 @@ test("Copy details stays available before the session is identified", async () =
 test("an agent marked unread stays unread in view until focus moves onto it", async () => {
   const sent: [string, any][] = [];
   const s: any = new Controller({
-    socket: "",
     request: transport(async (op, fields) => {
       sent.push([op, fields]);
       return { ok: true };
@@ -886,6 +1182,7 @@ test("an agent marked unread stays unread in view until focus moves onto it", as
     s.focusPane(1);
     s.tab_menu = new TabMenu({ tab: 2, agent: true, anchor_x: 0 });
     await s.tabMenuAction("mark-unread");
+    await s.tasks.idle();
     expect(sent.at(-1)).toEqual(["pane.mark_unread", { pane: 2, binding: 0n, conversation: 0, session: "" }]);
     s.receiveSnapshot(marked(2));
     expect(await acknowledged()).toEqual([]);
@@ -894,6 +1191,7 @@ test("an agent marked unread stays unread in view until focus moves onto it", as
     // Marked while focused, it waits for focus to leave and come back.
     s.tab_menu = new TabMenu({ tab: 2, agent: true, anchor_x: 0 });
     await s.tabMenuAction("mark-unread");
+    await s.tasks.idle();
     s.receiveSnapshot(marked(2));
     expect(await acknowledged()).toEqual([]);
     s.focusPane(1);
@@ -903,6 +1201,7 @@ test("an agent marked unread stays unread in view until focus moves onto it", as
     // Out of view, the mark is let go; showing the pane again reads it.
     s.tab_menu = new TabMenu({ tab: 1, agent: true, anchor_x: 0 });
     await s.tabMenuAction("mark-unread");
+    await s.tasks.idle();
     s.receiveSnapshot(marked(1));
     s.switchWorkspace(2);
     await acknowledged();
@@ -918,7 +1217,6 @@ test.each(["tab key", "tab click", "agent key"])(
     const commands: any[] = [];
     let snapshot = pair();
     const s: any = new Controller({
-      socket: "",
       request: transport(async (op, fields) => {
         if (op !== "session.command") return snapshot;
         commands.push(protocol.decode("session.command", fields).command);
@@ -935,8 +1233,10 @@ test.each(["tab key", "tab click", "agent key"])(
     s.height = 30;
     try {
       // The clicked agent need not be focused or have the tab's ID.
-      if (input === "agent key") await s.openAgentMenu(2, 3, 3);
-      else s.openTabMenu(0, 30);
+      if (input === "agent key") {
+        await s.openAgentMenu(2, 3, 3);
+        await s.tasks.idle();
+      } else s.openTabMenu(0, 30);
       commands.length = 0;
       await s.key(c("m"));
       expect(s.tab_menu.destinations).toEqual([{ id: 2, name: "/b" }]);
@@ -991,7 +1291,6 @@ test("move destinations page, cancel without moving, and disable without another
 
 test("a missing destination reports a move failure without changing workspace", async () => {
   const s: any = new Controller({
-    socket: "",
     request: transport(async () => {
       throw Error("NoWorkspace");
     }).request,
@@ -1015,19 +1314,115 @@ test("edit workspace opens the current workspace's menu centered in its row, and
   try {
     s.sidebar_open = false;
     await s.perform({ name: "edit-workspace" });
-    expect([s.tab_menu?.anchor_x, s.tab_menu?.anchor_y]).toEqual([40, 1]);
+    expect([s.tab_menu?.anchor_x, s.tab_menu?.anchor_y]).toEqual([36, 1]);
     s.sidebar_open = true;
     s.navigation.workspace_id = 2;
     await s.perform({ name: "edit-workspace" });
     expect(s.tab_menu?.workspace).toBe(true);
     expect(s.tab_menu?.tab).toBe(2);
-    expect(s.tab_menu?.entries().map((e: Row) => e.label)).toEqual(["Rename", "Close"]);
-    expect([s.tab_menu?.anchor_x, s.tab_menu?.anchor_y]).toEqual([4, 6]);
+    expect(s.tab_menu?.entries().map((e: Row) => e.label)).toEqual([
+      "Rename",
+      "Change folder",
+      "Archive workspace",
+      "Close",
+    ]);
+    expect([s.tab_menu?.anchor_x, s.tab_menu?.anchor_y]).toEqual([0, 6]);
     await s.key(114);
     expect(s.tab_menu).toBeNull();
-    expect(s.name_dialog?.target).toEqual({ workspace_name: 2 });
+    expect(s.name_dialog).toBeNull();
+    expect(s.inline_rename?.target).toEqual({ workspace: 2 });
+    expect(s.inline_rename.drawer).toBe(false);
   } finally {
     viewer.close(s);
+  }
+});
+
+test("change folder works in a terminal too short for the folder list", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "corgi-change-folder-")));
+  mkdirSync(join(root, "app/next"), { recursive: true });
+  const snapshot: any = folders(join(root, "app"));
+  snapshot.workspaces[0].name = "app";
+  const commands: any[] = [];
+  const s: any = new Controller({
+    request: transport(async (op, fields) => {
+      if (op === "launcher.catalog") return { agents: [], data: { accounts: [], removed: [] } };
+      if (op !== "session.command") return snapshot;
+      commands.push(protocol.decode("session.command", fields).command);
+      return { result: {} };
+    }).request,
+  });
+  s.receiveSnapshot(snapshot);
+  s.input_state.attached = true;
+  s.height = 12;
+  try {
+    s.tab_menu = new TabMenu({ tab: 1, workspace: true, anchor_x: 0 });
+    await s.tabMenuAction("change-folder");
+    expect(s.frame()).toContain("Change folder");
+    await s.input(bytes("\tnext\r"));
+    await s.settle();
+    expect(commands).toEqual([{ "workspace.edit": { target: 1, name: "next", cwd: join(root, "app/next") } }]);
+  } finally {
+    viewer.close(s);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a workspace menu shows its folder's control characters as ?", async () => {
+  const { s } = recording(folders("/src/a\nb"));
+  try {
+    await s.perform({ name: "edit-workspace" });
+    expect(s.tab_menu.details.get("change-folder").runs).toEqual([["/src/a?b", "faint"]]);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("change folder browses from the workspace's folder and moves it there", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "corgi-change-folder-")));
+  for (const dir of ["app/next", "other"]) mkdirSync(join(root, dir), { recursive: true });
+  const snapshot: any = folders(join(root, "app"), join(root, "other"));
+  snapshot.workspaces[0].name = "app";
+  snapshot.workspaces[1].name = "custom";
+  const commands: any[] = [];
+  const s: any = new Controller({
+    request: transport(async (op, fields) => {
+      if (op === "launcher.catalog") return { agents: [], data: { accounts: [], removed: [] } };
+      if (op !== "session.command") return snapshot;
+      commands.push(protocol.decode("session.command", fields).command);
+      return { result: {} };
+    }).request,
+  });
+  s.receiveSnapshot(snapshot);
+  s.input_state.attached = true;
+  try {
+    await s.perform({ name: "edit-workspace" });
+    expect(s.tab_menu.details.get("change-folder").runs).toEqual([[join(root, "app"), "faint"]]);
+    await s.key(102);
+    const d = s.name_dialog;
+    expect(d).toBeInstanceOf(newWorkspace.Dialog);
+    expect([d.moving, d.browser.focused, d.browser.folder(), d.browser.entries]).toEqual([
+      1,
+      true,
+      join(root, "app"),
+      ["next"],
+    ]);
+    // A name that is its folder's follows the folder.
+    await s.input(bytes("next"));
+    expect(d.name()).toBe("next");
+    await s.input(bytes("\r"));
+    await s.settle();
+    expect(commands).toEqual([{ "workspace.edit": { target: 1, name: "next", cwd: join(root, "app/next") } }]);
+    expect(s.name_dialog).toBeNull();
+    // A name of its own stays.
+    s.tab_menu = new TabMenu({ tab: 2, workspace: true, anchor_x: 0 });
+    await s.tabMenuAction("change-folder");
+    await s.input(bytes("\x1b[D"));
+    expect(s.name_dialog.browser.folder()).toBe(join(root, "app"));
+    await s.input(bytes("\r"));
+    expect(commands.at(-1)).toEqual({ "workspace.edit": { target: 2, name: "custom", cwd: join(root, "app") } });
+  } finally {
+    viewer.close(s);
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -1036,6 +1431,7 @@ test("open shows the workspace already on that folder", async () => {
   s.receiveSnapshot(folders("/a", "/b"));
   try {
     await s.perform({ name: "open", value: "/b" });
+    await s.tasks.idle();
     expect(s.current().id).toBe(2);
     await expect(s.perform({ name: "open", value: "b" })).rejects.toThrow("InvalidDirectory");
   } finally {
@@ -1108,7 +1504,6 @@ test.each(["enter", "kitty enter", "click"])("one %s creates a workspace from th
     commands: any[] = [];
   let snapshot = folders("/a");
   const s = new Controller({
-    socket: "",
     request: transport(async (op, fields) => {
       if (op !== "session.command") return snapshot;
       commands.push(protocol.decode("session.command", fields).command);
@@ -1128,6 +1523,7 @@ test.each(["enter", "kitty enter", "click"])("one %s creates a workspace from th
         button = v.buttons()[0];
       await s.input(bytes(`\x1b[<0;${button.x + 2};${v.buttons_y + 1}M`));
     } else await s.input(bytes(input === "enter" ? "\r" : "\x1b[13u"));
+    await s.tasks.idle();
     expect(commands).toEqual([{ "workspace.create": { name: basename(cwd), cwd } }]);
     expect(s.current().id).toBe(2);
     expect(s.name_dialog).toBeNull();
@@ -1140,8 +1536,8 @@ test("open adds a workspace for a folder no workspace is on", async () => {
   const commands: any[] = [];
   let snapshot = folders("/a");
   const s = new Controller({
-    socket: "",
     request: transport(async (op, fields) => {
+      if (op === "launcher.catalog") return { agents: [], data: { accounts: [], removed: [] } };
       if (op !== "session.command") return snapshot;
       commands.push(protocol.decode("session.command", fields).command);
       snapshot = folders("/a", "/b");
@@ -1151,6 +1547,7 @@ test("open adds a workspace for a folder no workspace is on", async () => {
   s.receiveSnapshot(snapshot);
   try {
     await s.perform({ name: "open", value: "/b" });
+    await s.tasks.idle();
     expect(commands).toEqual([{ "workspace.create": { name: "", cwd: "/b" } }]);
     expect(s.current().id).toBe(2);
   } finally {
@@ -1249,6 +1646,7 @@ test("dropping an opened ready agent keeps its new position", async () => {
     expect(from).toBeDefined();
     expect(to).toBeDefined();
     await s.input(bytes(mouse(0, from) + mouse(32, to) + mouse(0, to, true)));
+    await s.settle();
     expect(sent).toContainEqual({ "agent.place": { workspace: 1, target: { pane: 2 }, before: { pane: 1 } } });
     expect(ready()).toEqual([{ pane: 2 }, { pane: 1 }]);
     expect(s.focused().id).toBe(2);
@@ -1797,7 +2195,6 @@ test("the launcher names a new worktree, then adds it before starting the agent 
   const sent: [string, any][] = [];
   let refuse: string | null = "BranchExists";
   const s: any = new Controller({
-    socket: "",
     request: transport(async (op, fields) => {
       sent.push([op, fields]);
       if (op === "worktree.add" && refuse) return { err: refuse };
@@ -1816,121 +2213,105 @@ test("the launcher names a new worktree, then adds it before starting the agent 
   s.input_state.attached = true;
   s.openLauncher(true, "/src/app-topic");
   s.agent_launcher.selected = "claude";
-  const hold = async () => {
-    await s.key(13);
-    clock.advance(300);
-    for (let i = 0; i < 70 && s.agent_launcher.worktree.mode === "open"; i++) {
-      await s.key(13);
-      clock.advance(50);
-    }
-  };
-  try {
-    await s.key("w".charCodeAt(0));
-    expect([s.agent_launcher.worktree.mode, s.agent_launcher.worktree.focus]).toEqual(["open", "branch"]);
-    // Browsing fills Branch while preserving the list and its caret.
-    await s.input(bytes("\x1b[A"));
-    expect([s.agent_launcher.worktree.focus, s.agent_launcher.worktree.field.name()]).toEqual(["branch", "topic"]);
-    await s.input(bytes("\x1bOA"));
-    expect(s.agent_launcher.worktree.field.name()).toBe("main");
-    await s.key(13);
-    expect(s.agent_launcher.cwd).toBe("/src/app");
-    await s.key("w".charCodeAt(0));
-    await s.input(bytes("\x1b[200~top\x1b[201~"));
-    expect(s.agent_launcher.worktree.typed).toBe("top");
-    const box = () => s.agent_launcher.worktreeBox(s.width, s.height, s.sidebarView([]));
-    const mouse = (button: number, x: number, y: number, release = false) =>
-      s.input(bytes(`\x1b[<${button};${x + 1};${y + 1}${release ? "m" : "M"}`));
-    await mouse(35, box().label_x, box().list);
-    expect(s.agent_launcher.worktree.field.name()).toBe("top");
-    await mouse(0, box().label_x, box().list);
-    await mouse(0, box().label_x, box().list, true);
-    expect(s.agent_launcher.worktree.field.name()).toBe("topic");
-    expect(s.agent_launcher.worktree.focus).toBe("branch");
-    // Escape closes the box from the form in one press.
-    await s.key(27);
-    expect([s.agent_launcher.worktree.mode, s.agent_launcher === null]).toEqual(["closed", false]);
-    await s.key("w".charCodeAt(0));
-    for (const byte of bytes("log in")) await s.key(byte);
-    // Tab moves to From, which searches the branches the daemon listed.
-    await s.key(9);
-    expect(s.agent_launcher.worktree.focus).toBe("from");
-    // There Escape only dismisses From's list.
-    await s.key(27);
-    expect([s.agent_launcher.worktree.mode, s.agent_launcher.worktree.focus]).toEqual(["open", "branch"]);
-    await s.key(9);
-    for (const byte of bytes("top")) await s.key(byte);
-    await s.key(13);
-    expect(s.agent_launcher.worktree.focus).toBe("branch");
-    await s.key(13);
-    expect(s.agent_launcher.worktree.planned).toBeNull();
-    clock.advance(1200);
-    await s.expireInput();
-    expect(s.agent_launcher.worktree.create.progress).toBe(0);
-    await hold();
-    expect(s.agent_launcher.worktree.planned).toEqual({
-      branch: "log-in",
-      base: "refs/heads/topic",
-      base_name: "topic",
-      path: "/src/app/.worktrees/log-in",
-    });
-    expect(s.agent_launcher.place().label).toBe("log-in");
-    // The tail of the held Enter must not launch the highlighted agent.
-    for (let i = 0; i < 5; i++) {
-      await s.key(13);
-      clock.advance(50);
-    }
-    expect(sent.some(([op]) => op === "session.command" || op === "worktree.add")).toBe(false);
-    // Git refuses: the form comes back with why, and nothing launches.
-    await s.key("a".charCodeAt(0));
-    expect([s.agent_launcher.worktree.mode, s.agent_launcher.worktree.focus]).toEqual(["open", "branch"]);
-    expect(s.agent_launcher.worktree.error).toBe("A branch named log-in exists already");
-    expect(sent.some(([op]) => op === "session.command")).toBe(false);
-    refuse = null;
-    clock.advance(300);
-    const confirm = () => mouse(0, box().rect.x + box().rect.w - 5, box().footer);
-    await confirm();
-    clock.advance(400);
-    await mouse(0, box().rect.x + box().rect.w - 5, box().footer, true);
-    clock.advance(1000);
-    await s.expireInput();
-    expect(s.agent_launcher.worktree.mode).toBe("open");
-    expect(s.agent_launcher.worktree.create.progress).toBe(0);
-    await confirm();
-    const button = box();
-    clock.advance(3100);
-    await s.expireInput();
-    expect(s.agent_launcher.worktree.mode).toBe("closed");
-    await mouse(0, button.rect.x + button.rect.w - 5, button.footer, true);
-    await s.key("a".charCodeAt(0));
-    const add = sent.findLast(([op]) => op === "worktree.add")!;
-    expect(add[1]).toEqual({
-      workspace: 1,
-      path: "/src/app/.worktrees/log-in",
-      branch: "log-in",
-      base: "refs/heads/topic",
-    });
-    const create = sent.find(([op]) => op === "session.command")!;
-    expect(create[1].command["agent.create"]).toEqual({
-      workspace: 1,
-      cwd: "/src/app/.worktrees/log-in",
-      provider: "claude",
-    });
-  } finally {
-    clock.reset();
-  }
+  await s.key("w".charCodeAt(0));
+  expect([s.agent_launcher.worktree.mode, s.agent_launcher.worktree.focus]).toEqual(["open", "branch"]);
+  // Browsing fills Branch while preserving the list and its caret.
+  await s.input(bytes("\x1b[A"));
+  expect([s.agent_launcher.worktree.focus, s.agent_launcher.worktree.field.name()]).toEqual(["branch", "topic"]);
+  await s.input(bytes("\x1bOA"));
+  expect(s.agent_launcher.worktree.field.name()).toBe("main");
+  await s.key(13);
+  expect(s.agent_launcher.cwd).toBe("/src/app");
+  await s.key("w".charCodeAt(0));
+  await s.input(bytes("\x1b[200~top\x1b[201~"));
+  expect(s.agent_launcher.worktree.typed).toBe("top");
+  const box = () => s.agent_launcher.worktreeBox(s.width, s.height, s.sidebarView([]));
+  const mouse = (button: number, x: number, y: number, release = false) =>
+    s.input(bytes(`\x1b[<${button};${x + 1};${y + 1}${release ? "m" : "M"}`));
+  await mouse(35, box().label_x, box().list);
+  expect(s.agent_launcher.worktree.field.name()).toBe("top");
+  await mouse(0, box().label_x, box().list);
+  await mouse(0, box().label_x, box().list, true);
+  expect(s.agent_launcher.worktree.field.name()).toBe("topic");
+  expect(s.agent_launcher.worktree.focus).toBe("branch");
+  // Escape closes the box from the form in one press.
+  await s.key(27);
+  expect([s.agent_launcher.worktree.mode, s.agent_launcher === null]).toEqual(["closed", false]);
+  await s.key("w".charCodeAt(0));
+  for (const byte of bytes("log in")) await s.key(byte);
+  // Tab moves to From, which searches the branches the daemon listed.
+  await s.key(9);
+  expect(s.agent_launcher.worktree.focus).toBe("from");
+  // There Escape only dismisses From's list.
+  await s.key(27);
+  expect([s.agent_launcher.worktree.mode, s.agent_launcher.worktree.focus]).toEqual(["open", "branch"]);
+  await s.key(9);
+  for (const byte of bytes("top")) await s.key(byte);
+  await s.key(13);
+  expect(s.agent_launcher.worktree.focus).toBe("branch");
+  // Enter plans the new worktree at once.
+  await s.key(13);
+  expect(s.agent_launcher.worktree.mode).toBe("closed");
+  expect(s.agent_launcher.worktree.planned).toEqual({
+    branch: "log-in",
+    base: "refs/heads/topic",
+    base_name: "topic",
+    path: "/src/app/.worktrees/log-in",
+  });
+  expect(s.agent_launcher.place().label).toBe("log-in");
+  expect(sent.some(([op]) => op === "session.command" || op === "worktree.add")).toBe(false);
+  // Git refuses: the form comes back with why, and nothing launches.
+  await s.key("a".charCodeAt(0));
+  expect([s.agent_launcher.worktree.mode, s.agent_launcher.worktree.focus]).toEqual(["open", "branch"]);
+  expect(s.agent_launcher.worktree.error).toBe("A branch named log-in exists already");
+  expect(sent.some(([op]) => op === "session.command")).toBe(false);
+  refuse = null;
+  // So does a click on the footer's button.
+  const button = box();
+  await mouse(0, button.rect.x + button.rect.w - 5, button.footer);
+  expect(s.agent_launcher.worktree.mode).toBe("closed");
+  await mouse(0, button.rect.x + button.rect.w - 5, button.footer, true);
+  await s.key("a".charCodeAt(0));
+  const add = sent.findLast(([op]) => op === "worktree.add")!;
+  expect(add[1]).toEqual({
+    workspace: 1,
+    path: "/src/app/.worktrees/log-in",
+    branch: "log-in",
+    base: "refs/heads/topic",
+  });
+  const create = sent.find(([op]) => op === "session.command")!;
+  expect(create[1].command["agent.create"]).toEqual({
+    workspace: 1,
+    cwd: "/src/app/.worktrees/log-in",
+    provider: "claude",
+  });
 });
 
-/** An attached controller whose session commands land in `sent`, each making pane 1. */
-function recording(snapshot: any) {
+/** An attached controller whose session commands land in `sent`, each making
+ * pane 1, unless `fail` names the error one gets instead. */
+function recording(snapshot: any, fail?: (command: any) => string | undefined) {
   const sent: any[] = [];
   const s: any = new Controller({
-    socket: "",
     request: transport(async (op, fields: any) => {
+      const runtime = {
+        panes: s.runtime.panes.map((p: Pane) => ({ agent: () => p.agent, account: () => p.account })),
+        workspaces: s.runtime.workspaces,
+        sessions: [],
+        account_hidden: s.runtime.account_hidden,
+        changed() {},
+      } as unknown as Runtime;
+      if (op === "account.remove")
+        return { deleted: await accountService.remove(runtime, fields.provider, fields.account) };
+      if (op === "account.restore")
+        return { account: accountService.restore(runtime, fields.provider, fields.account) };
+      if (op === "launcher.catalog") return { agents: [], data: { accounts: [], removed: [] } };
       if (op !== "session.command") return snapshot;
       sent.push(fields.command);
-      return { result: { pane: 1 } };
+      const err = fail?.(fields.command);
+      return err === undefined ? { result: { pane: 1 } } : { err };
     }).request,
   });
+  s.machine.profiles.loaded = true;
   s.model_cache = new agentModels.Cache(
     () => {},
     async () => [],
@@ -1940,21 +2321,40 @@ function recording(snapshot: any) {
   return { s, sent };
 }
 
-test("both launch screens list snapshot accounts before any preview arrives", () => {
+test("both launch screens discover snapshot accounts before offering them", () => {
   const { s } = recording({
     ...folders("/src/app"),
     accounts: [{ provider: "claude", account: "/accounts/work", name: "work", managed: true }],
   });
   s.openLauncher(true);
   const launch: agentLauncher.Menu = s.agent_launcher;
+  launch.profiles = [];
   const row = agentLauncher.Row.of("claude", "/accounts/work");
   expect(launch.rows()).toContain(row);
-  expect(launch.shown(row)).toBe(true);
+  expect(launch.shown(row)).toBe(false);
+  expect(launch.discovering()).toContain("Claude Code · work");
   expect(launch.cells(row)).toContain("Claude Code · work");
   launch.manage();
   expect(launch.manageModel().agents.map(a => a.label)).toContain("Claude Code · work");
   expect(launch.manageModel().agents.find(a => a.account === "/accounts/work")?.managed).toBe(true);
+  expect(launch.manager.items(launch.manageModel()).have).toEqual([]);
 });
+
+test.each(["\x1b[H", "\x1b[1~", "\x1b[F", "\x1b[4~"])(
+  "explicit launcher selection survives discovery (%j)",
+  async key => {
+    const { s } = recording(folders("/src/app"));
+    s.openLauncher(true);
+    const launch: agentLauncher.Menu = s.agent_launcher;
+    launch.profiles = [];
+    launch.select("claude");
+    expect(launch.selected).toBe("terminal");
+    await s.input(bytes(key));
+    launch.preview = agentLauncher.preview({ pending: false });
+    launch.normalize();
+    expect(launch.selected).toBe("terminal");
+  },
+);
 
 test("an account's row starts its agent there, and resuming keeps a conversation's account", async () => {
   const snapshot = {
@@ -1964,7 +2364,10 @@ test("an account's row starts its agent there, and resuming keeps a conversation
   const { s, sent } = recording(snapshot);
   Object.assign(s.launch_previews, {
     cwd: "/src/app",
-    preview: agentLauncher.preview({ accounts: [{ provider: "claude", account: "/accounts/work", name: "work" }] }),
+    preview: agentLauncher.preview({
+      pending: false,
+      accounts: [{ provider: "claude", account: "/accounts/work", name: "work" }],
+    }),
   });
   s.openLauncher(true);
   // Codex, Claude Code, then Claude Code · work.
@@ -2006,13 +2409,15 @@ test("an account's row starts its agent there, and resuming keeps a conversation
 test.each(["launcher", "settings"] as const)(
   "%s management saves names, flags and environment in the shared model",
   async source => {
-    const saved = process.env.CORGI_ENV_BASE,
+    const saved = { CORGI_ENV_BASE: process.env.CORGI_ENV_BASE, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR },
       base = realpathSync(mkdtempSync(join(tmpdir(), "corgi-manage-")));
     process.env.CORGI_ENV_BASE = base;
     process.env.CLAUDE_CONFIG_DIR = join(base, "default");
     accounts.reset();
     try {
       const { s, sent } = recording(folders("/src/app"));
+      s.launch_previews.preview = agentLauncher.preview({ pending: false });
+      s.launch_previews.cwd = "/src/app";
       const launch = await openManagement(s, source);
       launch.manager.at = agentManager.agentKey("claude", "");
       await s.key(13);
@@ -2046,8 +2451,9 @@ test.each(["launcher", "settings"] as const)(
       expect(launch.label("claude")).toBe("Claude Code · home");
       expect(launch.manager.page).toBe("list");
     } finally {
-      if (saved === undefined) delete process.env.CORGI_ENV_BASE;
-      else process.env.CORGI_ENV_BASE = saved;
+      for (const [key, value] of Object.entries(saved))
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
       accounts.reset();
       rmSync(base, { recursive: true, force: true });
     }
@@ -2074,6 +2480,8 @@ test.each(["launcher", "settings"] as const)(
       const recorded = recording(folders("/src/app")),
         sent = recorded.sent;
       s = recorded.s;
+      s.remoteSignin = (provider: Provider, account: string, adding: boolean, host: signin.Host) =>
+        signin.adding(provider, null, host);
       await openManagement(s, source);
       await s.key(27);
       expect(s.agent_launcher).toBeNull();
@@ -2239,6 +2647,8 @@ test.each([false, true])(
       expect(readFileSync(credential, "utf8")).toBe("signed in");
       expect(readFileSync(accounts.path(), "utf8")).toBe(accountFile);
       expect(sent).toEqual([]);
+      await Promise.all([...s.account_removals.values()].map((job: any) => job.task));
+      await s.finishAccountRemovals();
       expect(manager.error).toContain("Close the agent");
       expect(signOut).not.toHaveBeenCalled();
       s.runtime.panes[0].agent.provider = null;
@@ -2278,6 +2688,8 @@ test("a signed-out account's row signs in to it over the panes instead of starti
   process.env.CORGI_CLAUDE_BIN = "/usr/bin/true";
   try {
     const { s, sent } = withWork({ signed_in: false });
+    s.remoteSignin = (provider: Provider, account: string, adding: boolean, host: signin.Host) =>
+      signin.signingIn({ provider, dir: account, name: "work", managed: true }, host);
     s.agent_launcher.selected = work;
     await s.key(13);
     expect(sent).toEqual([]);
@@ -2316,12 +2728,15 @@ test("space in Manage hides a row in the current workspace's picker only", async
 test("an account's row has a YOLO and launcher membership of its own, apart from its provider's", async () => {
   const { s, sent } = withWork();
   s.agent_launcher.selected = work;
+  // The toggle shows once the daemon has it; input doesn't wait for it.
   await s.key("y".charCodeAt(0));
+  await s.settle();
   expect(sent.at(-1)).toEqual({ "agent.yolo": { provider: "claude", enabled: true, account: "/accounts/work" } });
   expect([s.agent_launcher.yoloOf(work), s.agent_launcher.yoloOf("claude")]).toEqual([true, false]);
   s.agent_launcher.selected = "claude";
   // An older daemon refuses an account, so the default's row sends none.
   await s.key("y".charCodeAt(0));
+  await s.settle();
   expect(sent.at(-1)).toEqual({ "agent.yolo": { provider: "claude", enabled: true } });
   await s.input(bytes("\x1b[C"));
   s.agent_launcher.manager.at = agentManager.agentKey("claude", "/accounts/work");
@@ -2344,6 +2759,50 @@ test("an account's row has a YOLO and launcher membership of its own, apart from
   expect(sent.at(-1)).toEqual({
     "agent.visibility": { hidden: byProvider(p => p === "claude") },
   });
+});
+
+test.each(["pi", "omp"] as const)(
+  "Add agent keeps an explicit signed-out %s choice in the launcher",
+  async provider => {
+    const { s, sent } = withWork(),
+      launch = s.agent_launcher;
+    launch.preview.installed[provider] = true;
+    Object.assign(launch.preview.options[provider], { signed_in: false, pending: false });
+    expect(launch.shown(provider)).toBe(false);
+    launch.manage();
+    launch.manager.open(`found:${provider}:`);
+    const action = launch.manager.key(13, launch.manageModel());
+    expect(action?.kind).toBe("show");
+    await s.manageAction(action);
+    expect(sent.at(-1)).toEqual({
+      "agent.workspace_visibility": { workspace: s.current().id, row: provider, shown: true },
+    });
+    expect(launch.added).toContain(provider);
+    expect(launch.shown(provider)).toBe(true);
+    expect(launch.manageModel().agents.find((a: agentManager.Agent) => a.provider === provider)?.shown).toBe(true);
+  },
+);
+
+test("dragging a signed-out default from Add agent remembers the explicit choice", async () => {
+  const { s, sent } = withWork(),
+    launch = s.agent_launcher;
+  launch.preview.installed.pi = true;
+  Object.assign(launch.preview.options.pi, { signed_in: false, pending: false });
+  expect(launch.shown("pi")).toBe(false);
+  await s.manageAction({ kind: "move", row: "pi", before: "claude", order: ["claude", "pi"], shown: true });
+  expect(sent.at(-1)).toEqual({
+    "agent.launcher.move": {
+      workspace: s.current().id,
+      row: "pi",
+      before: "claude",
+      order: ["claude", "pi"],
+      shown: true,
+    },
+  });
+  expect(launch.added).toContain("pi");
+  expect(launch.shown("pi")).toBe(true);
+  launch.preview.options.claude.signed_in = true;
+  expect(launch.shown("pi")).toBe(true);
 });
 
 test("the launcher lights the checkout it starts agents in, as the overview lights a worktree", () => {
@@ -2371,7 +2830,7 @@ test("the launcher lights the checkout it starts agents in, as the overview ligh
       stale: false,
     },
   });
-  const s: any = new Controller({ socket: "", request: transport(async () => snapshot).request });
+  const s: any = new Controller({ request: transport(async () => snapshot).request });
   s.receiveSnapshot(snapshot);
   s.openLauncher(true, "/src/app-topic");
   expect(s.spotlight()).toEqual({ workspace: 1, path: "/src/app-topic" });
@@ -2447,7 +2906,7 @@ test("an agent's review and the launcher's Where read the checkout the list puts
         stale: false,
       },
     });
-  const s: any = new Controller({ socket: "", request: transport(async () => snapshot).request });
+  const s: any = new Controller({ request: transport(async () => snapshot).request });
   const placed = () => s.running.map((o: launcherResume.Open) => [o.session, o.folder]);
   s.receiveSnapshot(snapshot);
   expect(s.reviewTarget().cwd).toBe("/src/app");
@@ -2509,7 +2968,6 @@ test("a worktree's menu shows its diff line and opens its folder in a waiting sh
   const sent: [string, any][] = [];
   let waiting: number[] = [];
   const s: any = new Controller({
-    socket: "",
     request: transport(async (op, fields) => {
       sent.push([op, fields]);
       if (op === "pane.idle")
@@ -2645,7 +3103,6 @@ test("the agent menu's diff line is read ahead for the focused agent, its neighb
 test("setup requests models as soon as Clever Corgi is visible without waiting for discovery", async () => {
   const requests: protocol.Op[] = [],
     s = new Controller({
-      socket: "",
       request: transport(async op => {
         requests.push(op);
         if (op === "inference.configure") return new Promise(() => {});
@@ -2907,7 +3364,7 @@ test("Add agent adds a removed account back, its row there at once and shown in 
     launch.workspace_hidden = [row];
     await s.manageAction({ kind: "restore", provider: "claude", account: old.dir });
     expect(restore).toHaveBeenCalledWith("claude", old.dir);
-    expect(sent).toContainEqual({ "agent.workspace_visibility": { workspace: ws.id, row, shown: true } });
+    expect(ws.launcher_hidden).toEqual([]);
     expect(launch.workspace_hidden).toEqual([]);
     expect(launch.manageModel().agents.find((a: agentManager.Agent) => a.account === old.dir)).toMatchObject({
       label: "Claude Code · old",
@@ -2949,6 +3406,45 @@ test("custom keys resolve legacy, CSI-u, Alt and fragmented UTF-8 input", async 
   }
 });
 
+const prefixed = (s: any, key: string) => String.fromCharCode(keymap.prefixByte(s.prefs.prefix)) + key;
+
+test("prefix Space opens the prompt over the panes, and closes it again", async () => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  try {
+    await s.input(bytes(prefixed(s, " ")));
+    expect(s.prompt.open).toBe(true);
+    expect(s.prompt.context).toMatchObject({
+      cwd: "/a",
+      workspace: "/a",
+      workspace_id: 1,
+      focus: { title: "shell", provider: null, activity: "", pane: 1 },
+      herd: [],
+    });
+    // The pane it opened over goes with the next message; the workspace goes in its instructions.
+    expect(s.prompt.attached()).toEqual(["shell"]);
+    expect(s.overlayOpen()).toBe(true);
+    expect(s.frame()).toContain("Ask Corgi anything");
+    // Esc after the prefix goes back to the prompt.
+    await s.input(bytes(prefixed(s, "\x1b[27u")));
+    expect([s.prompt.open, s.prefix]).toEqual([true, false]);
+    await s.input(bytes(prefixed(s, " ")));
+    expect(s.prompt.open).toBe(false);
+    // Another command leaves it.
+    await s.input(bytes(prefixed(s, " ")));
+    await s.input(bytes(prefixed(s, "b")));
+    expect([s.prompt.open, s.sidebar_open]).toEqual([false, false]);
+    // Opening another menu puts it away too.
+    await s.perform({ name: "prompt" });
+    await s.perform({ name: "new" });
+    expect(s.prompt.open).toBe(false);
+    expect(s.agent_launcher).not.toBeNull();
+  } finally {
+    viewer.close(s);
+  }
+});
+
 test("the shortcut recorder owns direct commands and ignores bracketed paste", async () => {
   const s = controller();
   s.receiveSnapshot(folders("/a"));
@@ -2964,6 +3460,63 @@ test("the shortcut recorder owns direct commands and ignores bracketed paste", a
     expect(s.help.edit.recorded).toHaveLength(1);
     expect(s.agent_launcher).toBeNull();
     expect(s.help.edit.recorded[0].mods.ctrl).toBe(true);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("while the prompt shows it takes keys, sequences, pastes and the pointer ahead of the pane", async () => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  const sent = spyOn(s, "sendInput").mockImplementation(() => {}),
+    key = spyOn(s.prompt, "key"),
+    sequence = spyOn(s.prompt, "sequence"),
+    paste = spyOn(s.prompt, "pasteByte"),
+    click = spyOn(s.prompt, "click"),
+    scroll = spyOn(s.prompt, "scroll");
+  try {
+    await s.perform({ name: "prompt" });
+    await s.input(bytes("hi"));
+    expect(key.mock.calls.map(c => c[0])).toEqual([104, 105]);
+    // The prefix twice types it into the prompt, not the pane behind.
+    await s.input(bytes(prefixed(s, prefixed(s, ""))));
+    expect(key).toHaveBeenLastCalledWith(keymap.prefixByte(s.prefs.prefix));
+    await s.input(bytes("\x1b[A"));
+    expect(sequence).toHaveBeenLastCalledWith("\x1b[A");
+    // Alt+Enter from a legacy terminal and Shift+Enter from a Kitty one make a new line.
+    await s.input(bytes("\x1b\r"));
+    expect(sequence).toHaveBeenLastCalledWith("\x1b\r");
+    await s.input(bytes("\x1b[13;2u"));
+    expect(sequence).toHaveBeenLastCalledWith("\x1b\r");
+    expect(s.prompt.open).toBe(true);
+    await s.input(bytes("\x1b[200~ok\x1b[201~"));
+    expect(paste.mock.calls.map(c => c[0])).toEqual([111, 107]);
+    // The wheel says where the pointer is, so a list under it can scroll.
+    await s.input(bytes("\x1b[<65;10;5M"));
+    expect(scroll).toHaveBeenLastCalledWith(true, 9, 4);
+    // A move with the button down drags its selection, and the release copies it; other moves hover.
+    const drag = spyOn(s.prompt, "drag").mockReturnValue(true),
+      hover = spyOn(s.prompt, "hover").mockReturnValue(false),
+      release = spyOn(s.prompt, "release").mockReturnValue({ kind: "copy", text: "picked" });
+    await s.input(bytes("\x1b[<32;12;5M\x1b[<35;13;5M\x1b[<0;12;5m"));
+    expect(drag.mock.calls).toEqual([[11, 4]]);
+    expect(hover.mock.calls).toEqual([[12, 4]]);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(s.clipboard).toBe("picked");
+    for (const spy of [drag, hover, release]) spy.mockRestore();
+    expect(sent).not.toHaveBeenCalled();
+    // Esc closes it.
+    await s.input(bytes("\x1b[27u"));
+    expect(key).toHaveBeenLastCalledWith(27);
+    expect(s.prompt.open).toBe(false);
+    // A press outside its card closes it and goes no further.
+    await s.perform({ name: "prompt" });
+    s.frame();
+    await s.input(bytes("\x1b[<0;1;1M\x1b[<0;1;1m"));
+    expect(click).toHaveBeenLastCalledWith(0, 0);
+    expect(s.prompt.open).toBe(false);
+    expect(sent).not.toHaveBeenCalled();
   } finally {
     viewer.close(s);
   }
@@ -3013,13 +3566,13 @@ test("presses on one pane cell within the double-click window count up to three"
   const { s, at, click } = clickSeries();
   try {
     expect(await click()).toBe(1);
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     expect(await click()).toBe(2);
     clock.advance(100);
     expect(await click()).toBe(3);
     clock.advance(100);
     expect(await click()).toBe(3);
-    clock.advance(double_click_ms + 1);
+    clock.advance(clock.double_click_ms + 1);
     expect(await click()).toBe(1);
     clock.advance(50);
     // Shift still counts; Ctrl and Alt end the series.
@@ -3037,6 +3590,255 @@ test("presses on one pane cell within the double-click window count up to three"
   } finally {
     setSystemTime();
     clock.reset();
+    viewer.close(s);
+  }
+});
+
+test("the card takes its conversation back only when the daemon refuses the pane", async () => {
+  const snapshot = folders("/a");
+  const s: any = new Controller({
+    request: transport(async op => (op === "session.command" ? { err: "NoWorkspace" } : snapshot)).request,
+  });
+  s.receiveSnapshot(snapshot);
+  s.input_state.attached = true;
+  const reclaim = spyOn(s.prompt, "reclaim").mockImplementation(() => {}),
+    effect = { kind: "pane", argv: ["corgi", "__chat"], cwd: "/w", handoff: "/tmp/h.json" };
+  try {
+    await s.promptEffect(effect);
+    expect(reclaim).toHaveBeenCalledWith("/tmp/h.json", "NoWorkspace");
+    reclaim.mockClear();
+    // Made, then reading the change failed: the pane goes on with it.
+    const made = spyOn(s, "execute").mockImplementation(async (_command: unknown, done?: () => void) => {
+      done?.();
+      throw Error("ConnectionClosed");
+    });
+    await s.promptEffect(effect);
+    made.mockRestore();
+    // Lost before the reply: a pane may still open and read the handoff.
+    const lost = spyOn(s, "execute").mockRejectedValue(Error("ConnectionClosed"));
+    await s.promptEffect(effect);
+    lost.mockRestore();
+    expect(reclaim).not.toHaveBeenCalled();
+  } finally {
+    reclaim.mockRestore();
+    viewer.close(s);
+  }
+});
+
+test("the prompt opens a pane for what it hands off, and keeps its last pick for the next viewer", async () => {
+  const { s, sent } = recording(folders("/a"));
+  const choice = { provider: "claude", account: "", model: "claude-haiku-4-5", name: "Haiku 4.5", effort: null },
+    update = spyOn(preferences, "update").mockImplementation(() => {}),
+    load = spyOn(preferences, "load").mockReturnValue(
+      Object.assign(new preferences.Preferences(), { onboarding_complete: true, prompt_model: choice }),
+    );
+  try {
+    await s.promptEffect({
+      kind: "pane",
+      argv: ["env", "CLAUDE_CONFIG_DIR=/a b", "claude", "--resume", "s1"],
+      cwd: "/w",
+    });
+    expect(sent.at(-1)).toEqual({
+      "pane.create": { workspace: 1, cwd: "/w", command: "env 'CLAUDE_CONFIG_DIR=/a b' claude --resume s1", title: "" },
+    });
+    await s.promptEffect({ kind: "pick", choice: { ...choice, effort: "low" } });
+    expect(update).toHaveBeenCalledWith({ prompt_model: { ...choice, effort: "low" } });
+    s.loadPreferences();
+    expect(s.prompt.choice).toEqual(choice);
+  } finally {
+    update.mockRestore();
+    load.mockRestore();
+    viewer.close(s);
+  }
+});
+
+test("the prompt's conversation is a Corgi agent while a Corgi pane holds it, and not while it's in the card", () => {
+  const s = controller(),
+    corgi = {
+      id: 7,
+      workspace: 1,
+      provider: "claude",
+      corgi: true,
+      session: "c1",
+      state: "blocked",
+      attention: "needs_input",
+      observation: { completed: 2, read: 0 },
+    },
+    agent = { id: 8, workspace: 1, provider: "codex", session: "x1", state: "idle", attention: "none" },
+    saved = process.env.CORGI_PROMPT_SESSION;
+  // The viewer reloaded while its prompt's session ran.
+  process.env.CORGI_PROMPT_SESSION = "claude:c1";
+  s.receiveSnapshot({ ...folders("/a"), headless_sessions: [corgi, agent] });
+  try {
+    // In the card: the status line speaks for it, not the agent list.
+    expect(s.agentEntries().some((e: sidebar.Entry) => e.name === "Corgi")).toBe(false);
+    expect(s.workspaceEntries()[0]).toMatchObject({ agents: 1, attention: 0, unread: 0 });
+    // It goes on in it.
+    expect([s.prompt.conversation.provider, s.prompt.conversation.session]).toEqual(["claude", "c1"]);
+    // In a pane: a Corgi agent, counted, jumped to, and chosen it goes to the pane.
+    s.receiveSnapshot({ ...folders("/a"), headless_sessions: [{ ...corgi, pane: 1 }, agent] });
+    const entries = s.agentEntries();
+    expect(entries.map((e: sidebar.Entry) => [e.target, e.name])).toContainEqual([{ headless: 7 }, "Corgi"]);
+    expect(entries.find((e: sidebar.Entry) => e.name === "Corgi")).toMatchObject({ state: "blocked", unread: true });
+    expect(s.workspaceEntries()[0]).toMatchObject({ agents: 2, attention: 1, unread: 1 });
+    expect(s.firstUnreadAgent(0)).toEqual({ headless: 7 });
+    const focus = spyOn(s, "focusPane");
+    s.selectAgent({ headless: 7 });
+    expect(focus).toHaveBeenCalledWith(1);
+    expect(s.prompt.open).toBe(false);
+    // Its row's menu stays open while the row does.
+    const menu = new TabMenu({ tab: 7, headless: true, anchor_x: 0 });
+    expect(s.tabMenuStale(menu)).toBe(false);
+    // Once it exits, it leaves the list.
+    s.receiveSnapshot({ ...folders("/a"), headless_sessions: [{ ...corgi, pane: 1, exited: true }] });
+    expect(s.agentEntries().some((e: sidebar.Entry) => e.name === "Corgi")).toBe(false);
+    expect(s.tabMenuStale(menu)).toBe(true);
+  } finally {
+    if (saved === undefined) delete process.env.CORGI_PROMPT_SESSION;
+    else process.env.CORGI_PROMPT_SESSION = saved;
+    viewer.close(s);
+  }
+});
+
+test("put away, the prompt says in the status line when it needs you or has answered", () => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  const attention = spyOn(s.prompt, "attention").mockReturnValue("needs_input");
+  try {
+    s.dirty = false;
+    s.pollPrompt();
+    expect(s.dirty).toBe(true);
+    expect(s.frame().replace(/\x1b\[[0-9;:?]*[a-zA-Z]/g, "")).toContain("● Corgi needs you · Ctrl+B Space");
+    s.dirty = false;
+    s.pollPrompt();
+    expect(s.dirty).toBe(false);
+    attention.mockReturnValue("finished");
+    expect(s.promptCue()).toEqual({ text: "Corgi answered · Ctrl+B Space", tone: "accent" });
+    attention.mockReturnValue("working");
+    expect(s.promptCue()).toBeNull();
+    attention.mockReturnValue("needs_input");
+    s.perform({ name: "prompt" });
+    expect(s.promptCue()).toBeNull();
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("put away, Corgi sounds its own when it answers or needs you, once, and not while its card shows", async () => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  const attention = spyOn(s.prompt, "attention").mockReturnValue("working");
+  try {
+    s.pollPrompt();
+    expect(s.prompt_chime).toBeNull();
+    attention.mockReturnValue("finished");
+    s.pollPrompt();
+    expect(s.prompt_chime).toBe("finished");
+    // The viewer plays it and clears it; it doesn't come again for the same answer.
+    s.prompt_chime = null;
+    s.pollPrompt();
+    expect(s.prompt_chime).toBeNull();
+    attention.mockReturnValue("needs_input");
+    s.pollPrompt();
+    expect(s.prompt_chime).toBe("needs_input");
+    // With the card open it's in view: no sound.
+    s.prompt_chime = null;
+    attention.mockReturnValue("working");
+    s.pollPrompt();
+    await s.perform({ name: "prompt" });
+    attention.mockReturnValue("finished");
+    s.pollPrompt();
+    expect(s.prompt_chime).toBeNull();
+  } finally {
+    viewer.close(s);
+  }
+});
+
+/** A recording controller on `pair()` whose sidebar rows take presses at
+ * their field's cell, and whose pane input lands in `typed`. */
+function renaming(fail?: (command: any) => string | undefined, snapshot: any = pair()) {
+  const { s, sent } = recording(snapshot, fail);
+  for (const method of ["input", "key"]) {
+    const run = s[method].bind(s);
+    s[method] = async (...args: any[]) => {
+      await run(...args);
+      await s.settle();
+    };
+  }
+  const typed: string[] = [];
+  s.sendInput = (_term: any, data: any) => typed.push(Buffer.from(data).toString());
+  const rect = (target: any) => s.sidebarView(s.sidebarEntries()).fieldRect(target, s.workspaceEntries());
+  const press = (x: number, y: number, button = 0) =>
+    s.input(bytes(`\x1b[<${button};${x + 1};${y + 1}M\x1b[<${button};${x + 1};${y + 1}m`));
+  const twice = async (target: any) => {
+    const at = rect(target);
+    await press(at.x, at.y);
+    await press(at.x, at.y);
+  };
+  return { s, sent, typed, rect, press, twice };
+}
+const probe = (pane: number) => ({ "agent.rename": { target: pane } });
+
+test("a double-click on an agent row renames it in place, with the dialog's outcome", async () => {
+  const { s, sent, typed, twice } = renaming();
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ agent: 2 });
+    expect(s.focused().id).toBe(2);
+    expect(s.inline_rename.target).toEqual({ agent: 2 });
+    expect(s.inline_rename.field.raw()).toBe("agent 2");
+    expect(s.inline_rename.field.cursor).toBe(s.inline_rename.field.len);
+    expect(s.inline_rename.field.selection()).toBeNull();
+    expect(sent).toEqual([probe(2)]);
+    expect(s.frame()).toContain("agent 2");
+    await s.input(bytes("\x03Fix API\r"));
+    expect(sent.at(-1)).toEqual({ "agent.rename": { target: 2, name: "Fix API" } });
+    expect(s.inline_rename).toBeNull();
+    expect(typed).toEqual([]);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a character bound to an action types into the rename field", async () => {
+  const { s, sent, twice } = renaming();
+  const bound = spyOn(s.prefs, "bindings").mockReturnValue([
+    { key: 0xe9, mods: {}, prefixed: false, action: { name: "new-workspace" } },
+  ]);
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ agent: 2 });
+    await s.input(bytes("é"));
+    expect([s.inline_rename?.field.raw(), s.name_dialog, sent]).toEqual(["agent 2é", null, [probe(2)]]);
+  } finally {
+    bound.mockRestore();
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("moving the free pointer off the cell or turning the wheel between presses opens no field", async () => {
+  const { s, sent, rect, press } = renaming();
+  const at = rect({ agent: 2 });
+  const report = (button: number, x: number, y: number) => s.input(bytes(`\x1b[<${button};${x + 1};${y + 1}M`));
+  try {
+    setSystemTime(new Date(1000));
+    await press(at.x, at.y);
+    await report(35, at.x + 1, at.y);
+    await report(35, at.x, at.y);
+    await press(at.x, at.y);
+    expect(s.inline_rename).toBeNull();
+    await report(65, at.x, at.y);
+    await press(at.x, at.y);
+    expect(s.inline_rename).toBeNull();
+    // Unheld motion within the cell keeps it.
+    await report(35, at.x, at.y);
+    await press(at.x, at.y);
+    expect(s.inline_rename?.target).toEqual({ agent: 2 });
+    expect(sent).toEqual([probe(2)]);
+  } finally {
+    setSystemTime();
     viewer.close(s);
   }
 });
@@ -3082,6 +3884,37 @@ test("scrolling, resizing or dragging off the cell ends a click series", async (
   }
 });
 
+test("a double-click on a workspace row edits its name; Escape keeps the old one", async () => {
+  const { s, sent, twice } = renaming();
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ workspace: 1 });
+    expect(s.inline_rename.target).toEqual({ workspace: 1 });
+    expect(s.inline_rename.field.raw()).toBe("/a");
+    expect(s.inline_rename.fallback).toBe("a");
+    await s.input(bytes("\x03Edited"));
+    await s.key(27);
+    expect(s.inline_rename).toBeNull();
+    expect(sent).toEqual([]);
+    await twice({ workspace: 1 });
+    await s.input(bytes("\x03Edited\r"));
+    expect(sent).toEqual([{ "workspace.edit": { target: 1, name: "Edited" } }]);
+    expect(s.inline_rename).toBeNull();
+    // An empty name is refused, as in the dialog; the field stays open.
+    await twice({ workspace: 1 });
+    await s.input(bytes("\x03\r"));
+    expect(sent).toHaveLength(1);
+    expect(s.inline_rename.message).toBe("Enter a workspace name.");
+    expect(s.frame()).toContain("Enter a workspace name.");
+    await s.key(27);
+    expect(s.inline_rename).toBeNull();
+    expect(sent).toHaveLength(1);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
 test("presses in copy mode don't count a click series", async () => {
   const { s, click } = clickSeries();
   try {
@@ -3097,6 +3930,28 @@ test("presses in copy mode don't count a click series", async () => {
   }
 });
 
+test("the open field takes every key: nothing reaches the pane and no binding runs", async () => {
+  const { s, sent, typed, twice } = renaming();
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ agent: 1 });
+    const count = s.model().count;
+    await s.input(bytes("\x02c"));
+    expect(s.prefix).toBe(false);
+    expect(s.model().count).toBe(count);
+    expect(s.inline_rename.field.raw()).toBe("agent 1c");
+    await s.input(bytes("\x1b[D\x1b[Dx"));
+    expect(s.inline_rename.field.raw()).toBe("agent x1c");
+    await s.input(bytes("\x1b[200~a\nb\x1b[201~"));
+    expect(s.inline_rename.field.raw()).toBe("agent xab1c");
+    expect(sent).toEqual([probe(1)]);
+    expect(typed).toEqual([]);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
 /** A controller whose focused pane shows "  hello there", whose daemon answers every
  * pick with "hello" at its cells but the shown text in `reply.shown`, and
  * records each pick it was asked in `asks`. */
@@ -3104,10 +3959,10 @@ function picking() {
   const reply = { shown: "hello" };
   const asks: any[] = [];
   const s: any = new Controller({
-    socket: "",
     request: transport(async (op, fields) => {
       // A sync sees nothing new, and focus changes are accepted.
-      if (op === "viewer.sync" || op === "session.command") return { ok: true, viewer_protocol: 3 };
+      if (op === "viewer.sync") return { ok: true, viewer_protocol: 4 };
+      if (op === "session.command") return { ok: true, result: protocol.emptyResult() };
       if (op !== "viewer.pick") throw Error("UnexpectedRequest");
       asks.push(fields);
       return { ok: true, match: { x: 2, y: 0, end_x: 6, end_y: 0 }, shown: reply.shown, copy: "hello" };
@@ -3125,7 +3980,7 @@ function picking() {
   term.receive(native.surface(1));
   const at = `${rect.x + 4};${rect.y + 1}`;
   const doubleClick = async () => {
-    clock.advance(double_click_ms + 1);
+    clock.advance(clock.double_click_ms + 1);
     s.clearEffects();
     await s.input(bytes(`\x1b[<0;${at}M\x1b[<0;${at}m\x1b[<0;${at}M\x1b[<0;${at}m`));
   };
@@ -3150,7 +4005,7 @@ test("a pick whose text the pane no longer shows copies nothing", async () => {
     // The same answer copies once it matches what the pane shows.
     reply.shown = "hello";
     await doubleClick();
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     await s.expireInput();
     expect(s.effects).toEqual([{ write_terminal: `\x1b]52;c;${Buffer.from("hello").toString("base64")}\x07` }]);
     expect(s.copy_feedback_until).not.toBe(0);
@@ -3168,8 +4023,8 @@ test("a double-click copies its word once a third press can no longer pick the l
   const copies = () => s.effects.filter((effect: any) => "write_terminal" in effect).length;
   try {
     await doubleClick();
-    expect(s.pending_copy).toEqual({ text: "hello", due: clock.milliTimestamp() + double_click_ms });
-    clock.advance(double_click_ms - 1);
+    expect(s.pending_copy).toEqual({ text: "hello", due: clock.milliTimestamp() + clock.double_click_ms });
+    clock.advance(clock.double_click_ms - 1);
     await s.expireInput();
     expect(copies()).toBe(0);
     clock.advance(1);
@@ -3183,7 +4038,7 @@ test("a double-click copies its word once a third press can no longer pick the l
     expect(asks.at(-1)?.unit).toBe("line");
     expect(s.pending_copy).toBeNull();
     expect(copies()).toBe(1);
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     await s.expireInput();
     expect(copies()).toBe(1);
     // A key or a press elsewhere copies the word at once.
@@ -3245,7 +4100,7 @@ test("a held double-click ends on a scroll, a key or a focus change", async () =
   const { s, term, rect, done } = picking();
   const at = `${rect.x + 4};${rect.y + 1}`;
   const hold = async () => {
-    clock.advance(double_click_ms + 1);
+    clock.advance(clock.double_click_ms + 1);
     await s.input(bytes(`\x1b[<0;${at}M\x1b[<0;${at}m\x1b[<0;${at}M`));
     await s.gesture.pending;
     expect(term.holding_selection).toBe(true);
@@ -3280,7 +4135,7 @@ test("a drag past its pane's edges asks for the pane's edge cells", async () => 
   const { s, rect, asks, done } = picking();
   const at = `${rect.x + 4};${rect.y + 1}`;
   try {
-    clock.advance(double_click_ms + 1);
+    clock.advance(clock.double_click_ms + 1);
     await s.input(bytes(`\x1b[<0;${at}M\x1b[<0;${at}m\x1b[<0;${at}M`));
     await s.gesture.pending;
     await s.input(bytes(`\x1b[<32;${rect.x - 4};${rect.y + rect.h + 4}M`));
@@ -3297,7 +4152,6 @@ test("a drag past its pane's edges asks for the pane's edge cells", async () => 
 test("a pick answered after its pane closed changes nothing", async () => {
   const answers: (() => void)[] = [];
   const s: any = new Controller({
-    socket: "",
     request: transport(async op => {
       if (op !== "viewer.pick") throw Error("UnexpectedRequest");
       return new Promise(resolve =>
@@ -3338,10 +4192,276 @@ test("a pick answered after its pane closed changes nothing", async () => {
   }
 });
 
+test("the prompt's picker offers each installed agent's models per account, with plan and limits", async () => {
+  const now = Math.floor(Date.now() / 1000),
+    base = folders("/a");
+  const s = controller(),
+    read: string[] = [];
+  // As the viewer's own cache does, a catalog arriving has the prompt told again.
+  s.machine.profiles.loaded = true;
+  s.model_cache = new agentModels.Cache(
+    () => (s.prompt_stale = true),
+    async (provider, account) => {
+      read.push(`${provider}:${account}`);
+      return provider === "claude"
+        ? [
+            { id: "claude-opus-4-7", name: "Opus 4.7", efforts: ["low", "medium", "high"], default_effort: "high" },
+            { id: "claude-haiku-4-5", name: "Haiku 4.5" },
+          ]
+        : [{ id: "gpt-6", name: "GPT-6", efforts: ["low", "high"], default_effort: "low" }];
+    },
+  );
+  s.receiveSnapshot({
+    ...base,
+    panes: [{ ...base.panes[0], agent: { ...base.panes[0].agent, provider: "claude", conversation: 3 } }],
+    conversations: [{ id: 3, model: "claude-opus-4-7", agent: { provider: "claude" } }],
+    accounts: [{ provider: "claude", account: "/accounts/work", name: "work", managed: true }],
+    inference: { provider: "claude", model: "claude-haiku-4-5", launches: { claude: 9, codex: 2 } },
+  });
+  s.input_state.attached = true;
+  Object.assign(s.launch_previews, {
+    received: true,
+    preview: agentLauncher.preview({
+      installed: { claude: true, codex: true, pi: false, opencode2: false, omp: false },
+      names: { claude: "personal" },
+      options: {
+        claude: {
+          signed_in: true,
+          plan: "Max",
+          limits: {
+            windows: [
+              { minutes: 10080, used: 48, reset_at: null },
+              { minutes: 300, used: 12, reset_at: null },
+            ],
+          },
+          usage_fetched_at: now,
+        },
+        codex: { signed_in: true, plan: "Pro" },
+      },
+      accounts: [
+        { provider: "claude", account: "/accounts/work", name: "work", option: { signed_in: true, plan: "Team" } },
+      ],
+    }),
+  });
+  const options = spyOn(accounts, "launchOptions").mockReturnValue({ flags: "", env: [], effort: "medium" }),
+    catalog = spyOn(s.prompt, "catalog"),
+    update = spyOn(preferences, "update").mockImplementation(() => {});
+  try {
+    await s.perform({ name: "prompt" });
+    // Suggestions wait for the catalogs, so the model offered doesn't change
+    // under the user; till then the prompt says they're loading.
+    expect(catalog.mock.calls.at(-1)![1]).toEqual([]);
+    expect(catalog.mock.calls.at(-1)![4]).toBe(true);
+    await Bun.sleep(1);
+    expect(read.sort()).toEqual(["claude:", "claude:/accounts/work", "codex:"]);
+    s.pollPrompt();
+    const [entries, suggested, briefs, , loading] = catalog.mock.calls.at(-1) as [
+      modelPicker.Entry[],
+      modelPicker.Choice[],
+      modelPicker.Brief[],
+      modelPicker.Choice | null,
+      boolean,
+    ];
+    expect(loading).toBe(false);
+    expect(entries.map(e => `${e.provider}:${e.account}:${e.model}`).sort()).toEqual([
+      "claude:/accounts/work:claude-haiku-4-5",
+      "claude:/accounts/work:claude-opus-4-7",
+      "claude::claude-haiku-4-5",
+      "claude::claude-opus-4-7",
+      "codex::gpt-6",
+    ]);
+    expect(entries.find(e => e.provider === "claude" && e.account === "")).toMatchObject({ account_name: "personal" });
+    // Each account's header has its plan and limits in columns.
+    expect(briefs.find(b => b.provider === "claude" && b.account === "")).toMatchObject({
+      ...modelPicker.brief("claude", "", ["Max", "5h 12%", "7d 48%"]),
+      plan: "Max",
+      limits: ["5h 12%", "7d 48%"],
+    });
+    expect(briefs.find(b => b.provider === "claude" && b.account === "/accounts/work")).toMatchObject({
+      plan: "Team",
+      limits: [],
+    });
+    // Opus at the effort the launcher runs it with leads; Clever Corgi's Haiku is the quick one.
+    expect(suggested[0]).toMatchObject({ provider: "claude", account: "", model: "claude-opus-4-7", effort: "medium" });
+    expect(suggested.some(c => c.model === "claude-haiku-4-5")).toBe(true);
+    // Tab opens the picker on Auto, and Enter keeps following it.
+    await s.input(bytes("\t\r"));
+    expect(update).toHaveBeenCalledWith({ prompt_model: "auto" });
+  } finally {
+    options.mockRestore();
+    update.mockRestore();
+    viewer.close(s);
+  }
+});
+
+test("a press outside the field closes it unsaved and still acts; one inside changes nothing", async () => {
+  const { s, sent, rect, press, twice } = renaming();
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ agent: 1 });
+    const inside = rect({ agent: 1 });
+    await press(inside.x + 2, inside.y);
+    expect(s.inline_rename.target).toEqual({ agent: 1 });
+    expect(s.inline_rename.field.cursor).toBe(s.inline_rename.field.len);
+    await s.input(bytes("x"));
+    const other = rect({ agent: 2 });
+    await press(other.x, other.y);
+    expect(s.inline_rename).toBeNull();
+    expect(s.focused().id).toBe(2);
+    // The message line counts as outside.
+    await twice({ agent: 1 });
+    s.inline_rename.message = "busy";
+    const at = rect({ agent: 1 });
+    await press(at.x, at.message_y);
+    expect(s.inline_rename).toBeNull();
+    expect(sent).toEqual([probe(1), probe(1)]);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a field starts with the label, else the agent name, else empty; a workspace's with its name", async () => {
+  const snapshot = pair();
+  (snapshot.panes[0] as any).name = "tag";
+  snapshot.panes[1].agent.name = "";
+  (snapshot.workspaces[1] as any).name = "Custom";
+  const { s, sent, twice } = renaming(undefined, snapshot);
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ agent: 1 });
+    expect(s.inline_rename.field.raw()).toBe("tag");
+    await s.key(27);
+    await twice({ agent: 2 });
+    expect(s.inline_rename.field.raw()).toBe("");
+    expect(s.inline_rename.fallback).toBe("Claude");
+    // Return on an empty agent field sends nothing, as the dialog does.
+    await s.key(13);
+    expect(s.inline_rename).toBeNull();
+    expect(sent).toEqual([probe(1), probe(2)]);
+    await twice({ workspace: 2 });
+    expect(s.inline_rename.field.raw()).toBe("Custom");
+    expect(s.inline_rename.fallback).toBe("b");
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a refused double-click is a plain press: the second one still starts a drag", async () => {
+  const { s, rect } = renaming(c => (c["agent.rename"]?.name === undefined ? "RenameUnavailable" : undefined));
+  try {
+    setSystemTime(new Date(1000));
+    const at = rect({ agent: 2 });
+    const down = (x: number, y: number) => s.input(bytes(`\x1b[<0;${x + 1};${y + 1}M`));
+    await down(at.x, at.y);
+    await s.input(bytes(`\x1b[<0;${at.x + 1};${at.y + 1}m`));
+    await down(at.x, at.y);
+    expect(s.inline_rename).toBeNull();
+    expect(s.focused().id).toBe(2);
+    expect(s.agent_drag).not.toBeNull();
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a modified or middle press outside the field closes it too; one inside keeps it", async () => {
+  const { s, sent, rect, press, twice } = renaming();
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ agent: 1 });
+    const inside = rect({ agent: 1 });
+    await press(inside.x + 1, inside.y, 4);
+    expect(s.inline_rename.target).toEqual({ agent: 1 });
+    await press(60, 10, 4);
+    expect(s.inline_rename).toBeNull();
+    await twice({ agent: 1 });
+    await press(60, 10, 1);
+    expect(s.inline_rename).toBeNull();
+    expect(sent).toEqual([probe(1), probe(1)]);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("Kitty-encoded keys go to the open field, not to the pane or a binding", async () => {
+  const { s, sent, typed, twice } = renaming();
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ agent: 1 });
+    const count = s.model().count;
+    // "x", then Ctrl-B and c as the prefix and its new-tab key.
+    await s.input(bytes("\x1b[120u\x1b[98;5u\x1b[99u"));
+    expect(s.model().count).toBe(count);
+    expect(s.inline_rename.field.raw()).toBe("agent 1xc");
+    expect(sent).toEqual([probe(1)]);
+    expect(typed).toEqual([]);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a double-click on row B while A's field is open edits B", async () => {
+  const { s, twice } = renaming();
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ agent: 1 });
+    await twice({ agent: 2 });
+    expect(s.inline_rename.target).toEqual({ agent: 2 });
+    expect(s.inline_rename.field.raw()).toBe("agent 2");
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a double-click opens no field on a headless row or an agent that refuses the rename probe", async () => {
+  const {
+    s: refused,
+    sent,
+    twice,
+  } = renaming(c => (c["agent.rename"]?.name === undefined ? "RenameUnavailable" : undefined));
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ agent: 1 });
+    expect(refused.inline_rename).toBeNull();
+    expect(refused.focused().id).toBe(1);
+    expect(sent).toEqual([probe(1)]);
+  } finally {
+    viewer.close(refused);
+  }
+  const snapshot = {
+    ...pair(),
+    headless_sessions: [{ id: 7, workspace: 1, provider: "codex", cwd: "/a", state: "working" }],
+  };
+  const { s } = recording(snapshot);
+  try {
+    const entries = s.sidebarEntries();
+    const index = entries.findIndex((e: any) => "headless" in e.target);
+    expect(index).toBeGreaterThan(-1);
+    const view = s.sidebarView(entries);
+    let y = view.middle() + 2;
+    while (y < s.height) {
+      const hit = view.hit(6, y);
+      if (hit.tag === "entry" && hit.entry === index) break;
+      y++;
+    }
+    expect(y).toBeLessThan(s.height);
+    for (let i = 0; i < 2; i++) await s.input(bytes(`\x1b[<0;7;${y + 1}M\x1b[<0;7;${y + 1}m`));
+    expect(s.inline_rename).toBeNull();
+    expect(s.clicks.target).toBeNull();
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
 test("a drag keeps one pick out and copies the answer for where it ended", async () => {
   const asks: { to_x: number | null; answer: (copy: string) => void }[] = [];
   const s: any = new Controller({
-    socket: "",
     request: transport(async (op, fields: any) => {
       if (op !== "viewer.pick") throw Error("UnexpectedRequest");
       return new Promise(resolve =>
@@ -3384,6 +4504,39 @@ test("a drag keeps one pick out and copies the answer for where it ended", async
   }
 });
 
+test("only a double-click on the name renames, not one elsewhere on the row", async () => {
+  const snapshot = pair();
+  snapshot.panes[2].agent.observation = { completed: 2, read: 0 };
+  const { s, sent, rect, press } = renaming(undefined, snapshot);
+  const twice = async (x: number, y: number) => {
+    await press(x, y);
+    await press(x, y);
+  };
+  try {
+    setSystemTime(new Date(1000));
+    const ws = s.workspaceEntries()[1];
+    const view = s.sidebarView(s.sidebarEntries());
+    const badge = view.unreadRange(ws).start,
+      name = rect({ workspace: 2 });
+    expect(view.unreadHit(ws, badge, name.y + 1)).toBe(true);
+    await twice(badge, name.y + 1);
+    await twice(name.x + displayWidth(ws.name), name.y);
+    expect([s.current().id, s.inline_rename]).toEqual([2, null]);
+    await twice(name.x + displayWidth(ws.name) - 1, name.y);
+    expect(s.inline_rename?.target).toEqual({ workspace: 2 });
+    await s.input(bytes("\x1b[27u"));
+    const agent = rect({ agent: 3 });
+    await twice(agent.x, agent.y + 1);
+    await twice(agent.x + displayWidth("agent 3"), agent.y);
+    expect([s.focused().id, s.inline_rename, sent]).toEqual([3, null, []]);
+    await twice(agent.x + displayWidth("agent 3") - 1, agent.y);
+    expect(s.inline_rename?.target).toEqual({ agent: 3 });
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
 /** A controller on two workspaces whose focused pane shows "  hello there",
  * "hello" a link to `url`, and whose daemon fails every request (an old
  * daemon has no viewer.pick). `click` presses and releases `dx` cells right
@@ -3391,7 +4544,6 @@ test("a drag keeps one pick out and copies the answer for where it ended", async
 function linking() {
   const url = "https://example.com/hello";
   const s: any = new Controller({
-    socket: "",
     request: transport(async op => {
       throw Error(op === "viewer.pick" ? "UnknownOperation" : "UnexpectedRequest");
     }).request,
@@ -3440,18 +4592,18 @@ test("a plain click on a pane link opens it once the double-click window has pas
     const at = clock.milliTimestamp();
     await click();
     expect(s.effects).toEqual([]);
-    expect(s.pending_open).toEqual({ url, pane: 1, due: at + double_click_ms });
+    expect(s.pending_open).toEqual({ url, pane: 1, due: at + clock.double_click_ms });
     expect(await opened()).toEqual([]);
-    clock.advance(double_click_ms - 1);
+    clock.advance(clock.double_click_ms - 1);
     expect(await opened()).toEqual([]);
     clock.advance(1);
     expect(await opened()).toEqual([url]);
     expect(s.pending_open).toBeNull();
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     expect(await opened()).toEqual([]);
     // Held past the window, it opens at its release.
     await mouse(0);
-    clock.advance(double_click_ms + 100);
+    clock.advance(clock.double_click_ms + 100);
     expect(await opened()).toEqual([]);
     await mouse(0, 0, true);
     expect(await opened()).toEqual([url]);
@@ -3469,24 +4621,24 @@ test("a second press on a pane link cancels its open, another press opens it at 
     await mouse(0);
     expect(await opened()).toEqual([]);
     await mouse(0, 0, true);
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     expect(await opened()).toEqual([]);
     // A press on another cell of the pane opens it before it lands.
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     await click();
     clock.advance(50);
     await mouse(0, 20);
     expect(s.effects).toEqual([{ open_url: url }]);
     s.clearEffects();
     await mouse(0, 20, true);
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     expect(await opened()).toEqual([]);
     // A wheel step isn't a press.
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     await click();
     clock.advance(50);
     await mouse(64);
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     expect(await opened()).toEqual([url]);
   } finally {
     done();
@@ -3501,10 +4653,10 @@ test("a second press on the same link opens it only once", async () => {
     clock.advance(100);
     await click(0, 1);
     expect(s.effects).toEqual([]);
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     expect(await opened()).toEqual([url]);
     // A Ctrl+click after a plain click opens at once, and only then.
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     await click();
     clock.advance(50);
     await mouse(16);
@@ -3512,14 +4664,14 @@ test("a second press on the same link opens it only once", async () => {
     await mouse(16, 0, true);
     expect(s.effects).toEqual([{ open_url: url }]);
     s.clearEffects();
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     expect(await opened()).toEqual([]);
     // Nor once its pane lost focus before the press.
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     await click();
     s.focusPane(2);
     await click(0, 20);
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     expect(await opened()).toEqual([]);
   } finally {
     done();
@@ -3531,17 +4683,17 @@ test("a pane link's open is dropped once its pane loses focus or closes", async 
   try {
     await click();
     s.focusPane(2);
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     expect(await opened()).toEqual([]);
     s.focusPane(1);
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     await click();
     expect(s.pending_open).not.toBeNull();
     const closed = folders("/a", "/b");
     closed.workspaces = closed.workspaces.slice(1);
     closed.panes = closed.panes.slice(1);
     s.receiveSnapshot(closed);
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     expect(await opened()).toEqual([]);
   } finally {
     done();
@@ -3555,7 +4707,7 @@ test("a Ctrl+click opens a pane link at once", async () => {
     expect(s.effects).toEqual([{ open_url: url }]);
     expect(s.pending_open).toBeNull();
     s.clearEffects();
-    clock.advance(double_click_ms);
+    clock.advance(clock.double_click_ms);
     expect(await opened()).toEqual([]);
   } finally {
     done();
@@ -3568,7 +4720,7 @@ test("a double-click the daemon can't pick leaves nothing selected, copied or op
     const message = s.message;
     // On the link and on a word.
     for (const dx of [0, 7]) {
-      clock.advance(double_click_ms + 1);
+      clock.advance(clock.double_click_ms + 1);
       await click(0, dx);
       await click(0, dx);
       expect(s.click_series?.count).toBe(2);
@@ -3580,10 +4732,2586 @@ test("a double-click the daemon can't pick leaves nothing selected, copied or op
       expect(term.holding_selection).toBe(false);
       expect(s.picked).toBeNull();
       expect(s.message).toBe(message);
-      clock.advance(double_click_ms);
+      clock.advance(clock.double_click_ms);
       expect(await opened()).toEqual([]);
     }
   } finally {
     done();
+  }
+});
+test("Esc calls off a retry still waiting, and goes to the agent once the retry is under way", async () => {
+  const calls: [string, unknown][] = [],
+    snapshot: any = pair();
+  snapshot.panes[0].agent = { ...snapshot.panes[0].agent, provider: "codex", state: "working", retry_at: 60_000 };
+  const s: any = new Controller({
+    request: transport(async (op, fields) => {
+      calls.push([op, fields]);
+      return {};
+    }).request,
+  });
+  s.receiveSnapshot(snapshot);
+  s.input_state.attached = true;
+  const sent: string[] = [];
+  s.sendInput = (_: unknown, data: Uint8Array | number[]) => sent.push(Buffer.from(data).toString());
+  try {
+    s.focusPane(1);
+    setSystemTime(new Date(45_000));
+    await s.input(bytes("\x1b[27u"));
+    expect(calls).toEqual([["retry.cancel", { pane: 1 }]]);
+    expect(sent).toEqual([]);
+    setSystemTime(new Date(61_000));
+    await s.input(bytes("\x1b[27u"));
+    expect(calls).toHaveLength(1);
+    expect(sent).toEqual(["\x1b"]);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("the prompt's catalogs are read ahead of it, once, only where the launcher lists an agent or the user picked one", async () => {
+  const s = controller(),
+    read: string[] = [];
+  s.machine.profiles.loaded = true;
+  s.model_cache = new agentModels.Cache(
+    () => {},
+    async (provider, account) => {
+      read.push(`${provider}:${account}`);
+      return [];
+    },
+  );
+  s.receiveSnapshot(folders("/a"));
+  Object.assign(s.launch_previews, {
+    received: true,
+    preview: agentLauncher.preview({
+      installed: { claude: true, codex: true, pi: true, opencode2: false, omp: true },
+      options: { claude: { signed_in: true }, codex: { signed_in: true }, pi: { signed_in: true }, omp: {} },
+    }),
+  });
+  s.runtime.agent_hidden.pi = true;
+  s.runtime.agent_hidden.omp = true;
+  s.prefs.prompt_model = { provider: "omp", account: "", model: "sonnet", name: "Sonnet", effort: null };
+  try {
+    s.pollPrompt();
+    await Bun.sleep(1);
+    expect(read.sort()).toEqual(["claude:", "codex:", "omp:"]);
+    // Neither time nor finding agents on opening Manage reads them again;
+    // the Find agents button does.
+    const again = async () => {
+      s.prompt_warmed_at = 0;
+      s.pollPrompt();
+      await Bun.sleep(1);
+    };
+    await again();
+    expect(read.length).toBe(3);
+    s.connection = { request: async () => ({ ok: true }) };
+    s.findAgents();
+    await s.finding_agents;
+    await again();
+    expect(read.length).toBe(3);
+    s.finding_agents_until = 0;
+    s.findAgents(true);
+    await s.finding_agents;
+    await again();
+    expect(read.length).toBe(6);
+    // Pressed while the automatic search runs, it reads them once that ends.
+    s.finding_agents_until = 0;
+    s.findAgents();
+    s.findAgents(true);
+    await s.finding_agents;
+    await again();
+    expect(read.length).toBe(9);
+  } finally {
+    viewer.close(s);
+  }
+});
+test("the prompt offers an agent hidden in Manage agents that the user runs, and every one when it would offer none", async () => {
+  const s = controller(),
+    read: string[] = [];
+  s.machine.profiles.loaded = true;
+  s.model_cache = new agentModels.Cache(
+    () => {},
+    async (provider, account) => {
+      read.push(`${provider}:${account}`);
+      return [];
+    },
+  );
+  s.receiveSnapshot(folders("/a"));
+  Object.assign(s.launch_previews, {
+    received: true,
+    preview: agentLauncher.preview({
+      installed: { claude: true, codex: true, pi: true, opencode2: false, omp: false },
+      options: { claude: { signed_in: true }, codex: { signed_in: true }, pi: { signed_in: false } },
+    }),
+  });
+  for (const p of Provider.all) s.runtime.agent_hidden[p] = true;
+  try {
+    // Nothing listed or run: every signed-in agent.
+    s.pollPrompt();
+    await Bun.sleep(1);
+    expect(read.sort()).toEqual(["claude:", "codex:"]);
+    // Claude runs from a saved command in a pane: only it.
+    const places = () => (s as any).promptPlaces().map((p: { provider: string }) => p.provider);
+    s.runtime.panes[0].agent.provider = "claude";
+    expect(places()).toEqual(["claude"]);
+    // Launched once long ago isn't running it; a saved command that starts it is.
+    s.runtime.panes[0].agent.provider = null;
+    s.runtime.inference.launches.claude = 5;
+    const saved = s.runtime.agent_commands[0];
+    saved.command = "codex";
+    Object.assign(saved.semantics, { provider: "codex", default_account: true });
+    expect(places()).toEqual(["codex"]);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("the field closes when its item goes, scrolls away or is covered, and follows a reorder", async () => {
+  const { s, twice } = renaming();
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ agent: 2 });
+    // The same rows in another order keep the field on its item.
+    const reordered = pair();
+    reordered.panes.reverse();
+    s.receiveSnapshot(reordered);
+    expect(s.inline_rename.target).toEqual({ agent: 2 });
+    // The pane goes.
+    const without = pair();
+    without.workspaces[0].model = { nodes: [{ pane: 1 }], tabs: [{ id: 1, root: 0, title: "" }], revision: 1 };
+    without.panes = without.panes.filter(p => p.id !== 2);
+    s.receiveSnapshot(without);
+    expect(s.inline_rename).toBeNull();
+    s.receiveSnapshot(pair());
+    // The workspace goes.
+    expect(s.beginInlineRename({ workspace: 2 })).toBe(true);
+    const one = pair();
+    one.workspaces.pop();
+    one.panes.pop();
+    s.receiveSnapshot(one);
+    expect(s.inline_rename).toBeNull();
+    s.receiveSnapshot(pair());
+    // The sidebar hides, or a menu opens over it.
+    await twice({ agent: 1 });
+    s.sidebar_open = false;
+    s.frame();
+    expect(s.inline_rename).toBeNull();
+    s.sidebar_open = true;
+    await twice({ agent: 1 });
+    s.openLauncher(true);
+    s.frame();
+    expect(s.inline_rename).toBeNull();
+    s.closeMenu();
+    await twice({ agent: 1 });
+    s.beginRename();
+    s.frame();
+    expect(s.inline_rename).toBeNull();
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("the prompt offers the other workspaces with what they hold, and an attached one tells its overview", async () => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a", "/api"));
+  try {
+    const mentions = s.promptContext().mentions,
+      api = { id: 2, name: "/api" };
+    expect(mentions.slice(-3)).toEqual([
+      { kind: "workspace", id: 2, name: "/api", cwd: "/api" },
+      { kind: "agent", pane: 2, name: "shell", provider: null, activity: "/api", workspace: api },
+      { kind: "diff", cwd: "/api", workspace: api },
+    ]);
+    expect(await s.resolveMention(mentions.at(-3))).toBe(
+      ["Workspace /api (id 2), in /api.", "Other panes:", "- shell (pane 2) in /api"].join("\n"),
+    );
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("the prompt offers the workspace's panes, the selection and the diff, and reads what they hold", async () => {
+  const commands: unknown[] = [];
+  const s: any = new Controller({
+    request: transport(async (op, fields: any) => {
+      if (op !== "session.command") throw Error("UnexpectedRequest");
+      commands.push(fields.command);
+      return { ok: true, result: { pane: 1, tab: 1, workspace: 1, text: "$ bun test\n1 fail\x1b[2J\tdone\n" } };
+    }).request,
+  });
+  s.receiveSnapshot(folders("/a"));
+  const selection = spyOn(s.pane(1).terminal, "selectedText").mockReturnValue("the \x1b]52;c;eA==\x07words");
+  const run = spyOn(subprocess, "run").mockImplementation(async (argv: string[]) => {
+    const out = (text: string, code = 0) => new subprocess.Output({ exited: code }, Buffer.from(text), Buffer.alloc(0));
+    if (argv.includes("rev-parse")) return out("abc\n");
+    return out(argv.includes("--stat") ? " a.ts | 1 +\n" : "diff --git a/a.ts b/a.ts\n+x\n");
+  });
+  try {
+    const context = s.promptContext();
+    expect(context.mentions).toEqual([
+      { kind: "agent", pane: 1, name: "shell", provider: null, activity: "/a" },
+      { kind: "selection", pane: 1, name: "shell" },
+      { kind: "diff", cwd: "/a" },
+    ]);
+    expect(await s.resolveMention(context.mentions[0])).toBe("$ bun test\n1 fail  done");
+    expect(commands).toEqual([{ "pane.read": { target: 1, lines: 80n, view: "history" } }]);
+    expect(await s.resolveMention(context.mentions[1])).toBe("the words");
+    expect(await s.resolveMention(context.mentions[2])).toBe(" a.ts | 1 +\n\ndiff --git a/a.ts b/a.ts\n+x\n");
+    expect(run.mock.calls.map(c => c[0].slice(0, 3))).toEqual([
+      ["git", "-C", "/a"],
+      ["git", "-C", "/a"],
+      ["git", "-C", "/a"],
+    ]);
+    expect(run.mock.calls.slice(1).map(c => c[0].slice(5))).toEqual([
+      ["diff", "--stat", "HEAD"],
+      ["diff", "HEAD"],
+    ]);
+    // A clean checkout says so; no selection, no selection offered.
+    run.mockImplementation(
+      async (argv: string[]) =>
+        new subprocess.Output({ exited: 0 }, Buffer.from(argv.includes("rev-parse") ? "abc\n" : ""), Buffer.alloc(0)),
+    );
+    expect(await s.resolveMention({ kind: "diff", cwd: "/a" })).toBe("No uncommitted changes.");
+    selection.mockReturnValue("");
+    expect(s.promptContext().mentions.map((m: any) => m.kind)).toEqual(["agent", "diff"]);
+  } finally {
+    run.mockRestore();
+    selection.mockRestore();
+    viewer.close(s);
+  }
+});
+
+test("Ctrl+Shift+K opens and closes the prompt; plain Ctrl+K goes to the pane", async () => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  const sent = spyOn(s, "sendInput").mockImplementation(() => {});
+  try {
+    await s.input(bytes("\x1b[107;6u"));
+    expect(s.prompt.open).toBe(true);
+    await s.input(bytes("\x1b[107;6u"));
+    expect(s.prompt.open).toBe(false);
+    await s.input(bytes("\x0b"));
+    expect(s.prompt.open).toBe(false);
+    expect(sent.mock.calls.map(c => c[1])).toEqual([[11]]);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a viewer that starts leaves alone a prompt session a Corgi pane holds", () => {
+  const s = controller();
+  s.receiveSnapshot({
+    ...folders("/a"),
+    headless_sessions: [
+      { id: 7, workspace: 1, provider: "claude", corgi: true, session: "held", pane: 1, state: "idle" },
+    ],
+  });
+  try {
+    expect(s.runtime.corgi_sessions.map((h: any) => [h.session, h.pane])).toEqual([["held", 1]]);
+    expect(s.prompt.conversation.session).toBe("");
+    // Its row shows focused while its pane is.
+    const row = s.agentEntries().find((e: any) => e.target.headless === 7);
+    expect([row?.name, row?.focused]).toEqual(["Corgi", true]);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a reloaded viewer goes on with its own prompt session; another viewer's stays theirs", async () => {
+  const sessions = [
+    { id: 7, workspace: 1, provider: "claude", corgi: true, session: "mine", pane: null, state: "idle" },
+    { id: 8, workspace: 1, provider: "claude", corgi: true, session: "theirs", pane: null, state: "idle" },
+  ];
+  const viewers = (count: number) => {
+    const s: any = new Controller({
+      request: transport(async op => {
+        if (op === "viewer.list") return { viewers: Array.from({ length: count }, (_, i) => ({ id: i + 1 })) };
+        throw Error("UnexpectedRequest");
+      }).request,
+    });
+    s.machine.profiles.loaded = true;
+    s.model_cache = new agentModels.Cache(
+      () => {},
+      async () => [],
+    );
+    return s;
+  };
+  const saved = process.env.CORGI_PROMPT_SESSION;
+  const reloaded = viewers(2),
+    second = viewers(2),
+    only = viewers(1);
+  try {
+    // The reload exec'd it in place; its environment names its session.
+    process.env.CORGI_PROMPT_SESSION = "claude:mine";
+    reloaded.receiveSnapshot({ ...folders("/a"), headless_sessions: sessions });
+    await Bun.sleep(1);
+    expect(reloaded.prompt.conversation.session).toBe("mine");
+    // A second viewer takes neither while another viewer is on.
+    delete process.env.CORGI_PROMPT_SESSION;
+    second.receiveSnapshot({ ...folders("/a"), headless_sessions: sessions });
+    await Bun.sleep(1);
+    expect(second.prompt.conversation.session).toBe("");
+    // The only viewer picks up the newest one left behind.
+    only.receiveSnapshot({ ...folders("/a"), headless_sessions: sessions });
+    await Bun.sleep(1);
+    expect(only.prompt.conversation.session).toBe("theirs");
+  } finally {
+    if (saved === undefined) delete process.env.CORGI_PROMPT_SESSION;
+    else process.env.CORGI_PROMPT_SESSION = saved;
+    for (const s of [reloaded, second, only]) viewer.close(s);
+  }
+});
+
+test("the field closes when its row scrolls out of the agent list", async () => {
+  const snapshot = pair();
+  const ids = Array.from({ length: 30 }, (_, i) => i + 10);
+  snapshot.workspaces[0].model = {
+    nodes: ids.map(id => ({ pane: id })),
+    tabs: ids.map((id, i) => ({ id, root: i, title: "" })),
+    revision: 0,
+  };
+  snapshot.panes = ids.map(id => ({
+    id,
+    workspace: 1,
+    tab: id,
+    cols: 40,
+    rows: 24,
+    agent: {
+      provider: "claude",
+      name: `agent ${id}`,
+      state: "idle",
+      attention: "none",
+      observation: { completed: 0, read: 0 },
+    },
+  }));
+  const { s } = recording(snapshot);
+  try {
+    setSystemTime(new Date(1000));
+    const at = s.sidebarView(s.sidebarEntries()).fieldRect({ agent: 10 }, s.workspaceEntries());
+    for (let i = 0; i < 2; i++)
+      await s.input(bytes(`\x1b[<0;${at.x + 1};${at.y + 1}M\x1b[<0;${at.x + 1};${at.y + 1}m`));
+    await s.settle();
+    expect(s.inline_rename?.target).toEqual({ agent: 10 });
+    const view = s.sidebarView(s.sidebarEntries());
+    for (let i = 0; i < 3; i++) await s.input(bytes(`\x1b[<65;3;${view.middle() + 4}M`));
+    expect(s.sidebarView(s.sidebarEntries()).fieldRect({ agent: 10 }, s.workspaceEntries())).toBeNull();
+    s.frame();
+    expect(s.inline_rename).toBeNull();
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a single press selects or switches at once, and only a second press on the same row renames", async () => {
+  const { s, rect, press } = renaming();
+  try {
+    setSystemTime(new Date(1000));
+    const agent = rect({ agent: 2 });
+    await press(agent.x, agent.y);
+    expect(s.focused().id).toBe(2);
+    expect(s.inline_rename).toBeNull();
+    const ws = rect({ workspace: 2 });
+    await press(ws.x, ws.y);
+    expect(s.current().id).toBe(2);
+    expect(s.inline_rename).toBeNull();
+    // Too late for a double-click.
+    setSystemTime(new Date(1500));
+    await press(ws.x, ws.y);
+    expect(s.inline_rename).toBeNull();
+    // The rows reorder between the presses: the second lands on another workspace.
+    setSystemTime(new Date(1600));
+    const swapped = pair();
+    swapped.workspaces.reverse();
+    s.receiveSnapshot(swapped);
+    expect(s.workspaceEntries()[0].id).toBe(2);
+    await press(ws.x, ws.y);
+    expect(s.inline_rename).toBeNull();
+    expect(s.current().id).toBe(1);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a drag between two presses is no double-click, and still reorders", async () => {
+  const { s, sent, rect } = renaming();
+  try {
+    setSystemTime(new Date(1000));
+    const first = rect({ agent: 1 }),
+      second = rect({ agent: 2 });
+    await s.input(bytes(`\x1b[<0;${first.x + 1};${first.y + 1}M`));
+    // Past the second row's middle, so the drop lands below it.
+    await s.input(bytes(`\x1b[<32;${first.x + 1};${second.y + 3}M`));
+    expect(s.agent_drag?.dragging).toBe(true);
+    await s.input(bytes(`\x1b[<0;${first.x + 1};${second.y + 3}m`));
+    expect(sent.at(-1)["agent.move"]).toBeDefined();
+    const moved = rect({ agent: 1 });
+    await s.input(bytes(`\x1b[<0;${moved.x + 1};${moved.y + 1}M\x1b[<0;${moved.x + 1};${moved.y + 1}m`));
+    expect(s.inline_rename).toBeNull();
+    // Motion within the pressed cell keeps the double-click; to another cell ends it.
+    await s.input(bytes(`\x1b[<32;${moved.x + 1};${moved.y + 1}M`));
+    await s.input(bytes(`\x1b[<0;${moved.x + 1};${moved.y + 1}m`));
+    await s.input(bytes(`\x1b[<0;${moved.x + 1};${moved.y + 1}M\x1b[<0;${moved.x + 1};${moved.y + 1}m`));
+    expect(s.inline_rename?.target).toEqual({ agent: 1 });
+    await s.key(27);
+    await s.input(bytes(`\x1b[<0;${moved.x + 1};${moved.y + 1}M\x1b[<32;${moved.x + 2};${moved.y + 1}M`));
+    await s.input(bytes(`\x1b[<0;${moved.x + 2};${moved.y + 1}m`));
+    await s.input(bytes(`\x1b[<0;${moved.x + 1};${moved.y + 1}M\x1b[<0;${moved.x + 1};${moved.y + 1}m`));
+    expect(s.inline_rename).toBeNull();
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("Rename in a row's menu edits the row in place", async () => {
+  const { s, sent } = renaming();
+  try {
+    s.tab_menu = new TabMenu({ tab: 1, agent: true, anchor_x: 0 });
+    await s.tabMenuAction("rename");
+    expect(s.name_dialog).toBeNull();
+    expect(s.inline_rename?.target).toEqual({ agent: 1 });
+    expect(s.inline_rename.field.raw()).toBe("agent 1");
+    s.tab_menu = new TabMenu({ tab: 2, workspace: true, anchor_x: 0 });
+    await s.tabMenuAction("rename");
+    expect(s.name_dialog).toBeNull();
+    expect(s.inline_rename?.target).toEqual({ workspace: 2 });
+    expect(sent).toEqual([]);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("with the sidebar closed, prefix W then r renames the current workspace in its drawer", async () => {
+  const { s, sent } = renaming();
+  const rename = async () => {
+    await s.perform({ name: "edit-workspace" });
+    await s.key(114);
+    expect(s.name_dialog).toBeNull();
+    expect(s.sidebar_open).toBe(true);
+    expect(s.sidebar_focus?.drawer).toBe("workspaces");
+    expect(s.inline_rename?.target).toEqual({ workspace: s.current().id });
+    expect(s.inline_rename.drawer).toBe(true);
+  };
+  const away = () => {
+    expect(s.inline_rename).toBeNull();
+    expect(s.sidebar_open).toBe(false);
+    expect(s.sidebar_focus).toBeNull();
+  };
+  try {
+    s.sidebar_open = false;
+    await rename();
+    // The field's keys never move the drawer's cursor.
+    await s.input(bytes("\x1b[B\x1b[A"));
+    expect(s.sidebar_focus.cursor).toEqual({ workspace: 1 });
+    await s.key(27);
+    away();
+    await rename();
+    await s.input(bytes("\x03Drawer\r"));
+    expect(sent).toEqual([{ "workspace.edit": { target: 1, name: "Drawer" } }]);
+    away();
+    // A press off the drawer puts both away.
+    await rename();
+    await s.input(bytes("\x1b[<0;70;12M\x1b[<0;70;12m"));
+    away();
+    // A press on another drawer row opens it, as the drawer does without a field.
+    await rename();
+    const at = s.sidebarView(s.sidebarEntries()).fieldRect({ workspace: 2 }, s.workspaceEntries());
+    await s.input(bytes(`\x1b[<0;${at.x + 1};${at.y + 1}M\x1b[<0;${at.x + 1};${at.y + 1}m`));
+    away();
+    expect(s.current().id).toBe(2);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("rename reveals its workspace's row past archived workspaces listed before it", () => {
+  const snapshot: any = folders(...Array.from({ length: 16 }, (_, i) => `/w${i + 1}`));
+  for (const i of [0, 1, 2, 3, 4, 5]) {
+    snapshot.workspaces[i].archived = true;
+    snapshot.panes[i].dormant = true;
+  }
+  const { s } = recording(snapshot);
+  try {
+    const view = () => s.sidebarView(s.sidebarEntries());
+    expect(view().workspaceCapacity()).toBeLessThan(10);
+    s.beginWorkspace(9);
+    expect([s.inline_rename?.target, s.name_dialog]).toEqual([{ workspace: 9 }, null]);
+    expect(view().fieldRect({ workspace: 9 }, s.workspaceEntries())).not.toBeNull();
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a failed workspace rename in the drawer keeps the field and the drawer, with the message", async () => {
+  const { s } = renaming(c => ("workspace.edit" in c ? "Boom" : undefined));
+  try {
+    s.sidebar_open = false;
+    await s.perform({ name: "edit-workspace" });
+    await s.key(114);
+    await s.input(bytes("\x03Nope\r"));
+    expect(s.inline_rename?.message).toBe("Could not rename this workspace");
+    expect(s.inline_rename.field.raw()).toBe("Nope");
+    expect(s.sidebar_open).toBe(true);
+    expect(s.sidebar_focus?.drawer).toBe("workspaces");
+    // Clipped to the drawer's width.
+    expect(s.frame()).toContain("Could not rename this w…");
+    await s.input(bytes("!"));
+    expect(s.inline_rename.message).toBeNull();
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("too narrow for any sidebar, r opens the centered rename dialog as before", async () => {
+  const { s } = renaming();
+  try {
+    s.height = 12;
+    s.sidebar_open = false;
+    expect(s.sidebarView([]).width).toBe(0);
+    await s.perform({ name: "edit-workspace" });
+    await s.key(114);
+    expect(s.inline_rename).toBeNull();
+    expect(s.sidebar_open).toBe(false);
+    expect(s.sidebar_focus).toBeNull();
+    expect(s.name_dialog?.target).toEqual({ workspace_name: 1 });
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test.each([
+  ["legacy Delete", "\x7f"],
+  ["legacy Backspace", "\x08"],
+  ["Kitty Backspace", "\x1b[127u"],
+])("Backspace in the prompt's empty box takes back the chip (%s)", async (_name, backspace) => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  try {
+    await s.perform({ name: "prompt" });
+    expect(s.prompt.attached()).toEqual(["shell"]);
+    expect(s.frame()).toContain("shell");
+    await s.input(bytes("ab"));
+    await s.input(bytes(backspace));
+    await s.input(bytes(backspace));
+    expect(s.prompt.attached()).toEqual(["shell"]);
+    await s.input(bytes(backspace));
+    expect(s.prompt.attached()).toEqual([]);
+    expect(s.prompt.open).toBe(true);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a viewer finds agents the first time it opens Manage agents, and again from Find agents", async () => {
+  const asked: unknown[] = [],
+    snapshot = folders("/src/app");
+  let finish!: () => void;
+  const s: any = new Controller({
+    request: transport(async (op, fields) => {
+      if (op === "agent.discover") {
+        asked.push(fields);
+        if (asked.length === 2) await new Promise<void>(resolve => (finish = resolve));
+        return { ok: true };
+      }
+      if (op === "session.command") return { result: { pane: 1 } };
+      return snapshot;
+    }).request,
+  });
+  s.receiveSnapshot(snapshot);
+  s.input_state.attached = true;
+  const settle = async () => {
+    await s.expireInput();
+    await s.finding_agents;
+    await s.expireInput();
+  };
+  setSystemTime(new Date(1000));
+  try {
+    let launch = await openManagement(s, "launcher");
+    await settle();
+    expect(asked).toEqual([{ provider: null, cwd: "/src/app" }]);
+    // A quick reply keeps the spinner and disables refresh for 150 ms.
+    setSystemTime(new Date(1149));
+    await s.expireInput();
+    expect(launch.finding).toBe(true);
+    await s.manageAction({ kind: "find" });
+    expect(asked).toHaveLength(1);
+    setSystemTime(new Date(1150));
+    s.dirty = false;
+    await s.expireInput();
+    expect(launch.finding).toBe(false);
+    expect(s.dirty).toBe(true);
+    // Opening it again doesn't look again; the button does.
+    s.closeLauncher();
+    launch = await openManagement(s, "launcher");
+    await settle();
+    expect(asked).toHaveLength(1);
+    await s.manageAction({ kind: "find" });
+    await s.expireInput();
+    expect(launch.finding).toBe(true);
+    setSystemTime(new Date(1550));
+    await s.expireInput();
+    expect(launch.finding).toBe(true);
+    finish();
+    await settle();
+    expect(launch.finding).toBe(false);
+    expect(asked).toHaveLength(2);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test.each([
+  ["AgentBusy", "Claude is busy: rename it once its input box is empty"],
+  ["RenameUnavailable", "This agent can't be renamed from outside"],
+  ["NoConversation", "This agent has no conversation yet"],
+  ["InvalidName", "Names are one line of up to 80 characters"],
+  ["Whatever", "Could not rename this agent"],
+])("a rename refused with %s keeps the field, says why, and retries on Return", async (err, message) => {
+  let failing = true;
+  const { s, sent, twice } = renaming(c => (failing && c["agent.rename"]?.name !== undefined ? err : undefined));
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ agent: 1 });
+    await s.input(bytes("\x03New name\r"));
+    expect(s.inline_rename?.field.raw()).toBe("New name");
+    expect(s.inline_rename.message).toBe(message);
+    expect(s.remembered_names.get(1)).toBe("New name");
+    expect(s.frame()).toContain(message.slice(0, 12));
+    // Typing clears the message; Return tries again with the current text.
+    await s.input(bytes("!"));
+    expect(s.inline_rename.message).toBeNull();
+    await s.key(13);
+    expect(s.inline_rename.message).toBe(message);
+    expect(sent.filter(c => c["agent.rename"]?.name !== undefined)).toEqual([
+      { "agent.rename": { target: 1, name: "New name" } },
+      { "agent.rename": { target: 1, name: "New name!" } },
+    ]);
+    failing = false;
+    await s.key(13);
+    expect(s.inline_rename).toBeNull();
+    expect(s.remembered_names.size).toBe(0);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("startup waits open from the shared banner and cancel the selected task through the daemon", async () => {
+  const requests: unknown[] = [],
+    view = new Controller({
+      request: transport(async (op, fields) => {
+        requests.push({ op, fields });
+        return { ok: true };
+      }).request,
+    });
+  try {
+    view.receiveSnapshot({
+      ...folders("/a"),
+      startup_waits: [
+        {
+          id: "slow-start",
+          pane: 1,
+          provider: "opencode2",
+          phase: "installing",
+          detail: "mise downloading",
+          started_at: Date.now() - 12000,
+          cancelled: false,
+        },
+      ],
+    });
+    view.input_state.attached = true;
+    expect(view.frame()).toContain("1 waiting");
+    await view.input(bytes(`\x1b[<0;${view.width - 2};${view.height}M`));
+    expect(view.startup_card).not.toBeNull();
+    await view.input(bytes("x"));
+    expect(requests).toContainEqual({ op: "startup.kill", fields: { id: "slow-start" } });
+    expect(view.runtime.startup_waits[0].cancelled).toBe(true);
+    expect(view.frame()).toContain("Stopping OpenCode");
+    await view.input(bytes("\x1b"));
+  } finally {
+    view.runtime.destroy();
+  }
+});
+
+test.each([
+  ["Boom", "Could not rename this workspace"],
+  ["NoWorkspace", "No such workspace"],
+])("a failed workspace rename keeps the field with its explanation (%s)", async (err, message) => {
+  const { s, twice } = renaming(c => ("workspace.edit" in c ? err : undefined));
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ workspace: 1 });
+    await s.input(bytes("\x03Nope\r"));
+    expect(s.inline_rename?.field.raw()).toBe("Nope");
+    expect(s.inline_rename.message).toBe(message);
+    expect(s.remembered_names.size).toBe(0);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("an agent's review reads the checkout the list puts it under", () => {
+  const checkout = (path: string, branch: string, primary: boolean) => ({
+    path,
+    head: "4f1c2a9e0b",
+    branch: `refs/heads/${branch}`,
+    primary,
+    bare: false,
+    detached: false,
+    locked: null,
+    prunable: null,
+    available: true,
+    comparison: null,
+    changes: null,
+    stale: false,
+  });
+  const snapshot = folders("/src/app");
+  Object.assign(snapshot.panes[0], {
+    cwd: "/src/app",
+    agent: { ...snapshot.panes[0].agent, provider: "codex", cwd: "/src/app" },
+  });
+  Object.assign(snapshot.workspaces[0], {
+    worktrees: {
+      common_dir: "/src/app/.git",
+      base: { ref: "refs/heads/main", name: "main", head: "4f1c2a9e0b" },
+      entries: [checkout("/src/app", "main", true), checkout("/src/app-topic", "topic", false)],
+      agents: [],
+      stale: false,
+    },
+  });
+  const s: any = new Controller({ request: transport(async () => snapshot).request });
+  s.receiveSnapshot(snapshot);
+  expect(s.reviewTarget().cwd).toBe("/src/app");
+  // Started on main but writing in topic, it's listed under topic.
+  (snapshot.workspaces[0] as any).worktrees.agents = [
+    { target: { pane: 1 }, path: "/src/app-topic", source: "write", stale: false },
+  ];
+  s.receiveSnapshot(snapshot);
+  expect(s.reviewTarget().cwd).toBe("/src/app-topic");
+});
+
+test("a rename that can't reach the daemon says so, for a workspace or an agent", async () => {
+  const { s, twice } = renaming();
+  const edit = spyOn(s, "edit").mockRejectedValue(Object.assign(Error("write EPIPE"), { code: "EPIPE" }));
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ workspace: 1 });
+    await s.input(bytes("\x03Nope\r"));
+    expect(s.inline_rename.message).toBe("No daemon connection");
+    await s.input(bytes("\x1b[27u"));
+    edit.mockRejectedValue(Error("ConnectionClosed"));
+    await twice({ agent: 2 });
+    await s.input(bytes("\x03Fix API\r"));
+    expect([s.inline_rename.target, s.inline_rename.message]).toEqual([{ agent: 2 }, "No daemon connection"]);
+  } finally {
+    edit.mockRestore();
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a remembered name prefills the next rename until Escape, success or the pane going drops it", async () => {
+  const { s, rect, press, twice } = renaming(c => (c["agent.rename"]?.name !== undefined ? "AgentBusy" : undefined));
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ agent: 1 });
+    await s.input(bytes("\x03Kept\r"));
+    expect(s.inline_rename?.message).toContain("busy");
+    // Click-away keeps it for the next rename.
+    const other = rect({ agent: 2 });
+    await press(other.x, other.y);
+    expect(s.inline_rename).toBeNull();
+    expect(s.remembered_names.get(1)).toBe("Kept");
+    await twice({ agent: 1 });
+    expect(s.inline_rename?.field.raw()).toBe("Kept");
+    s.closeInlineRename();
+    s.tab_menu = new TabMenu({ tab: 1, agent: true, anchor_x: 0 });
+    await s.tabMenuAction("rename");
+    expect(s.inline_rename?.field.raw()).toBe("Kept");
+    // Escape drops it.
+    await s.key(27);
+    expect(s.remembered_names.size).toBe(0);
+    await twice({ agent: 1 });
+    expect(s.inline_rename?.field.raw()).toBe("agent 1");
+    await s.input(bytes("\x03Gone\r"));
+    expect(s.remembered_names.get(1)).toBe("Gone");
+    // The pane going drops it.
+    const without = pair();
+    without.workspaces[0].model = { nodes: [{ pane: 2 }], tabs: [{ id: 1, root: 0, title: "" }], revision: 1 };
+    without.panes = without.panes.filter(p => p.id !== 1);
+    s.receiveSnapshot(without);
+    expect(s.inline_rename).toBeNull();
+    expect(s.remembered_names.size).toBe(0);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("switching machines shows the other's data and closes what named the old one's ids", () => {
+  const s = controller();
+  const other = new Machine({ request: transport(async () => ({})).request }, "work", true);
+  s.adopt(other);
+  s.receiveSnapshot(folders("/a", "/b"));
+  s.receiveSnapshot(folders("/w"), other);
+  const chosen: [string, number | null][] = [];
+  s.onMachine = (machine: Machine, focus: any) => void chosen.push([machine.name, focus?.workspace ?? null]);
+  try {
+    const rows = s.workspaceRows();
+    expect(rows.map((row: any) => row.name)).toEqual(["/a", "/b", "/w"]);
+    s.selectRow(rows[2].id);
+    expect(chosen).toEqual([["work", 1]]);
+    s.tab_menu = new TabMenu({ tab: 1, anchor_x: 0 });
+    s.switchMachine(other);
+    expect(s.tab_menu).toBeNull();
+    expect(s.runtime).toBe(other.runtime);
+    expect(s.connection).toBe(other.connection);
+    // Row ids don't change with the machine shown.
+    expect(s.workspaceRows().map((row: any) => row.id)).toEqual(rows.map((row: any) => row.id));
+    s.selectRow(rows[0].id);
+    expect(chosen).toEqual([
+      ["work", 1],
+      ["local", 1],
+    ]);
+  } finally {
+    viewer.close(s);
+    other.runtime.destroy();
+  }
+});
+
+test("the prompt's conversation stays on the machine it started on when another is shown", async () => {
+  const asked: [string, string][] = [];
+  const daemon = (name: string) =>
+    transport(async (op: string) => {
+      asked.push([name, op]);
+      return op === "headless.start" ? { provider: "codex", session: "s" } : { events: [] };
+    });
+  const s = new Controller(daemon("here"));
+  const other = new Machine({ request: daemon("work").request }, "work", true);
+  s.adopt(other);
+  try {
+    const prompt = Reflect.get(s, "promptDaemon").call(s);
+    s.switchMachine(other);
+    s.prompt.conversation.session = (await prompt.start({})).session;
+    s.switchMachine(s.machines[0]);
+    await prompt.call("headless.events", { provider: "codex", session: "s" });
+    expect(asked).toEqual([
+      ["work", "headless.start"],
+      ["work", "headless.events"],
+    ]);
+  } finally {
+    viewer.close(s);
+    other.runtime.destroy();
+  }
+});
+
+test("an image pasted into the prompt goes to the machine its conversation runs on", async () => {
+  const s = controller();
+  const uploaded: string[] = [];
+  const other = new Machine(
+    {
+      ...transport(async () => ({})),
+      image: async (path: string) => {
+        uploaded.push(path);
+        return "/remote/image.png";
+      },
+    },
+    "work",
+    true,
+  );
+  s.adopt(other);
+  const attached = spyOn(s.prompt, "attachImage").mockImplementation(() => {});
+  try {
+    // A conversation running on work, with this computer shown.
+    Reflect.get(s, "prompt_sessions").set("codex:s", other);
+    s.prompt.conversation.provider = "codex";
+    s.prompt.conversation.session = "s";
+    Reflect.set(s, "paste_target", "prompt");
+    await s.pasteResult({ path: "/tmp/image.png" });
+    expect(uploaded).toEqual(["/tmp/image.png"]);
+    expect(attached.mock.calls.map(c => c[0])).toEqual(["/remote/image.png"]);
+    // A new chat meanwhile starts here, where work's path means nothing.
+    Reflect.set(s, "paste_target", "prompt");
+    const pasting = s.pasteResult({ path: "/tmp/image.png" });
+    s.prompt.conversation.session = "";
+    await pasting;
+    expect(attached).toHaveBeenCalledTimes(1);
+    // Nor does another conversation on the same machine.
+    Reflect.get(s, "prompt_sessions").set("codex:t", other);
+    s.prompt.conversation.session = "s";
+    Reflect.set(s, "paste_target", "prompt");
+    const replaced = s.pasteResult({ path: "/tmp/image.png" });
+    s.prompt.conversation.session = "t";
+    await replaced;
+    expect(attached).toHaveBeenCalledTimes(1);
+  } finally {
+    attached.mockRestore();
+    viewer.close(s);
+    other.runtime.destroy();
+  }
+});
+
+test("clearing a prompt conversation stops it on its own machine, whichever is shown", async () => {
+  const asked: [string, string][] = [];
+  const daemon = (name: string) =>
+    transport(async (op: string) => {
+      asked.push([name, op]);
+      return op === "headless.start" ? { provider: "codex", session: "s" } : { events: [], next_seq: 1 };
+    });
+  const s = new Controller(daemon("here"));
+  const other = new Machine({ request: daemon("work").request }, "work", true);
+  s.adopt(other);
+  try {
+    s.switchMachine(other);
+    const conversation = s.prompt.conversation;
+    conversation.session = (await Reflect.get(s, "promptDaemon").call(s).start({})).session;
+    conversation.attach({ provider: "codex", account: "", persist: false } as any, "s", false);
+    s.switchMachine(s.machines[0]);
+    asked.length = 0;
+    // As /new does: the session is let go before its last calls.
+    await conversation.reset(null);
+    expect(asked.filter(([, op]) => op === "headless.stop")).toEqual([["work", "headless.stop"]]);
+  } finally {
+    viewer.close(s);
+    other.runtime.destroy();
+  }
+});
+
+test("a prompt conversation resumed after a reload stays on its machine when another is shown", async () => {
+  const asked: [string, string][] = [];
+  const daemon = (name: string) =>
+    transport(async (op: string) => {
+      asked.push([name, op]);
+      return op === "viewer.list" ? { viewers: [{}] } : { events: [] };
+    });
+  const s = new Controller(daemon("here"));
+  const other = new Machine({ request: daemon("work").request }, "work", true);
+  s.adopt(other);
+  s.receiveSnapshot(folders("/a"));
+  s.receiveSnapshot(
+    {
+      ...folders("/w"),
+      headless_sessions: [
+        { id: 7, workspace: 1, provider: "claude", corgi: true, session: "left", pane: null, state: "idle" },
+      ],
+    },
+    other,
+  );
+  try {
+    s.switchMachine(other);
+    await Reflect.get(s, "resumePrompt").call(s);
+    expect(s.prompt.conversation.session).toBe("left");
+    s.switchMachine(s.machines[0]);
+    asked.length = 0;
+    await Reflect.get(s, "promptDaemon").call(s).call("headless.events", { provider: "claude", session: "left" });
+    expect(asked).toEqual([["work", "headless.events"]]);
+  } finally {
+    viewer.close(s);
+    other.runtime.destroy();
+  }
+});
+
+test("a remote machine's checkouts aren't read with this computer's git", () => {
+  const s = controller();
+  const other = new Machine({ request: transport(async () => ({})).request }, "work", true);
+  s.adopt(other);
+  s.receiveSnapshot(folders("/a"));
+  s.receiveSnapshot(folders("/a"), other);
+  try {
+    // This computer has /a too: its changes aren't the remote agent's.
+    const wanted = spyOn(s.review_summaries, "want");
+    s.switchMachine(other);
+    Reflect.get(s, "openReview").call(s);
+    expect(s.review.open).toBe(false);
+    expect(s.message).toContain("Review changes on the remote machine");
+    Reflect.get(s, "readAhead").call(s, s.sidebarEntries());
+    expect(wanted).not.toHaveBeenCalled();
+  } finally {
+    viewer.close(s);
+    other.runtime.destroy();
+  }
+});
+
+test("a remote machine's launcher lists the agents saved on that computer, not this one's", async () => {
+  const opus = {
+    agent: "profile/opus",
+    row: "profile:opus",
+    label: "Opus",
+    launcher: true,
+    provider: "claude",
+    account: "",
+    name: "Opus",
+    options: { flags: "", env: [], model: "claude-opus-5-5" },
+    yolo: false,
+  };
+  const local = spyOn(agentProfiles, "list").mockReturnValue([
+    { id: "here", provider: "codex", account: "", name: "Here", options: { flags: "", env: [] }, yolo: false },
+  ]);
+  const asked: unknown[] = [],
+    sent: unknown[] = [];
+  const s = controller();
+  const other = new Machine(
+    {
+      request: transport(async (op, fields: any) => {
+        if (op === "launcher.catalog") {
+          asked.push(fields);
+          return { agents: [opus] };
+        }
+        if (op === "session.snapshot") return folders("/w");
+        if (op !== "session.command") throw Error("UnexpectedRequest");
+        sent.push(fields.command);
+        return { result: {} };
+      }).request,
+    },
+    "work",
+    true,
+  );
+  s.adopt(other);
+  s.receiveSnapshot(folders("/w"), other);
+  s.switchMachine(other);
+  try {
+    s.openLauncher(true);
+    expect(s.agent_launcher.profiles).toEqual([]);
+    await other.tasks.idle();
+    await s.pollLauncher(false);
+    expect(asked).toEqual([{ workspace: 1, cwd: "/w", preview: false }]);
+    expect(s.agent_launcher.profiles.map((p: agentProfiles.Profile) => p.name)).toEqual(["Opus"]);
+    expect(s.agent_launcher.shown("profile:opus")).toBe(true);
+    // Read once it's shown, then again only as a launcher opens.
+    await s.pollLauncher(false);
+    await other.tasks.idle();
+    expect(asked).toHaveLength(1);
+    s.agent_launcher.selected = "profile:opus";
+    await s.key("y".charCodeAt(0));
+    await other.tasks.idle();
+    expect(sent.at(-1)).toEqual({ "agent.launcher.configure": { row: "profile:opus", yolo: true } });
+    expect(s.agent_launcher.yoloOf("profile:opus")).toBe(true);
+  } finally {
+    local.mockRestore();
+    viewer.close(s);
+    other.runtime.destroy();
+  }
+});
+
+test("all agents lists each online machine's under its name, and its rows switch to it", () => {
+  const s = controller();
+  const other = new Machine({ request: transport(async () => ({})).request }, "work", true);
+  let online = true;
+  other.presence = () => ({
+    online,
+    link_quality: null,
+    connecting: false,
+    connection_status: null,
+    description: "",
+    cached: [],
+    seen: true,
+    stale: false,
+  });
+  s.adopt(other);
+  const agents = (...cwds: string[]) => {
+    const snapshot = folders(...cwds);
+    for (const p of snapshot.panes) p.agent.provider = "codex" as any;
+    return snapshot;
+  };
+  s.receiveSnapshot(agents("/a"));
+  s.receiveSnapshot(agents("/w", "/x"), other);
+  s.host.prefs.agents = "all";
+  const chosen: [string, unknown][] = [];
+  s.onMachine = (machine: Machine, focus: unknown) => void chosen.push([machine.name, focus]);
+  try {
+    const entries = s.agentEntries();
+    const names = entries.map((e: any) => ("group" in e.target ? `${e.name} ${e.group.machine}` : e.target.pane));
+    // The shown machine's rows keep their ids; another's are set apart.
+    const away = 2 * 2 ** 32;
+    expect(names).toEqual(["/a local", 1, "/w work", away + 1, "/x work", away + 2]);
+    s.selectAgent(entries[3].target);
+    expect(chosen).toEqual([["work", { pane: 1 }]]);
+    // Folding another machine's group keeps to that machine.
+    s.selectAgent(entries[2].target);
+    expect(other.folded_groups).toEqual([1]);
+    expect(s.folded_groups).toEqual([]);
+    expect(s.agentEntries()).toHaveLength(5);
+    online = false;
+    expect(s.agentEntries()).toHaveLength(2);
+    online = true;
+    s.machine_filter = s.machine;
+    expect(s.agentEntries()).toHaveLength(2);
+  } finally {
+    viewer.close(s);
+    other.runtime.destroy();
+  }
+});
+
+test("a remote paste that never reached the daemon is typed into the pane instead, and one that may have isn't", async () => {
+  let failure = "StaleConnection";
+  const s = new Controller({
+    ...transport(async op => {
+      if (op === "pane.paste") throw Error(failure);
+      throw Error("UnexpectedRequest");
+    }),
+    image: async () => "/remote/image.png",
+  });
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  s.host.clipboard = new hostClipboard.State();
+  try {
+    const terminal = s.runtime.panes[0].terminal;
+    Reflect.set(s, "paste_target", { pane: s.runtime.panes[0].id });
+    await s.pasteResult({ relay: { text: "kept", image: null } });
+    expect(Buffer.from(terminal.pending).toString()).toContain("kept");
+    expect(terminal.pasting()).toBe(true);
+    terminal.pending = [];
+    // Sent before the connection went, it may have run: typing it could paste it twice.
+    failure = "ReplyLost";
+    Reflect.set(s, "paste_target", { pane: s.runtime.panes[0].id });
+    await s.pasteResult({ relay: { text: "once", image: null } });
+    expect(s.message).toContain("Connection lost before the reply");
+    expect(terminal.pending).toEqual([]);
+    // An image that never reached the machine has no path there to type.
+    s.connection.image = async () => {
+      throw Error("ImageUploadFailed");
+    };
+    Reflect.set(s, "paste_target", { pane: s.runtime.panes[0].id });
+    await s.pasteResult({ relay: { text: null, image: { mime: "image/png", path: "/tmp/image.png" } } });
+    expect(s.message).toBe("ImageUploadFailed");
+    expect(terminal.pending).toEqual([]);
+    expect(terminal.pasting()).toBe(false);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a paste whose machine is no longer shown isn't typed into the shown one's pane", async () => {
+  let refuse!: (error: Error) => void;
+  const s = new Controller(
+    transport(async op => {
+      if (op === "pane.paste") return new Promise((_, reject) => (refuse = reject));
+      throw Error("UnexpectedRequest");
+    }),
+  );
+  const other = new Machine({ request: transport(async () => ({})).request }, "work", true);
+  s.adopt(other);
+  s.receiveSnapshot(folders("/a"));
+  s.receiveSnapshot(folders("/w"), other);
+  s.input_state.attached = true;
+  s.host.clipboard = new hostClipboard.State();
+  try {
+    const id = s.runtime.panes[0].id;
+    expect(other.runtime.pane(id)).not.toBeNull();
+    Reflect.set(s, "paste_target", { pane: id });
+    const pasting = s.pasteResult({ relay: { text: "kept", image: null } });
+    s.switchMachine(other);
+    refuse(Error("StaleConnection"));
+    await pasting;
+    expect(other.runtime.pane(id)!.terminal.pending).toEqual([]);
+  } finally {
+    viewer.close(s);
+    other.runtime.destroy();
+  }
+});
+
+test("a remote image paste the clipboard never brought leaves no progress behind", () => {
+  const s = new Controller({ ...transport(async () => ({})), image: async () => "/remote/image.png" });
+  s.receiveSnapshot(folders("/a"));
+  try {
+    Reflect.get(s, "expectPaste").call(s, { pane: s.runtime.panes[0].id }, true);
+    expect(s.paste_progress).not.toBeNull();
+    // A reconnect or a switch dropped the clipboard read.
+    s.pasteDropped();
+    expect(s.paste_progress).toBeNull();
+    expect(Reflect.get(s, "paste_target")).toBeNull();
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("remote image progress covers preparation, receipts and failure without leaking into a later paste", async () => {
+  let report!: ImageProgress;
+  let resolve!: (path: string) => void;
+  let reject!: (error: Error) => void;
+  const s = new Controller({
+    ...transport(async () => {
+      throw Error("UnexpectedRequest");
+    }),
+    image: (_path, _mime, progress) => {
+      report = progress!;
+      return new Promise<string>((yes, no) => {
+        resolve = yes;
+        reject = no;
+      });
+    },
+  });
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  s.host.clipboard = new hostClipboard.State();
+  try {
+    await s.pasteEvent("image/png");
+    expect(s.paste_progress?.phase).toBe("preparing");
+    const first = s.pasteResult({ path: "/tmp/image.png" });
+    report(512, 1024);
+    expect(s.paste_progress?.phase).toBe("uploading");
+    expect(s.paste_progress?.received).toBe(512);
+    resolve("/remote/image.png");
+    await first;
+    expect(s.paste_progress?.phase).toBe("done");
+    expect(s.runtime.panes[0].terminal.pending.length).toBeGreaterThan(0);
+    // The pane takes another paste once the path has gone to the daemon.
+    s.runtime.panes[0].terminal.pending = [];
+
+    s.host.clipboard.reading = null;
+    await s.pasteEvent("image/png");
+    const failed = s.pasteResult({ path: "/tmp/image.png" });
+    reject(Error("ImageUploadFailed"));
+    // The paste is a task: its failure is told, not thrown at the viewer.
+    await failed;
+    expect(s.message).toBe("ImageUploadFailed");
+    expect(s.paste_progress?.phase).toBe("failed");
+
+    s.host.clipboard.reading = null;
+    await s.pasteEvent("image/png");
+    const canceled = s.pasteResult({ path: "/tmp/image.png" });
+    s.paste_progress = null;
+    s.host.clipboard.reading = null;
+    await s.pasteEvent("image/png");
+    report(1024, 1024);
+    reject(Error("StaleConnection"));
+    await canceled;
+    const current = () => s.paste_progress;
+    expect(current()?.phase).toBe("preparing");
+    expect(current()?.received).toBe(0);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("input past 80 bytes is refused and says so until the next edit", async () => {
+  const { s, twice } = renaming();
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ agent: 1 });
+    await s.input(bytes("a".repeat(73)));
+    expect(s.inline_rename.field.len).toBe(80);
+    expect(s.inline_rename.message).toBeNull();
+    await s.input(bytes("a"));
+    expect(s.inline_rename.field.len).toBe(80);
+    expect(s.inline_rename.message).toBe("Names fit in 80 characters");
+    await s.input(bytes("\x1b[200~bb\x1b[201~"));
+    expect(s.inline_rename.message).toBe("Names fit in 80 characters");
+    await s.key(127);
+    expect(s.inline_rename.field.len).toBe(79);
+    expect(s.inline_rename.message).toBeNull();
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("Escape while a save is in flight closes the field; the late failure neither reopens it nor remembers", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => (release = resolve));
+  const s: any = new Controller({
+    request: transport(async (op, fields: any) => {
+      if (op !== "session.command") return pair();
+      if (fields.command["agent.rename"]?.name !== undefined) {
+        await gate;
+        return { err: "AgentBusy" };
+      }
+      return { result: { pane: 1 } };
+    }).request,
+  });
+  s.receiveSnapshot(pair());
+  s.input_state.attached = true;
+  try {
+    setSystemTime(new Date(1000));
+    const at = s.sidebarView(s.sidebarEntries()).fieldRect({ agent: 1 }, s.workspaceEntries());
+    for (let i = 0; i < 2; i++)
+      await s.input(bytes(`\x1b[<0;${at.x + 1};${at.y + 1}M\x1b[<0;${at.x + 1};${at.y + 1}m`));
+    await s.input(bytes("\x03Late"));
+    const saving = s.key(13);
+    // The gate holds the rename, so a tick lets the save start without ending it.
+    await Bun.sleep(0);
+    expect(s.inline_rename?.saving).toBe(true);
+    await s.key(13);
+    await s.key(27);
+    expect(s.inline_rename).toBeNull();
+    release();
+    await saving;
+    expect(s.inline_rename).toBeNull();
+    expect(s.remembered_names.size).toBe(0);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("Copy ID names the harness, session, id and paths, leaving out what isn't known", () => {
+  const pane = (label: string, fields: object) => ({ label, cwd: "/repo/sub", agent: agent(fields) }) as Pane;
+  const claude = pane("", {
+    provider: "claude",
+    name: "fix sidebar hover",
+    session: "0b8e1c2a",
+    cwd: "/repo",
+    transcript: "/home/u/.claude/projects/-repo/0b8e1c2a.jsonl",
+  });
+  expect(breadcrumbs(claude)).toBe(
+    [
+      "harness: Claude Code",
+      "session: fix sidebar hover",
+      "id: 0b8e1c2a",
+      "cwd: /repo",
+      "transcript: /home/u/.claude/projects/-repo/0b8e1c2a.jsonl",
+    ].join("\n"),
+  );
+  // A pane's own name wins; the pane's folder stands in for the agent's.
+  expect(breadcrumbs(pane("review", { provider: "codex", name: "thread", session: "019a" }))).toBe(
+    ["harness: Codex", "session: review", "id: 019a", "cwd: /repo/sub"].join("\n"),
+  );
+});
+
+test("a split waiting on a slow daemon leaves input free and takes focus only where it opened", async () => {
+  const workspace = (id: number, panes: number[]) => ({
+    id,
+    name: `ws${id}`,
+    cwd: "/tmp",
+    model: {
+      nodes: panes.map(pane => ({ pane })),
+      tabs: panes.map((_, i) => ({ id: id * 10 + i, root: i, title: "" })),
+      revision: 0,
+    },
+  });
+  const pane = (id: number, ws: number, tab: number) => ({
+    id,
+    workspace: ws,
+    tab,
+    cols: 80,
+    rows: 24,
+    agent: { provider: null, attention: "none", observation: { completed: 0, read: 0 } },
+  });
+  const before = {
+    workspaces: [workspace(1, [1]), workspace(2, [2])],
+    panes: [pane(1, 1, 10), pane(2, 2, 20)],
+    conversations: [],
+    headless_sessions: [],
+  };
+  const after = {
+    ...before,
+    workspaces: [workspace(1, [1, 3]), workspace(2, [2])],
+    panes: [...before.panes, pane(3, 1, 11)],
+  };
+  for (const moved of [true, false]) {
+    let release!: () => void;
+    const commands: unknown[] = [];
+    const s: any = new Controller({
+      request: transport(async (op, fields: any) => {
+        if (op === "session.snapshot") return after;
+        commands.push(fields.command);
+        await new Promise<void>(resolve => (release = resolve));
+        return { ok: true, result: { pane: 3 } };
+      }).request,
+    });
+    try {
+      s.receiveSnapshot(before);
+      s.switchWorkspace(1);
+      await s.perform({ name: "split", value: "right" });
+      expect(commands).toHaveLength(1);
+      // The reply hasn't come; the viewer still takes input.
+      if (moved) s.switchWorkspace(2);
+      expect(s.current().id).toBe(moved ? 2 : 1);
+      release();
+      await s.tasks.idle();
+      expect(s.current().id).toBe(moved ? 2 : 1);
+      expect(s.focused()?.id).toBe(moved ? 2 : 3);
+    } finally {
+      viewer.close(s);
+    }
+  }
+});
+
+/** One workspace with panes 1 and 2, over a daemon whose commands wait until
+ * the test lets them go, then give `reply`; snapshots answer at once. */
+function slowDaemon(reply: (command: any) => object = () => ({ ok: true, result: { pane: 2 } })) {
+  const snapshot = {
+    workspaces: [
+      {
+        id: 1,
+        name: "one",
+        cwd: "/tmp",
+        model: {
+          nodes: [{ pane: 1 }, { pane: 2 }],
+          tabs: [
+            { id: 10, root: 0, title: "" },
+            { id: 11, root: 1, title: "" },
+          ],
+          revision: 4,
+        },
+      },
+    ],
+    panes: [1, 2].map(id => ({
+      id,
+      workspace: 1,
+      tab: id === 1 ? 10 : 11,
+      cols: 80,
+      rows: 24,
+      agent: { provider: "codex", attention: "none", observation: { completed: 0, read: 0 } },
+    })),
+    conversations: [],
+    headless_sessions: [],
+  };
+  const commands: any[] = [];
+  const replies: (() => void)[] = [];
+  const s: any = new Controller({
+    request: transport(async (op, fields: any) => {
+      if (op === "session.snapshot") return snapshot;
+      commands.push(fields.command);
+      await new Promise<void>(resolve => replies.push(resolve));
+      return reply(fields.command);
+    }).request,
+  });
+  s.receiveSnapshot(snapshot);
+  /** Lets every reply go, including ones for requests the replies lead to. */
+  const answer = async () => {
+    let idle = false;
+    void s.tasks.idle().then(() => (idle = true));
+    while (!idle) {
+      while (replies.length) replies.shift()!();
+      await Bun.sleep(0);
+    }
+  };
+  return { s, commands, answer };
+}
+
+test("a name saved on a slow daemon waits for it, and a second Enter doesn't fork twice", async () => {
+  const { s, commands, answer } = slowDaemon();
+  try {
+    s.name_dialog = Dialog.init({ fork: 1 }, "copy");
+    s.finishName(true);
+    s.finishName(true);
+    expect(commands).toEqual([{ "agent.fork": { target: 1, name: "copy" } }]);
+    expect(s.name_dialog).not.toBeNull();
+    await answer();
+    expect(s.name_dialog).toBeNull();
+    expect(commands).toHaveLength(1);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a full input box still opens the field on a double-click and keeps Rename in the menu", async () => {
+  const busy = (c: any) => (c["agent.rename"]?.name === undefined ? "AgentBusy" : undefined);
+  const { s, twice } = renaming(busy);
+  try {
+    setSystemTime(new Date(1000));
+    await twice({ agent: 1 });
+    expect(s.inline_rename?.target).toEqual({ agent: 1 });
+    s.closeInlineRename();
+    await s.openAgentMenu(1, 0, 0);
+    await s.settle();
+    expect(s.tab_menu?.off.has("rename")).toBe(false);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+  const { s: refused } = renaming(c => (c["agent.rename"]?.name === undefined ? "RenameUnavailable" : undefined));
+  try {
+    await refused.openAgentMenu(1, 0, 0);
+    await refused.settle();
+    expect(refused.tab_menu?.off.has("rename")).toBe(true);
+  } finally {
+    viewer.close(refused);
+  }
+});
+
+test("a divider dragged over a slow daemon sends the latest ratio once the last one lands", async () => {
+  const { s, commands, answer } = slowDaemon();
+  try {
+    const drag = { cancelled: false };
+    for (const ratio of [0.3, 0.4, 0.5]) s.resizeSplit(drag, { target: 1, other: 2, ratio });
+    expect(commands).toEqual([{ "split.ratio": { target: 1, other: 2, ratio: 0.3, expected: 4n } }]);
+    await answer();
+    expect(commands.map(c => c["split.ratio"].ratio)).toEqual([0.3, 0.5]);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("an agent menu opens once the daemon says what it allows, unless Esc came first", async () => {
+  for (const escaped of [false, true]) {
+    const { s, answer } = slowDaemon();
+    try {
+      s.openAgentMenu(1, 0, 0);
+      expect(s.tab_menu).toBeNull();
+      if (escaped) s.closeMenu();
+      await answer();
+      expect(s.tab_menu !== null).toBe(!escaped);
+    } finally {
+      viewer.close(s);
+    }
+  }
+});
+
+test("keys typed right after a split on a slow daemon wait for it and land in the new pane", async () => {
+  const { s, commands, answer } = slowDaemon();
+  try {
+    s.input_state.attached = true;
+    s.focusPane(1);
+    await s.input(bytes("\x02vls"));
+    expect(Object.keys(commands[0])).toEqual(["pane.split"]);
+    const pending = (id: number) => Buffer.from(s.pane(id).terminal.pending).toString();
+    expect(pending(1)).toBe("");
+    await answer();
+    await s.settle();
+    expect(s.focused()?.id).toBe(2);
+    expect(pending(2)).toBe("ls");
+    expect(pending(1)).toBe("");
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a pane still opening has the keyboard and no pane shows focus until it arrives", async () => {
+  const { s, answer } = slowDaemon();
+  try {
+    s.input_state.attached = true;
+    s.focusPane(1);
+    await s.input(bytes("\x02vls"));
+    expect(s.openingFocus()).not.toBeNull();
+    expect(s.pane(1).terminal.pending).toEqual([]);
+    await answer();
+    expect(s.openingFocus()).toBeNull();
+    expect(s.focused()?.id).toBe(2);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("Corgi's keys run at once while a pane opens", async () => {
+  const { s, commands } = slowDaemon();
+  try {
+    s.input_state.attached = true;
+    s.focusPane(1);
+    await s.input(bytes("\x02v\x02q"));
+    expect(Object.keys(commands[0])).toEqual(["pane.split"]);
+    expect(s.input_state.attached).toBe(false);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("focus chosen while a pane opens takes the keyboard back; what was typed before still reaches the pane", async () => {
+  const { s, answer } = slowDaemon();
+  try {
+    s.input_state.attached = true;
+    s.focusPane(1);
+    await s.input(bytes("\x02vab"));
+    // Choosing the pane that had focus counts, though focus stays put.
+    s.focusPane(1);
+    await s.input(bytes("cd"));
+    await answer();
+    const pending = (id: number) => Buffer.from(s.pane(id).terminal.pending).toString();
+    expect(s.focused()?.id).toBe(1);
+    expect(pending(1)).toBe("cd");
+    expect(pending(2)).toBe("ab");
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("closing a pane still opening closes it as it arrives, and other pane actions wait for it", async () => {
+  const { s, commands, answer } = slowDaemon();
+  try {
+    s.input_state.attached = true;
+    s.focusPane(1);
+    await s.input(bytes("\x02v\x02v"));
+    expect(commands.filter(c => "pane.split" in c)).toHaveLength(1);
+    expect(s.message).toBe(" The new pane is still opening");
+    await s.input(bytes("\x02xls"));
+    await answer();
+    expect(commands.at(-1)).toEqual({ "pane.close": { target: 2 } });
+    expect(Buffer.from(s.pane(1).terminal.pending).toString()).toBe("ls");
+    expect(s.pane(2).terminal.pending).toEqual([]);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a pane that fails to open drops what was typed for it and says why", async () => {
+  const { s, answer } = slowDaemon(() => ({ err: "TooManyPanes" }));
+  try {
+    s.input_state.attached = true;
+    s.focusPane(1);
+    await s.input(bytes("\x02vls"));
+    await answer();
+    expect(s.message).toBe("TooManyPanes");
+    expect(s.focused()?.id).toBe(1);
+    expect(s.runtime.panes.flatMap((p: any) => p.terminal.pending)).toEqual([]);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a launcher shortcut the daemon refuses says so instead of ending the viewer", async () => {
+  const { s, answer } = slowDaemon(() => ({ err: "NoWorkspace" }));
+  try {
+    s.input_state.attached = true;
+    s.focusPane(1);
+    s.openLauncher(true);
+    await s.input(bytes("t"));
+    expect(s.agent_launcher).toBeNull();
+    await answer();
+    expect(s.message).toBe("NoWorkspace");
+  } finally {
+    viewer.close(s);
+  }
+});
+
+/** One tab with panes 1 and 2 side by side. A split of pane 1 answers pane 3,
+ * which snapshots show only once the daemon has made it. */
+function splittingDaemon() {
+  const pane = (id: number) => ({
+    id,
+    workspace: 1,
+    tab: 10,
+    cols: 40,
+    rows: 24,
+    agent: { provider: null, attention: "none", observation: { completed: 0, read: 0 } },
+  });
+  const workspace = (nodes: object[], revision: number) => ({
+    id: 1,
+    name: "one",
+    cwd: "/tmp",
+    model: { nodes, tabs: [{ id: 10, root: 0, title: "" }], revision },
+  });
+  const side = (first: number, second: number) => ({ split: { axis: "horizontal", first, second, ratio: 500 } });
+  const before = {
+    workspaces: [workspace([side(1, 2), { pane: 1 }, { pane: 2 }], 1)],
+    panes: [pane(1), pane(2)],
+    conversations: [],
+    headless_sessions: [],
+  };
+  const after = {
+    ...before,
+    workspaces: [workspace([side(1, 2), side(3, 4), { pane: 2 }, { pane: 1 }, { pane: 3 }], 2)],
+    panes: [pane(1), pane(2), pane(3)],
+  };
+  let made = false;
+  const replies: (() => void)[] = [];
+  const s: any = new Controller({
+    request: transport(async op => {
+      if (op === "session.snapshot") return made ? after : before;
+      await new Promise<void>(resolve => replies.push(resolve));
+      made = true;
+      return { ok: true, result: { pane: 3 } };
+    }).request,
+  });
+  s.receiveSnapshot(before);
+  s.input_state.attached = true;
+  s.width = 120;
+  s.height = 40;
+  s.focusPane(1);
+  const answer = async () => {
+    while (replies.length) replies.shift()!();
+    await s.tasks.idle();
+  };
+  return { s, answer };
+}
+
+test("a pane that appears only once the daemon makes it takes focus and what was typed, and shows focus then", async () => {
+  const { s, answer } = splittingDaemon();
+  try {
+    expect(s.frame()).toContain(render.divider_focused);
+    await s.input(bytes("\x02vls"));
+    // Nothing on screen claims the keyboard while the pane is on its way.
+    expect(s.frame()).not.toContain(render.divider_focused);
+    await answer();
+    expect(s.focused()?.id).toBe(3);
+    expect(Buffer.from(s.pane(3).terminal.pending).toString()).toBe("ls");
+    expect(s.pane(1).terminal.pending).toEqual([]);
+    expect(s.frame()).toContain(render.divider_focused);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a pane opening on one machine gets its keys and its close there, whichever machine is shown", async () => {
+  for (const close of [false, true]) {
+    const { s, commands, answer } = slowDaemon();
+    const home = s.machine,
+      sent: unknown[] = [];
+    const other = new Machine(
+      {
+        request: transport(async (op, fields: any) => {
+          if (op === "session.snapshot") return pair();
+          sent.push(fields.command);
+          return { ok: true, result: {} };
+        }).request,
+      },
+      "work",
+      true,
+    );
+    s.adopt(other);
+    s.receiveSnapshot(pair(), other);
+    try {
+      s.input_state.attached = true;
+      s.focusPane(1);
+      await s.input(bytes(close ? "\x02v\x02x" : "\x02vls"));
+      s.switchMachine(other);
+      await answer();
+      await other.tasks.idle();
+      expect(sent).toEqual([]);
+      expect(other.runtime.panes.flatMap(p => p.terminal.pending)).toEqual([]);
+      if (close) expect(commands.at(-1)).toEqual({ "pane.close": { target: 2 } });
+      else expect(Buffer.from(home.runtime.pane(2)!.terminal.pending).toString()).toBe("ls");
+    } finally {
+      home.runtime.destroy();
+      viewer.close(s);
+    }
+  }
+});
+
+test("a paste made while a pane opens is dropped, and typing still reaches the pane", async () => {
+  const { s, answer } = slowDaemon();
+  const clipboard = Object.assign(new hostClipboard.State(), { support: "on" });
+  s.host.clipboard = clipboard;
+  try {
+    s.input_state.attached = true;
+    s.focusPane(1);
+    await s.input(bytes("\x02v\x1b[200~pasted\x1b[201~ls"));
+    await s.pasteEvent("text/plain");
+    expect(s.paste_target).toBeNull();
+    await answer();
+    expect(Buffer.from(s.pane(2).terminal.pending).toString()).toBe("ls");
+    expect(s.pane(1).terminal.pending).toEqual([]);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("Esc typed for a pane opening reaches it, not the old pane's retry", async () => {
+  const { s, commands, answer } = slowDaemon();
+  try {
+    s.input_state.attached = true;
+    s.focusPane(1);
+    const p = s.pane(1);
+    p.agent.state = "working";
+    p.agent.retry_at = Date.now() + 100_000;
+    await s.input(bytes("\x02v\x1b"));
+    // A lone Esc goes once the tick knows no sequence follows it.
+    s.input_state.escape_at = 0;
+    await s.expireInput();
+    await answer();
+    expect(commands.some(c => "retry.cancel" in c)).toBe(false);
+    expect(s.pane(2).terminal.pending).toEqual([27]);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a wheel over the old pane scrolls it without taking the keyboard from a pane opening", async () => {
+  const { s, answer } = splittingDaemon();
+  try {
+    await s.input(bytes("\x02v"));
+    const place = s.layoutView().placements(s.area())[0];
+    await s.input(bytes(`\x1b[<65;${place.rect.x + 3};${place.rect.y + 3}M`));
+    await s.input(bytes("ls"));
+    await answer();
+    expect(Buffer.from(s.pane(3).terminal.pending).toString()).toBe("ls");
+    expect(s.pane(1).terminal.pending).toEqual([]);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a split ends copy mode, so keys for the new pane aren't read as copy-mode commands", async () => {
+  const { s, answer } = splittingDaemon();
+  try {
+    s.copy_mode = true;
+    await s.input(bytes("\x02vls"));
+    expect(s.copy_mode).toBe(false);
+    await answer();
+    expect(Buffer.from(s.pane(3).terminal.pending).toString()).toBe("ls");
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("the first agent launched in an empty workspace is shown once it opens", async () => {
+  const empty = {
+    workspaces: [{ id: 1, name: "one", cwd: "/tmp", model: { nodes: [], tabs: [], revision: 1 } }],
+    panes: [],
+    conversations: [],
+    headless_sessions: [],
+  };
+  const full = {
+    ...empty,
+    workspaces: [
+      {
+        id: 1,
+        name: "one",
+        cwd: "/tmp",
+        model: { nodes: [{ pane: 5 }], tabs: [{ id: 10, root: 0, title: "" }], revision: 2 },
+      },
+    ],
+    panes: [
+      {
+        id: 5,
+        workspace: 1,
+        tab: 10,
+        cols: 80,
+        rows: 24,
+        agent: { provider: "codex", attention: "none", observation: { completed: 0, read: 0 } },
+      },
+    ],
+  };
+  let made = false;
+  const s: any = new Controller({
+    request: transport(async op => {
+      if (op === "session.snapshot") return made ? full : empty;
+      made = true;
+      return { ok: true, result: { pane: 5 } };
+    }).request,
+  });
+  s.receiveSnapshot(empty);
+  try {
+    await s.launchAgent("codex", "", " Signed in");
+    await s.tasks.idle();
+    expect(s.launched).toBe(5);
+    expect(s.focused()?.id).toBe(5);
+    expect(s.message).toBe(" Signed in");
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("YOLO flips at once, holds through a refresh until the daemon has it, and a quick second press turns it back", async () => {
+  const { s, sent } = withWork();
+  try {
+    s.toggleLauncherYolo(work);
+    expect(s.agent_launcher.yoloOf(work)).toBe(true);
+    // The launcher's refresh from what the daemon last said keeps the value on its way.
+    s.syncLauncherYolo(s.agent_launcher);
+    expect(s.agent_launcher.yoloOf(work)).toBe(true);
+    s.toggleLauncherYolo(work);
+    expect(s.agent_launcher.yoloOf(work)).toBe(false);
+    await s.settle();
+    expect(sent.filter(c => "agent.yolo" in c).map(c => c["agent.yolo"].enabled)).toEqual([true, false]);
+    expect(s.agent_launcher.yoloOf(work)).toBe(false);
+    // Once both are answered, the launcher shows what the daemon says again.
+    expect(s.yolo_pending.size).toBe(0);
+    s.runtime.account_yolo = ["/accounts/work"];
+    s.syncLauncherYolo(s.agent_launcher);
+    expect(s.agent_launcher.yoloOf(work)).toBe(true);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a launcher reopened while a YOLO change is on its way shows it, so the next press turns it back", async () => {
+  const { s, sent } = withWork();
+  try {
+    s.toggleLauncherYolo(work);
+    s.closeMenu();
+    s.openLauncher(true);
+    expect(s.agent_launcher.yoloOf(work)).toBe(true);
+    s.toggleLauncherYolo(work);
+    await s.settle();
+    expect(sent.filter(c => "agent.yolo" in c).map(c => c["agent.yolo"].enabled)).toEqual([true, false]);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a YOLO change the daemon refuses goes back to what it has", async () => {
+  const { s } = recording(folders("/src/app"), c => ("agent.yolo" in c ? "Busy" : undefined));
+  try {
+    s.openLauncher(true);
+    s.toggleLauncherYolo("claude");
+    expect(s.agent_launcher.yoloOf("claude")).toBe(true);
+    await s.settle();
+    expect(s.agent_launcher.yoloOf("claude")).toBe(false);
+    expect(s.message).toBe("Busy");
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a terminal launched while its worktree is added opens in the workspace it was asked for", async () => {
+  let added!: () => void;
+  const commands: any[] = [];
+  const s: any = new Controller({
+    request: transport(async (op, fields: any) => {
+      if (op === "worktree.add") await new Promise<void>(resolve => (added = resolve));
+      if (op !== "session.command") return pair();
+      commands.push(fields.command);
+      return { ok: true, result: { pane: 1 } };
+    }).request,
+  });
+  s.receiveSnapshot(pair());
+  s.input_state.attached = true;
+  try {
+    s.switchWorkspace(1);
+    s.openLauncher(true);
+    s.agent_launcher.worktree.planned = { branch: "b", base: "main", base_name: "main", path: "/a/b" };
+    await s.input(bytes("t"));
+    // Input carries on while Git adds the worktree.
+    s.closeMenu();
+    s.switchWorkspace(2);
+    added();
+    await s.settle();
+    expect(commands).toEqual([{ "pane.create": { workspace: 1, cwd: "/a/b", command: null, title: "" } }]);
+    expect(s.current().id).toBe(2);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a pane takes one paste at a time by every way a paste comes, says so, and typing still goes", async () => {
+  const { s, answer } = slowDaemon();
+  try {
+    s.input_state.attached = true;
+    s.focusPane(1);
+    const terminal = s.pane(1).terminal,
+      pending = () => Buffer.from(terminal.pending).toString();
+    await s.input(bytes("\x1b[200~one\x1b[201~x\x1b[200~two\x1b[201~y"));
+    expect(pending()).toBe("onexy");
+    expect(s.message).toBe(" Still sending the last paste; paste again once it lands");
+    s.clipboard = "three";
+    await s.perform({ name: "paste" });
+    s.pasteText({ pane: 1 }, "four");
+    expect(pending()).toBe("onexy");
+    // Once the daemon has it, the next paste goes.
+    const sent = terminal.flush();
+    await answer();
+    await sent;
+    s.pasteText({ pane: 1 }, "five");
+    expect(pending()).toBe("five");
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("while a pane's input waits, only hovers give way: clicks, drags and the wheel reach it whole", async () => {
+  const s: any = new Controller(transport(async () => ({ ok: true })));
+  s.width = 100;
+  s.height = 30;
+  s.sidebar_open = false;
+  s.input_state.attached = true;
+  s.receiveSnapshot({
+    workspaces: [
+      {
+        id: 1,
+        name: "one",
+        cwd: "/tmp",
+        model: { nodes: [{ pane: 1 }], tabs: [{ id: 1, root: 0, title: "" }], revision: 0 },
+      },
+    ],
+    panes: [
+      {
+        id: 1,
+        workspace: 1,
+        tab: 1,
+        cols: 100,
+        rows: 29,
+        agent: { provider: null, attention: "none", observation: { completed: 0, read: 0 } },
+      },
+    ],
+    conversations: [],
+    headless_sessions: [],
+  });
+  const source = new NativeTerminal(100, 29);
+  try {
+    // A program that tracks every motion, reported as SGR.
+    source.feed("\x1b[?1003h\x1b[?1006h");
+    s.runtime.pane(1).terminal.receive(source.surface(1));
+    s.frame();
+    const place = s.layoutView().placements(s.area())[0].rect;
+    const at = (button: number, x: number, release = false) =>
+      `\x1b[<${button};${place.x + x + 1};${place.y + 3}${release ? "m" : "M"}`;
+    const reports = () =>
+      [
+        ...Buffer.from(s.runtime.pane(1).terminal.pending)
+          .toString()
+          .matchAll(/\x1b\[<(\d+);(\d+);\d+([Mm])/g),
+      ].map(([, button, x, kind]) => `${button}@${Number(x) - 1}${kind}`);
+    await s.input(bytes(at(35, 1) + at(35, 2) + at(35, 3)));
+    expect(reports()).toEqual(["35@3M"]);
+    await s.input(bytes(at(0, 3) + at(32, 4) + at(32, 5) + at(32, 6) + at(0, 6, true) + at(64, 6) + at(64, 6)));
+    expect(reports()).toEqual(["35@3M", "0@3M", "32@4M", "32@5M", "32@6M", "0@6m", "64@6M", "64@6M"]);
+  } finally {
+    source.destroy();
+    viewer.close(s);
+  }
+});
+
+test("a paste cut off by an input reset, or failing part-way, never leaves its pane refusing pastes", async () => {
+  const { s, answer } = slowDaemon();
+  try {
+    s.input_state.attached = true;
+    s.focusPane(1);
+    const terminal = s.pane(1).terminal,
+      text = () => Buffer.from(terminal.pending).toString();
+    // Its end never comes: the viewer gave up the input it was in, and the
+    // paste, none of which had gone, goes not at all.
+    await s.input(bytes("x\x1b[200~par"));
+    s.cancelInput();
+    expect(text()).toBe("x");
+    expect(terminal.pasting()).toBe(false);
+    terminal.pending = [];
+    // Too big to fit, a paste goes whole or not at all, and ends either way.
+    s.clipboard = "x".repeat(1024 * 1024 + 1);
+    await expect(s.perform({ name: "paste" })).rejects.toThrow("InputBackpressure");
+    expect(terminal.pending).toEqual([]);
+    expect(terminal.pasting()).toBe(false);
+    // Failing part-way, the rest of the paste is dropped up to its end, and
+    // what follows is read as usual.
+    const full = new Array(1024 * 1024 - 2).fill(97);
+    terminal.pending = [...full];
+    await expect(s.input(bytes("\x1b[200~four\x1b[201~ls"))).rejects.toThrow("InputBackpressure");
+    expect(text().slice(full.length)).toBe("ls");
+    expect(s.input_state.paste).toBeNull();
+    // When its end comes in later input, what comes before it is never typed.
+    terminal.pending = [...full, 97];
+    await expect(s.input(bytes("\x1b[200~fo"))).rejects.toThrow("InputBackpressure");
+    terminal.pending = [];
+    await s.input(bytes("ur\nrm -rf x\x1b[201~ls"));
+    expect(text()).toBe("ls");
+    await answer();
+    s.pasteText({ pane: 1 }, "five");
+    expect(text()).toBe("lsfive");
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("through the viewer's routing, a workspace name's double-click renames and a click in its field stays there", async () => {
+  const { s, rect } = renaming();
+  // As the viewer routes a click: workspace drags first, the rest as input.
+  const click = async (x: number, y: number) => {
+    for (const release of [false, true])
+      if (!s.workspaceDragInput(x, y, 0, release))
+        await s.input(bytes(`\x1b[<0;${x + 1};${y + 1}${release ? "m" : "M"}`));
+  };
+  try {
+    setSystemTime(new Date(1000));
+    const at = rect({ workspace: 2 });
+    await click(at.x, at.y);
+    await click(at.x, at.y);
+    expect(s.inline_rename?.target).toEqual({ workspace: 2 });
+    expect(s.workspaceDragInput(at.x + 1, at.y, 0, false)).toBe(false);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a press after a drag on a workspace's name starts no rename", async () => {
+  const { s, rect } = renaming();
+  try {
+    setSystemTime(new Date(1000));
+    const at = rect({ workspace: 2 });
+    expect(s.workspaceDragInput(at.x, at.y, 0, false)).toBe(true);
+    expect(s.workspaceDragInput(at.x + 1, at.y, 32, false)).toBe(true);
+    expect(s.workspaceDragInput(at.x, at.y, 32, false)).toBe(true);
+    expect(s.workspaceDragInput(at.x, at.y, 0, true)).toBe(true);
+    expect(s.workspaceDragInput(at.x, at.y, 0, false)).toBe(true);
+    expect(s.inline_rename).toBeNull();
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("closing the workspace shown settles on the next, unless the user went elsewhere; closing another leaves the view", async () => {
+  for (const moved of [false, true]) {
+    let closed = false,
+      release!: () => void;
+    const after = { ...pair(), workspaces: pair().workspaces.filter(w => w.id !== 1), panes: [pair().panes[2]] };
+    const s: any = new Controller({
+      request: transport(async op => {
+        if (op === "session.snapshot") return closed ? after : pair();
+        await new Promise<void>(resolve => (release = resolve));
+        closed = true;
+        return { ok: true, result: {} };
+      }).request,
+    });
+    try {
+      s.receiveSnapshot(pair());
+      s.switchWorkspace(1);
+      s.closeWorkspace(1, false);
+      if (moved) s.switchWorkspace(2);
+      const settle = spyOn(s, "switchWorkspace");
+      release();
+      await s.settle();
+      expect(s.current().id).toBe(2);
+      // The settling switch reveals and visits the workspace landed on.
+      expect(settle.mock.calls).toEqual(moved ? [] : [[2]]);
+    } finally {
+      viewer.close(s);
+    }
+  }
+  const s: any = new Controller({
+    request: transport(async op => (op === "session.snapshot" ? pair() : { ok: true, result: {} })).request,
+  });
+  try {
+    s.receiveSnapshot(pair());
+    s.switchWorkspace(1);
+    const settle = spyOn(s, "switchWorkspace");
+    s.closeWorkspace(2, false);
+    await s.settle();
+    expect(settle).not.toHaveBeenCalled();
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a delayed command refreshes its owning machine after the viewer switches", async () => {
+  const pending = Promise.withResolvers<unknown>();
+  let reads = 0;
+  const first = new Machine(
+    transport(async op => {
+      if (op === "session.command") return pending.promise;
+      if (op === "session.snapshot") {
+        reads++;
+        return folders("/updated");
+      }
+      throw Error("UnexpectedRequest");
+    }),
+  );
+  const second = new Machine(
+    transport(async () => {
+      throw Error("WrongMachine");
+    }),
+    "work",
+    true,
+  );
+  const s: any = new Controller(first);
+  s.adopt(second);
+  s.receiveSnapshot(folders("/local"));
+  s.receiveSnapshot(folders("/remote"), second);
+  try {
+    s.command({ "pane.rename": { target: 1, name: "renamed" } });
+    s.switchMachine(second);
+    pending.resolve({ ok: true, result: { pane: 1 } });
+    await first.tasks.idle();
+    expect(reads).toBe(1);
+    expect(first.runtime.workspaces.items[0].cwd).toBe("/updated");
+    expect(s.current().cwd).toBe("/remote");
+  } finally {
+    first.runtime.destroy();
+    viewer.close(s);
+  }
+});
+
+test("activity sections keep same-numbered agents on different machines distinct", () => {
+  const s = controller();
+  const other = new Machine(
+    transport(async () => ({})),
+    "work",
+    true,
+  );
+  s.adopt(other);
+  const snapshot = (cwd: string) => {
+    const value = folders(cwd);
+    value.panes[0].agent.provider = "codex" as any;
+    return value;
+  };
+  s.receiveSnapshot(snapshot("/local"));
+  s.receiveSnapshot(snapshot("/remote"), other);
+  s.prefs.agents = "all";
+  s.prefs.agent_sort = "activity";
+  const chosen: unknown[] = [];
+  s.onMachine = (machine: Machine, focus: unknown) => chosen.push([machine.name, focus]);
+  try {
+    const agents = s.agentEntries().filter((e: sidebar.Entry) => sidebar.isAgent(e.target));
+    expect(agents.map((e: sidebar.Entry) => e.target)).toEqual([{ pane: 1 }, { pane: 2 * 2 ** 32 + 1 }]);
+    s.selectAgent(agents[1].target);
+    expect(chosen).toEqual([["work", { pane: 1 }]]);
+  } finally {
+    other.runtime.destroy();
+    viewer.close(s);
+  }
+});
+
+test("remote sign-in asks its daemon and never starts a local account process", async () => {
+  const calls: [string, unknown][] = [];
+  const s: any = new Controller(
+    new Machine(
+      transport(async (op, fields) => {
+        calls.push([op, fields]);
+        return op === "account.signin.sync" ? { state: null } : {};
+      }),
+      "work",
+      true,
+    ),
+  );
+  const local = spyOn(signin.Signin.prototype, "open").mockRejectedValue(Error("LocalSignin"));
+  s.receiveSnapshot(folders("/remote"));
+  try {
+    s.openSignin((host: signin.Host) => s.remoteSignin("claude", "", true, host));
+    await Bun.sleep(1);
+    expect(local).not.toHaveBeenCalled();
+    expect(calls.find(([op]) => op === "account.signin.open")?.[1]).toMatchObject({
+      provider: "claude",
+      cwd: "/remote",
+      add: true,
+    });
+    expect(s.signin).not.toBeNull();
+  } finally {
+    viewer.close(s);
+    local.mockRestore();
+  }
+});
+
+test("a remote resource card sends signals and pane navigation to its owner", async () => {
+  const s = controller(),
+    calls: unknown[] = [];
+  const other = new Machine(
+    transport(async (op, fields) => {
+      calls.push([op, fields]);
+      return { ok: true };
+    }),
+    "work",
+    true,
+  );
+  s.adopt(other);
+  s.receiveSnapshot(folders("/local"));
+  s.receiveSnapshot(folders("/remote"), other);
+  const process = { pid: 42, start: 7n, name: "cat", pane: 1, cpu: 0 };
+  const key = s.rowKey(1, other);
+  other.runtime.resources.workspaces = [{ id: 1, known: true, processes: [process] }] as any;
+  s.resource_card.update({ id: key, known: true, processes: [process] }, false);
+  s.resource_card.pin({ pid: 42, start: "7" });
+  const chosen: unknown[] = [];
+  s.onMachine = (machine: Machine, focus: unknown) => chosen.push([machine.name, focus]);
+  try {
+    expect(s.resourceDetail()).toBe(key);
+    await s.signalProcesses("term");
+    expect(calls).toEqual([]);
+    await s.signalProcesses("term");
+    expect(calls).toEqual([["process.signal", { workspace: 1, pid: 42, start: 7n, signal: "term" }]]);
+    await s.perform({ name: "resource-go" });
+    expect(chosen).toEqual([["work", { pane: 1 }]]);
+  } finally {
+    other.runtime.destroy();
+    viewer.close(s);
+  }
+});
+
+test("switching machines during an awaited key discards the old batch's tail", async () => {
+  const s = controller(),
+    pending = Promise.withResolvers<void>();
+  const other = new Machine(
+    transport(async () => ({})),
+    "work",
+    true,
+  );
+  s.adopt(other);
+  s.receiveSnapshot(folders("/local"));
+  s.receiveSnapshot(folders("/remote"), other);
+  s.input_state.attached = true;
+  const sent: [string, number][] = [];
+  s.key = async (byte: number) => {
+    sent.push([s.machine.name, byte]);
+    if (byte === 97) await pending.promise;
+  };
+  try {
+    const batch = s.input(bytes("ab"));
+    s.switchMachine(other);
+    await s.input(bytes("c"));
+    pending.resolve();
+    await batch;
+    expect(sent).toEqual([
+      ["local", 97],
+      ["work", 99],
+    ]);
+    expect(s.input_state.keybuf).toEqual([]);
+  } finally {
+    pending.resolve();
+    other.runtime.destroy();
+    viewer.close(s);
+  }
+});
+
+test("remote workspace renaming uses its row below the machine header and keeps failed names on their machine", () => {
+  const s = controller(),
+    local = s.machine,
+    remote = new Machine(
+      transport(async () => pair()),
+      "work",
+      true,
+    );
+  s.height = 60;
+  s.receiveSnapshot(pair());
+  s.adopt(remote);
+  s.receiveSnapshot(pair(), remote);
+  try {
+    local.remembered_names.set(1, "local draft");
+    s.switchMachine(remote);
+    expect(s.remembered_names.size).toBe(0);
+    s.remembered_names.set(1, "remote draft");
+    expect(s.beginInlineRename({ workspace: 1 })).toBe(true);
+    const rows = s.workspaceRows(),
+      target = { workspace: s.rowKey(1, remote) },
+      view = s.sidebarView(s.sidebarEntries()),
+      rect = view.fieldRect(target, rows);
+    expect(view.rename?.target).toEqual(target);
+    expect(view.hit(rect!.x, rect!.y)).toEqual({
+      tag: "workspace",
+      workspace: rows.findIndex((row: sidebar.WorkspaceEntry) => row.id === target.workspace),
+    });
+    expect(s.frame()).toContain("/a");
+    expect(s.inline_rename?.target).toEqual({ workspace: 1 });
+    s.switchMachine(local);
+    expect(s.inline_rename).toBeNull();
+    expect(s.remembered_names.get(1)).toBe("local draft");
+    expect(remote.remembered_names.get(1)).toBe("remote draft");
+  } finally {
+    s.switchMachine(local);
+    remote.runtime.destroy();
+    viewer.close(s);
+  }
+});
+
+test.each(["probe", "save"])(
+  "a slow remote rename %s leaves input processing free and cannot change another machine",
+  async mode => {
+    const pending = Promise.withResolvers<void>(),
+      commands: unknown[] = [],
+      s = controller(),
+      local = s.machine,
+      remote = new Machine(
+        transport(async (op, fields: any) => {
+          if (op !== "session.command") return pair();
+          commands.push(fields.command);
+          await pending.promise;
+          return mode === "probe" ? { result: { pane: 1 } } : { err: "AgentBusy" };
+        }),
+        "work",
+        true,
+      );
+    s.receiveSnapshot(pair());
+    s.adopt(remote);
+    s.receiveSnapshot(pair(), remote);
+    s.input_state.attached = true;
+    try {
+      s.switchMachine(remote);
+      if (mode === "probe") {
+        const at = s.sidebarView(s.sidebarEntries()).fieldRect({ agent: 1 }, s.workspaceRows());
+        for (let i = 0; i < 2; i++)
+          await s.input(bytes(`\x1b[<0;${at.x + 1};${at.y + 1}M\x1b[<0;${at.x + 1};${at.y + 1}m`));
+      } else {
+        expect(s.beginInlineRename({ agent: 1 })).toBe(true);
+        await s.input(bytes("\x03remote name\r"));
+        expect(s.inline_rename.saving).toBe(true);
+      }
+      expect(commands).toHaveLength(1);
+      s.switchMachine(local);
+      expect(s.inline_rename).toBeNull();
+      local.remembered_names.set(1, "local draft");
+      pending.resolve();
+      await remote.tasks.idle();
+      expect(s.machine).toBe(local);
+      expect(s.inline_rename).toBeNull();
+      expect(local.remembered_names.get(1)).toBe("local draft");
+      expect(remote.remembered_names.size).toBe(0);
+    } finally {
+      pending.resolve();
+      await remote.tasks.idle();
+      s.switchMachine(local);
+      remote.runtime.destroy();
+      viewer.close(s);
+    }
+  },
+);
+
+test("Escape cancels an agent rename probe before its slow reply opens the field", async () => {
+  const { s, commands, answer } = slowDaemon();
+  try {
+    s.doubleClickAgent(1);
+    expect(commands).toEqual([probe(1)]);
+    await s.key(27);
+    await answer();
+    expect(s.inline_rename).toBeNull();
+  } finally {
+    await answer();
+    viewer.close(s);
+  }
+});
+
+test("remote management reads options from its daemon and refreshes a saved configuration", async () => {
+  const local = spyOn(accounts, "launchOptions").mockImplementation(() => {
+    throw Error("LocalAccountRead");
+  });
+  let settings = { flags: "--remote", env: [] as [string, string][], model: "remote-model" };
+  const asked: string[] = [];
+  const snapshot = folders("/remote");
+  const remote = new Machine(
+    transport(async (op, fields: any) => {
+      asked.push(op);
+      if (op === "launcher.catalog")
+        return {
+          agents: [],
+          data: {
+            accounts: [{ row: "claude", folder: "/remote/.claude", suggest: "Remote", options: settings }],
+            removed: [],
+          },
+        };
+      if (op === "session.snapshot") return snapshot;
+      if (op === "session.command") {
+        settings = { ...settings, ...fields.command["agent.launcher.configure"] };
+        return { result: {} };
+      }
+      return {};
+    }),
+    "remote",
+    true,
+  );
+  const s: any = new Controller(remote);
+  s.receiveSnapshot(snapshot);
+  s.launch_previews.preview = agentLauncher.preview({
+    pending: false,
+    installed: byProvider(p => p === "claude"),
+    options: { claude: { signed_in: true } },
+  });
+  try {
+    s.openLauncher(true);
+    await remote.tasks.idle();
+    await s.pollLauncher(false);
+    await s.openManager();
+    expect(s.agent_launcher.managing).toBe(true);
+    const model = s.agent_launcher.manageModel(),
+      a = model.agents.find((a: agentManager.Agent) => a.provider === "claude");
+    expect(model.options(a)).toEqual(settings);
+    expect(model.folder("claude", "")).toBe("/remote/.claude");
+    await s.manageAction({ kind: "model", agent: a, model: "updated-model", effort: "high" });
+    await s.pollLauncher(false);
+    await remote.tasks.idle();
+    await s.pollLauncher(false);
+    expect(s.agent_launcher.manageModel().options(a).model).toBe("updated-model");
+    expect(asked.filter(op => op === "launcher.catalog")).toHaveLength(2);
+    expect(local).not.toHaveBeenCalled();
+  } finally {
+    local.mockRestore();
+    viewer.close(s);
+  }
+});
+
+test.each(["model", "configure"])(
+  "reopening settings after %s waits for a fresh catalog, including an older reply in flight",
+  async kind => {
+    let settings = { flags: "--old", env: [["SETTING", "old"]] as [string, string][], model: "old-model" };
+    let reads = 0;
+    const stale = Promise.withResolvers<void>(),
+      fresh = Promise.withResolvers<void>(),
+      snapshot = folders("/remote");
+    const machine = new Machine(
+      transport(async (op, fields: any) => {
+        if (op === "session.snapshot") return snapshot;
+        if (op === "launcher.catalog") {
+          const options = structuredClone(settings),
+            read = ++reads;
+          if (read === 2) await stale.promise;
+          if (read === 3) await fresh.promise;
+          return {
+            agents: [],
+            data: { accounts: [{ row: "claude", folder: "/remote/.claude", suggest: "Remote", options }], removed: [] },
+          };
+        }
+        if (op === "session.command") {
+          const patch = { ...fields.command["agent.launcher.configure"] };
+          if (patch.effort === "default") delete patch.effort;
+          settings = { ...settings, ...patch, env: patch.env ? Object.entries(JSON.parse(patch.env)) : settings.env };
+          return { result: {} };
+        }
+        return {};
+      }),
+      "remote",
+      true,
+    );
+    const s: any = new Controller(machine);
+    s.receiveSnapshot(snapshot);
+    s.updateLaunchPreview = () => {};
+    s.launch_previews.cwd = "/remote";
+    s.launch_previews.preview = agentLauncher.preview({
+      pending: false,
+      installed: byProvider(p => p === "claude"),
+      options: { claude: { signed_in: true } },
+    });
+    try {
+      s.openLauncher(true);
+      await machine.tasks.idle();
+      await s.pollLauncher(false);
+      await s.openManager();
+      const launch = s.agent_launcher,
+        manager = launch.manager;
+      const agent = launch.manageModel().agents.find((a: agentManager.Agent) => a.provider === "claude");
+      s.readProfiles(true);
+      expect(reads).toBe(2);
+      await s.manageAction(
+        kind === "model"
+          ? { kind, agent, model: "new-model", effort: "high" }
+          : { kind, agent, name: "New", options: { model: "new-model", flags: "--new", env: [["SETTING", "new"]] } },
+      );
+      const reopen = () => {
+        manager.open(agentManager.agentKey("claude", ""));
+        expect(manager.selected(launch.manageModel())?.kind).toBe("agent");
+        manager.key(101, launch.manageModel());
+      };
+      reopen();
+      expect(manager.page).toBe("list");
+      stale.resolve();
+      await machine.tasks.idle();
+      await s.pollLauncher(false);
+      expect(reads).toBe(3);
+      reopen();
+      expect(manager.page).toBe("list");
+      fresh.resolve();
+      await machine.tasks.idle();
+      await s.pollLauncher(false);
+      reopen();
+      expect(manager.page).toBe("agent");
+      expect(manager.agent_form.options().model).toBe("new-model");
+      expect(manager.agent_form.options().flags).toBe(settings.flags);
+      expect(manager.agent_form.options().env).toEqual(settings.env);
+      await s.manageAction({ kind: "configure", agent, name: "Rename only", options: manager.agent_form.options() });
+      expect(settings.model).toBe("new-model");
+      expect(settings.flags).toBe(kind === "configure" ? "--new" : "--old");
+      expect(settings.env).toEqual([["SETTING", kind === "configure" ? "new" : "old"]]);
+    } finally {
+      stale.resolve();
+      fresh.resolve();
+      await machine.tasks.idle();
+      viewer.close(s);
+    }
+  },
+);
+
+test("model catalogs belong to the selected machine even when account paths match", async () => {
+  const home = new Machine(transport(async () => ({ models: [{ id: "local", name: "Local" }] })));
+  const away = new Machine(
+    transport(async () => ({ models: [{ id: "remote", name: "Remote" }] })),
+    "remote",
+    true,
+  );
+  const s: any = new Controller(home);
+  s.receiveSnapshot(folders("/same"));
+  s.receiveSnapshot(folders("/same"), away);
+  try {
+    const here = s.model_cache.get("claude", "/same/account", "/same");
+    await Bun.sleep(0);
+    expect(here.values[0].id).toBe("local");
+    s.switchMachine(away);
+    const there = s.model_cache.get("claude", "/same/account", "/same");
+    await Bun.sleep(0);
+    expect(there.values[0].id).toBe("remote");
+  } finally {
+    viewer.close(s);
+    home.runtime.destroy();
   }
 });

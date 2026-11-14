@@ -1,5 +1,9 @@
 {
   "hello": {},
+  "link.open": {},
+  "link.resume": {
+    "link": "7d3a4b0e-5f61-4c2a-9a8e-2f1b6c0d9e47"
+  },
   "session.command": {
     "command": {
       "pane.close": {
@@ -10,9 +14,17 @@
   "session.locate": {
     "pane": 1
   },
+  "workspace.archive.preview": {
+    "target": 1
+  },
   "session.list": {},
-  "launcher.catalog": {},
-  "launcher.models": { "row": "codex" },
+  "launcher.catalog": {
+    "workspace": 0,
+    "cwd": ""
+  },
+  "launcher.models": {
+    "row": "codex"
+  },
   "session.snapshot": {},
   "session.subscribe": {},
   "viewer.watch": {
@@ -45,8 +57,20 @@
     "needle": "x",
     "skip": 1
   },
-  "viewer.pick": { "pane": 1, "offset": 0, "unit": "word", "x": 3, "y": 2, "to_x": 9, "to_y": 2 },
-  "viewer.image": { "pane": 1, "image": "1-1", "offset": 0 },
+  "viewer.pick": {
+    "pane": 1,
+    "offset": 0,
+    "unit": "word",
+    "x": 3,
+    "y": 2,
+    "to_x": 9,
+    "to_y": 2
+  },
+  "viewer.image": {
+    "pane": 1,
+    "image": "1-1",
+    "offset": 0
+  },
   "pane.acknowledge": {
     "pane": 1,
     "session": "s",
@@ -101,6 +125,12 @@
   "smart_links.configure": {
     "enabled": false
   },
+  "retry.configure": {
+    "enabled": false
+  },
+  "retry.cancel": {
+    "pane": 1
+  },
   "git.push": {
     "workspace": 1,
     "ref": {
@@ -153,8 +183,14 @@
   "agent.preview": {
     "workspace": 1
   },
+  "agent.preview.cached": {
+    "workspace": 1
+  },
   "agent.track_usage": {
     "workspace": 1
+  },
+  "agent.discover": {
+    "provider": "codex"
   },
   "agent.history": {},
   "viewer.list": {},
@@ -175,7 +211,18 @@
     "provider": "codex",
     "cwd": "/tmp",
     "workspace": 1,
-    "prompt": "hello"
+    "prompt": "hello",
+    "model": "gpt-6-luna",
+    "effort": "high",
+    "instructions": "Be brief.",
+    "persist": false,
+    "corgi": true,
+    "images": [
+      {
+        "path": "/tmp/a.png",
+        "mime": "image/png"
+      }
+    ]
   },
   "headless.list": {},
   "headless.stop": {
@@ -190,10 +237,22 @@
     },
     "provider": "codex"
   },
+  "headless.search": {
+    "id": 1,
+    "search": {}
+  },
+  "headless.memory": {
+    "id": 1,
+    "file": "/memory/MEMORY.md",
+    "line": "- Ships Fridays",
+    "was_file": "/memory/2026-10-30.md",
+    "was_line": "- Ships on Fridays"
+  },
   "headless.events": {
     "session": "t",
     "after": 4,
-    "provider": "codex"
+    "provider": "codex",
+    "pane": 3
   },
   "theme": {
     "theme": {
@@ -220,7 +279,77 @@
     "ms": 1000
   },
   "viewer.terminal": {
-    "terminal": { "name": "kitty(0.39.1)", "cols": 120, "rows": 40 }
+    "terminal": {
+      "name": "kitty(0.39.1)",
+      "cols": 120,
+      "rows": 40
+    }
   },
-  "bugreport": {}
+  "bugreport": {},
+  "startup": {
+    "id": "test",
+    "pane": 1,
+    "provider": "opencode2",
+    "phase": "service",
+    "started_at": 1
+  },
+  "startup.kill": {
+    "id": "test"
+  },
+  "viewer.receipt": {
+    "sequence": 1,
+    "frame": 2
+  },
+  "viewer.stream": {
+    "viewer_protocol": 3,
+    "interests": [
+      {
+        "pane": 1,
+        "cols": 80,
+        "rows": 24
+      }
+    ],
+    "ack": 2,
+    "sequence": 1
+  },
+  "viewer.data": {
+    "link": "example"
+  },
+  "viewer.stream.configure": {
+    "viewer_protocol": 3,
+    "interests": [
+      {
+        "pane": 1,
+        "cols": 80,
+        "rows": 24
+      }
+    ],
+    "ack": 2,
+    "sequence": 1
+  },
+  "account.restore": {
+    "provider": "claude",
+    "account": "/accounts/work"
+  },
+  "account.remove": {
+    "provider": "claude",
+    "account": "/accounts/work"
+  },
+  "account.signin.open": {
+    "id": "0123456789abcdef",
+    "provider": "claude",
+    "account": "",
+    "add": true,
+    "cwd": "/tmp",
+    "cols": 80,
+    "rows": 24
+  },
+  "account.signin.sync": {
+    "id": "0123456789abcdef",
+    "cols": 80,
+    "rows": 24
+  },
+  "account.signin.close": {
+    "id": "0123456789abcdef"
+  }
 }

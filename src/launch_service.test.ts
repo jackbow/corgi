@@ -2,11 +2,21 @@ import { afterAll, beforeAll, test, expect, spyOn } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { service, publish, request, sample, stop, due } from "./launch_service";
+import { service, publish, request, sample, stop, due, agentRan, discover } from "./launch_service";
+import { Entry } from "./launch/command";
 import { Preview, Worker as PreviewWorker, active_every, idle_every } from "./launch/preview";
-import { Text } from "./providers";
+import { Text, byProvider } from "./providers";
 import * as protocol from "./protocol";
 import * as accounts from "./accounts";
+import * as discovery from "./discovery";
+import * as integration from "./integration";
+import * as os from "./os";
+/** A runtime's launcher list with nothing taken out. */
+const nothingRemoved = () => ({
+  agent_hidden: byProvider(() => false),
+  account_hidden: [] as string[],
+  agent_commands: [] as Entry[],
+});
 // Previews list the user's accounts; these tests see none.
 const saved = { HOME: process.env.HOME, CORGI_ENV_BASE: process.env.CORGI_ENV_BASE },
   home = mkdtempSync(join(tmpdir(), "corgi-launch-service-"));
@@ -22,8 +32,52 @@ afterAll(() => {
   accounts.reset();
   rmSync(home, { recursive: true, force: true });
 });
+test("cached previews neither create jobs nor refresh old ones", async () => {
+  const server: any = { runtime: { ...nothingRemoved(), getWorkspace: () => ({ cwd: "/tmp" }) } },
+    messages: any[] = [],
+    client: any = { queue: (value: any) => messages.push(value) },
+    s = service(server),
+    pump = spyOn(s.launch_previews, "pump"),
+    follow = spyOn(s, "follow"),
+    snapshot = spyOn(s.launch_previews, "cached"),
+    cached = (cwd = "") =>
+      request(server, client, {
+        op: "agent.preview.cached",
+        payload: protocol.decode("agent.preview.cached", { workspace: 1, cwd }),
+      });
+  try {
+    await cached();
+    expect(messages[0].preview.pending).toBe(false);
+    expect(s.launch_previews.jobs).toHaveLength(0);
+    const before = new Preview().with({ pending: false }),
+      job = {
+        cwd: "/tmp",
+        preview: before,
+        queued: false,
+        updated: 1,
+        used: 2,
+        accessing: false,
+        request_access: false,
+      };
+    s.launch_previews.jobs.push(job);
+    await cached();
+    expect(messages[1].preview).toEqual(messages[0].preview);
+    expect(snapshot).toHaveBeenLastCalledWith("/tmp");
+    await cached("/tmp/other");
+    expect(snapshot).toHaveBeenLastCalledWith("/tmp/other");
+    expect(job).toMatchObject({ queued: false, updated: 1, used: 2 });
+    expect(pump).not.toHaveBeenCalled();
+    expect(follow).not.toHaveBeenCalled();
+  } finally {
+    pump.mockRestore();
+    follow.mockRestore();
+    snapshot.mockRestore();
+    await stop(server);
+  }
+});
+
 test("new preview subscribers refresh sign-in after a pending pass", async () => {
-  const server: any = { runtime: { getWorkspace: () => ({ cwd: "/tmp" }) } },
+  const server: any = { runtime: { ...nothingRemoved(), getWorkspace: () => ({ cwd: "/tmp" }) } },
     messages: any[] = [],
     client = (): any => ({
       dead: false,
@@ -196,7 +250,7 @@ test("restored preview subscriptions restart their workers without a new request
   }
 });
 test("accounts are read often while someone uses a viewer and rarely otherwise", () => {
-  const server: any = { clients: [] },
+  const server: any = { clients: [], runtime: nothingRemoved() },
     asked: number[] = [];
   service(server).launch_previews.sample = every => void asked.push(every);
   try {
@@ -207,6 +261,34 @@ test("accounts are read often while someone uses a viewer and rarely otherwise",
     viewer.input_at = Date.now() - 60 * 1000;
     sample(server);
     expect(asked).toEqual([idle_every, idle_every, active_every]);
+  } finally {
+    stop(server);
+  }
+});
+test("a saved command keeps its provider's default read once its row is taken out", () => {
+  const command = (source: string, provider: "codex" | "pi", default_account: boolean, hidden = false) => {
+    const e = new Entry();
+    e.set(source);
+    e.hidden = hidden;
+    Object.assign(e.semantics, { provider, default_account });
+    return e;
+  };
+  const runtime = {
+      ...nothingRemoved(),
+      agent_hidden: byProvider(p => p === "codex" || p === "pi"),
+      agent_commands: [
+        command("codex --search", "codex", true),
+        command("CODEX_HOME=/elsewhere codex", "codex", false),
+        command("pi --fast", "pi", true, true),
+        new Entry(),
+      ],
+    },
+    server: any = { clients: [], runtime },
+    s = service(server);
+  s.launch_previews.sample = () => {};
+  try {
+    sample(server);
+    expect(s.launch_previews.removed.commands).toEqual([{ provider: "codex", account: "" }]);
   } finally {
     stop(server);
   }
@@ -322,6 +404,105 @@ test("a subscription is due only while the worker holds a preview it wasn't sent
     expect(due(server, client)).toBe(false);
     expect(due(server, { launch_preview: null } as any)).toBe(false);
   } finally {
+    await stop(server);
+  }
+});
+
+test("install-on-use processes rescan once even when the installed version is unsupported", async () => {
+  const server: any = {},
+    cwd = spyOn(os, "processCwd").mockReturnValue("/workspace/local"),
+    executable = spyOn(os, "processPath").mockReturnValue("/installed/bin/pi"),
+    onDemand = spyOn(discovery, "onDemand").mockReturnValue(true),
+    installed = spyOn(discovery, "installed").mockReturnValue(false),
+    prepare = spyOn(integration, "prepare").mockResolvedValue(),
+    rescan = spyOn(discovery, "rescan").mockResolvedValue();
+  try {
+    const settle = () => new Promise(resolve => setImmediate(resolve));
+    // Every hook a running agent sends asks; only the first from each process finds again.
+    for (let i = 0; i < 3; i++) agentRan(server, "pi", 42);
+    await settle();
+    agentRan(server, "pi", 42);
+    await settle();
+    expect(rescan.mock.calls).toEqual([[["pi"], "/workspace/local"]]);
+    expect(onDemand).toHaveBeenCalledWith("pi", "/workspace/local");
+    agentRan(server, "pi", 43);
+    await settle();
+    expect(rescan).toHaveBeenCalledTimes(2);
+    // Once it's found, nothing asks.
+    onDemand.mockReturnValue(false);
+    agentRan(server, "pi", 44);
+    await settle();
+    expect(rescan).toHaveBeenCalledTimes(2);
+  } finally {
+    cwd.mockRestore();
+    executable.mockRestore();
+    onDemand.mockRestore();
+    installed.mockRestore();
+    prepare.mockRestore();
+    rescan.mockRestore();
+    await stop(server);
+  }
+});
+
+for (const previewFound of [false, true])
+  test(`mise handing off the same PID sets up the installed agent (preview found it: ${previewFound})`, async () => {
+    const server: any = {},
+      cwd = spyOn(os, "processCwd").mockReturnValue("/workspace/local"),
+      executable = spyOn(os, "processPath").mockReturnValue("/bin/mise"),
+      onDemand = spyOn(discovery, "onDemand").mockReturnValue(true),
+      installed = spyOn(discovery, "installed").mockReturnValue(false),
+      known = spyOn(accounts, "known").mockReturnValue([
+        { provider: "codex", dir: "/accounts/work", name: "work", managed: false },
+      ]),
+      prepare = spyOn(integration, "prepare").mockResolvedValue(),
+      rescan = spyOn(discovery, "rescan").mockImplementation(async () => {
+        installed.mockReturnValue(true);
+      }),
+      settle = () => new Promise(resolve => setImmediate(resolve));
+    try {
+      for (let i = 0; i < 3; i++) agentRan(server, "codex", 42);
+      await settle();
+      expect(rescan).not.toHaveBeenCalled();
+      expect(prepare).not.toHaveBeenCalled();
+      // The preview may discover the executable while mise still owns the PID.
+      installed.mockReturnValue(previewFound);
+      onDemand.mockReturnValue(!previewFound);
+      agentRan(server, "codex", 42);
+      await settle();
+      expect(rescan).not.toHaveBeenCalled();
+      executable.mockReturnValue("/installed/bin/codex");
+      for (let i = 0; i < 3; i++) agentRan(server, "codex", 42);
+      await settle();
+      agentRan(server, "codex", 42);
+      await settle();
+      expect(rescan.mock.calls).toEqual([[["codex"], "/workspace/local"]]);
+      expect(prepare.mock.calls).toEqual([
+        ["codex", "", false, "/workspace/local"],
+        ["codex", "/accounts/work", false, "/workspace/local"],
+      ]);
+    } finally {
+      cwd.mockRestore();
+      executable.mockRestore();
+      onDemand.mockRestore();
+      installed.mockRestore();
+      known.mockRestore();
+      prepare.mockRestore();
+      rescan.mockRestore();
+      await stop(server);
+    }
+  });
+
+test("Find agents rescans the requested workspace rather than the daemon directory", async () => {
+  const server: any = {},
+    installed = spyOn(discovery, "installed").mockReturnValue(false),
+    rescan = spyOn(discovery, "rescan").mockResolvedValue();
+  try {
+    await discover(server, ["pi"], "/workspace/local");
+    expect(rescan.mock.calls).toEqual([[["pi"], "/workspace/local"]]);
+    expect(installed.mock.calls).toEqual([["pi", "/workspace/local"]]);
+  } finally {
+    installed.mockRestore();
+    rescan.mockRestore();
     await stop(server);
   }
 });

@@ -2,12 +2,14 @@ import { watch, type FSWatcher } from "node:fs";
 import { basename, dirname } from "node:path";
 import { Quit } from "../subprocess";
 import { Provider, adapter, byProvider, Text } from "../providers";
-import type { Launcher } from "../providers/adapter";
+import type { Launcher, Login as Identity } from "../providers/adapter";
 import { Model } from "../providers/model";
 import { Info, serializeLimits } from "../usage/account";
 import * as limitHistory from "../usage/limits";
 import * as discovery from "../discovery";
 import * as accounts from "../accounts";
+import * as profiles from "../agent_profiles";
+import * as row from "./row";
 export { Text };
 /** Seconds between account reads while someone uses a viewer, and otherwise. */
 export const active_every = 150,
@@ -33,6 +35,7 @@ export class Option {
   source = new Text();
   account = new Text();
   plan = new Text();
+  login: Identity | null = null;
   limits: Info["limits"] = "none";
   spend: Info["spend"] = null;
   usage_fetched_at = 0;
@@ -40,6 +43,7 @@ export class Option {
   usage_needs_consent = false;
   history = limitHistory.none();
   spend_history = limitHistory.noSpend();
+  spend_daily: limitHistory.SpendDay[] = [];
   toJSON() {
     return { ...this, limits: serializeLimits(this.limits) };
   }
@@ -56,6 +60,9 @@ export class Preview {
   pending = true;
   options = byProvider(() => new Option());
   installed = byProvider(() => true);
+  configured = byProvider(() => false);
+  /** Missing mise tools that can install during an explicit launch. */
+  on_demand = byProvider(() => false);
   /** The version of each agent too old to count as installed, or "". */
   outdated = byProvider(() => "");
   /** What each default account is called; "" for one that goes by its agent's name. */
@@ -68,8 +75,8 @@ export class Preview {
 }
 /** An account Corgi knows, as the launcher lists it. */
 export type Account = { provider: Provider; account: string; name: string; managed: boolean; option: Option };
-export function installed() {
-  return byProvider(p => discovery.installed(p));
+export function installed(cwd = process.cwd()) {
+  return byProvider(p => discovery.installed(p, cwd));
 }
 type Row = { provider: Provider; account: string };
 /** The folders of one provider signed in to one account. */
@@ -78,6 +85,8 @@ type Group = { provider: Provider; id: string; folders: string[] };
  * through one of them, the one that worked last; the rest only read their
  * sign-in. */
 class Login {
+  /** The latest workspace whose executable can read this account. */
+  cwd = process.cwd();
   /** When this worker last read it, in ms. */
   read_at = 0;
   /** Someone asked for its usage: the next read fetches it, whatever its age. */
@@ -91,6 +100,7 @@ class Login {
   infos = new Map<string, Info>();
   history = limitHistory.none();
   spend = limitHistory.noSpend();
+  daily: limitHistory.SpendDay[] = [];
 }
 /** A fresh usage reading, which other folders of its account can show. */
 function usable(info: Info) {
@@ -101,11 +111,58 @@ function loginOf(provider: Provider, account: string) {
   const id = accounts.identity(provider, account)?.id;
   return id ? `login:${id}` : `folder:${account}`;
 }
+/** An account's launcher, taking one call at a time: a background round and a
+ * folder's preview can both read it, and an account reader isn't safe to
+ * enter twice. Closing waits for the calls already made, and a call after it
+ * starts nothing. */
+export class OneAtATime implements Launcher {
+  private free: Promise<void> = Promise.resolve();
+  private closed = false;
+  constructor(private readonly launcher: Launcher) {}
+  async account(quit: Quit, max_age: number, cwd?: string) {
+    const done = await this.turn();
+    try {
+      return this.closed ? new Info() : await this.launcher.account(quit, max_age, cwd);
+    } finally {
+      done();
+    }
+  }
+  async model(cwd: string, quit: Quit) {
+    const done = await this.turn();
+    try {
+      return this.closed ? { model: "", source: "" } : await this.launcher.model(cwd, quit);
+    } finally {
+      done();
+    }
+  }
+  watches() {
+    return this.launcher.watches?.() ?? [];
+  }
+  async close() {
+    const done = await this.turn();
+    try {
+      this.closed = true;
+      this.launcher.close();
+    } finally {
+      done();
+    }
+  }
+  /** Waits for the calls before this one; call what it returns when this one ends. */
+  private async turn(): Promise<() => void> {
+    const before = this.free,
+      { promise, resolve } = Promise.withResolvers<void>();
+    this.free = promise;
+    await before;
+    return resolve;
+  }
+}
 export class Worker {
   quit = Quit.init();
   stopping = false;
   running = false;
   private pending: Promise<void> | null = null;
+  /** The round of account reads under way, beside the jobs. */
+  private rounding: Promise<void> | null = null;
   jobs: {
     cwd: string;
     preview: Preview;
@@ -121,9 +178,19 @@ export class Worker {
   logins = new Map<string, Login>();
   /** Seconds between account reads, which the daemon sets from its viewers. */
   every = idle_every;
+  /** The rows taken out of Manage agents, which it doesn't read. */
+  removed: row.Removed = { agent_hidden: byProvider(() => false), account_hidden: [], commands: [] };
   private checked = 0;
   private sampling = false;
-  private installs: { at: number; installed: Preview["installed"]; outdated: Preview["outdated"] } | null = null;
+  private cached_accounts = new Map<string, Preview>();
+  private installs: {
+    at: number;
+    cwd: string;
+    installed: Preview["installed"];
+    configured: Preview["configured"];
+    outdated: Preview["outdated"];
+    on_demand: Preview["on_demand"];
+  } | null = null;
   /** The folder of each file a launcher reads, watched by file. */
   watching = new Map<string, FSWatcher>();
   private settle: ReturnType<typeof setTimeout> | null = null;
@@ -137,7 +204,7 @@ export class Worker {
     for (const watcher of this.watching.values()) watcher.close();
     this.watching.clear();
     if (this.settle) clearTimeout(this.settle);
-    await this.pending;
+    await Promise.all([this.pending, this.rounding]);
   }
   /** Watches the files `launcher` reads. A file can be replaced rather than
    * written in place, so its folder is watched. */
@@ -165,6 +232,7 @@ export class Worker {
    * others when next asked. */
   private reread() {
     if (this.stopping) return;
+    this.installs = null;
     const now = Date.now();
     for (const job of this.jobs) {
       job.updated = 0;
@@ -174,14 +242,55 @@ export class Worker {
     }
     void this.pump();
   }
+  private finding = new Map<string, Promise<void>>();
+  /** Rescan the requested workspace and invalidate every cached preview. */
+  async rediscover(providers: readonly Provider[], cwd = process.cwd()) {
+    await Promise.all(
+      providers.map(provider => {
+        const key = provider + "\0" + cwd;
+        let pending = this.finding.get(key);
+        if (!pending) {
+          pending = discovery.rescan([provider], cwd).finally(() => this.finding.delete(key));
+          this.finding.set(key, pending);
+        }
+        return pending;
+      }),
+    );
+    this.reread();
+  }
+  /** Follows the rows Manage agents took out, reading again once they changed. */
+  follow(removed: row.Removed) {
+    if (row.sameRemoved(removed, this.removed)) return;
+    this.removed = row.removedOf(removed);
+    this.close(this.skipped());
+    this.reread();
+  }
+  /** Closes the launchers of the rows `gone` names. They keep a provider process each. */
+  private close(gone: (l: row.Launch) => boolean) {
+    for (const [key, launcher] of this.launchers) {
+      const [provider, account] = key.split("\0") as [Provider, string];
+      if (!gone({ provider, account })) continue;
+      void launcher.then(l => l?.close());
+      this.launchers.delete(key);
+    }
+  }
   launcher(p: Provider, account = "") {
     const key = p + "\0" + account;
     let launcher = this.launchers.get(key);
-    if (!launcher) this.launchers.set(key, (launcher = adapter(p).launcher?.(account) ?? Promise.resolve(null)));
+    if (!launcher) this.launchers.set(key, (launcher = this.open(p, account)));
     return launcher;
+  } /** `p`'s launcher for `account`, taking one call at a time. */
+  private async open(p: Provider, account: string): Promise<Launcher | null> {
+    const launcher = await adapter(p).launcher?.(account);
+    return launcher ? new OneAtATime(launcher) : null;
   }
+
   preview(cwd: string, refresh = false) {
     return this.request(cwd, false, refresh);
+  }
+  /** Latest account snapshot: no job, discovery, provider read or refresh. */
+  cached(cwd: string) {
+    return this.cached_accounts.get(cwd) ?? new Preview().with({ pending: false });
   }
   trackUsage(cwd: string) {
     return this.request(cwd, true);
@@ -191,8 +300,7 @@ export class Worker {
   sample(every: number) {
     this.every = every;
     const now = Date.now();
-    if (now - this.checked < check_ms) return;
-    this.checked = now;
+    if (this.sampling || now - this.checked < check_ms) return;
     this.sampling = true;
     void this.pump();
   }
@@ -205,12 +313,12 @@ export class Worker {
       for (const login of this.logins.values()) {
         login.read_at = 0;
         login.stale = true;
-        login.forced ||= access;
+        login.forced ||= access && login.cwd === cwd;
       }
     let job = this.jobs.find(j => j.cwd === cwd);
     if (job) {
       job.used = now;
-      const listed = this.list(job.preview),
+      const listed = this.list(job.preview, cwd),
         moved =
           job.preview.accounts.length !== listed.accounts.length ||
           job.preview.accounts.some(
@@ -235,7 +343,10 @@ export class Worker {
       }
       return job.preview;
     }
-    const preview = this.list(new Preview());
+    const preview = this.list(new Preview(), cwd);
+    // Keep settled account availability when a different folder starts reading its models.
+    preview.options = byProvider(p => this.shown(p, "", preview.options[p], cwd));
+    preview.accounts = preview.accounts.map(a => ({ ...a, option: this.shown(a.provider, a.account, a.option, cwd) }));
     job = {
       cwd,
       preview,
@@ -245,33 +356,41 @@ export class Worker {
       accessing: false,
       request_access: access,
     };
-    if (this.jobs.length >= 32)
-      this.jobs.splice(
+    if (this.jobs.length >= 32) {
+      const [oldest] = this.jobs.splice(
         this.jobs.reduce((best, j, i, a) => (j.used < a[best].used ? i : best), 0),
         1,
       );
+      this.cached_accounts.delete(oldest.cwd);
+    }
     this.jobs.push(job);
     void this.pump();
     return preview;
   }
   /** Account rows come from local state, independently of provider reads. */
-  private list(previous: Preview): Preview {
+  private list(previous: Preview, cwd = process.cwd()): Preview {
     const now = performance.now();
-    if (!this.installs || now - this.installs.at >= 5000) {
-      const found = installed();
+    if (!this.installs || this.installs.cwd !== cwd || now - this.installs.at >= 5000) {
+      const found = installed(cwd),
+        on_demand = byProvider(p => !found[p] && discovery.onDemand(p, cwd));
       this.installs = {
         at: now,
+        cwd,
         installed: found,
-        outdated: byProvider(p => (found[p] ? "" : (discovery.outdated(p) ?? ""))),
+        configured: byProvider(p => (found[p] || on_demand[p]) && accounts.configured(p, cwd)),
+        on_demand,
+        outdated: byProvider(p => (found[p] ? "" : (discovery.outdated(p, cwd) ?? ""))),
       };
     }
-    const { installed: available, outdated } = this.installs,
+    const { installed: available, configured, outdated, on_demand } = this.installs,
       names = accounts.defaultNames(),
-      listed = accounts.known().filter(a => available[a.provider]);
+      listed = accounts.known().filter(a => available[a.provider] || on_demand[a.provider]);
     if (
       Provider.all.every(
         p =>
           previous.installed[p] === available[p] &&
+          previous.configured[p] === configured[p] &&
+          previous.on_demand[p] === on_demand[p] &&
           previous.outdated[p] === outdated[p] &&
           previous.names[p] === names[p],
       ) &&
@@ -287,6 +406,8 @@ export class Worker {
       return previous;
     return previous.with({
       installed: available,
+      configured,
+      on_demand,
       outdated,
       names,
       accounts: listed.map(a => ({
@@ -299,28 +420,39 @@ export class Worker {
       })),
     });
   }
+  /** Starts what's due, and settles once it's done. A round runs beside the
+   * jobs: a subscriber's read shares the round's reads of its accounts rather
+   * than waiting on all of them, one of which may hang. */
   pump(): Promise<void> {
     if (this.stopping) return Promise.resolve();
-    if (this.pending) return this.pending;
-    const pending = this.drain();
-    this.pending = pending;
-    void pending
-      .finally(() => {
-        if (this.pending === pending) this.pending = null;
-      })
-      .catch(() => {});
-    return pending;
+    if (this.sampling && !this.rounding) {
+      const rounding = this.round().finally(() => {
+        this.sampling = false;
+        this.checked = Date.now();
+        if (this.rounding === rounding) this.rounding = null;
+      });
+      this.rounding = rounding;
+      void rounding.catch(() => {});
+    }
+    if (!this.pending) {
+      const pending = this.drain();
+      this.pending = pending;
+      void pending
+        .finally(() => {
+          if (this.pending !== pending) return;
+          this.pending = null;
+          // A job queued while the drain was finishing hasn't run.
+          if (this.jobs.some(job => job.queued)) void this.pump();
+        })
+        .catch(() => {});
+    }
+    return Promise.all([this.pending, this.rounding]).then(() => {});
   }
   private async drain() {
     this.running = true;
     try {
       for (;;) {
         if (this.stopping) break;
-        if (this.sampling) {
-          this.sampling = false;
-          await this.round();
-          continue;
-        }
         const job = this.jobs.find(job => job.queued);
         if (!job) break;
         await this.run(job);
@@ -333,19 +465,23 @@ export class Worker {
     job.queued = false;
     job.accessing = job.request_access;
     job.request_access = false;
-    await discovery.check();
+    await discovery.check(job.cwd);
     if (this.stopping) return;
     this.installs = null;
-    job.preview = this.list(job.preview).with({ pending: true });
-    // Launchers keep a provider process each, so those of accounts gone close.
-    const live = new Set([...Provider.all.map(p => p + "\0"), ...accounts.known().map(a => a.provider + "\0" + a.dir)]);
-    for (const [key, launcher] of this.launchers)
-      if (!live.has(key)) {
-        void launcher.then(l => l?.close());
-        this.launchers.delete(key);
-      }
-    const rows = this.rows(job.preview),
+    const skip = this.skipped();
+    job.preview = this.withSkipped(this.list(job.preview, job.cwd).with({ pending: true }), skip, job.cwd);
+    job.preview = job.preview.with({
+      options: byProvider(p =>
+        job.preview.installed[p]
+          ? job.preview.options[p]
+          : Object.assign(new Option(), job.preview.options[p], { pending: false }),
+      ),
+    });
+    const rows = this.rows(job.preview, skip),
       groups = this.groups(rows);
+    // Launchers of rows it no longer reads, such as accounts gone, close.
+    const live = new Set(rows.map(l => l.provider + "\0" + l.account));
+    this.close(l => !live.has(l.provider + "\0" + l.account));
     await Promise.all(
       rows.map(async ({ provider, account }) => {
         let option: Option;
@@ -367,20 +503,57 @@ export class Worker {
               }
             : { options: { ...job.preview.options, [provider]: option } },
         );
+        this.cached_accounts.set(job.cwd, job.preview);
       }),
     );
     if (this.stopping) return;
     if (this.jobs.includes(job)) {
       job.preview = job.preview.with({ pending: job.queued });
+      this.cached_accounts.set(job.cwd, job.preview);
       job.accessing = false;
       job.updated = Date.now();
     }
   }
-  private rows(preview: Preview): Row[] {
+  /** Which rows it doesn't read: those removed that no saved agent or command runs in. */
+  private skipped(): (l: row.Launch) => boolean {
+    const used = profiles.list();
+    return l => row.removed(this.removed, l, used);
+  }
+  /** The rows it reads: installed providers' own and their accounts', but those skipped. */
+  private rows(preview: Preview, skip: (l: row.Launch) => boolean): Row[] {
     return [
       ...Provider.all.filter(p => preview.installed[p]).map(provider => ({ provider, account: "" })),
       ...preview.accounts,
-    ];
+    ].filter(l => !preview.on_demand[l.provider] && !skip(l));
+  }
+  /** A removed row's option: who signed in, so Add agent can offer it back.
+   * Nothing asks its servers: the provider's own files say, or for one whose
+   * files don't, such as OpenCode, this worker's last read of it. An
+   * account's folder that neither names is signed out. */
+  private signedIn({ provider, account }: row.Launch, cwd: string): Option {
+    const option = new Option(),
+      who = accounts.identity(provider, account),
+      last = who
+        ? undefined
+        : this.logins.get(provider + "\0" + loginOf(provider, account) + "\0" + cwd)?.infos.get(account);
+    option.pending = false;
+    if (who) {
+      option.signed_in = true;
+      option.account = new Text(who.email);
+    } else if (last) {
+      option.signed_in = last.signed_in;
+      option.account = last.account;
+    } else if (account) option.signed_in = false;
+    return option;
+  }
+  /** `preview` with its skipped rows showing only who signed in. */
+  private withSkipped(preview: Preview, skip: (l: row.Launch) => boolean, cwd: string): Preview {
+    const own = (l: row.Launch, option: Option) =>
+      preview.on_demand[l.provider] || skip(l) ? this.signedIn(l, cwd) : option;
+    return preview.with({
+      options: byProvider(p => own({ provider: p, account: "" }, preview.options[p])),
+      accounts: preview.accounts.map(a => ({ ...a, option: own(a, a.option) })),
+    });
   }
   private groups(rows: Row[]): Group[] {
     const groups: Group[] = [];
@@ -395,22 +568,49 @@ export class Worker {
   /** Reads the accounts due a read, then shows what they read in every
    * folder's preview, so subscribers needn't wait for their next refresh. */
   private async round() {
-    const before = new Map([...this.logins].map(([key, login]) => [key, login.read_at]));
-    await Promise.all(this.groups(this.rows(this.list(new Preview()))).map(group => this.read(group)));
-    if (this.stopping || [...this.logins].every(([key, login]) => before.get(key) === login.read_at)) return;
-    for (const job of this.jobs)
-      job.preview = job.preview.with({
-        options: byProvider(p => this.shown(p, "", job.preview.options[p])),
-        accounts: job.preview.accounts.map(a => ({ ...a, option: this.shown(a.provider, a.account, a.option) })),
-      });
+    const skip = this.skipped(),
+      directories = new Set(this.jobs.length ? this.jobs.map(job => job.cwd) : [process.cwd()]);
+    for (const cwd of directories) {
+      await discovery.check(cwd);
+      if (this.stopping) return;
+      this.installs = null;
+      const listed = this.list(new Preview(), cwd);
+      this.close(skip);
+      await Promise.all(this.groups(this.rows(listed, skip)).map(group => this.read(group, cwd)));
+      if (this.stopping) return;
+      const shown = (l: row.Launch, option: Option) =>
+        listed.on_demand[l.provider] || skip(l)
+          ? this.signedIn(l, cwd)
+          : this.shown(l.provider, l.account, option, cwd);
+      this.cached_accounts.set(
+        cwd,
+        listed.with({
+          pending: false,
+          options: byProvider(p => shown({ provider: p, account: "" }, listed.options[p])),
+          accounts: listed.accounts.map(a => ({ ...a, option: shown(a, a.option) })),
+        }),
+      );
+      for (const job of this.jobs.filter(job => job.cwd === cwd))
+        job.preview = this.list(job.preview, cwd).with({
+          options: byProvider(p => shown({ provider: p, account: "" }, job.preview.options[p])),
+          accounts: job.preview.accounts.map(a => ({ ...a, option: shown(a, a.option) })),
+        });
+    }
   }
   /** Reads an account once `every` seconds have passed: its folders in turn,
    * the one that worked last first, until one reads its usage. Those after
    * it read only their sign-in, and show the reading they share. */
-  private read({ provider, id, folders }: Group): Promise<void> {
-    const key = provider + "\0" + id;
+  private read({ provider, id, folders }: Group, cwd = process.cwd()): Promise<void> {
+    const key = provider + "\0" + id + "\0" + cwd;
     let login = this.logins.get(key);
-    if (!login) this.logins.set(key, (login = new Login()));
+    if (!login) {
+      login = new Login();
+      login.forced = this.jobs.some(job => job.cwd === cwd && job.accessing);
+      this.logins.set(key, login);
+    }
+    const directory = (login.cwd = cwd);
+    // A fresh reading asked for since the one under way began comes after it.
+    if (login.reading && login.stale) return this.again(login.reading, { provider, id, folders }, cwd);
     if (login.reading) return login.reading;
     if (Date.now() - login.read_at < this.every * 1000 && folders.every(f => login.infos.has(f)))
       return Promise.resolve();
@@ -426,7 +626,7 @@ export class Worker {
         let info = new Info();
         try {
           const launcher = await this.launcher(provider, folder);
-          if (launcher) info = await launcher.account(this.quit, max_age);
+          if (launcher) info = await launcher.account(this.quit, max_age, directory);
         } catch {
           info.usage_error = new Text("account read failed");
         }
@@ -443,16 +643,22 @@ export class Worker {
         const history = await limitHistory.update(provider, id, shown, this.stopping);
         login.history = history.sparks;
         login.spend = history.spend;
+        login.daily = history.daily;
       }
       login.read_at = login.stale ? 0 : Date.now();
     })().finally(() => (login.reading = null));
     login.reading = reading;
     return reading;
   }
+  /** Reads `group` again once `reading`, which began before someone asked for a fresh one, ends. */
+  private async again(reading: Promise<void>, group: Group, cwd: string): Promise<void> {
+    await reading;
+    return this.read(group, cwd);
+  }
   /** `base` with what `account`'s folder read, or when that has no fresh
    * usage, the reading another folder signed in to the same account got. */
-  private shown(provider: Provider, account: string, base: Option): Option {
-    const login = this.logins.get(provider + "\0" + loginOf(provider, account)),
+  private shown(provider: Provider, account: string, base: Option, cwd: string): Option {
+    const login = this.logins.get(provider + "\0" + loginOf(provider, account) + "\0" + cwd),
       own = login?.infos.get(account);
     if (!login || !own) return base;
     const source = login.source !== null ? login.infos.get(login.source) : undefined,
@@ -468,8 +674,10 @@ export class Worker {
       for (const key of ["limits", "spend", "usage_fetched_at", "usage_error"] as const)
         (out as any)[key] = source[key];
     if (borrowed && source.plan.len) out.plan = source.plan;
+    out.login = accounts.identity(provider, account);
     out.history = login.history;
     out.spend_history = login.spend;
+    out.spend_daily = login.daily;
     return out;
   }
   /** What `account` of `p` would start with in `cwd`. */
@@ -477,9 +685,9 @@ export class Worker {
     const launcher = await this.launcher(p, account);
     if (!launcher) return null;
     this.watch(launcher);
-    await this.read(group);
+    await this.read(group, cwd);
     if (this.stopping) return null;
-    const out = this.shown(p, account, new Option());
+    const out = this.shown(p, account, new Option(), cwd);
     const chosen = await launcher.model(cwd, this.quit);
     if (chosen.model) out.setModel(chosen.model, chosen.source, chosen.model_name);
     else out.source = new Text(chosen.source);

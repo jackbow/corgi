@@ -4,7 +4,8 @@ import encodeQR from "qr";
 import { field, str } from "../json";
 import type { Addresses } from "./tailscale";
 
-export const remoteProtocol = 2;
+// Background services from before the HTTP/WebSocket daemon transport must restart.
+export const remoteProtocol = 3;
 export type Control = (command: string, value?: Record<string, unknown>) => Promise<unknown>;
 export function qr(url: string) {
   const pixels = encodeQR(url, "raw", { border: 4, ecc: "medium" });

@@ -2,13 +2,13 @@ import * as effort from "../effort";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { lstatSync } from "node:fs";
-import { configHome, Hooks, planLabel } from "../common";
+import { Hooks, planLabel } from "../common";
 import type { Adapter } from "../adapter";
 import * as hooksFile from "../hooks_file";
 import { Watcher } from "./screen";
 import * as daemon from "./daemon";
-import * as renaming from "./rename";
-import { Claude, stream_json, summaryArgs } from "./headless";
+import * as peer from "./peer";
+import { Claude, summaryArgs } from "./headless";
 import { transcript } from "./transcript";
 import * as usage from "./usage";
 import * as conversation from "./conversation";
@@ -17,9 +17,8 @@ export { BlockType, Line, MessageType, TaskNotice, TaskStatus, TranscriptLine } 
 import { caps, identity, info, keeping, vocabulary } from "./info";
 import { signin } from "./signin";
 import * as commandLine from "../command_line";
-export function configDir(env = process.env) {
-  return configHome(env, vocabulary.config_env, ".claude");
-}
+import { configDir, settingsModel } from "./config";
+export { configDir };
 /** Where `account` keeps its settings, "" for the default's. */
 const dir = (account: string) => account || configDir();
 export function subagentTranscript(transcript: string, session: string, agent: string) {
@@ -61,11 +60,14 @@ export const adapter: Adapter = {
       : []),
     ...["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(dir => root + dir + "/claude"),
   ],
+  distribution: { packages: ["@anthropic-ai/claude-code"], version: v => `${v} (Claude Code)` },
   accounts: {
+    service: "claude",
     env: vocabulary.config_env,
     home: configDir,
     prefix: ".claude-",
     identity: root => identity(root, root === configDir() && !process.env[vocabulary.config_env]),
+    configured: (root, cwd) => !!settingsModel(cwd, { ...process.env, [vocabulary.config_env]: root }).model,
     // Its setup; the login and the conversations stay the account's own.
     shared: {
       dirs: ["skills", "agents", "commands", "plugins", "hooks", "themes", "output-styles"],
@@ -114,24 +116,32 @@ export const adapter: Adapter = {
   },
   rename: {
     async channel(session, _connected, account) {
-      const peer = await renaming.peerIn(path.join(dir(account), "sessions"), session);
-      return peer ? name => renaming.rename(peer, session, name) : null;
+      const found = await peer.peerIn(path.join(dir(account), "sessions"), session);
+      return found ? name => peer.rename(found, session, name) : null;
+    },
+  },
+  message: {
+    async channel(session, _connected, account) {
+      const found = await peer.peerIn(path.join(dir(account), "sessions"), session);
+      return found ? text => peer.message(found, session, text) : null;
     },
   },
   headless: {
-    start: at => Claude.start(at, stream_json, null),
+    start: at => Claude.session(at),
     restore: Claude.restore,
+    tools: true,
   },
   inference: {
     model: "claude-haiku-5-5",
     catalog: "native",
     source: "Anthropic",
-    models: (account, quit) => import("./models").then(m => m.read(account, quit)),
+    models: (account, quit, cwd) => import("./models").then(m => m.read(account, quit, cwd)),
     start: (r, at) => Claude.start({ ...at, cwd: "/tmp" }, summaryArgs(r), { schema: r.schema !== null }),
     restore: Claude.restore,
   },
   launcher: account => import("./launcher").then(m => m.open(account)),
   history: account => import("./history").then(m => m.open(account)),
+  search: () => import("./search").then(m => m.conversations),
   transcript: {
     ...transcript,
     continuation: (transcript, session) => path.join(path.dirname(transcript), session + ".jsonl"),

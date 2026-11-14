@@ -20,15 +20,26 @@ import * as profiles from "./agent_profiles";
 import * as accountCommand from "./account_command";
 import * as signin from "./signin";
 import { Launch } from "./runtime";
+import { Database } from "bun:sqlite";
+import { Provider } from "./providers";
 
 const saved = { ...process.env },
-  variables = ["HOME", "CORGI_ENV_BASE", "XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME"];
+  variables = [
+    "HOME",
+    "CORGI_ENV_BASE",
+    "XDG_STATE_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
+    "PI_CODING_AGENT_DIR",
+    "ANTHROPIC_MODEL",
+  ];
 let home = "";
 beforeEach(() => {
   home = realpathSync(mkdtempSync(join(tmpdir(), "corgi-accounts-")));
   process.env.HOME = home;
   process.env.CORGI_ENV_BASE = join(home, "state");
-  for (const key of ["XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME"]) delete process.env[key];
+  for (const key of ["XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "ANTHROPIC_MODEL"])
+    delete process.env[key];
   mkdirSync(join(home, ".claude"));
   accounts.reset();
 });
@@ -46,6 +57,53 @@ const signIn = (dir: string, email: string, id = email) => {
     JSON.stringify({ oauthAccount: { emailAddress: email, accountUuid: id, organizationUuid: "org" } }),
   );
 };
+
+test("a ChatGPT login is one subscription for Codex, Pi and omp", () => {
+  const claims = { sub: "user-1", email: "me@home.dev", "https://api.openai.com/auth": { chatgpt_account_id: "ws-1" } },
+    token = "header." + Buffer.from(JSON.stringify(claims)).toString("base64url") + ".signature";
+  const codex = join(home, ".codex"),
+    pi = join(home, ".pi", "agent"),
+    omp = join(home, ".omp", "agent");
+  for (const dir of [codex, pi, omp]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(codex, "auth.json"), JSON.stringify({ tokens: { id_token: token, account_id: "ws-1" } }));
+  writeFileSync(
+    join(pi, "auth.json"),
+    JSON.stringify({ "openai-codex": { type: "oauth", access: token, refresh: "r" } }),
+  );
+  writeFileSync(join(pi, "settings.json"), JSON.stringify({ defaultProvider: "openai-codex" }));
+  writeFileSync(join(omp, "config.yml"), "modelRoles:\n  default: openai-codex/gpt-6-luna\n");
+  const db = new Database(join(omp, "agent.db"));
+  db.exec(
+    "CREATE TABLE auth_credentials (id INTEGER, provider TEXT, credential_type TEXT, data TEXT, identity_key TEXT, disabled_cause TEXT)",
+  );
+  db.query("INSERT INTO auth_credentials VALUES (1, 'openai-codex', 'oauth', ?, 'u1', NULL)").run(
+    JSON.stringify({ email: "me@home.dev", accountId: "ws-1" }),
+  );
+  db.close();
+  signIn(home, "me@home.dev", "claude-user");
+  expect(accounts.identity("codex", "")).toMatchObject({ id: "user-1/ws-1", service: "chatgpt", workspace: "ws-1" });
+  expect(accounts.identity("pi", "")).toMatchObject({ email: "me@home.dev", service: "chatgpt", workspace: "ws-1" });
+  expect(accounts.identity("omp", "")).toMatchObject({ email: "me@home.dev", service: "chatgpt", workspace: "ws-1" });
+  expect(accounts.identity("claude", "")).toEqual({
+    email: "me@home.dev",
+    id: "claude-user/org",
+    service: "claude",
+    workspace: "org",
+  });
+  // A key is no subscription, and nor is a provider the model doesn't use.
+  const keyed = join(home, ".codex-key");
+  mkdirSync(keyed);
+  writeFileSync(join(keyed, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "sk-test" }));
+  expect(accounts.identity("codex", keyed)).not.toHaveProperty("service");
+  const other = join(home, ".pi-other");
+  mkdirSync(other);
+  writeFileSync(
+    join(other, "auth.json"),
+    JSON.stringify({ "openai-codex": { type: "oauth", access: token, refresh: "r" } }),
+  );
+  writeFileSync(join(other, "settings.json"), JSON.stringify({ defaultProvider: "google" }));
+  expect(accounts.identity("pi", other)).not.toHaveProperty("service");
+});
 
 test("default-only providers reject account creation before creating a folder", () => {
   expect(() => accounts.stage("opencode2", "work")).toThrow("AccountManagementUnsupported");
@@ -90,7 +148,7 @@ test("Omarchy's accounts show under their labels, and a folder named like one do
 
 test("the default account's login is read from HOME", () => {
   writeFileSync(join(home, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "me@home.com" } }));
-  expect(accounts.identity("claude", "")).toEqual({ email: "me@home.com", id: "me@home.com/" });
+  expect(accounts.identity("claude", "")).toMatchObject({ email: "me@home.com", id: "me@home.com/" });
 });
 
 test("a new account's numbered folder waits in a private temporary folder until its sign-in works out", () => {
@@ -459,7 +517,7 @@ test("account edits persist privately and apply only to new launches of that acc
   expect(accounts.launchOptions("claude", dir)).toEqual(options);
   const launch = Launch.in("claude", dir, true);
   expect(launch.typed()).toBe("claude --dangerously-skip-permissions --model sonnet --add-dir 'two words'");
-  expect(launch.run("/corgi", launch.typed()).env).toEqual([...options.env, ["CLAUDE_CONFIG_DIR", dir]]);
+  expect(launch.run("/corgi").env).toEqual([...options.env, ["CLAUDE_CONFIG_DIR", dir]]);
   expect(launch.account()).toBe(dir);
   expect(before.typed()).toBe("claude");
   expect(Launch.in("claude", "").typed()).toBe("claude");
@@ -578,4 +636,79 @@ test("an account's folder reads from ~ when it's in the user's home, however HOM
   } finally {
     rmSync(link);
   }
+});
+
+test("automatic defaults require a saved login or a model choice, not an empty configuration", () => {
+  for (const provider of Provider.all) expect(accounts.configured(provider)).toBe(false);
+  mkdirSync(join(home, ".codex"));
+  writeFileSync(join(home, ".codex", "config.toml"), 'model = "local-model"\n');
+  writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ model: "opus" }));
+  expect(accounts.configured("codex")).toBe(true);
+  expect(accounts.configured("claude")).toBe(true);
+  const pi = join(home, ".pi", "agent"),
+    omp = join(home, ".omp", "agent"),
+    opencode = join(home, ".local", "state", "opencode");
+  for (const dir of [pi, omp, opencode]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(pi, "settings.json"), JSON.stringify({ extensions: ["corgi"] }));
+  writeFileSync(join(pi, "auth.json"), "{}");
+  writeFileSync(join(omp, "config.yml"), "theme: dark\n");
+  writeFileSync(join(opencode, "model.json"), JSON.stringify({ recent: [] }));
+  for (const provider of ["pi", "omp", "opencode2"] as const) expect(accounts.configured(provider)).toBe(false);
+  writeFileSync(join(pi, "auth.json"), JSON.stringify({ anthropic: { type: "api_key", key: "test" } }));
+  expect(accounts.configured("pi")).toBe(true);
+  rmSync(join(pi, "auth.json"));
+  writeFileSync(join(pi, "settings.json"), JSON.stringify({ defaultProvider: "local", defaultModel: "local-model" }));
+  expect(accounts.configured("pi")).toBe(true);
+  writeFileSync(join(omp, "config.yml"), "modelRoles:\n  default: local/local-model\n");
+  expect(accounts.configured("omp")).toBe(true);
+  rmSync(join(omp, "config.yml"));
+  const db = new Database(join(omp, "agent.db"));
+  db.exec(
+    "CREATE TABLE auth_credentials (id INTEGER, provider TEXT, credential_type TEXT, data TEXT, identity_key TEXT, disabled_cause TEXT)",
+  );
+  db.query("INSERT INTO auth_credentials VALUES (1, 'anthropic', 'api_key', ?, '', NULL)").run(
+    JSON.stringify({ key: "test" }),
+  );
+  db.close();
+  expect(accounts.configured("omp")).toBe(true);
+  writeFileSync(
+    join(opencode, "model.json"),
+    JSON.stringify({ recent: [{ providerID: "opencode", modelID: "free-model" }] }),
+  );
+  expect(accounts.configured("opencode2")).toBe(true);
+  rmSync(join(opencode, "model.json"));
+  const data = join(home, ".local", "share", "opencode");
+  mkdirSync(data, { recursive: true });
+  const credentials = new Database(join(data, "opencode.db"));
+  credentials.exec("CREATE TABLE credential (id TEXT PRIMARY KEY)");
+  expect(accounts.configured("opencode2")).toBe(false);
+  credentials.exec("INSERT INTO credential VALUES ('test')");
+  credentials.close();
+  expect(accounts.configured("opencode2")).toBe(true);
+});
+
+test.each([
+  [
+    "pi",
+    ".pi/settings.json",
+    '{"defaultProvider":"local","defaultModel":"local-model"}',
+    '{"defaultProvider":"local","defaultModel":""}',
+  ],
+  ["omp", ".omp/config.yml", "modelRoles:\n  default: local/local-model\n", "theme: dark\n"],
+  ["claude", ".claude/settings.json", '{"model":"opus"}', '{"model":""}'],
+  ["claude", ".claude/settings.local.json", '{"model":"sonnet"}', '{"permissions":{}}'],
+] as const)("%s recognizes model choices in %s only for that workspace", (provider, path, configured, empty) => {
+  const cwd = join(home, "project"),
+    other = join(home, "other"),
+    file = join(cwd, path);
+  mkdirSync(dirname(file), { recursive: true });
+  mkdirSync(other);
+  expect(accounts.identity(provider, "")).toBeNull();
+  expect(accounts.configured(provider, cwd)).toBe(false);
+  writeFileSync(file, empty);
+  expect(accounts.configured(provider, cwd)).toBe(false);
+  writeFileSync(file, configured);
+  expect(accounts.configured(provider, cwd)).toBe(true);
+  expect(accounts.configured(provider, other)).toBe(false);
+  expect(accounts.identity(provider, "")).toBeNull();
 });
