@@ -1,6 +1,8 @@
 import { test, expect, beforeEach, afterEach, setSystemTime, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import type { FSWatcher } from "node:fs";
+import * as fs from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { OneAtATime, Option, Worker, active_every, idle_every } from "./preview";
@@ -44,26 +46,6 @@ function listed(names: string[]) {
   accounts.reset();
 }
 const turn = () => new Promise<void>(resolve => setImmediate(resolve));
-/** Observe a probe event before testing a change through this watcher. */
-async function waitForWatcher(watcher: FSWatcher, directory: string, deadline: number) {
-  const name = `.watch-ready-${crypto.randomUUID()}`,
-    probe = join(directory, name);
-  let ready = false;
-  const changed = (_event: string, file: string | Buffer | null) => {
-    if (file?.toString() === name) ready = true;
-  };
-  watcher.on("change", changed);
-  try {
-    while (!ready && performance.now() < deadline) {
-      writeFileSync(probe, "");
-      await new Promise(resolve => setTimeout(resolve, 20));
-    }
-    expect(ready).toBe(true);
-  } finally {
-    watcher.off("change", changed);
-    rmSync(probe, { force: true });
-  }
-}
 test("a launch preview names the model it shows and where it came from", () => {
   const o = new Option();
   o.setModel("opus", "Project");
@@ -626,7 +608,16 @@ test("a launch preview prefers the provider's model name and keeps its launch id
 
 test("a launch preview reads a provider again as soon as a file it reads changes", async () => {
   const worker = new Worker(),
-    file = join(root, "picked.json");
+    file = join(root, "picked.json"),
+    events = new EventEmitter(),
+    watcher = Object.assign(events, {
+      close: () => void events.removeAllListeners(),
+    }) as FSWatcher,
+    watching = spyOn(fs, "watch").mockImplementation(((directory: fs.PathLike, listener: fs.WatchListener<string>) => {
+      expect(directory).toBe(root);
+      events.on("change", listener);
+      return watcher;
+    }) as typeof fs.watch);
   writeFileSync(file, JSON.stringify({ model: "first" }));
   worker.launcher = async () => ({
     account: async () => new Info(),
@@ -638,18 +629,21 @@ test("a launch preview reads a provider again as soon as a file it reads changes
     worker.preview(root);
     await worker.pump();
     expect(worker.preview(root).options.pi.model.text()).toBe("first");
-    const deadline = performance.now() + 3000;
-    await waitForWatcher(worker.watching.get(file)!, root, deadline);
+    expect(worker.watching.get(file)).toBe(watcher);
     // Replaced, as editors and atomic writers do, rather than written in place.
     writeFileSync(file + ".tmp", JSON.stringify({ model: "second" }));
     renameSync(file + ".tmp", file);
-    while (worker.preview(root).options.pi.model.text() !== "second" && performance.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 20));
-      await worker.pump();
-    }
+    watcher.emit("change", "rename", "picked.json.tmp");
+    await Bun.sleep(120);
+    await worker.pump();
+    expect(worker.preview(root).options.pi.model.text()).toBe("first");
+    watcher.emit("change", "rename", "picked.json");
+    await Bun.sleep(120);
+    await worker.pump();
     expect(worker.preview(root).options.pi.model.text()).toBe("second");
   } finally {
     await worker.stop();
+    watching.mockRestore();
   }
 });
 

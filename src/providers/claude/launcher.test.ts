@@ -10,7 +10,7 @@ test("project settings override the user's, and ANTHROPIC_MODEL overrides both",
   try {
     mkdirSync(config);
     mkdirSync(join(project, ".claude"), { recursive: true });
-    const env = { HOME: root, CLAUDE_CONFIG_DIR: config };
+    const env = { HOME: root, CLAUDE_CONFIG_DIR: config, CORGI_TEST_SYSTEM_ROOT: join(root, "system") };
     expect(settingsModel(project, env)).toEqual({ model: "", source: "Account default / provider selection" });
     writeFileSync(join(config, "settings.json"), JSON.stringify({ model: "sonnet" }));
     expect(settingsModel(project, env)).toEqual({ model: "sonnet", source: "User settings" });
@@ -19,6 +19,13 @@ test("project settings override the user's, and ANTHROPIC_MODEL overrides both",
     expect(settingsModel(project, { ...env, ANTHROPIC_MODEL: "haiku" })).toEqual({
       model: "haiku",
       source: "ANTHROPIC_MODEL",
+    });
+    const managed = join(env.CORGI_TEST_SYSTEM_ROOT, "Library/Application Support/ClaudeCode");
+    mkdirSync(managed, { recursive: true });
+    writeFileSync(join(managed, "managed-settings.json"), JSON.stringify({ model: "managed-model" }));
+    expect(settingsModel(project, { ...env, ANTHROPIC_MODEL: "haiku" })).toEqual({
+      model: "managed-model",
+      source: "Managed settings",
     });
   } finally {
     rmSync(root, { recursive: true, force: true });

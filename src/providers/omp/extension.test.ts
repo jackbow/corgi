@@ -28,7 +28,7 @@ appendFileSync(${JSON.stringify(log)},JSON.stringify({argv:process.argv.slice(2)
     driver,
     `
 import extension from ${JSON.stringify(extension)};
-import {writeFileSync,readFileSync,watch} from "node:fs";
+import {writeFileSync,readFileSync} from "node:fs";
 const hooks = new Map(), entries = [], events = new Map();
 const childPath=${JSON.stringify(join(root, "child.jsonl"))};
 let name, session="s1";
@@ -38,15 +38,14 @@ const branch=[{type:"message",message:{role:"user",content:[{type:"text",text:"F
 const ctx={mode:"tui",cwd:"/tmp",agent:{kind:"main"},model:{provider:"openai-codex",id:"gpt-6-luna",contextWindow:1000},getContextUsage:()=>({tokens:10}),ui:{onTerminalInput:()=>()=>{}},sessionManager:{getSessionId:()=>session,getSessionFile:()=>"/tmp/s1.jsonl",getBranch:()=>branch}};
 const sub={...ctx,agent:{kind:"sub"}};
 const emit=(event,e={},c=ctx)=>hooks.get(event)?.(e,c);
-const waitForHook=predicate=>{
-  const {promise,resolve}=Promise.withResolvers();
-  const check=()=>{
+const waitForHook=async predicate=>{
+  const deadline=Date.now()+2000;
+  while(Date.now()<deadline){
     let sent=[];try{sent=readFileSync(${JSON.stringify(log)},"utf8").trim().split("\\n").map(line=>JSON.parse(line))}catch{}
-    if(sent.some(predicate)){watcher.close();resolve()}
-  };
-  const watcher=watch(${JSON.stringify(root)},check);
-  check();
-  return promise;
+    if(sent.some(predicate))return;
+    await new Promise(resolve=>setTimeout(resolve,10));
+  }
+  throw Error("Expected hook was not received");
 };
 ${script}
 await emit("session_shutdown");
