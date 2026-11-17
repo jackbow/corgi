@@ -32,6 +32,8 @@ import { agent, type Pane } from "./mirror";
 import * as summaries from "./review/summaries";
 import * as sidebar from "./sidebar";
 import * as render from "./render";
+import { snapshot as prSnapshot } from "./fixtures/pull_request";
+import { Store as ReviewStore } from "./review_state";
 
 /** A controller with no daemon: these tests send no requests. */
 function controller(): any {
@@ -1669,6 +1671,34 @@ test("sending notes from fullscreen review reveals the receiving pane", async ()
   } finally {
     paste.mockRestore();
     s.review.hide();
+    viewer.close(s);
+  }
+});
+
+test("PR diff notes keep shortcut letters while typing and paste into the agent chat", async () => {
+  const { s, sent } = steering(),
+    snapshot = prSnapshot(),
+    paste = spyOn(s.pane(1).terminal, "bracketedPaste").mockReturnValue(true),
+    body = "Please review PR: r g G u";
+  s.pull_request.cache.cached = async () => snapshot;
+  s.pull_request.cache.client.diff = async () => "diff --git a/app.ts b/app.ts\n@@ -1 +1 @@\n-old\n+new\n";
+  try {
+    await s.perform({ name: "pull-request", value: snapshot.ref.url });
+    await Promise.resolve();
+    await s.perform({ name: "pull-request-diff" });
+    await Promise.resolve();
+    await s.reviewKey({ text: "C" });
+    for (const text of body) await s.reviewKey({ text });
+    expect(s.pull_request.open).toBe(false);
+    expect(s.review.typingArea()?.text).toBe(body);
+    await s.reviewKey({ named: "enter" });
+    await s.reviewKey({ text: "s" });
+    expect(sent).toEqual([[1, `\x1b[200~app.ts (file)\n${body}\x1b[201~`]]);
+    expect(s.review.noteCount(-3)).toBe(0);
+    expect(s.keyboard).toBe("pane");
+    expect(s.focused().id).toBe(1);
+  } finally {
+    paste.mockRestore();
     viewer.close(s);
   }
 });
@@ -3355,8 +3385,7 @@ test("a drag keeps one pick out and copies the answer for where it ended", async
  * "hello" a link to `url`, and whose daemon fails every request (an old
  * daemon has no viewer.pick). `click` presses and releases `dx` cells right
  * of the link's second cell. */
-function linking() {
-  const url = "https://example.com/hello";
+function linking(url = "https://example.com/hello") {
   const s: any = new Controller({
     socket: "",
     request: transport(async op => {
@@ -3424,6 +3453,107 @@ test("a plain click on a pane link opens it once the double-click window has pas
     expect(await opened()).toEqual([url]);
   } finally {
     done();
+  }
+});
+
+test("GitHub PR chat links open the internal panel, with an explicit browser escape", async () => {
+  const { s, click, opened, done } = linking("https://github.com/acme/app/pull/12/files");
+  const snapshot = prSnapshot();
+  s.pull_request.cache.cached = async () => snapshot;
+  s.pull_request.cache.refresh = async () => snapshot;
+  try {
+    await click();
+    clock.advance(double_click_ms);
+    expect(await opened()).toEqual([]);
+    expect(s.pull_request.open).toBe(true);
+    expect(s.pull_request.ref.url).toBe(snapshot.ref.url);
+    expect(s.keyboard).toBe("review");
+    expect(s.review.open).toBe(false);
+    s.frame();
+    await s.perform({ name: "pull-request-browser" });
+    expect(s.effects).toContainEqual({ open_url: snapshot.ref.url });
+    await s.perform({ name: "pull-request-close" });
+    expect(s.pull_request.open).toBe(false);
+    expect(s.keyboard).toBe("pane");
+  } finally {
+    done();
+  }
+});
+
+test("PR panel mouse releases select tabs and controls through viewer actions", async () => {
+  const s = controller(),
+    snapshot = prSnapshot();
+  s.receiveSnapshot(folders("/not-a-repo"));
+  s.width = 120;
+  s.height = 35;
+  s.input_state.attached = true;
+  s.pull_request.cache.cached = async () => snapshot;
+  s.pull_request.cache.refresh = async () => snapshot;
+  try {
+    await s.perform({ name: "pull-request", value: snapshot.ref.url });
+    await Promise.resolve();
+    s.frame();
+    const rect = s.reviewRect(),
+      x = rect.x + 1 + Math.floor((rect.w - 2) / 2) + 2,
+      y = rect.y + 4;
+    await s.input(bytes(`\x1b[<0;${x + 1};${y + 1}M`));
+    expect(s.pull_request.tab).toBe("overview");
+    s.frame();
+    await s.input(bytes(`\x1b[<0;${x + 1};${y + 1}m`));
+    expect(s.pull_request.tab).toBe("discussion");
+    expect(s.keyboard).toBe("review");
+    s.frame();
+    await s.input(bytes("1"));
+    expect(s.pull_request.tab).toBe("overview");
+    await s.input(bytes("m"));
+    expect(s.pull_request.confirmation?.snapshot).toEqual(snapshot);
+    await s.reviewKey({ named: "escape" });
+    expect(s.pull_request.confirmation).toBeNull();
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("PR diffs use the displayed revisions in the existing viewer and return to PR details", async () => {
+  const s = controller(),
+    snapshot = prSnapshot();
+  const contentReads: unknown[][] = [];
+  s.receiveSnapshot(folders("/not-a-repo"));
+  s.width = 120;
+  s.height = 35;
+  s.input_state.attached = true;
+  s.pull_request.cache.cached = async () => snapshot;
+  s.pull_request.cache.refresh = async () => snapshot;
+  s.pull_request.cache.client.diff = async (displayed: unknown) => {
+    expect(displayed).toEqual(snapshot);
+    return "diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-old\n+new\n";
+  };
+  s.pull_request.cache.client.content = async (...args: unknown[]) => {
+    contentReads.push(args);
+    return "new\npinned context\n";
+  };
+  try {
+    await s.perform({ name: "pull-request", value: snapshot.ref.url });
+    await Promise.resolve();
+    await s.perform({ name: "pull-request-diff" });
+    await Promise.resolve();
+    expect(s.review.remote).toBe(snapshot.ref.url);
+    expect(s.review.open).toBe(true);
+    expect(s.pull_request.open).toBe(false);
+    s.frame();
+    expect(s.review.remote).toBe(snapshot.ref.url);
+    expect(contentReads).toHaveLength(0);
+    await s.reviewKey({ text: "Z" });
+    await s.review.refresh();
+    expect(contentReads).toEqual([[snapshot, "app.ts", false]]);
+    expect(s.review.saved()?.full_context).toBe(true);
+    await s.reviewKey({ text: "Z" });
+    expect(s.review.saved()?.full_context).toBe(false);
+    await s.reviewKey({ text: "P" });
+    expect(s.pull_request.open).toBe(true);
+    expect(s.review.open).toBe(false);
+  } finally {
+    viewer.close(s);
   }
 });
 
@@ -3552,5 +3682,352 @@ test("a double-click the daemon can't pick leaves nothing selected, copied or op
     }
   } finally {
     done();
+  }
+});
+
+test("PR views and remote diffs follow conversations and retain independent navigation", async () => {
+  const s = controller(),
+    world = folders("/not-a-repo", "/also-not-a-repo"),
+    a = prSnapshot(),
+    b = prSnapshot(13);
+  world.panes[0].agent = { ...world.panes[0].agent, conversation: 101 } as any;
+  world.panes[1].agent = { ...world.panes[1].agent, conversation: 102 } as any;
+  s.receiveSnapshot(world);
+  const prepare = (snapshot: typeof a) => {
+    s.pull_request.cache.cached = async () => snapshot;
+    s.pull_request.cache.refresh = async () => snapshot;
+    s.pull_request.cache.client.diff = async () =>
+      "diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-old\n+new\n";
+  };
+  try {
+    prepare(a);
+    await s.perform({ name: "pull-request", value: a.ref.url });
+    await Promise.resolve();
+    const first = s.pull_request;
+    first.tab = "discussion";
+    first.top = 7;
+    await s.perform({ name: "pull-request-filter" });
+    first.top = 7;
+    s.focusPane(2);
+    expect(s.pull_request.open).toBe(false);
+    expect(s.review.remote).toBeNull();
+    prepare(b);
+    await s.perform({ name: "pull-request", value: b.ref.url });
+    await Promise.resolve();
+    const second = s.pull_request;
+    second.tab = "stack";
+    s.focusPane(1);
+    expect(s.pull_request).toBe(first);
+    expect(first.open).toBe(true);
+    expect(first.tab).toBe("discussion");
+    expect(first.top).toBe(7);
+    expect(first.unresolvedOnly).toBe(true);
+    await s.perform({ name: "pull-request-diff" });
+    await Promise.resolve();
+    const diff = s.review;
+    expect(diff.remote).toBe(a.ref.url);
+    s.focusPane(2);
+    expect(s.pull_request).toBe(second);
+    expect(s.pull_request.tab).toBe("stack");
+    expect(s.review.remote).toBeNull();
+    s.focusPane(1);
+    expect(s.review).toBe(diff);
+    expect(s.review.open).toBe(true);
+    // The same conversation resumed in another pane keeps its PR and diff.
+    s.runtime.panes[1].agent.conversation = 101;
+    s.focusPane(2);
+    expect(s.pull_request).toBe(first);
+    expect(s.review).toBe(diff);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("late PR diffs cannot open in another conversation", async () => {
+  const s = controller(),
+    snapshot = prSnapshot();
+  s.receiveSnapshot(folders("/not-a-repo", "/also-not-a-repo"));
+  s.pull_request.cache.cached = async () => snapshot;
+  s.pull_request.cache.refresh = async () => snapshot;
+  let resolve!: (patch: string) => void;
+  s.pull_request.cache.client.diff = () =>
+    new Promise<string>(yes => {
+      resolve = yes;
+    });
+  try {
+    await s.perform({ name: "pull-request", value: snapshot.ref.url });
+    await Promise.resolve();
+    const first = s.pull_request;
+    await s.perform({ name: "pull-request-diff" });
+    s.focusPane(2);
+    resolve("");
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(s.review.remote).toBeNull();
+    expect(s.pull_request.open).toBe(false);
+    s.focusPane(1);
+    expect(s.pull_request).toBe(first);
+    expect(first.open).toBe(true);
+    expect(first.busy).toBe(false);
+    expect(s.review.remote).toBeNull();
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("PR viewer toggle restores the conversation view and preserves its navigation", async () => {
+  const s = controller(),
+    snapshot = prSnapshot();
+  s.receiveSnapshot(folders("/not-a-repo", "/also-not-a-repo"));
+  s.input_state.attached = true;
+  s.width = 120;
+  s.height = 35;
+  s.pull_request.cache.cached = async () => snapshot;
+  s.pull_request.cache.refresh = async () => snapshot;
+  try {
+    await s.perform({ name: "pull-request", value: snapshot.ref.url });
+    await Promise.resolve();
+    const p = s.pull_request;
+    p.tab = "discussion";
+    p.top = 4;
+    p.unresolvedOnly = true;
+    // Kitty encodes Cmd+Shift+G with modifiers 10.
+    await s.input(bytes("\x1b[103;10u"));
+    expect(p.open).toBe(false);
+    expect(s.keyboard).toBe("pane");
+    await s.input(bytes("\x1b[103;10u"));
+    await Promise.resolve();
+    expect(p.open).toBe(true);
+    expect(p.tab).toBe("discussion");
+    expect(p.top).toBe(4);
+    expect(p.unresolvedOnly).toBe(true);
+    expect(s.keyboard).toBe("review");
+    s.focusPane(2);
+    await s.perform({ name: "pull-request-toggle" });
+    expect(s.pull_request.open).toBe(false);
+    expect(s.message).toContain("Open a GitHub PR link");
+    expect(p.open).toBe(true);
+    s.focusPane(1);
+    expect(s.pull_request).toBe(p);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("PR conflict button starts one background Codex with the requested model and push instructions", async () => {
+  const sent: [string, any][] = [],
+    s: any = new Controller({
+      socket: "",
+      request: transport(async (op, fields) => {
+        sent.push([op, fields]);
+        return { ok: true, session: "conflict-agent", provider: "codex" };
+      }).request,
+    });
+  s.receiveSnapshot(folders("/repo"));
+  const snapshot = prSnapshot();
+  snapshot.mergeable = "CONFLICTING";
+  s.pull_request.snapshot = snapshot;
+  s.pull_request.ref = snapshot.ref;
+  try {
+    await s.perform({ name: "pull-request-conflicts" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sent).toHaveLength(1);
+    expect(sent[0][0]).toBe("headless.start");
+    expect(sent[0][1]).toMatchObject({
+      provider: "codex",
+      model: "gpt-6.1-sol",
+      effort: "medium",
+      cwd: "/repo",
+      workspace: 1,
+    });
+    expect(sent[0][1].prompt).toContain(snapshot.ref.url);
+    expect(sent[0][1].prompt).toContain("isolated git worktree");
+    expect(sent[0][1].prompt).toContain("normal push, never a force push");
+    expect(sent[0][1].prompt).toContain("actual base branch");
+    await s.perform({ name: "pull-request-conflicts" });
+    expect(sent).toHaveLength(1);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a conflict agent started for another PR cannot replace the current PR's launch status", async () => {
+  let finish!: (value: unknown) => void;
+  const s: any = new Controller({
+    socket: "",
+    request: transport(
+      () =>
+        new Promise(resolve => {
+          finish = resolve;
+        }),
+    ).request,
+  });
+  s.receiveSnapshot(folders("/repo"));
+  const first = prSnapshot(),
+    next = prSnapshot(13);
+  first.mergeable = "CONFLICTING";
+  s.pull_request.snapshot = first;
+  s.pull_request.ref = first.ref;
+  try {
+    await s.perform({ name: "pull-request-conflicts" });
+    s.pull_request.ref = next.ref;
+    s.pull_request.snapshot = next;
+    finish({ ok: true, session: "older-pr-agent", provider: "codex" });
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    expect(s.pull_request.conflictSession).toBeNull();
+    expect(s.pull_request.conflictStarting).toBe(false);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("PR viewer state restores by provider session identity across new controllers and conversation IDs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-resume-pr-")),
+    file = join(dir, "state.json"),
+    snapshot = prSnapshot();
+  const open = (conversation: number) => {
+    const s = controller(),
+      world = folders("/repo");
+    world.panes[0].agent = {
+      ...world.panes[0].agent,
+      conversation,
+      provider: "codex",
+      session: "durable-session",
+    } as any;
+    s.receiveSnapshot(world);
+    s.review_state = new ReviewStore(file);
+    s.pull_request.cache.cached = async () => snapshot;
+    s.pull_request.cache.refresh = async () => snapshot;
+    s.followReview();
+    return s;
+  };
+  let first: any, second: any;
+  try {
+    first = open(101);
+    await first.perform({ name: "pull-request", value: snapshot.ref.url });
+    await Promise.resolve();
+    first.pull_request.tab = "discussion";
+    first.pull_request.top = 11;
+    first.pull_request.unresolvedOnly = true;
+    first.pull_request.openThreads.add("resolved-thread");
+    viewer.close(first);
+    first = null;
+    second = open(202);
+    await Promise.resolve();
+    expect(second.pull_request.open).toBe(true);
+    expect(second.pull_request.ref.url).toBe(snapshot.ref.url);
+    expect(second.pull_request.tab).toBe("discussion");
+    expect(second.pull_request.top).toBe(11);
+    expect(second.pull_request.unresolvedOnly).toBe(true);
+    expect(second.pull_request.openThreads.has("resolved-thread")).toBe(true);
+  } finally {
+    if (first) viewer.close(first);
+    if (second) viewer.close(second);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("previous PR diff reloads its patch and restores navigation when the conversation resumes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-resume-remote-")),
+    file = join(dir, "state.json"),
+    snapshot = prSnapshot();
+  const open = (conversation: number) => {
+    const s = controller(),
+      world = folders("/not-a-repo");
+    world.panes[0].agent = {
+      ...world.panes[0].agent,
+      conversation,
+      provider: "codex",
+      session: "remote-session",
+    } as any;
+    s.receiveSnapshot(world);
+    s.review_state = new ReviewStore(file);
+    s.pull_request.cache.cached = async () => snapshot;
+    s.pull_request.cache.refresh = async () => snapshot;
+    s.pull_request.cache.client.diff = async () =>
+      "diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-old\n+new\n";
+    s.followReview();
+    return s;
+  };
+  let first: any, second: any;
+  try {
+    first = open(101);
+    await first.perform({ name: "pull-request", value: snapshot.ref.url });
+    await Promise.resolve();
+    await first.perform({ name: "pull-request-diff" });
+    await Promise.resolve();
+    const saved = first.review.saved();
+    first.review.restoreView({ ...saved, path: "app.ts", split: true, top: 3, cur: 4 });
+    viewer.close(first);
+    first = null;
+    second = open(202);
+    for (let i = 0; i < 6; i++) {
+      await Promise.resolve();
+      second.followReview();
+    }
+    expect(second.review.remote).toBe(snapshot.ref.url);
+    expect(second.review.open).toBe(true);
+    expect(second.pull_request.open).toBe(false);
+    expect(second.review.saved()).toMatchObject({ path: "app.ts", split: true, top: 3, cur: 4 });
+  } finally {
+    if (first) viewer.close(first);
+    if (second) viewer.close(second);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("previous local diff selection and layout restore instead of the path editor", () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-resume-diff-")),
+    file = join(dir, "state.json"),
+    s = controller();
+  const store = new ReviewStore(file);
+  store.put("codex:diff-session", {
+    active: "diff",
+    pr: null,
+    diff: {
+      folder: "/not-a-repo",
+      path: "app.ts",
+      scope: "uncommitted",
+      all: false,
+      top: 7,
+      cur: 9,
+      tree_top: 3,
+      part: "diff",
+      split: true,
+      hide_tests: true,
+      full_context: true,
+      wrap: false,
+      pick: null,
+    },
+  });
+  store.flush();
+  const world = folders("/original");
+  world.panes[0].agent = {
+    ...world.panes[0].agent,
+    conversation: 17,
+    provider: "codex",
+    session: "diff-session",
+  } as any;
+  try {
+    s.receiveSnapshot(world);
+    s.review_state = new ReviewStore(file);
+    s.followReview();
+    expect(s.review.open).toBe(true);
+    expect(s.review.typing).toBe(false);
+    expect(s.review.saved()).toMatchObject({
+      folder: "/not-a-repo",
+      path: "app.ts",
+      top: 7,
+      cur: 9,
+      scope: "uncommitted",
+      split: true,
+      hide_tests: true,
+      full_context: true,
+    });
+  } finally {
+    viewer.close(s);
+    rmSync(dir, { recursive: true, force: true });
   }
 });

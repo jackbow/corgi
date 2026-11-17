@@ -73,7 +73,15 @@ function validInput(value: any): Input {
   switch (value.kind) {
     case "prompt":
       if (typeof value.text !== "string" || !value.text) bad();
-      return { kind: "prompt", text: value.text, ...(session ? { session } : {}) };
+      if (value.model !== undefined && typeof value.model !== "string") bad();
+      if (value.effort !== undefined && typeof value.effort !== "string") bad();
+      return {
+        kind: "prompt",
+        text: value.text,
+        ...(session ? { session } : {}),
+        ...(value.model ? { model: value.model } : {}),
+        ...(value.effort ? { effort: value.effort } : {}),
+      };
     case "answer":
       if (typeof value.request !== "string" || typeof value.allow !== "boolean") bad();
       if (value.message !== undefined && typeof value.message !== "string") bad();
@@ -505,6 +513,7 @@ export async function request(server: Server, client: Peer, request: Request, re
     if (!query.prompt.trim()) throw Error("InvalidMessage");
     if (runtime.sessions.length >= 16) throw Error("TooManyHeadlessSessions");
     const workspace = query.workspace ? runtime.getWorkspace(query.workspace) : server.onlyWorkspace();
+    if ((query.model || query.effort) && query.provider !== "codex") throw Error("HeadlessUnsupported");
     const session = await Session.start(runtime.next_session, query.provider, query.cwd || workspace.cwd);
     if (client.dead) {
       session.destroy();
@@ -512,7 +521,12 @@ export async function request(server: Server, client: Peer, request: Request, re
     }
     session.workspace_id = workspace.id;
     try {
-      session.send({ kind: "prompt", text: query.prompt });
+      session.send({
+        kind: "prompt",
+        text: query.prompt,
+        ...(query.model ? { model: query.model } : {}),
+        ...(query.effort ? { effort: query.effort } : {}),
+      });
     } catch (error) {
       session.destroy();
       throw error;

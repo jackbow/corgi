@@ -74,6 +74,10 @@ import * as shellPicker from "./shell_picker";
 import { installedShells } from "./launch/command";
 import * as linkTooltip from "./link_tooltip";
 import * as linkThumbnail from "./link_thumbnail";
+import * as pullRequest from "./pull_request";
+import * as pullRequestPanel from "./pull_request_panel";
+import * as remoteDiff from "./review/remote";
+import * as reviewState from "./review_state";
 import * as paneImages from "./pane_images";
 import * as tabIcons from "./tab_icons";
 import * as resourceTooltip from "./resource_tooltip";
@@ -462,7 +466,91 @@ export class Controller {
   search_skip = 0;
   last_bell_kind = "none";
   /** The review panel at the right edge; it follows the focused pane. */
-  review = new panel.Panel();
+  review_state: reviewState.Store | null = null;
+  private restored_reviews = new Set<string>();
+  private deferred_pr_diffs = new Map<string, panel.Saved>();
+  private savedReviewOwner(): string | null {
+    if (!this.runtime.workspaces.items.length) return null;
+    const agent = this.focused()?.agent;
+    return agent?.provider && agent.session
+      ? `${agent.provider}:${agent.session}`
+      : agent?.conversation
+        ? `conversation:${agent.conversation}`
+        : null;
+  }
+  saveReviews(): void {
+    const owner = this.savedReviewOwner();
+    if (!owner || !this.review_state || !this.restored_reviews.has(owner)) return;
+    const p = this.pull_request,
+      r = this.review,
+      previous = this.review_state.get(owner);
+    this.review_state.put(owner, {
+      active: p.open ? "pr" : r.open ? (r.remote ? "remote" : "diff") : null,
+      pr: p.ref
+        ? {
+            url: p.ref.url,
+            tab: p.tab,
+            top: p.top,
+            checksOpen: p.checksOpen,
+            unresolvedOnly: p.unresolvedOnly,
+            openThreads: [...p.openThreads],
+            foldedThreads: [...p.foldedThreads],
+          }
+        : null,
+      diff: r.open ? r.saved() : (previous?.diff ?? null),
+    });
+  }
+  private restoreReview(): void {
+    const owner = this.savedReviewOwner();
+    if (!owner || !this.review_state || this.restored_reviews.has(owner)) return;
+    this.restored_reviews.add(owner);
+    const saved = this.review_state.get(owner);
+    if (!saved) return;
+    const p = this.pull_request;
+    if (p.ref) return;
+    if (saved.pr) {
+      p.ref = pullRequest.parse(saved.pr.url);
+      p.tab = saved.pr.tab;
+      p.top = saved.pr.top;
+      p.checksOpen = saved.pr.checksOpen;
+      p.unresolvedOnly = saved.pr.unresolvedOnly;
+      p.openThreads = new Set(saved.pr.openThreads);
+      p.foldedThreads = new Set(saved.pr.foldedThreads);
+      if ((saved.active === "pr" || saved.active === "remote") && p.ref) void p.show(p.ref);
+    }
+    if (saved.active === "remote" && saved.diff && saved.pr) this.deferred_pr_diffs.set(this.reviewOwner(), saved.diff);
+    else if (saved.diff) {
+      this.local_review.follow(this.reviewTarget());
+      this.local_review.restoreView(saved.diff);
+      if (saved.active === "diff") this.local_review.show();
+    }
+  }
+  private local_review = new panel.Panel();
+  private pr_cache = new pullRequest.Cache();
+  private pr_views = new Map<string, pullRequestPanel.Panel>();
+  private pr_diffs = new Map<string, panel.Panel>();
+  private reviewOwner(): string {
+    const target = this.runtime.workspaces.items.length ? this.reviewTarget() : null;
+    return target?.conversation ? `conversation:${target.conversation}` : `pane:${target?.pane ?? 0}`;
+  }
+  get review(): panel.Panel {
+    const remote = this.pr_diffs.get(this.reviewOwner());
+    return remote?.open && remote.remote ? remote : this.local_review;
+  }
+  get pull_request(): pullRequestPanel.Panel {
+    const owner = this.reviewOwner();
+    let view = this.pr_views.get(owner);
+    if (!view) {
+      view = new pullRequestPanel.Panel(this.pr_cache);
+      view.changed = () => {
+        this.dirty = true;
+        this.wake();
+      };
+      this.pr_views.set(owner, view);
+    }
+    return view;
+  }
+  private pr_diff_generation = 0;
   /** The review panel's edge while it is dragged. */
   private review_drag = false;
   /** A press in the review panel holds the pointer until it is released. */
@@ -542,6 +630,7 @@ export class Controller {
     if (operation) await this.edit(operation);
   }
   switchWorkspace(id: number): void {
+    this.saveReviews();
     if (this.runtime.workspaces.index(id) === null) throw Error("NoWorkspace");
     this.rememberAgent();
     if (this.input_state.tab_drag) this.input_state.tab_drag.cancelled = true;
@@ -600,7 +689,13 @@ export class Controller {
       this.revealCursor(entries);
       return true;
     }
-    if (this.reviewKeys()) return this.review.move(to);
+    if (this.reviewKeys()) {
+      if (this.pull_request.open) {
+        if (to === "left") this.giveKeyboard("pane");
+        return true;
+      }
+      return this.review.move(to);
+    }
     if (this.model().count === 0) return false;
     const other = this.navigation.command(this.runtime.workspaces, { name: "focus", value: to }, this.area()).focus;
     if (other === null) return false;
@@ -612,7 +707,10 @@ export class Controller {
   private giveKeyboard(to: Keyboard): void {
     const from = this.keyboard;
     if (from === to) return;
-    if (to !== "review" && this.review.open) this.review.unzoom();
+    if (to !== "review") {
+      if (this.pull_request.open) this.pull_request.fullscreen = false;
+      else if (this.review.open) this.review.unzoom();
+    }
     this.keyboard = to;
     if (typeof from === "object" && from.sidebar.drawer) this.sidebar_open = false;
     this.dirty = true;
@@ -769,6 +867,7 @@ export class Controller {
     return again && !this.sidebar_focus && !this.reviewKeys();
   }
   focusPane(id: number, remember = true): void {
+    this.saveReviews();
     const owner = this.runtime.workspaces.owner(id);
     if (!owner) throw Error("NoPane");
     this.rememberAgent();
@@ -863,6 +962,9 @@ export class Controller {
     } catch (error) {
       this.notice((error as Error).message);
     }
+  }
+  loadReviewState(): void {
+    this.review_state ??= reviewState.Store.open(this.connection.socket ?? "local");
   }
   loadPreferences(): void {
     this.prefs = preferences.load();
@@ -1847,7 +1949,7 @@ export class Controller {
   /** Whether a full-screen view hides every pane, so nothing on them was seen. */
   coversPanes(): boolean {
     return (
-      this.review.fullscreen ||
+      this.reviewFullscreen() ||
       this.moonlander !== null ||
       this.onboarding !== null ||
       (this.prefix && this.help_visible)
@@ -2423,7 +2525,143 @@ export class Controller {
         this.setAgentScope(this.prefs.agents === "workspace" ? "all" : "workspace");
         break;
       case "review":
+        this.pull_request.open = false;
         this.toggleReview();
+        break;
+      case "pull-request": {
+        const ref = pullRequest.parse(String(act.value || this.pull_request.ref?.url || ""));
+        if (!ref) {
+          this.notice(i18n.t`Expected a GitHub PR URL`);
+          break;
+        }
+        this.openPullRequest(ref);
+        break;
+      }
+      case "pull-request-toggle":
+        if (this.pull_request.open) await this.perform({ name: "pull-request-close" });
+        else if (this.pull_request.ref) this.openPullRequest(this.pull_request.ref);
+        else this.notice(i18n.t`Open a GitHub PR link in this conversation first`);
+        break;
+      case "pull-request-close":
+        this.deferred_pr_diffs.delete(this.reviewOwner());
+        this.pr_diff_generation++;
+        this.pull_request.open = false;
+        this.pull_request.fullscreen = false;
+        this.giveKeyboard("pane");
+        break;
+      case "pull-request-leave":
+        this.pull_request.fullscreen = false;
+        this.giveKeyboard("pane");
+        break;
+      case "pull-request-status":
+        void this.pull_request.refreshStatus();
+        break;
+      case "pull-request-conflicts": {
+        const p = this.pull_request,
+          snapshot = p.snapshot;
+        if (
+          !snapshot ||
+          snapshot.state !== "OPEN" ||
+          snapshot.mergeable !== "CONFLICTING" ||
+          p.conflictStarting ||
+          p.conflictSession ||
+          p.refreshing ||
+          p.statusRefreshing ||
+          p.busy ||
+          p.error ||
+          p.statusError
+        )
+          break;
+        p.conflictStarting = true;
+        this.dirty = true;
+        const workspace = this.current().id,
+          cwd = this.reviewTarget()?.cwd || this.current().cwd;
+        void call(this.connection, "headless.start", {
+          provider: "codex",
+          prompt: pullRequest.conflictPrompt(snapshot),
+          cwd,
+          workspace,
+          model: "gpt-6.1-sol",
+          effort: "medium",
+        })
+          .then(result => {
+            if (p.ref?.url === snapshot.ref.url) p.conflictSession = result.session;
+          })
+          .catch(error => {
+            if (p.ref?.url === snapshot.ref.url) p.statusError = (error as Error).message;
+          })
+          .finally(() => {
+            p.conflictStarting = false;
+            this.dirty = true;
+            this.wake();
+          });
+        break;
+      }
+      case "pull-request-refresh":
+        if (this.pull_request.ref) void this.pull_request.show(this.pull_request.ref, true);
+        break;
+      case "pull-request-browser":
+        if (this.pull_request.ref) this.effects.push({ open_url: this.pull_request.ref.url });
+        break;
+      case "pull-request-diff":
+        this.openPullRequestDiff();
+        break;
+      case "pull-request-tab":
+        this.pull_request.selectTab(String(act.value));
+        break;
+      case "pull-request-ready": {
+        const p = this.pull_request;
+        if (
+          p.snapshot?.draft &&
+          p.snapshot.state === "OPEN" &&
+          !p.refreshing &&
+          !p.statusRefreshing &&
+          !p.error &&
+          !p.statusError
+        )
+          void p.mutate({ kind: "ready" });
+        break;
+      }
+      case "pull-request-filter":
+        this.pull_request.unresolvedOnly = !this.pull_request.unresolvedOnly;
+        this.pull_request.top = 0;
+        break;
+      case "pull-request-checks":
+        this.pull_request.checksOpen = !this.pull_request.checksOpen;
+        break;
+      case "pull-request-thread": {
+        const p = this.pull_request,
+          id = String(act.value),
+          thread = p.snapshot?.threads.find(t => t.id === id);
+        if (thread) {
+          const expanded = thread.resolved ? p.openThreads : p.foldedThreads;
+          if (expanded.has(id)) expanded.delete(id);
+          else expanded.add(id);
+        }
+        break;
+      }
+      case "pull-request-retry":
+        void this.pull_request.mutate({ kind: "retry", check: String(act.value || "") || undefined });
+        break;
+      case "pull-request-auto": {
+        const p = this.pull_request;
+        if (p.snapshot?.autoMerge) {
+          if (!p.refreshing && !p.error) void p.mutate({ kind: "disable-auto" });
+        } else p.requestMerge("enable-auto");
+        break;
+      }
+      case "pull-request-merge":
+        this.pull_request.requestMerge("merge");
+        break;
+      case "pull-request-confirm": {
+        const confirmation = this.pull_request.confirmation,
+          method = act.value;
+        if (confirmation && (method === "squash" || method === "merge" || method === "rebase"))
+          void this.pull_request.mutate({ kind: confirmation.kind, method }, confirmation.snapshot);
+        break;
+      }
+      case "pull-request-cancel":
+        this.pull_request.confirmation = null;
         break;
       case "mute":
         this.muted = !this.muted;
@@ -2552,7 +2790,8 @@ export class Controller {
       case "close":
       case "close-tab":
         if (act.name === "zoom" && this.reviewKeys()) {
-          this.review.toggleFullscreen();
+          if (this.pull_request.open) this.pull_request.fullscreen = !this.pull_request.fullscreen;
+          else this.review.toggleFullscreen();
           this.cancelDividers();
           this.dirty = true;
           break;
@@ -2795,7 +3034,87 @@ export class Controller {
     term.send(bytes);
   }
   private queueEffect(effect: Effect): void {
+    if ("open_url" in effect) {
+      const ref = pullRequest.parse(effect.open_url);
+      if (ref && !this.signin) {
+        void this.perform({ name: "pull-request", value: ref.url });
+        return;
+      }
+    }
     this.effects.push(effect);
+  }
+  private openPullRequest(ref: pullRequest.Ref): void {
+    this.pr_diff_generation++;
+    this.review.hide();
+    this.review.preview(null);
+    void this.pull_request.show(ref);
+    if (this.sidebarView([]).panel === 0) this.pull_request.fullscreen = true;
+    this.giveKeyboard("review");
+    this.selection = null;
+    this.cancelDividers();
+    this.dirty = true;
+  }
+  private openPullRequestDiff(saved?: panel.Saved): void {
+    const p = this.pull_request,
+      snapshot = p.snapshot;
+    if (!snapshot || p.busy) return;
+    const generation = ++this.pr_diff_generation;
+    p.busy = true;
+    p.error = "";
+    const destination = this.reviewTarget(),
+      owner = this.reviewOwner();
+    void p.cache.client
+      .diff(snapshot)
+      .then(patch => {
+        if (
+          generation !== this.pr_diff_generation ||
+          this.reviewOwner() !== owner ||
+          !p.open ||
+          p.ref?.url !== snapshot.ref.url
+        )
+          return;
+        const files = remoteDiff.files(patch);
+        const review = new panel.Panel();
+        review.changed = this.local_review.changed;
+        review.summarized = this.local_review.summarized;
+        review.resized = this.local_review.resized;
+        this.pr_diffs.set(owner, review);
+        review.showRemote(
+          snapshot.ref.url,
+          `${snapshot.ref.repo} #${snapshot.ref.number}`,
+          snapshot.base,
+          snapshot.head,
+          files,
+          destination,
+          async file =>
+            remoteDiff.context(
+              file,
+              await p.cache.client.content(snapshot, file.change.path, file.change.kind === "deleted"),
+            ),
+        );
+        if (saved) {
+          review.restoreView(saved);
+          this.deferred_pr_diffs.delete(owner);
+        }
+        const fullscreen = p.fullscreen;
+        p.open = false;
+        if (fullscreen) this.review.toggleFullscreen();
+        this.giveKeyboard("review");
+      })
+      .catch(error => {
+        if (generation === this.pr_diff_generation) {
+          p.error = (error as Error).message;
+          this.deferred_pr_diffs.delete(owner);
+        }
+      })
+      .finally(() => {
+        p.busy = false;
+        this.dirty = true;
+        this.wake();
+      });
+  }
+  private reviewFullscreen(): boolean {
+    return this.pull_request.open ? this.pull_request.fullscreen : this.review.fullscreen;
   }
   clearEffects(): void {
     this.effects = [];
@@ -4903,7 +5222,7 @@ export class Controller {
     if (this.corgi_setup?.editing || this.corgi_setup?.modelSearch()) return "setup";
     if (this.agent_picker) return "picker";
     if (this.name_dialog) return "name";
-    if (this.reviewKeys() && this.review.typing) return "review";
+    if (this.reviewKeys() && !this.pull_request.open) return "review";
     if (this.hasMenu() || this.reviewKeys()) return "discard";
     const p = this.focused();
     return p ? { pane: p.id } : "discard";
@@ -5005,6 +5324,7 @@ export class Controller {
       if (!p) return this.notice(i18n.t`The pane closed before the paste arrived`);
       this.sendInput(p.terminal, viewerNative.encodePaste(text, p.terminal.bracketedPaste()));
     } else {
+      if (target === "review" && this.review.pastePath(text)) return;
       for (const byte of viewerNative.encodePaste(text, true, 1)) void this.pasteByteSync(target, byte);
     }
   }
@@ -5340,12 +5660,18 @@ export class Controller {
       }
       const again = cl.paste === null ? bindings.repeatSequence(this.prefs.bindings(), text) : null;
       if (parsed_key === "paste_start" || parsed_key === "paste_end") {
-        if (parsed_key === "paste_start") cl.paste = this.pasteTarget();
+        if (parsed_key === "paste_start") {
+          cl.paste = this.pasteTarget();
+          if (cl.paste === "review") this.review.beginPathPaste();
+        }
         // The markers reach only an application that asked for them.
         const p = this.pastePane();
         if (cl.paste === "signin") await this.signin?.input(text);
         else if (p && p.terminal.bracketedPaste()) this.sendInput(p.terminal, seq);
-        if (parsed_key === "paste_end") cl.paste = null;
+        if (parsed_key === "paste_end") {
+          if (cl.paste === "review") this.review.endPathPaste();
+          cl.paste = null;
+        }
       } else if (cl.paste !== null) {
         const p = this.pastePane();
         if (cl.paste === "signin") await this.signin?.input(text);
@@ -5616,7 +5942,7 @@ export class Controller {
     }
     if (await this.linkMouse(button, x, y, release)) return;
     // A press gives the keyboard back to the panes, or to the review panel below when it lands there.
-    if (!release && (button & 0xe0) === 0 && !this.review.fullscreen) this.giveKeyboard("pane");
+    if (!release && (button & 0xe0) === 0 && !this.reviewFullscreen()) this.giveKeyboard("pane");
     // The prefix bar has no mouse targets. A click resumes normal UI input.
     if (this.prefix && !release && (button & 0xe0) === 0) this.closeMenu();
     const moved = this.pointer === null || this.pointer.x !== x || this.pointer.y !== y;
@@ -5906,6 +6232,8 @@ export class Controller {
       return;
     }
     const review_rect = this.reviewRect();
+    if (this.pull_request.open && review_rect && !review_rect.contains(x, y) && !this.review_pressed)
+      this.pull_request.mouse(35, x, y);
     if (
       review_rect !== null &&
       (review_rect.contains(x, y) || this.review_pressed) &&
@@ -5914,9 +6242,23 @@ export class Controller {
     ) {
       this.pointer = { x, y };
       if (!release && (button & 0xe0) === 0) this.giveKeyboard("review");
+      if (this.pull_request.open) {
+        if (!release && button === 0) this.review_pressed = true;
+        if (!release && button === 0 && x === review_rect.x && !this.reviewFullscreen()) this.review_drag = true;
+        else {
+          const command = this.pull_request.mouse(button, x, y, release);
+          if (command) await this.perform(command);
+        }
+        if (release) {
+          this.ui_mouse_down = false;
+          this.review_pressed = false;
+        }
+        this.dirty = true;
+        return;
+      }
       if (!release && button === 0) {
         this.ui_mouse_down = true;
-        if (x === review_rect.x && !this.review.fullscreen) this.review_drag = true;
+        if (x === review_rect.x && !this.reviewFullscreen()) this.review_drag = true;
         else {
           this.review_pressed = true;
           this.review.mouse("press", x, y);
@@ -7449,6 +7791,7 @@ export class Controller {
     const hide = this.images.begin() + this.tab_icons.begin();
     const retained = retain ? new composition.Frame() : undefined;
     const frame = this.renderFrame(retained);
+    this.saveReviews();
     const writes = this.images.end() + this.tab_icons.end();
     if (writes) this.queueEffect({ write_terminal: writes });
     const prefix = hide ? "\x1b[?2026h" + hide : "",
@@ -7522,11 +7865,15 @@ export class Controller {
     }
     const git_ws = this.gitWorkspace(),
       ghost = git_ws && this.git_card.selected !== null ? gitTooltip.review(git_ws, this.git_card.selected) : null;
-    this.review.preview(ghost && git_ws ? { cwd: git_ws.cwd, name: git_ws.name, ...ghost } : null);
+    this.review.preview(
+      !this.pull_request.open && !this.review.remote && ghost && git_ws
+        ? { cwd: git_ws.cwd, name: git_ws.name, ...ghost }
+        : null,
+    );
     const card = this.paste_card;
     const focused = this.focused();
     this.followReview();
-    const review_width = this.review.fullscreen ? this.width : this.sidebarView([]).panel,
+    const review_width = this.reviewFullscreen() ? this.width : this.sidebarView([]).panel,
       review_focused = this.keyboard === "review" && review_width > 0,
       ghost_width = this.review.ghosted ? review_width || this.ghostWidth(git_ws) : 0;
     return render.frame(
@@ -7621,14 +7968,21 @@ export class Controller {
           : this.workspaceEntries(),
         workspace_offset: this.workspace_offset,
         review_width,
-        review_fullscreen: this.review.fullscreen,
-        review_split: review_width > 0 ? this.review.splitRow : null,
+        review_fullscreen: this.reviewFullscreen(),
+        review_split: review_width > 0 && !this.pull_request.open ? this.review.splitRow : null,
         review_focused,
-        review_keys: review_width > 0 && this.review.keysOpen,
+        review_keys: review_width > 0 && !this.pull_request.open && this.review.keysOpen,
         review_draw:
           review_width > 0
             ? (w: Writer) =>
-                this.review.draw(w, this.width - review_width, 0, review_width, this.height, review_focused)
+                (this.pull_request.open ? this.pull_request : this.review).draw(
+                  w,
+                  this.width - review_width,
+                  0,
+                  review_width,
+                  this.height,
+                  review_focused,
+                )
             : null,
         review_ghost:
           ghost_width > 0
@@ -7651,20 +8005,22 @@ export class Controller {
   }
   /** The review panel's columns, or 0 while it is closed or can't fit beside panes. */
   private reviewWidth(sidebar_width: number): number {
-    return this.review.open ? panel.Panel.fit(this.prefs.review_width, this.width - sidebar_width) : 0;
+    return this.review.open || this.pull_request.open
+      ? panel.Panel.fit(this.prefs.review_width, this.width - sidebar_width)
+      : 0;
   }
   private reviewRect(): Rect | null {
-    if (this.review.fullscreen) return new Rect(0, 0, this.width, this.height);
+    if (this.reviewFullscreen()) return new Rect(0, 0, this.width, this.height);
     const width = this.sidebarView([]).panel;
     return width > 0 ? new Rect(this.width - width, 0, width, this.height) : null;
   }
   /** Whether keys go to the review panel: it has the keyboard and room to show. */
   private reviewKeys(): boolean {
-    return this.keyboard === "review" && (this.review.fullscreen || this.sidebarView([]).panel > 0);
+    return this.keyboard === "review" && (this.reviewFullscreen() || this.sidebarView([]).panel > 0);
   }
   /** Gives the keyboard to the review panel, when it is open and has room to show. */
   private enterReview(): void {
-    if (this.review.fullscreen || this.sidebarView([]).panel > 0) this.giveKeyboard("review");
+    if (this.reviewFullscreen() || this.sidebarView([]).panel > 0) this.giveKeyboard("review");
   }
   /** A pane, the focused one unless named, as the review panel shows it. */
   /** Reads the menus' diff line ahead of them: for the focused agent, the
@@ -7752,7 +8108,7 @@ export class Controller {
   private openReview(): void {
     this.review.follow(this.reviewTarget());
     this.review.show();
-    if (!this.review.fullscreen && this.sidebarView([]).panel === 0) {
+    if (!this.reviewFullscreen() && this.sidebarView([]).panel === 0) {
       this.review.hide();
       this.notice(i18n.t` Review needs a wider window`);
       return;
@@ -7763,6 +8119,25 @@ export class Controller {
     this.dirty = true;
   }
   private followReview(): void {
+    this.restoreReview();
+    const pending = this.deferred_pr_diffs.get(this.reviewOwner());
+    if (
+      pending &&
+      this.pull_request.open &&
+      this.pull_request.snapshot &&
+      !this.pull_request.refreshing &&
+      !this.pull_request.busy
+    )
+      this.openPullRequestDiff(pending);
+    if (this.pull_request.open) {
+      if (this.pull_request.fullscreen && this.keyboard === "pane") this.giveKeyboard("review");
+      return;
+    }
+    if (this.review.remote) {
+      this.review.dest = this.reviewTarget();
+      if (this.review.fullscreen && this.keyboard === "pane") this.giveKeyboard("review");
+      return;
+    }
     const current = this.reviewTarget();
     this.review.keep(new Set(this.runtime.panes.map(p => p.id)));
     const held =
@@ -7775,7 +8150,7 @@ export class Controller {
     if (!held) this.review.pinned = false;
     this.review.follow(this.reviewTarget(held ?? this.focused()));
     this.review.dest = current;
-    if (this.review.fullscreen && this.keyboard === "pane") this.giveKeyboard("review");
+    if (this.reviewFullscreen() && this.keyboard === "pane") this.giveKeyboard("review");
     if (!this.review.open && this.keyboard === "review") this.giveKeyboard("pane");
   }
   private closeReview(): void {
@@ -7801,12 +8176,25 @@ export class Controller {
     return byte >= 32 && byte < 127 ? { text: String.fromCharCode(byte) } : null;
   }
   private async reviewKey(k: panel.Key): Promise<void> {
+    if (this.pull_request.open) {
+      const command = this.pull_request.key(k);
+      if (command) await this.perform(command);
+      this.dirty = true;
+      return;
+    }
+    if (this.review.remote && !this.review.typing && "text" in k && k.text === "P") {
+      await this.perform({ name: "pull-request", value: this.review.remote });
+      return;
+    }
     await this.reviewEffect(this.review.key(k));
     this.dirty = true;
   }
   /** Carries out what the panel asked for: paste notes into a pane, copy them, or let go. */
   private async reviewEffect(effect: panel.Effect): Promise<void> {
     switch (effect.kind) {
+      case "pull-request":
+        await this.perform({ name: "pull-request", value: effect.url });
+        break;
       case "send": {
         const p = this.pane(effect.pane);
         if (!p) {

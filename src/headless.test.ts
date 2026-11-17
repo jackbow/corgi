@@ -430,3 +430,13 @@ test("a provider can retire a timed-out dialog without leaving its actor blocked
   expect(registry.get("codex", "t").pending_headless_requests).toBe(0);
   expect(registry.get("codex", "t").state.state).toBe("working");
 });
+
+test("headless prompt normalization preserves explicit model and effort and rejects malformed options", () => {
+  const s = session(),
+    input: Input = { kind: "prompt", text: "fix", model: "gpt-6.1-sol", effort: "medium" };
+  s.send(input);
+  expect((s.client as Fake).sent).toEqual([input]);
+  expect(() => s.send({ ...input, model: 42 })).toThrow("InvalidMessage");
+  expect(() => s.send({ ...input, effort: {} })).toThrow("InvalidMessage");
+  s.destroy();
+});

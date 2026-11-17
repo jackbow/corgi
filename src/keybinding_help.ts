@@ -948,6 +948,7 @@ export class State {
     heading(col, i18n.t`CORGI`);
     row(col, i18n.t`Toggle sidebar`, ["sidebar"]);
     row(col, i18n.t`Review changes`, ["review"]);
+    row(col, i18n.t`Toggle PR viewer`, ["pull-request-toggle"]);
     row(col, i18n.t`Setup`, ["setup"]);
     row(col, i18n.t`Shortcuts`, ["help"]);
     const remaining = this.entries.filter(e => !shownIds.has(e.id) && (e.shortcuts.length || e.custom));

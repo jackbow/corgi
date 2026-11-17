@@ -128,3 +128,22 @@ test("prompts wait for the handshake, which a handoff can carry over", () => {
   expect(restored.deferred).toEqual([{ kind: "prompt", text: "early", session: "t" }]);
   expect(restored.steps.get("7")).toEqual({ kind: "initialize" });
 });
+
+test("background Codex model and effort reach the thread and turn, including a saved pending thread", () => {
+  const lines: unknown[] = [],
+    { codex, written } = client(lines);
+  codex.send({ kind: "prompt", text: "resolve conflicts", model: "gpt-6.1-sol", effort: "medium" });
+  expect(written[0]).toMatchObject({ method: "thread/start", params: { cwd: "/repo", model: "gpt-6.1-sol" } });
+  expect([...codex.steps.values()][0]).toMatchObject({ model: "gpt-6.1-sol", effort: "medium" });
+  const restored = Codex.restore(
+    JSON.parse(JSON.stringify(codex.save(true), (_, v) => (typeof v === "bigint" ? Number(v) : v))),
+    true,
+  );
+  expect([...restored.steps.values()][0]).toMatchObject({ model: "gpt-6.1-sol", effort: "medium" });
+  lines.push({ id: 1, result: { thread: { id: "conflict-thread" } } });
+  codex.take();
+  expect(written[1]).toMatchObject({
+    method: "turn/start",
+    params: { threadId: "conflict-thread", model: "gpt-6.1-sol", effort: "medium" },
+  });
+});

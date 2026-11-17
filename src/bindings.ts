@@ -656,6 +656,7 @@ const tables: Record<Preset, Binding[]> = {
   ],
 };
 for (const [preset, list] of Object.entries(tables)) {
+  list.push({ key: 103, mods: { super: true, shift: true }, prefixed: false, action: { name: "pull-request-toggle" } });
   list.push({ key: 98, mods: { super: true, shift: true }, prefixed: false, action: { name: "review" } });
   list.push({ key: 97, mods: { super: true, shift: true }, prefixed: false, action: { name: "toggle-agent-scope" } });
   if (preset !== "cmux")

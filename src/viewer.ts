@@ -62,6 +62,7 @@ export async function openMode(
   view.iterm2_pointer = process.env.TERM_PROGRAM === "iTerm.app";
   view.branch_glyphs = branchGlyphs(process.env.TERM ?? "") || branchGlyphs(process.env.TERM_PROGRAM ?? "");
   view.loadPreferences();
+  view.loadReviewState();
   if (start_onboarding) view.openOnboarding("welcome");
   let opened: Reply<"viewer.open">;
   try {
@@ -89,6 +90,8 @@ function incompatible(error: Error): Error {
     : error;
 }
 export function close(view: Controller): void {
+  view.saveReviews();
+  view.review_state?.flush();
   view.closePreferences?.();
   view.closePreferences = null;
   view.model_cache.close();

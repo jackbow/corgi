@@ -71,7 +71,7 @@ function summaryThread(r: Inference, mcp: unknown) {
 type Step =
   | { kind: "initialize" }
   | { kind: "config"; text: string }
-  | { kind: "thread"; text: string }
+  | { kind: "thread"; text: string; model?: string; effort?: string }
   | { kind: "turn" }
   | { kind: "other" };
 /** A request Codex asked Corgi, and how to answer it. */
@@ -113,12 +113,14 @@ export class Codex implements Client {
     this.steps.set(String(id), step);
     this.io.write({ id, method, params });
   }
-  private startTurn(text: string) {
+  private startTurn(text: string, model?: string, effort?: string) {
     const summary = this.summary;
     this.request(
       "turn/start",
       {
         threadId: this.thread,
+        ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
         input: [{ type: "text", text }],
         ...(summary ? { effort: "low", outputSchema: summary.schema ? parse(summary.schema) : null } : {}),
       },
@@ -130,10 +132,19 @@ export class Codex implements Client {
       case "prompt":
         if (!this.ready) return void this.deferred.push(input);
         if (input.session) this.thread = input.session;
-        if (this.thread) return this.startTurn(input.text);
+        if (this.thread) return this.startTurn(input.text, input.model, input.effort);
         if (this.summary)
           return this.request("config/read", { includeLayers: false }, { kind: "config", text: input.text });
-        return this.request("thread/start", { cwd: this.cwd }, { kind: "thread", text: input.text });
+        return this.request(
+          "thread/start",
+          { cwd: this.cwd, ...(input.model ? { model: input.model } : {}) },
+          {
+            kind: "thread",
+            text: input.text,
+            ...(input.model ? { model: input.model } : {}),
+            ...(input.effort ? { effort: input.effort } : {}),
+          },
+        );
       case "answer": {
         const asked = this.requests.get(input.request);
         if (!asked) throw Error("NoRequest");
@@ -189,7 +200,7 @@ export class Codex implements Client {
         this.thread = thread;
         if (this.summary) this.created++;
         this.events.push({ kind: "conversation", session: thread, parent: null, role: null, shown: true });
-        return this.startTurn(step.text);
+        return this.startTurn(step.text, step.model, step.effort);
       }
       case "turn":
         if (failed) this.failure = Error("HarnessRejected");
