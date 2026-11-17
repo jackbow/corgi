@@ -2,6 +2,10 @@
 
 Application changes added during development.
 
+## Portable development helpers
+
+- macOS probe and signing-key transfer scripts require explicit SSH host settings (`CORGI_PROBE_HOST` and `CORGI_RELEASE_HOST`); the probe also requires `CORGI_PROBE_REMOTE` for the remote checkout path.
+
 ## GitHub PR viewer
 
 - PR and local/remote diff views survive viewer restarts and conversation resumes, including navigation and diff layout, keyed by provider session identity.
@@ -46,7 +50,6 @@ Application changes added during development.
 - Right-clicking a tab or agent offers **Move tab to workspace…**, preserving the tab's splits and running processes and following it to the destination.
 - Cmd+Shift+A toggles between the workspace-specific agent list and all agents, remembering the preference across viewer restarts.
 - The top-left bitmap icon is replaced with a themed `>_` terminal mark.
-
 
 ## Compatibility and validation
 
