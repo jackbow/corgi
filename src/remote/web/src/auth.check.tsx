@@ -111,7 +111,7 @@ it("requires an explicit unlock gesture and never loops biometric prompts during
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string, init: RequestInit) => {
-      if (path === "/api/challenge") return Response.json({ nonce: "bm9uY2U", credential: "Y3JlZGVudGlhbA" });
+      if (path === "/api/challenge") return Response.json({ nonce: "bm9uY2U", credential: "Y3JlZGVudGlhbA" }); // Base64url for "credential". gitleaks:allow
       if (path === "/api/session" && init.method === "POST") {
         expect(JSON.parse(init.body as string).assertion).toEqual({
           clientDataJSON: "AQ",

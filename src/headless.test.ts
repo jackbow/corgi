@@ -879,3 +879,12 @@ test("search progress reaches the prompt journal while its shell tool is still r
     request(p.server, p.peer, { op: "headless.search", payload: { id: s.id, search: state } }),
   ).rejects.toThrow("NoHeadlessSession");
 });
+test("headless prompt normalization preserves explicit model and effort and rejects malformed options", () => {
+  const s = session(),
+    input: Input = { kind: "prompt", text: "fix", model: "gpt-6.1-sol", effort: "medium" };
+  s.send(input);
+  expect((s.client as Fake).sent).toEqual([input]);
+  expect(() => s.send({ ...input, model: 42 })).toThrow("InvalidMessage");
+  expect(() => s.send({ ...input, effort: {} })).toThrow("InvalidMessage");
+  s.destroy();
+});

@@ -41,7 +41,7 @@ export const max_image_bytes = 20 * 1024 * 1024;
 /** What core asks of a headless client. A prompt or interrupt without a
  * session goes to the conversation it shows. */
 export type Input =
-  | { kind: "prompt"; text: string; session?: string; images?: Image[] }
+  | { kind: "prompt"; text: string; session?: string; images?: Image[]; model?: string; effort?: string }
   | { kind: "answer"; request: string; allow: boolean; message?: string }
   | { kind: "interrupt"; session?: string };
 /** What a request asks: `tool` when it is a tool waiting to run. */

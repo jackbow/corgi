@@ -107,7 +107,7 @@ test("explicit Codex home uses only that profile's cached public identity", asyn
     await writeFile(
       join(root, "auth.json"),
       JSON.stringify({
-        tokens: { id_token: "x.eyJlbWFpbCI6IndvcmtAZXhhbXBsZS5jb20ifQ.x" },
+        tokens: { id_token: "x.eyJlbWFpbCI6IndvcmtAZXhhbXBsZS5jb20ifQ.x" }, // Synthetic unsigned token. gitleaks:allow
       }),
     );
     const s = analyze(`CODEX_HOME='${root}' codex`, "/tmp");

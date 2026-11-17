@@ -20,6 +20,7 @@ import * as syntax from "./syntax";
 import * as tree from "./tree";
 import * as textArea from "../text_area";
 import type * as keys from "../keys";
+import type { File as RemoteFile } from "./remote";
 
 export type Scope = "all" | "uncommitted" | "commits";
 /** A key the panel reads: an edit, as every text box reads it, or one of its own. */
@@ -67,6 +68,7 @@ function typed(named: Named): textArea.Edit | null {
 /** What a key or click asks of the viewer beyond the panel. */
 export type Effect =
   | { kind: "none" }
+  | { kind: "pull-request"; url: string }
   | { kind: "send"; pane: number; from: number; text: string; notes: notes.Note[] }
   | { kind: "copy"; text: string; notes: notes.Note[] }
   | { kind: "hide" }
@@ -161,6 +163,21 @@ const keyGroups = (): KeyGroup[] => [
   ],
 ];
 
+export interface Saved {
+  folder: string | null;
+  path: string | null;
+  scope: Scope;
+  all: boolean;
+  top: number;
+  cur: number;
+  tree_top: number;
+  part: "tree" | "diff";
+  split: boolean;
+  hide_tests: boolean;
+  full_context: boolean;
+  wrap: boolean;
+  pick: string | null;
+}
 type Part = "tree" | "diff";
 /** A row of the file list: the "All files" slot above the files. */
 type ListRow = tree.Row | { kind: "all"; id: "all"; depth: 0 };
@@ -481,6 +498,49 @@ function plural(count: number, word: "note" | "file" | "commit" | "unmodified li
 }
 
 export class Panel {
+  /** A PR snapshot is independent of the focused pane's working tree. */
+  remote: string | null = null;
+  private remoteLoad: ((file: RemoteFile) => Promise<git.Loaded>) | null = null;
+  showRemote(
+    url: string,
+    title: string,
+    base: string,
+    head: string,
+    files: RemoteFile[],
+    destination: Target | null,
+    load?: (file: RemoteFile) => Promise<git.Loaded>,
+  ): void {
+    this.hide();
+    this.remote = url;
+    this.remoteLoad = load ?? null;
+    this.target = { pane: -3, cwd: url, name: title };
+    this.dest = destination;
+    this.reviews.set(-3, new Review());
+    this.roots.set(url, url);
+    const co = new Checkout(url);
+    co.head = head;
+    co.branch = title;
+    co.base = { name: i18n.t`PR base`, merge_base: base };
+    co.read = true;
+    const source: git.Source = { kind: "worktree", against: base };
+    co.listings.set(sourceKey(source), { changes: files.map(f => f.change), auto_collapsed: new Set(), edited: null });
+    for (const file of files) {
+      const lang = syntax.language(file.change.path);
+      co.files.set(`${sourceKey(source)}\0${file.change.path}`, {
+        sig: "remote",
+        loaded: file.loaded,
+        old: new syntax.Highlighter(lang, file.loaded.kind === "diff" ? file.loaded.diff.old : []),
+        new: new syntax.Highlighter(lang, file.loaded.kind === "diff" ? file.loaded.diff.new : []),
+      });
+    }
+    this.checkouts.set(url, co);
+    const r = this.review(-3);
+    r.path = files[0]?.change.path ?? null;
+    r.status = { text: i18n.t`PR snapshot · P returns to PR`, warm: false };
+    this.open = true;
+    r.visible = true;
+    this.changed();
+  }
   open = false;
   /** Kept on its pane's checkout while focus moves on; notes then go to `dest`. */
   pinned = false;
@@ -710,6 +770,7 @@ export class Panel {
     return width >= min_width ? width : 0;
   }
   follow(target: Target | null): void {
+    if (this.remote) return;
     const before = this.target,
       was_open = this.open;
     this.followed = target;
@@ -758,6 +819,58 @@ export class Panel {
     this.splitting = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    this.remote = null;
+    this.remoteLoad = null;
+  }
+  saved(): Saved | null {
+    if (!this.target) return null;
+    const r = this.review(this.target.pane);
+    return {
+      folder: r.folder,
+      path: r.path,
+      scope: r.scope,
+      all: r.all,
+      top: r.top,
+      cur: r.cur,
+      tree_top: r.tree_top,
+      part: r.part,
+      split: r.split,
+      hide_tests: r.hide_tests,
+      full_context: r.full_context,
+      wrap: r.wrap,
+      pick: r.pick,
+    };
+  }
+  restoreView(saved: Saved): void {
+    if (!this.target) return;
+    const r = this.review(this.target.pane);
+    Object.assign(r, saved);
+    r.tree_sel = saved.all ? "all" : saved.path ? "f:" + saved.path : null;
+    r.free = true;
+    if (!this.remote && saved.folder) this.target = { ...this.target, cwd: saved.folder };
+    void this.refresh();
+    this.changed();
+  }
+  beginPathPaste(): void {
+    if (!this.open || !this.target) return;
+    const r = this.review(this.target.pane);
+    if (!r.folder_input && !r.compose && !r.find && !this.remote) this.openFolder(r);
+    if (r.folder_input) r.folder_input.apply("select_all");
+  }
+  endPathPaste(): void {
+    if (!this.target) return;
+    const input = this.review(this.target.pane).folder_input;
+    if (input) void this.setFolder(input.text.trim());
+  }
+  pastePath(value: string): boolean {
+    if (!this.open || !this.target || this.remote) return false;
+    const r = this.review(this.target.pane);
+    if (r.compose || r.find) return false;
+    if (!r.folder_input) this.openFolder(r);
+    r.folder_input!.apply("select_all");
+    r.folder_input!.insert(value.trim());
+    this.endPathPaste();
+    return true;
   }
   private openFolder(r: Review): void {
     const input = new folders.Input(this.target?.cwd ?? "", () => {
@@ -833,6 +946,7 @@ export class Panel {
   }
   private source(co: Checkout, r: Review): git.Source | null {
     if (r.reference) return r.reference;
+    if (this.remote === co.root && co.base) return { kind: "worktree", against: co.base.merge_base };
     if (r.scope === "commits") return r.pick ? { kind: "commit", hash: r.pick } : null;
     if (r.scope === "all" && co.base) return { kind: "worktree", against: co.base.merge_base };
     return { kind: "worktree", against: co.head ?? git.empty_tree };
@@ -905,6 +1019,20 @@ export class Panel {
   }
   private async read(t: Target | null): Promise<void> {
     if (!t) return;
+    if (t.cwd === this.remote) {
+      const co = this.checkout(),
+        r = this.review(t.pane),
+        listed = co && this.listing(co, r);
+      if (co && listed && r.full_context) {
+        const queue = listed.changes.filter(change => r.all || change.path === r.path);
+        const reader = async () => {
+          for (let change = queue.shift(); change; change = queue.shift())
+            await this.loadFile(co, r, listed.source, change);
+        };
+        await Promise.all(Array.from({ length: parallel_reads }, reader));
+      }
+      return;
+    }
     const r = t.conversation ? this.sessions.get(t.conversation)! : this.review(t.pane);
     let root = this.roots.get(t.cwd);
     if (root === undefined) {
@@ -968,6 +1096,10 @@ export class Panel {
   }
   /** Reads one file's diff unless it is current. */
   private async loadFile(co: Checkout, r: Review, source: git.Source, change: git.Change): Promise<void> {
+    if (co.root === this.remote) {
+      await this.loadRemote(co, r, source, change);
+      return;
+    }
     if (change.generated && !r.loaded.has(change.path)) return;
     let stamp = "";
     if (source.kind === "worktree" && change.kind !== "deleted")
@@ -1003,6 +1135,51 @@ export class Panel {
       listed = this.listing(co, r),
       change = listed?.changes.find(c => c.path === r.path);
     if (listed && change) void this.loadFile(co, r, listed.source, change);
+  }
+  private async loadRemote(co: Checkout, r: Review, source: git.Source, change: git.Change): Promise<void> {
+    const key = `${sourceKey(source)}\0${change.path}`,
+      file = co.files.get(key);
+    if (!r.full_context || !this.remoteLoad || !file || file.sig !== "remote" || file.loaded.kind !== "diff") return;
+    file.sig = "remote-loading";
+    r.status = { text: i18n.t`Loading full-file context…`, warm: false };
+    this.changed();
+    try {
+      const loaded = await this.remoteLoad({ change, loaded: file.loaded });
+      if (this.remote !== co.root || this.checkouts.get(co.root) !== co) return;
+      if (loaded.kind !== "diff")
+        throw Error(loaded.kind === "failed" ? loaded.message : i18n.t`Full-file context is unavailable for this file`);
+      const unit = this.units(r, file.loaded.diff, change.path)[r.cur],
+        row = unit?.kind === "row" ? file.loaded.diff.rows[unit.row] : undefined;
+      const lang = syntax.language(change.path);
+      co.files.set(key, {
+        sig: "remote-full",
+        loaded,
+        old: new syntax.Highlighter(lang, loaded.diff.old),
+        new: new syntax.Highlighter(lang, loaded.diff.new),
+      });
+      if (r.path === change.path && row) {
+        r.cur = Math.max(
+          0,
+          this.units(r, loaded.diff, change.path).findIndex(
+            unit =>
+              unit.kind === "row" &&
+              loaded.diff.rows[unit.row].kind === row.kind &&
+              loaded.diff.rows[unit.row].old_no === row.old_no &&
+              loaded.diff.rows[unit.row].new_no === row.new_no,
+          ),
+        );
+        r.top = 0;
+        r.free = false;
+      }
+      if (!r.status?.warm) r.status = null;
+      this.loads++;
+    } catch (error) {
+      if (this.remote !== co.root || this.checkouts.get(co.root) !== co) return;
+      file.sig = "remote";
+      r.full_context = false;
+      r.status = { text: (error as Error).message, warm: true };
+    }
+    this.changed();
   }
   private current(): Now | null {
     const co = this.checkout(),
@@ -1202,6 +1379,7 @@ export class Panel {
 
   /** A key while the panel has the keyboard. */
   key(k: Key): Effect {
+    if (this.remote && !this.typing && "text" in k && ["r", "g", "G", "u"].includes(k.text)) return { kind: "none" };
     const t = this.target;
     if (!t) return "named" in k && k.named === "escape" ? { kind: "leave" } : { kind: "none" };
     const r = this.review(t.pane),
@@ -1477,6 +1655,7 @@ export class Panel {
         const unit = units[r.cur],
           row = unit?.kind === "row" ? unit.row : unit?.start;
         r.full_context = !r.full_context;
+        if (this.remote && r.full_context) void this.refresh();
         r.opened.clear();
         r.anchor = null;
         r.landmark = null;
@@ -1816,12 +1995,17 @@ export class Panel {
   }
   /** Where notes go: the focused pane while pinned, else the reviewed one. */
   private destination(): Target | null {
+    if (this.remote) return this.dest;
     return this.pinned && this.dest ? this.dest : this.target;
   }
   private send(r: Review, copy: boolean): Effect {
     const from = this.target,
-      to = this.destination();
-    if (!from || !to) return { kind: "none" };
+      to = this.destination() ?? (copy ? from : null);
+    if (!from) return { kind: "none" };
+    if (!to) {
+      r.status = { text: i18n.t`That pane closed; the notes are kept.`, warm: true };
+      return { kind: "none" };
+    }
     if (r.notes.length === 0) {
       r.status = { text: i18n.t`No notes yet. v selects lines, c comments.`, warm: false };
       return { kind: "none" };
@@ -2078,6 +2262,16 @@ export class Panel {
       t = this.target;
     if (focused) c.put(0, 0, "▌", colors.accent);
     let col = c.text(1, 0, i18n.t`Review`, colors.strong, null, true) + 1;
+    if (this.remote) {
+      const url = this.remote,
+        start = col;
+      col = c.text(col, 0, i18n.t`PR details`, colors.accent) + 1;
+      c.hit(start, 0, col - start, 1, {
+        act: () => {
+          this.pending = { kind: "pull-request", url };
+        },
+      });
+    }
     if (t) {
       // p's keycap, as in the footer, and "pin", lit while pinned.
       const start = col;
