@@ -239,6 +239,19 @@ export function fromJSON(value: Wire<Snapshot> | null | undefined): Snapshot {
       pane: p.pane ?? null,
       session: p.session ?? null,
     });
+  // Retained history can outlive the daemon version that produced it.
+  const processes = (list: Wire<Process>[] | undefined) =>
+    (list ?? [])
+      .filter(
+        p =>
+          p != null &&
+          Number.isInteger(p.pid) &&
+          p.pid > 0 &&
+          typeof p.name === "string" &&
+          ((typeof p.start === "bigint" && p.start >= 0n) ||
+            (typeof p.start === "number" && Number.isSafeInteger(p.start) && p.start >= 0)),
+      )
+      .map(restoreProcess);
   const restoreWork = (w: Wire<Work>) =>
     Object.assign(new Work(w.id), w, {
       memory: nullable(w.memory),
@@ -249,7 +262,7 @@ export function fromJSON(value: Wire<Snapshot> | null | undefined): Snapshot {
       gpu_shown: w.gpu_shown ?? false,
       gpu_devices: (w.gpu_devices ?? []).map(share),
       gpu_attribution: w.gpu_attribution ?? null,
-      processes: (w.processes ?? []).map(restoreProcess),
+      processes: processes(w.processes),
       history: (w.history ?? []).map(point => ({
         at: point.at,
         samples: point.samples ?? 1,
@@ -257,7 +270,7 @@ export function fromJSON(value: Wire<Snapshot> | null | undefined): Snapshot {
         memory: nullable(point.memory),
         io: nullable(point.io),
         gpus: (point.gpus ?? []).map(share),
-        processes: (point.processes ?? []).map(restoreProcess),
+        processes: processes(point.processes),
       })),
     });
   return Object.assign(new Snapshot(), value, {
