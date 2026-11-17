@@ -32,12 +32,14 @@ const saved = { ...process.env },
     "CODEX_HOME",
     "PI_CODING_AGENT_DIR",
     "ANTHROPIC_MODEL",
+    "CORGI_TEST_SYSTEM_ROOT",
   ];
 let home = "";
 beforeEach(() => {
   home = realpathSync(mkdtempSync(join(tmpdir(), "corgi-accounts-")));
   process.env.HOME = home;
   process.env.CORGI_ENV_BASE = join(home, "state");
+  process.env.CORGI_TEST_SYSTEM_ROOT = join(home, "system");
   for (const key of ["XDG_STATE_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR", "ANTHROPIC_MODEL"])
     delete process.env[key];
   mkdirSync(join(home, ".claude"));

@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { basename, join } from "node:path";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, renameSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import {
   processArgs,
   processPath,
@@ -17,15 +17,14 @@ import {
 } from "./os";
 
 test("the login shell comes from the account database, not SHELL", () => {
-  const account =
-    process.platform === "darwin"
-      ? Bun.spawnSync(["dscl", ".", "-read", `/Users/${env("USER")}`, "UserShell"])
-          .stdout.toString()
-          .replace(/^UserShell:\s*/, "")
-      : Bun.spawnSync(["getent", "passwd", String(process.getuid!())])
-          .stdout.toString()
-          .split(":")[6];
-  expect(loginShell()).toBe(account.trim());
+  const saved = process.env.SHELL;
+  try {
+    process.env.SHELL = "/not-the-login-shell";
+    expect(loginShell()).toBe(userInfo().shell);
+  } finally {
+    if (saved === undefined) delete process.env.SHELL;
+    else process.env.SHELL = saved;
+  }
 });
 test("a process's own arguments, executable and environment are readable", () => {
   const buf = Buffer.alloc(1024 * 1024),

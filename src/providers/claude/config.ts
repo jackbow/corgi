@@ -2,6 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { configHome } from "../common";
 import { vocabulary } from "./info";
+import { testBuild } from "../../build_assets";
 
 export function configDir(env = process.env) {
   return configHome(env, vocabulary.config_env, ".claude");
@@ -30,6 +31,7 @@ export function settingsModel(cwd: string, env = process.env) {
   read(cwd, ".claude/settings.json", "Project settings (if trusted)");
   read(cwd, ".claude/settings.local.json", "Local settings (if trusted)");
   if (env.ANTHROPIC_MODEL) chosen = { model: env.ANTHROPIC_MODEL, source: "ANTHROPIC_MODEL" };
-  read("/Library/Application Support/ClaudeCode", "managed-settings.json", "Managed settings");
+  const system = testBuild ? (env.CORGI_TEST_SYSTEM_ROOT ?? "") : "";
+  read(join(system || "/", "Library/Application Support/ClaudeCode"), "managed-settings.json", "Managed settings");
   return chosen;
 }
