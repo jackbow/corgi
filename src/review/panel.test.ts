@@ -7,6 +7,7 @@ import { Terminal } from "../pane/terminal";
 import { Writer } from "../text";
 import * as panel from "./panel";
 import * as i18n from "../i18n";
+import * as remote from "./remote";
 
 let root = "";
 const run = (...args: string[]) =>
@@ -62,6 +63,37 @@ const settle = async (p: panel.Panel) => {
   await p.refresh();
   await p.refresh();
 };
+
+test("remote PR snapshots use the diff viewer without following or rereading the local checkout", async () => {
+  const p = new panel.Panel();
+  const url = "https://github.com/acme/app/pull/12";
+  p.showRemote(
+    url,
+    "acme/app #12",
+    "b".repeat(40),
+    "a".repeat(40),
+    remote.files(
+      "diff --git a/widget.ts b/widget.ts\n--- a/widget.ts\n+++ b/widget.ts\n@@ -1 +1 @@\n-old widget\n+new widget\n",
+    ),
+    null,
+  );
+  try {
+    p.follow({ pane: 1, cwd: root, name: "local" });
+    p.keep(new Set([1]));
+    await p.refresh();
+    const text = screen(p).join("\n");
+    expect(text).toContain("widget.ts");
+    expect(text).toContain("old widget");
+    expect(text).toContain("new widget");
+    expect(p.remote).toBe(url);
+    p.hide();
+    expect(p.remote).toBeNull();
+    p.follow({ pane: 1, cwd: root, name: "local" });
+    expect(p.pane).toBe(1);
+  } finally {
+    p.hide();
+  }
+});
 const key = (p: panel.Panel, k: string | panel.Named) =>
   p.key(k.length === 1 ? { text: k } : { named: k as panel.Named });
 
@@ -88,6 +120,141 @@ function folderCheckout(): string {
     writeFileSync(join(dir, file), "after\n");
   return dir;
 }
+
+test("Z loads pinned PR file context once, shows the whole file, and folds back to hunks", async () => {
+  const p = new panel.Panel(),
+    url = "https://github.com/acme/app/pull/12",
+    content =
+      Array.from({ length: 40 }, (_, i) => (i === 11 ? "new widget" : `outside context ${i + 1}`)).join("\n") + "\n",
+    files = remote.files(
+      "diff --git a/widget.ts b/widget.ts\n--- a/widget.ts\n+++ b/widget.ts\n@@ -12 +12 @@\n-old widget\n+new widget\n",
+    );
+  let reads = 0;
+  p.showRemote(url, "PR", "b".repeat(40), "a".repeat(40), files, null, async file => {
+    reads++;
+    return remote.context(file, content);
+  });
+  try {
+    expect(screen(p, 90, 80).join("\n")).not.toContain("outside context 1");
+    p.key({ text: "Z" });
+    await settle(p);
+    expect(p.review(-3).full_context).toBe(true);
+    expect(screen(p, 90, 80).join("\n")).toContain("outside context 1");
+    expect(screen(p, 90, 80).join("\n")).toContain("outside context 40");
+    p.key({ text: "Z" });
+    expect(p.review(-3).full_context).toBe(false);
+    expect(screen(p, 90, 80).join("\n")).not.toContain("outside context 40");
+    expect(screen(p, 90, 80).join("\n")).toContain("new widget");
+    p.key({ text: "Z" });
+    await settle(p);
+    expect(reads).toBe(1);
+  } finally {
+    p.hide();
+  }
+});
+
+test("PR context failures retain readable hunks and Z can retry the load", async () => {
+  const p = new panel.Panel(),
+    files = remote.files("diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n");
+  let reads = 0;
+  p.showRemote("https://github.com/acme/app/pull/12", "PR", "b".repeat(40), "a".repeat(40), files, null, async file => {
+    if (++reads === 1) throw Error("offline");
+    return remote.context(file, "new\n");
+  });
+  try {
+    p.key({ text: "Z" });
+    await settle(p);
+    expect(p.review(-3).full_context).toBe(false);
+    expect(screen(p).join("\n")).toContain("offline");
+    expect(screen(p).join("\n")).toContain("new");
+    p.key({ text: "Z" });
+    await settle(p);
+    expect(p.review(-3).full_context).toBe(true);
+    expect(reads).toBe(2);
+  } finally {
+    p.hide();
+  }
+});
+
+test("restored whole-file PR views load context for all visible files", async () => {
+  const p = new panel.Panel(),
+    files = remote.files(
+      ["a.ts", "b.ts"].map(path => `diff --git a/${path} b/${path}\n@@ -1 +1 @@\n-old\n+new\n`).join(""),
+    ),
+    seen: string[] = [];
+  p.showRemote("https://github.com/acme/app/pull/12", "PR", "b".repeat(40), "a".repeat(40), files, null, async file => {
+    seen.push(file.change.path);
+    return remote.context(file, "new\n");
+  });
+  try {
+    p.restoreView({ ...p.saved()!, full_context: true, all: true });
+    await settle(p);
+    expect(seen.sort()).toEqual(["a.ts", "b.ts"]);
+    expect(p.review(-3).full_context).toBe(true);
+  } finally {
+    p.hide();
+  }
+});
+
+test("PR note editors and search accept shortcut letters and notes send to the conversation pane", () => {
+  const p = new panel.Panel(),
+    files = remote.files("diff --git a/app.ts b/app.ts\n@@ -1 +1 @@\n-old\n+new\n"),
+    destination = { pane: 42, cwd: "/repo", name: "Agent chat" },
+    body = "Please review r g G u P";
+  try {
+    for (const comment of ["c", "C"]) {
+      p.showRemote("https://github.com/acme/app/pull/12", "PR", "b".repeat(40), "a".repeat(40), files, destination);
+      p.key({ text: comment });
+      for (const text of body) p.key({ text });
+      expect(p.typingArea()?.text).toBe(body);
+      p.key({ named: "enter" });
+      let effect: panel.Effect;
+      if (comment === "C") {
+        const rows = screen(p, 110, 40),
+          y = rows.findIndex(row => row.includes("send 1 to Agent chat"));
+        expect(y).toBeGreaterThanOrEqual(0);
+        const x = rows[y].indexOf("send 1 to Agent chat") + 1;
+        p.mouse("press", x, y);
+        p.mouse("release", x, y);
+        effect = p.takeEffect();
+      } else effect = p.key({ text: "s" });
+      expect(effect).toMatchObject({ kind: "send", pane: 42, from: -3, notes: [{ text: body, path: "app.ts" }] });
+      if (effect.kind === "send") expect(effect.text).toContain(body);
+      expect(p.noteCount(-3)).toBe(0);
+    }
+    p.key({ text: "/" });
+    for (const text of "r g G u P") p.key({ text });
+    expect(p.typingArea()?.text).toBe("r g G u P");
+    p.key({ named: "escape" });
+    p.key({ text: "r" });
+    expect(p.typing).toBe(false);
+  } finally {
+    p.hide();
+  }
+});
+
+test("PR notes are retained without a conversation destination and can still be copied", () => {
+  const p = new panel.Panel();
+  p.showRemote(
+    "https://github.com/acme/app/pull/12",
+    "PR",
+    "b".repeat(40),
+    "a".repeat(40),
+    remote.files("diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n"),
+    null,
+  );
+  try {
+    p.key({ text: "C" });
+    for (const text of "review") p.key({ text });
+    p.key({ named: "enter" });
+    expect(p.key({ text: "s" })).toEqual({ kind: "none" });
+    expect(p.noteCount(-3)).toBe(1);
+    expect(screen(p).join("\n")).toContain("notes are kept");
+    expect(p.key({ text: "y" })).toMatchObject({ kind: "copy", text: "a.ts (file)\nreview" });
+  } finally {
+    p.hide();
+  }
+});
 
 test("a chosen folder filters changed files and survives closing and reopening", async () => {
   const dir = folderCheckout(),
@@ -417,7 +584,9 @@ test("opens on all: commits and working copy together", async () => {
   expect(narrow[1]).toContain(" all │ uncommitted │ commits ▾ 1 ");
   expect(narrow[2]).toContain("topic vs main");
   // How to close it stays at the bottom right when the other keys run out of room.
-  expect(rows.at(-2)).toMatch(/\? keys +q close $/);
+  expect(rows.at(-2)).toContain("S split");
+  expect(rows.at(-2)).toMatch(/q close $/);
+  expect(screen(p, 90).at(-2)).toMatch(/\? keys +q close $/);
   expect(narrow.at(-2)).toMatch(/q close $/);
   expect(narrow.at(-2)).not.toContain("? keys");
   const tree = rows.slice(3, 7).join("\n");
@@ -466,6 +635,128 @@ test("Z switches every file between hunks and full context and remembers the mod
     expect(body).not.toContain("export const v0 = 0;");
   } finally {
     p.hide();
+  }
+});
+
+test("S switches unified and split diffs, with a clickable footer and per-conversation mode", async () => {
+  const p = new panel.Panel();
+  try {
+    p.follow({ pane: 120, conversation: 1020, cwd: root, name: "Agent" });
+    p.show();
+    await settle(p);
+    const r = p.review(120);
+    expect(r.split).toBe(false);
+    expect(screen(p).at(-2)).toContain("S split");
+    key(p, "tab");
+    const before = screen(p, 140, 100);
+    expect(before.find(line => line.includes("export const v5 = 5;"))).not.toContain("export const v5 = 50;");
+    const cur = r.cur;
+    key(p, "S");
+    let rows = screen(p, 140, 100);
+    expect(r.cur).toBe(cur);
+    expect(rows.find(line => line.includes("export const v5 = 5;"))).toContain("export const v5 = 50;");
+    expect(rows.at(-2)).toContain("S unified");
+    expect(screen(p, 40, 60).at(-2)).toContain("S unified");
+    rows = screen(p, 140, 100);
+    p.mouse(
+      "press",
+      rows.at(-2)!.indexOf("S unified"),
+      rows.findIndex(line => line.includes("S unified")),
+    );
+    expect(r.split).toBe(false);
+    rows = screen(p, 140, 100);
+    expect(rows.find(line => line.includes("export const v5 = 5;"))).not.toContain("export const v5 = 50;");
+    key(p, "S");
+    key(p, "?");
+    expect(screen(p, 140, 100).join("\n")).toContain("Unified / split diff");
+    key(p, "escape");
+    p.hide();
+    p.follow({ pane: 121, conversation: 1021, cwd: root, name: "Other" });
+    expect(p.review(121).split).toBe(false);
+    p.follow({ pane: 122, conversation: 1020, cwd: root, name: "Agent" });
+    p.show();
+    expect(p.review(122).split).toBe(true);
+  } finally {
+    p.hide();
+  }
+});
+
+test("split clicks comment on the correct side and vertical movement follows aligned rows", async () => {
+  const p = new panel.Panel();
+  try {
+    p.follow({ pane: 123, cwd: root, name: "Agent" });
+    p.show();
+    await settle(p);
+    const r = p.review(123);
+    r.all = false;
+    r.path = "app.ts";
+    r.part = "diff";
+    r.full_context = true;
+    key(p, "S");
+    let rows = screen(p, 140, 100);
+    const y = rows.findIndex(line => line.includes("export const v5 = 5;"));
+    expect(y).toBeGreaterThan(0);
+    p.mouse("press", 15, y);
+    key(p, "c");
+    expect(r.compose?.side).toBe("old");
+    expect(r.compose?.snippet).toBe("-export const v5 = 5;");
+    key(p, "escape");
+    rows = screen(p, 140, 100);
+    p.mouse("press", 100, y);
+    key(p, "c");
+    expect(r.compose?.side).toBe("new");
+    expect(r.compose?.snippet).toBe("+export const v5 = 50;");
+    key(p, "escape");
+    key(p, "v");
+    key(p, "j");
+    key(p, "c");
+    expect(r.compose?.side).toBe("new");
+    expect(r.compose?.start).toBe(6);
+    expect(r.compose?.end).toBe(7);
+    key(p, "escape");
+    key(p, "home");
+    key(p, "end");
+    key(p, "c");
+    expect(r.compose?.end).toBe(40);
+  } finally {
+    p.hide();
+  }
+});
+
+test("split additions keep an empty old side and navigate in screen order", async () => {
+  const dir = folderCheckout(),
+    p = new panel.Panel();
+  try {
+    writeFileSync(join(dir, "app.ts"), "after\nextra\nlast\n");
+    p.follow({ pane: 124, cwd: dir, name: "Agent" });
+    p.show();
+    await settle(p);
+    const r = p.review(124);
+    r.all = false;
+    r.path = "app.ts";
+    r.part = "diff";
+    key(p, "S");
+    const rows = screen(p, 140, 60),
+      y = rows.findIndex(line => line.includes("before"));
+    expect(rows[y]).toContain("after");
+    expect(rows[y + 1].slice(1, 70).trim()).toBe("");
+    expect(rows[y + 1]).toContain("extra");
+    expect(rows[y + 2]).toContain("last");
+    p.mouse("press", 100, y);
+    key(p, "j");
+    key(p, "c");
+    expect(r.compose?.snippet).toBe("+extra");
+    key(p, "escape");
+    key(p, "k");
+    key(p, "c");
+    expect(r.compose?.snippet).toBe("+after");
+    key(p, "escape");
+    key(p, "end");
+    key(p, "c");
+    expect(r.compose?.snippet).toBe("+last");
+  } finally {
+    p.hide();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -1176,7 +1467,13 @@ test("wide source wraps and scrolls in cells without writing into the pane besid
     review.all = false;
     review.path = "wide.ts";
     review.free = true;
-    for (const width of [40, 53]) {
+    for (const [split, width] of [
+      [false, 40],
+      [false, 53],
+      [true, 80],
+      [true, 106],
+    ] as const) {
+      review.split = split;
       for (const [wrap, shift] of [
         [true, 0],
         [false, 0],
@@ -1211,5 +1508,28 @@ test("wide source wraps and scrolls in cells without writing into the pane besid
   } finally {
     p.hide();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("pasting a path in the diff editor replaces its current value and opens that directory", async () => {
+  const p = new panel.Panel();
+  p.follow({ pane: 501, conversation: 501, cwd: root, name: "test" });
+  p.show();
+  try {
+    p.key({ text: "r" });
+    expect(p.typing).toBe(true);
+    p.beginPathPaste();
+    for (const byte of new TextEncoder().encode(root + "\n")) p.pasteByte(byte);
+    p.endPathPaste();
+    await p.refresh();
+    await Bun.sleep(100);
+    expect(p.typing).toBe(false);
+    expect(p.saved()?.folder).toBe(root);
+    expect(p.pastePath(root)).toBe(true);
+    await p.refresh();
+    await Bun.sleep(100);
+    expect(p.saved()?.folder).toBe(root);
+  } finally {
+    p.hide();
   }
 });

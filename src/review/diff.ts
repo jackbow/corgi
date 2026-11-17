@@ -21,6 +21,37 @@ export interface Row {
 }
 /** What the pane shows: a row, or a folded run of rows [start, end). */
 export type Unit = { kind: "row"; row: number } | { kind: "fold"; start: number; end: number };
+/** Unit indices aligned across the old and new columns; null is an empty side. */
+export interface SplitUnit {
+  old: number | null;
+  new: number | null;
+}
+export function splitUnits(d: FileDiff, units: Unit[]): SplitUnit[] {
+  const result: SplitUnit[] = [];
+  for (let at = 0; at < units.length;) {
+    const unit = units[at];
+    if (unit.kind === "fold" || d.rows[unit.row].kind === "context") {
+      result.push({ old: at, new: at });
+      at++;
+      continue;
+    }
+    const old: number[] = [],
+      fresh: number[] = [];
+    while (at < units.length) {
+      const next = units[at];
+      if (next.kind === "fold" || d.rows[next.row].kind !== "deletion") break;
+      old.push(at++);
+    }
+    while (at < units.length) {
+      const next = units[at];
+      if (next.kind === "fold" || d.rows[next.row].kind !== "insertion") break;
+      fresh.push(at++);
+    }
+    for (let i = 0; i < Math.max(old.length, fresh.length); i++)
+      result.push({ old: old[i] ?? null, new: fresh[i] ?? null });
+  }
+  return result;
+}
 /** `[start, end)` character ranges within a line. */
 export type Ranges = [number, number][];
 

@@ -252,6 +252,7 @@ export function panes(c: Column) {
   c.heading(i18n.t`CORGI`);
   c.action(i18n.t`Toggle sidebar`, act("sidebar"), 2);
   c.action(i18n.t`Review changes`, act("review"), 2);
+  c.action(i18n.t`Toggle PR viewer`, act("pull-request-toggle"), 2);
   c.action(i18n.t`Setup`, act("setup"), 2);
 }
 const commandFooter = () => i18n.t`Press a shortcut or click a key`;
