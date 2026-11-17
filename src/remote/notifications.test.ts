@@ -29,7 +29,7 @@ const subscription = {
   endpoint: "https://web.push.apple.com/one",
   keys: {
     p256dh: "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
-    auth: "BTBZMqHH6r4Tts7J_aSIgg",
+    auth: "BTBZMqHH6r4Tts7J_aSIgg", // RFC 8291 example auth secret. gitleaks:allow
   },
 };
 test("agent alerts follow waiting transitions and completion receipts without unread or polling duplicates", () => {

@@ -158,7 +158,7 @@ type Step =
   | ({ kind: "steer"; thread: string; turn: string } & Said)
   | { kind: "other" };
 /** What a prompt says: its text, and the images that go with it. */
-type Said = { text: string; images?: Image[] };
+type Said = { text: string; images?: Image[]; model?: string; effort?: string };
 /** A prompt as Codex takes it: its text, then each image by path. */
 function userInput(said: Said) {
   return [
@@ -231,6 +231,8 @@ export class Codex implements Client {
       "turn/start",
       {
         threadId: thread,
+        ...(said.model ? { model: said.model } : {}),
+        ...(said.effort ? { effort: said.effort } : {}),
         input: userInput(said),
         ...(summary ? { effort: "low", outputSchema: summary.schema ? parse(summary.schema) : null } : {}),
       },
@@ -265,11 +267,20 @@ export class Codex implements Client {
       case "prompt": {
         if (!this.ready) return void this.deferred.push(input);
         if (input.session) this.thread = input.session;
-        const said: Said = { text: input.text, ...(input.images?.length ? { images: input.images } : {}) };
+        const said: Said = {
+          text: input.text,
+          ...(input.images?.length ? { images: input.images } : {}),
+          ...(input.model ? { model: input.model } : {}),
+          ...(input.effort ? { effort: input.effort } : {}),
+        };
         if (this.thread) return this.prompt(this.thread, said);
         if (this.summary)
           return this.request("config/read", { includeLayers: false }, { kind: "config", text: input.text });
-        return this.request("thread/start", sessionThread(this.cwd, this.options), { kind: "thread", ...said });
+        return this.request(
+          "thread/start",
+          sessionThread(this.cwd, { ...this.options, ...(input.model ? { model: input.model } : {}) }),
+          { kind: "thread", ...said },
+        );
       }
       case "answer": {
         const asked = this.requests.get(input.request);
@@ -331,7 +342,12 @@ export class Codex implements Client {
         this.thread = thread;
         if (this.summary) this.created++;
         this.events.push({ kind: "conversation", session: thread, parent: null, role: null, shown: true });
-        return this.startTurn({ text: step.text, ...(step.images ? { images: step.images } : {}) });
+        return this.startTurn({
+          text: step.text,
+          ...(step.images ? { images: step.images } : {}),
+          ...(step.model ? { model: step.model } : {}),
+          ...(step.effort ? { effort: step.effort } : {}),
+        });
       }
       case "turn":
         if (failed) {
@@ -341,7 +357,7 @@ export class Codex implements Client {
         return;
       case "steer": {
         if (!failed) return;
-        const said: Said = { text: step.text, ...(step.images ? { images: step.images } : {}) };
+        const { kind, thread, turn, ...said } = step;
         // A turn that takes no steering has it start the next; one that
         // ended meanwhile, at once.
         if (this.active.get(step.thread) === step.turn)

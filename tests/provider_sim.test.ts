@@ -21,7 +21,7 @@ async function client(path: string) {
     data = Buffer.concat([data, chunk]);
   });
   socket.write(
-    "GET / HTTP/1.1\r\nHost: fixture\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+    "GET / HTTP/1.1\r\nHost: fixture\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n", // RFC 6455 example nonce. gitleaks:allow
   );
   const deadline = Date.now() + 2000;
   while (data.indexOf("\r\n\r\n") < 0 && Date.now() < deadline) await Bun.sleep(2);

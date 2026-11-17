@@ -118,6 +118,7 @@ export async function run(
   // Machines keep their place in the list, local first, whichever is shown.
   const view = new Controller(endpoints[0].machine, host);
   view.loadPreferences();
+  view.loadReviewState();
   view.input_state.attached = true;
   for (const endpoint of endpoints) {
     view.adopt(endpoint.machine);

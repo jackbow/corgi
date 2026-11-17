@@ -82,6 +82,33 @@ test("a process from a provider the viewer doesn't know restores as no agent", (
   const restored = fromJSON({ workspaces: [{ id: 1, processes }] } as any);
   expect(restored.workspace(1).processes.map(p => p.provider)).toEqual([null, "codex"]);
 });
+test("resource snapshots discard process entries without identities from retained history", () => {
+  const valid = Object.assign(new Process(2, 9007199254740993n, "worker"), { memory: 256n });
+  const invalid = [
+    null,
+    {},
+    { memory: 0 },
+    { ...valid, start: null },
+    { ...valid, start: undefined },
+    { ...valid, start: -1 },
+    { ...valid, start: 1.5 },
+    { ...valid, pid: undefined },
+    { ...valid, name: undefined },
+    "old process",
+  ];
+  const restored = fromJSON(
+    json.parse(
+      json.stringify({
+        workspaces: [
+          { id: 1, processes: [...invalid, valid], history: [{ at: 1, memory: 512n, processes: [...invalid, valid] }] },
+        ],
+      }),
+    ),
+  );
+  expect(restored.workspace(1).processes).toEqual([valid]);
+  expect(restored.workspace(1).history[0].processes).toEqual([valid]);
+  expect(restored.workspace(1).history[0].memory).toBe(512n);
+});
 test("new process baselines preserve established workspace rates", () => {
   const established = Object.assign(new Process(1, 1n, "worker"), {
       cpu: 45,

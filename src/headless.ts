@@ -166,11 +166,15 @@ function validInput(value: any): Input {
     case "prompt": {
       const images = value.images === undefined ? [] : validImages(value.images);
       if (typeof value.text !== "string" || (!value.text && !images.length)) bad();
+      if (value.model !== undefined && typeof value.model !== "string") bad();
+      if (value.effort !== undefined && typeof value.effort !== "string") bad();
       return {
         kind: "prompt",
         text: value.text,
         ...(session ? { session } : {}),
         ...(images.length ? { images } : {}),
+        ...(value.model ? { model: value.model } : {}),
+        ...(value.effort ? { effort: value.effort } : {}),
       };
     }
     case "answer":

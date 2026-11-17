@@ -4,7 +4,7 @@
 set -euo pipefail
 usage='Usage: send-release-keys.sh [--notary-key AuthKey_KEYID.p8 --issuer ISSUER_ID] [--force]'
 [[ $(uname -s) == Darwin ]] || { echo 'Run this on your Mac.' >&2; exit 1; }
-host=${CORGI_RELEASE_HOST:-nocap}
+host=${CORGI_RELEASE_HOST:?Set CORGI_RELEASE_HOST to the SSH signing host}
 config=${CORGI_RELEASE_CONFIG:-$HOME/.config/corgi/release.json}
 notary_key='' issuer='' force=0
 while [[ $# -gt 0 ]]; do

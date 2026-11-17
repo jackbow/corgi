@@ -2,7 +2,6 @@
 
 See [HACKING.md](HACKING.md) for development workflows and architecture.
 
-
 ## Local functionality changes
 
 For every functional change relative to `main`, update
