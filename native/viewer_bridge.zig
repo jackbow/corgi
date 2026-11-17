@@ -22,7 +22,8 @@ pub export fn viewer_take(dst: [*]u8, cap: usize) i64 {
 
 /// Positioned row bytes and cursor controls, without a JSON round trip.
 /// Bit positions follow Modes' boolean fields, with paste_events at bit 7.
-pub export fn viewer_receive_frame(t: *pane.Terminal, data: [*]const u8, len: usize, cols: u16, rows: u16, flags: u32, kitty: u32, mouse_event: u32, mouse_format: u32, full_reset: bool, dirty_rows: [*]const u16, dirty_count: usize) i32 {
+pub export fn viewer_receive_frame(t: *pane.Terminal, data: [*]const u8, len: usize, cols: u16, rows: u16, flags: u32, kitty: u32, mouse_event: u32, mouse_format: usize, reset: usize, dirty_rows: [*]const u16, dirty_count: usize) i32 {
+    const full_reset = reset != 0;
     if (flags > 255 or kitty > 31 or mouse_event > 4 or mouse_format > 4) return -1;
     if (cols == 0 or rows == 0) return 1;
     for (dirty_rows[0..dirty_count]) |row| if (row >= rows) return -1;
@@ -44,8 +45,8 @@ pub export fn viewer_receive_frame(t: *pane.Terminal, data: [*]const u8, len: us
         .modify_other = flags & 64 != 0,
         .paste_events = flags & 128 != 0,
         .kitty = @intCast(kitty),
-        .mouse_event = @enumFromInt(mouse_event),
-        .mouse_format = @enumFromInt(mouse_format),
+        .mouse_event = @fromBackingInt(@intCast(mouse_event)),
+        .mouse_format = @fromBackingInt(@intCast(mouse_format)),
     });
     t.installedRows(if (full_reset or external or resized) null else dirty_rows[0..dirty_count]) catch return -2;
     return 0;
@@ -77,7 +78,7 @@ pub export fn viewer_rows(t: *pane.Terminal, id: u32, x: u16, y: u16, w: u16, h:
     const state = &t.render;
     for (0..@min(state.rows, h)) |row| {
         out.writer.print("\x1b[{d};{d}H", .{ y + row + 1, x + 1 }) catch return -1;
-        pane.surface.writeRowHovered(&out.writer, state, t.hyperlinks(), @enumFromInt(id), row, w, dimmed, if (hovering) hovered else null) catch return -1;
+        pane.surface.writeRowHovered(&out.writer, state, t.hyperlinks(), @fromBackingInt(@intCast(id)), row, w, dimmed, if (hovering) hovered else null) catch return -1;
     }
     return written();
 }
@@ -93,7 +94,7 @@ pub export fn viewer_cursor(t: *pane.Terminal, visible: bool) i64 {
 
 /// The program's mouse event mode: 0 when it takes no mouse input.
 pub export fn viewer_mouse_event(t: *pane.Terminal) i32 {
-    return @intFromEnum(t.vt.flags.mouse_event);
+    return @backingInt(t.vt.flags.mouse_event);
 }
 pub export fn viewer_mode(t: *pane.Terminal, which: u32) bool {
     return switch (which) {

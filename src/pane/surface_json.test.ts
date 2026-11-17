@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { toBuffer, type Pointer } from "bun:ffi";
+import { toArrayBuffer, type Pointer } from "bun:ffi";
 import { call, symbols } from "../native_bridge";
 import * as json from "../json";
 import * as surface from "./surface";
@@ -12,7 +12,7 @@ function reply(bytes: string) {
     };
   return spyOn(native, "app_terminal_json").mockImplementation((_handle, _input, _length, output, capacity) => {
     if (payload.length > capacity) return -payload.length;
-    toBuffer(output, 0, capacity).set(payload);
+    new Uint8Array(toArrayBuffer(output, 0, capacity)).set(payload);
     return payload.length;
   });
 }

@@ -27,4 +27,4 @@ Application changes added during development.
 - Ignore retained resource-history process entries missing a valid identity, fixing a viewer crash (`Invalid argument type in ToBigInt operation`) when opening resource details or navigating diffs.
 
 - Added translations, refreshed site recordings, and regression tests for the diff changes.
-- Fixed two Bun 1.3.9 crashes: native argument packing on macOS ARM64 and buffer cleanup during garbage collection.
+- Fixed two Bun 1.3.9 crashes using pointer-sized native arguments on macOS ARM64 and copied buffers during garbage collection.
