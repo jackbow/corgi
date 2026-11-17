@@ -1,5 +1,5 @@
 import { expect, setSystemTime, spyOn, test } from "bun:test";
-import { toBuffer, type Pointer } from "bun:ffi";
+import { toArrayBuffer, type Pointer } from "bun:ffi";
 import { answerClipboard, waitTime, close } from "./viewer";
 import { State, type Result } from "./host_clipboard";
 import { n } from "./native_ffi";
@@ -11,7 +11,7 @@ function output() {
   const bytes: string[] = [];
   const native = n as unknown as { probe_write(fd: number, data: Pointer, length: number): number };
   const write = spyOn(native, "probe_write").mockImplementation((_fd, data, length) => {
-    bytes.push(toBuffer(data, 0, length).toString());
+    bytes.push(Buffer.from(toArrayBuffer(data, 0, length)).toString());
     return length;
   });
   return { bytes, close: () => write.mockRestore() };

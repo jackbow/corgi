@@ -64,3 +64,32 @@ test("direct surface installation rejects invalid scalar fields before mutation"
     target.destroy();
   }
 });
+
+test("surface updates preserve untouched rows with populated and empty dirty lists", () => {
+  const source = Terminal.create(12, 3),
+    target = Terminal.create(12, 3);
+  try {
+    source.feed("first\r\nbefore\r\nlast");
+    viewer_native.receiveFrame(target.handle, source.surface(1));
+    source.feed("\x1b[2;1Hafter \x1b[?1003h\x1b[?1006h");
+    viewer_native.receiveFrame(target.handle, source.surface(1), new Uint16Array([1]));
+    expect(target.text()).toBe(source.text());
+    expect(
+      target
+        .liveText()
+        .split("\n")
+        .map(line => line.trimEnd()),
+    ).toEqual(["first", "after", "last"]);
+    expect(viewer_native.mouseEvents(target.handle)).toBe(true);
+    source.feed("\x1b[3;2H\x1b[?1003l");
+    viewer_native.receiveFrame(target.handle, source.surface(1), new Uint16Array(0));
+    viewer_native.updateRender(target.handle);
+    viewer_native.updateRender(source.handle);
+    expect(viewer_native.cursor(target.handle)).toEqual(viewer_native.cursor(source.handle));
+    expect(viewer_native.mouseEvents(target.handle)).toBe(false);
+    expect(target.text()).toBe(source.text());
+  } finally {
+    source.destroy();
+    target.destroy();
+  }
+});

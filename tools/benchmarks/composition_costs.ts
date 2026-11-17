@@ -54,7 +54,7 @@ function fullLibrary(path: string) {
 function composedLibrary(path: string) {
   return dlopen(path, {
     frame_diff_compose: {
-      args: ["ptr", "ptr", "usize", "ptr", "ptr", "usize", "u16", "u16", "bool", "u8"],
+      args: ["ptr", "ptr", "usize", "ptr", "ptr", "usize", "u16", "u16", "usize", "usize"],
       returns: FFIType.i64_fast,
     },
     frame_diff_timing_enable: { args: ["ptr", "bool"], returns: "void" },
@@ -230,7 +230,7 @@ class Host {
             1,
             cursor?.x ?? 0,
             cursor?.y ?? 0,
-            cursor !== null,
+            Number(cursor !== null),
             reuseChrome ? 1 : 0,
           ),
         )
