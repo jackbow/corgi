@@ -67,8 +67,15 @@ export function link(text: string, cols: number): string | null {
 /** The processes that run a program from inside `folders`, as Codex starts
  * its background server from its folder: they'd outlive it. */
 function inside(folders: string[]): number[] {
-  const listed = Bun.spawnSync(["ps", "-A", "-o", "pid=,command="]).stdout.toString(),
-    pids: number[] = [];
+  let listed: string;
+  try {
+    const result = Bun.spawnSync(["ps", "-A", "-o", "pid=,command="]);
+    if (result.exitCode !== 0) return [];
+    listed = result.stdout.toString();
+  } catch {
+    return [];
+  }
+  const pids: number[] = [];
   for (const row of listed.split("\n")) {
     const m = /^\s*(\d+)\s+(\S.*)$/.exec(row);
     if (m && Number(m[1]) !== process.pid && folders.some(f => m[2].startsWith(f + "/"))) pids.push(Number(m[1]));

@@ -1,8 +1,31 @@
 import { expect, spyOn, test } from "bun:test";
 import { adding, link, Signin } from "./signin";
 import * as discovery from "./discovery";
+import * as accounts from "./accounts";
 import { signin as claude } from "./providers/claude/signin";
 import { signin as codex } from "./providers/codex/signin";
+
+test.each(["denied", "failed"])("abandoning a staged account completes when process listing is %s", failure => {
+  const staged = { provider: "claude" as const, name: "work", dir: "/isolated/account", temp: "/isolated/staged" },
+    flow = new Signin(true, false, { changed() {}, done() {} }),
+    identity = spyOn(accounts, "identity").mockReturnValue(null),
+    unstage = spyOn(accounts, "unstage").mockImplementation(() => {}),
+    listing = spyOn(Bun, "spawnSync").mockImplementation(() => {
+      if (failure === "denied") throw Object.assign(Error("Process listing denied"), { code: "EPERM" });
+      return { exitCode: 1, stdout: Buffer.alloc(0) } as ReturnType<typeof Bun.spawnSync>;
+    });
+  flow.provider = "claude";
+  flow.staged = staged;
+  try {
+    expect(() => flow.abandon()).not.toThrow();
+    expect(listing).toHaveBeenCalledWith(["ps", "-A", "-o", "pid=,command="]);
+    expect(unstage).toHaveBeenCalledWith(staged);
+    expect(flow.staged).toBeNull();
+    expect(flow.over).toBe(true);
+  } finally {
+    for (const mock of [identity, unstage, listing]) mock.mockRestore();
+  }
+});
 
 test("account creation resolves installed agents before selecting the only provider", async () => {
   const pending = Promise.withResolvers<void>(),
