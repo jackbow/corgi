@@ -5,8 +5,8 @@ set -euo pipefail
 check=0
 if [[ ${1:-} == --check ]]; then check=1; shift; fi
 [[ $# == 0 ]] || { echo 'Usage: macos.sh [--check]' >&2; exit 1; }
-host=${CORGI_PROBE_HOST:-nocap}
-remote=${CORGI_PROBE_REMOTE:-/home/t/dev/personal/corgi}
+host=${CORGI_PROBE_HOST:?Set CORGI_PROBE_HOST to the SSH build host}
+remote=${CORGI_PROBE_REMOTE:?Set CORGI_PROBE_REMOTE to the absolute remote checkout path}
 [[ $remote =~ ^/[a-zA-Z0-9_./-]+$ ]] || { echo 'Expected an absolute remote path without shell characters.' >&2; exit 1; }
 case $(uname -m) in
     arm64) arch=arm64 ;;

@@ -144,7 +144,7 @@ test("tool lines keep the command and drop wrappers, scripts and patch bodies", 
   let value = call("exec");
   expect(
     value.script(
-      `text((await tools.exec_command({cmd:"sed -n '1,220p' tests/support.ts",workdir:"/Users/tal/dev/personal/corgi",max_output_tokens:8000})).output)`,
+      `text((await tools.exec_command({cmd:"sed -n '1,220p' tests/support.ts",workdir:"/work/corgi",max_output_tokens:8000})).output)`,
     ),
   ).toBe(true);
   expect(value.text()).toBe("exec: sed -n '1,220p' tests/support.ts");
@@ -152,7 +152,7 @@ test("tool lines keep the command and drop wrappers, scripts and patch bodies", 
   expect(
     value.script(String.raw`const r = await Promise.allSettled([
     tools.exec_command({cmd:"rg -n \"focus|blur\" src",max_output_tokens:4000}),
-    tools.apply_patch("*** Begin Patch\n*** Update File: /Users/tal/dev/personal/corgi/src/resources.zig\n@@\n-  old\n+  new\n*** End Patch"),
+    tools.apply_patch("*** Begin Patch\n*** Update File: /work/corgi/src/resources.zig\n@@\n-  old\n+  new\n*** End Patch"),
     tools.write_stdin({session_id:17169,chars:""})
   ]);`),
   ).toBe(true);
