@@ -65,6 +65,8 @@ Application changes added during development.
 
 ## Compatibility and validation
 
+- Cancelling or completing sign-in can clean up a staged account even when the system denies process listing; the sign-in process itself is still stopped.
+
 - Ignore retained resource-history process entries missing a valid identity, fixing a viewer crash (`Invalid argument type in ToBigInt operation`) when opening resource details or navigating diffs.
 
 - Added translations, refreshed site recordings, and regression tests for the diff changes.
