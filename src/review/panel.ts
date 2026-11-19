@@ -69,6 +69,7 @@ function typed(named: Named): textArea.Edit | null {
 export type Effect =
   | { kind: "none" }
   | { kind: "pull-request"; url: string }
+  | { kind: "refresh" }
   | { kind: "send"; pane: number; from: number; text: string; notes: notes.Note[] }
   | { kind: "copy"; text: string; notes: notes.Note[] }
   | { kind: "hide" }
@@ -241,6 +242,7 @@ class Review {
   /** The wheel scrolled the tree; it follows the selection again when that moves. */
   tree_free = false;
   tree_hidden = false;
+  tree_width: number | null = null;
   tree_find: { query: textArea.TextArea; editing: boolean } | null = null;
   toggled = new Set<string>();
   cur = 0;
@@ -509,6 +511,9 @@ function plural(count: number, word: "note" | "file" | "commit" | "unmodified li
 export class Panel {
   /** A PR snapshot is independent of the focused pane's working tree. */
   remote: string | null = null;
+  remote_stale = false;
+  remote_refreshing = false;
+  remote_error = "";
   private remoteLoad: ((file: RemoteFile) => Promise<git.Loaded>) | null = null;
   showRemote(
     url: string,
@@ -518,13 +523,16 @@ export class Panel {
     files: RemoteFile[],
     destination: Target | null,
     load?: (file: RemoteFile) => Promise<git.Loaded>,
+    preserve = false,
   ): void {
+    const previous = preserve && this.remote === url && this.target ? this.review(this.target.pane) : null,
+      visible = this.open;
     this.hide();
     this.remote = url;
     this.remoteLoad = load ?? null;
     this.target = { pane: -3, cwd: url, name: title };
     this.dest = destination;
-    this.reviews.set(-3, new Review());
+    this.reviews.set(-3, previous ?? new Review());
     this.roots.set(url, url);
     const co = new Checkout(url);
     co.head = head;
@@ -544,9 +552,11 @@ export class Panel {
     }
     this.checkouts.set(url, co);
     const r = this.review(-3);
-    r.path = this.listing(co, r)?.changes[0]?.path ?? null;
+    const paths = this.listing(co, r)?.changes.map(ch => ch.path) ?? [];
+    if (!previous || !paths.includes(r.path ?? "")) r.path = paths[0] ?? null;
     this.open = true;
     r.visible = true;
+    if (previous && !visible) this.hide(true);
     this.changed();
   }
   open = false;
@@ -602,6 +612,11 @@ export class Panel {
   /** The rule under the file list as last drawn: its row, the list's first
    * row, and the most rows the list may take. */
   private split: { y: number; top: number; room: number } | null = null;
+  private tree_divider: { x: number; y: number; h: number; left: number; max: number } | null = null;
+  private tree_drag = false;
+  get resizing(): "horizontal" | "vertical" | null {
+    return this.tree_drag ? "horizontal" : this.splitting ? "vertical" : null;
+  }
   /** The rule under the file list is being dragged. */
   splitting = false;
   /** The keys overlay is up, dimming everything but itself. */
@@ -825,15 +840,21 @@ export class Panel {
     this.schedule();
     void this.refresh();
   }
-  hide(): void {
+  hide(keepRemote = false): void {
     this.open = false;
     if (this.target) this.review(this.target.pane).visible = false;
     this.pinned = false;
     this.splitting = false;
+    this.tree_drag = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
-    this.remote = null;
-    this.remoteLoad = null;
+    if (!keepRemote) {
+      this.remote = null;
+      this.remoteLoad = null;
+      this.remote_stale = false;
+      this.remote_refreshing = false;
+      this.remote_error = "";
+    }
   }
   saved(): Saved | null {
     if (!this.target) return null;
@@ -1414,6 +1435,7 @@ export class Panel {
 
   /** A key while the panel has the keyboard. */
   key(k: Key): Effect {
+    if (this.remote && !this.typing && "text" in k && k.text === "r") return { kind: "refresh" };
     if (this.remote && !this.typing && "text" in k && ["r", "g", "G", "u"].includes(k.text)) return { kind: "none" };
     const t = this.target;
     if (!t) return "named" in k && k.named === "escape" ? { kind: "leave" } : { kind: "none" };
@@ -2144,10 +2166,19 @@ export class Panel {
     if (kind === "release") {
       this.selecting = null;
       this.placing = false;
+      this.tree_drag = false;
       if (this.splitting) {
         this.splitting = false;
         this.resized(this.tree_rows);
       }
+      return;
+    }
+    if (this.tree_drag && this.target && this.tree_divider) {
+      if (kind === "drag")
+        this.review(this.target.pane).tree_width = Math.min(
+          this.tree_divider.max,
+          Math.max(12, x - this.tree_divider.left),
+        );
       return;
     }
     if (this.splitting) {
@@ -2209,6 +2240,11 @@ export class Panel {
       return;
     }
     if (kind === "move") return;
+    const divider = this.tree_divider;
+    if (kind === "press" && divider && x === divider.x && y >= divider.y && y < divider.y + divider.h) {
+      this.tree_drag = true;
+      return;
+    }
     if (kind === "press" && y === this.split?.y) {
       this.splitting = true;
       return;
@@ -2351,6 +2387,16 @@ export class Panel {
           this.pending = { kind: "pull-request", url };
         },
       });
+      const refresh = col,
+        label = this.remote_refreshing ? i18n.t`Refreshing cached view…` : i18n.t`Refresh`;
+      col = c.text(col, 0, label + " · r", colors.accent) + 2;
+      c.hit(refresh, 0, col - refresh, 1, {
+        act: () => {
+          this.pending = { kind: "refresh" };
+        },
+      });
+      if (this.remote_stale) col = c.text(col, 0, i18n.t`stale`, colors.warm) + 2;
+      if (this.remote_error) col = c.text(col, 0, this.remote_error, colors.hot) + 2;
     }
     if (t) {
       // p's keycap, as in the footer, and "pin", lit while pinned.
@@ -2557,6 +2603,26 @@ export class Panel {
     const tests_label = r.hide_tests ? " t show tests " : " t hide tests ",
       tests_end = c.text(11, head + 1, tests_label, r.hide_tests ? colors.strong : colors.muted, null, r.hide_tests);
     c.hit(11, head + 1, tests_label.length, 1, { act: () => this.toggleTests(r) });
+    const paths = listed?.changes.map(ch => ch.path) ?? [],
+      directories = this.listRows(r, paths, listed?.edited ?? null).filter(row => row.kind === "dir"),
+      expand = directories.some(row => !row.open),
+      tree_label = expand ? i18n.t`Expand all` : i18n.t`Collapse all`,
+      controls_end = tests_end + (directories.length && !r.tree_hidden ? displayWidth(tree_label) + 3 : 0);
+    if (directories.length && !r.tree_hidden) {
+      c.text(tests_end + 1, head + 1, tree_label, colors.muted);
+      c.hit(tests_end + 1, head + 1, displayWidth(tree_label), 1, {
+        act: () => {
+          r.toggled = new Set(
+            tree
+              .rows(paths, new Set(), true)
+              .filter(row => row.kind === "dir" && (expand ? row.crowded : !row.crowded))
+              .map(row => row.path),
+          );
+          r.tree_top = 0;
+          r.tree_free = true;
+        },
+      });
+    }
     // How the files are listed, on the rule above them.
     if (listed?.edited && listed.changes.length && !r.tree_hidden) {
       const sorts: ["name" | "edited", string][] = [
@@ -2573,7 +2639,7 @@ export class Panel {
         displayWidth(i18n.t` sort: `) -
         " · ".length -
         1;
-      if (sx > tests_end) {
+      if (sx > controls_end) {
         sx = c.text(sx, head + 1, i18n.t` sort: `, colors.faint);
         for (const [sort, label] of sorts) {
           if (sort !== "name") sx = c.text(sx, head + 1, " · ", colors.faint);
@@ -2588,8 +2654,8 @@ export class Panel {
     let ty = head + 2;
     const full = c;
     const changes = listed?.changes ?? [];
-    const paths = changes.map(ch => ch.path);
     this.split = null;
+    this.tree_divider = null;
     if (!listed) {
       c.text(2, ty, r.scope === "commits" ? i18n.t`Pick a commit with g.` : i18n.t`Reading git…`, colors.muted);
       ty += 1;
@@ -2608,8 +2674,10 @@ export class Panel {
       );
       ty += 1;
     } else if (!r.tree_hidden && r.fullscreen && c.w >= 50 && c.h - ty > 2) {
-      const width = Math.min(38, Math.max(18, Math.floor(c.w * 0.28))),
+      const max = c.w - 1 - min_width,
+        width = Math.min(max, r.tree_width ?? Math.min(38, Math.max(18, Math.floor(c.w * 0.28)))),
         height = c.h - ty - 1;
+      this.tree_divider = { x: c.x + width, y: c.y + ty, h: height, left: c.x, max };
       const sidebar = c.view(0, ty, width, height);
       this.drawTree(sidebar, r, changes, paths, listed.edited, 0, height, focused, height);
       for (let row = ty; row < c.h - 1; row++) c.put(width, row, "│", colors.line);

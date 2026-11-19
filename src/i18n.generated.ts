@@ -482,6 +482,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Cmd+T/D/W, workspace numbers and related bindings replace host actions."]': () =>
       `Cmd+T/D/W、工作区编号等快捷键将接管终端原有操作。`,
     '["Code · old / new line"]': () => `代码 · 旧 / 新行号`,
+    '["Collapse all"]': () => `全部折叠`,
     '["Come back"]': () => `返回`,
     '["Command"]': () => `命令`,
     '["Command forwarding is not confirmed"]': () => `尚未确认 Command 键转发`,
@@ -600,6 +601,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Esc close"]': () => `Esc 关闭`,
     '["Esc · Space select · E expand · H handoff"]': () => `Esc · Space 选择 · E 展开 · H 接管`,
     '["Escape is reserved for canceling Corgi controls"]': () => `Escape 专用于取消 Corgi 操作`,
+    '["Expand all"]': () => `全部展开`,
     '["Expand lines"]': () => `展开行`,
     '["Expected a GitHub PR URL"]': () => `请输入 GitHub PR 链接`,
     '["External status checks cannot be retried through GitHub"]': () => `外部状态检查无法通过 GitHub 重试`,
@@ -2013,6 +2015,7 @@ ${v1} 使用该账号。
     '["Cmd+T/D/W, workspace numbers and related bindings replace host actions."]': () =>
       `Cmd+T/D/Wやワークスペース番号などが端末本体の操作に優先します。`,
     '["Code · old / new line"]': () => `コード · 旧 / 新行番号`,
+    '["Collapse all"]': () => `すべて折りたたむ`,
     '["Come back"]': () => `戻る`,
     '["Command"]': () => `コマンド`,
     '["Command forwarding is not confirmed"]': () => `Commandキーの転送を確認できません`,
@@ -2139,6 +2142,7 @@ ${v1} 使用该账号。
     '["Esc close"]': () => `Esc 閉じる`,
     '["Esc · Space select · E expand · H handoff"]': () => `Esc · Space 選択 · E 展開 · H 引き継ぎ`,
     '["Escape is reserved for canceling Corgi controls"]': () => `EscapeはCorgiの操作のキャンセル用です`,
+    '["Expand all"]': () => `すべて展開`,
     '["Expand lines"]': () => `行を展開`,
     '["Expected a GitHub PR URL"]': () => `GitHub PRのURLを入力してください`,
     '["External status checks cannot be retried through GitHub"]': () =>
@@ -3567,6 +3571,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Cmd+T/D/W, workspace numbers and related bindings replace host actions."]': () =>
       `Cmd+T/D/W, 작업 공간 번호와 관련 단축키가 호스트의 동작을 대신합니다.`,
     '["Code · old / new line"]': () => `코드 · 이전 / 새 줄 번호`,
+    '["Collapse all"]': () => `모두 접기`,
     '["Come back"]': () => `돌아오기`,
     '["Command"]': () => `명령`,
     '["Command forwarding is not confirmed"]': () => `Command 키 전달을 확인하지 못했습니다`,
@@ -3691,6 +3696,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Esc close"]': () => `Esc 닫기`,
     '["Esc · Space select · E expand · H handoff"]': () => `Esc · Space 선택 · E 펼치기 · H 인계`,
     '["Escape is reserved for canceling Corgi controls"]': () => `Escape는 Corgi 조작을 취소하는 전용 키입니다`,
+    '["Expand all"]': () => `모두 펼치기`,
     '["Expand lines"]': () => `행 펼치기`,
     '["Expected a GitHub PR URL"]': () => `GitHub PR URL을 입력하세요`,
     '["External status checks cannot be retried through GitHub"]': () =>
@@ -5500,6 +5506,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Cmd+T/D/W, workspace numbers and related bindings replace host actions."]': () =>
       `Cmd+T/D/W, номера пространств и связанные сочетания заменят действия терминала.`,
     '["Code · old / new line"]': () => `Код · старая / новая строка`,
+    '["Collapse all"]': () => `Свернуть всё`,
     '["Come back"]': () => `Вернуться`,
     '["Command"]': () => `Команда`,
     '["Command forwarding is not confirmed"]': () => `Передача клавиш Command не подтверждена`,
@@ -5653,6 +5660,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Esc close"]': () => `Esc закрыть`,
     '["Esc · Space select · E expand · H handoff"]': () => `Esc · Space выбрать · E развернуть · H передать`,
     '["Escape is reserved for canceling Corgi controls"]': () => `Escape зарезервирован для отмены действий в Corgi`,
+    '["Expand all"]': () => `Развернуть всё`,
     '["Expand lines"]': () => `Развернуть строки`,
     '["Expected a GitHub PR URL"]': () => `Ожидается URL запроса на слияние GitHub`,
     '["External status checks cannot be retried through GitHub"]': () =>

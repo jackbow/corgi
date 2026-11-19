@@ -4888,6 +4888,93 @@ test("PR panel mouse releases select tabs and controls through viewer actions", 
   }
 });
 
+test("the conversation diff toggle reopens its PR diff and refreshes changed revisions without losing notes", async () => {
+  const s = controller(),
+    snapshot = prSnapshot(),
+    fresh = { ...snapshot, head: "c".repeat(40), base: "d".repeat(40) },
+    heads: string[] = [];
+  s.receiveSnapshot(folders("/not-a-repo"));
+  s.width = 120;
+  s.height = 35;
+  s.pull_request.cache.cached = async () => snapshot;
+  s.pull_request.cache.refresh = async () => snapshot;
+  s.pull_request.cache.client.diff = async (value: typeof snapshot) => {
+    heads.push(value.head);
+    return "diff --git a/app.ts b/app.ts\n@@ -1 +1 @@\n-old\n+new\n";
+  };
+  s.pull_request.cache.client.revisions = async () => ({ head: fresh.head, base: fresh.base });
+  try {
+    await s.perform({ name: "pull-request", value: snapshot.ref.url });
+    await Promise.resolve();
+    await s.perform({ name: "pull-request-diff" });
+    await Promise.resolve();
+    const diff = s.review;
+    s.keyboard = "pane";
+    await s.perform({ name: "review" });
+    expect(diff.open).toBe(false);
+    expect(s.review).toBe(diff);
+    await s.perform({ name: "review" });
+    expect(s.review).toBe(diff);
+    expect(diff.remote).toBe(snapshot.ref.url);
+    expect(diff.open).toBe(true);
+    expect(heads).toHaveLength(1);
+    const source = s.pr_diff_sources.get(s.reviewOwner());
+    source.checked -= 60_001;
+    s.pollPRDiff();
+    await Promise.resolve();
+    expect(diff.remote_stale).toBe(true);
+    await s.reviewKey({ text: "c" });
+    await s.reviewKey({ text: "keep this note" });
+    await s.reviewKey({ named: "enter" });
+    const notes = diff.review(-3).notes;
+    expect(notes).toHaveLength(1);
+    s.pull_request.cache.refresh = async () => fresh;
+    await s.refreshPRDiff();
+    expect(s.review).toBe(diff);
+    expect(heads).toEqual([snapshot.head, fresh.head]);
+    expect(diff.remote_stale).toBe(false);
+    expect(diff.review(-3).notes).toBe(notes);
+    expect(source.snapshot).toBe(fresh);
+    let checks = 0;
+    s.pull_request.cache.client.revisions = async () => {
+      checks++;
+      return { head: fresh.head, base: "e".repeat(40) };
+    };
+    source.checked -= 60_001;
+    s.pollPRDiff();
+    s.pollPRDiff();
+    await Promise.resolve();
+    expect(checks).toBe(1);
+    expect(diff.remote_stale).toBe(true);
+    s.pull_request.cache.refresh = async () => {
+      throw Error("offline");
+    };
+    await s.refreshPRDiff();
+    expect(diff.open).toBe(true);
+    expect(diff.remote_error).toBe("offline");
+    expect(diff.remote_refreshing).toBe(false);
+    expect(source.snapshot).toBe(fresh);
+    expect(diff.review(-3).notes).toBe(notes);
+    expect(diff.remote_stale).toBe(true);
+    let resolve: (value: typeof fresh) => void = () => {};
+    s.pull_request.cache.refresh = () =>
+      new Promise<typeof fresh>(done => {
+        resolve = done;
+      });
+    const pending = s.refreshPRDiff();
+    await s.perform({ name: "review" });
+    expect(diff.open).toBe(false);
+    resolve(fresh);
+    await pending;
+    expect(diff.open).toBe(false);
+    expect(s.review).toBe(diff);
+    await s.perform({ name: "review" });
+    expect(diff.open).toBe(true);
+  } finally {
+    viewer.close(s);
+  }
+});
+
 test("PR diffs use the displayed revisions in the existing viewer and return to PR details", async () => {
   const s = controller(),
     snapshot = prSnapshot();
