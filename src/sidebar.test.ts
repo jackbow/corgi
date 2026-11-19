@@ -80,7 +80,7 @@ test("PR links replace idle dogs and add a row below working activity with match
     expect(View.height(entries[0])).toBe(state === "working" ? 3 : 2);
     const w = new Writer();
     view.draw(w, entries, []);
-    expect(w.buffered()).toContain(`\x1b]8;;${url}\x1b\\#12`);
+    expect(w.buffered()).toContain(`${palette.fg("muted")}\x1b]8;;${url}\x1b\\#12`);
     const top = view.middle() + 2;
     const rows = hostText(w.buffered(), 120, 40).split("\n");
     expect(rows[top + (state === "working" ? 2 : 1)].slice(5, 8)).toBe("#12");

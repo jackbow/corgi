@@ -664,7 +664,9 @@ export class Controller {
     let view = this.pr_views.get(owner);
     if (!view) {
       view = new pullRequestPanel.Panel(this.pr_cache);
+      const created = view;
       view.changed = () => {
+        if (created.snapshot) this.conversation_prs.update(created.snapshot.ref, created.snapshot);
         this.dirty = true;
         this.wake();
       };
@@ -2070,6 +2072,7 @@ export class Controller {
         const first_agent = entries.length,
           starts: number[] = [];
         for (const { entry, start } of agentRows.rows(runtime, ws, now_ms)) {
+          entry.pull_requests = this.conversation_prs.sidebar(entry.pull_requests);
           const target = entry.target,
             chat = "headless" in target ? runtime.corgi_sessions.find(s => s.id === target.headless) : null,
             pane = "pane" in target ? target.pane : chat?.pane;

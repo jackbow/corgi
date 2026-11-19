@@ -106,6 +106,8 @@ export class Tracker {
           if (reading.stamp === stamp) continue;
           await this.read(reading, file, provider, session, info.size, stamp);
           if (this.stopped || a.sessionId() !== session || a.transcriptPath() !== transcript) continue;
+          // A history rebuild must not replace the current list with earlier mentions.
+          if (reading.stamp !== stamp) continue;
           const items = reading.index.items();
           if (JSON.stringify(actor.pull_requests) !== JSON.stringify(items)) {
             actor.pull_requests = items;

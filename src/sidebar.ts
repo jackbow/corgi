@@ -92,7 +92,7 @@ function writePRs(w: Writer, refs: Mention[], room: number) {
       w.write(" ");
       used++;
     }
-    w.write(`${fg("accent")}\x1b]8;;${ref.url}\x1b\\${label}\x1b]8;;\x1b\\`);
+    w.write(`${fg("muted")}\x1b]8;;${ref.url}\x1b\\${label}\x1b]8;;\x1b\\`);
     used += width;
   }
 }
