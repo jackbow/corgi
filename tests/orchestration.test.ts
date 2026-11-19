@@ -36,6 +36,33 @@ class Orchestration extends Runtime {
     this.assertNotEqual(missing.code, 0);
     this.assertIn("NoWorkspace", missing.stderr);
   }
+  async test_session_names_work_outside_panes_and_closed_commands_remain_collectable() {
+    const started = await this.cli([
+        "run",
+        "--workspace",
+        "1",
+        "--name",
+        "checks",
+        "--bg",
+        "--json",
+        "--",
+        "/bin/sh",
+        "-c",
+        "sleep 1; printf named-output; exit 7",
+      ]),
+      task = JSON.parse(started.stdout).task;
+    this.assertEqual(started.code, 0, started.stderr);
+    const shown = await this.cli(["get", "checks", "--json"]);
+    this.assertEqual(shown.code, 0, shown.stderr);
+    this.assertEqual(JSON.parse(shown.stdout).session.task.id, `task:${task.id}`);
+    const waited = await this.cli(["wait", "checks", "--timeout", "5", "--json"]);
+    this.assertEqual(waited.code, 7, waited.stderr);
+    this.assertIn("named-output", JSON.parse(waited.stdout).tasks[0].output);
+    await this.until(async () => !(await this.panes()).some((p: any) => p.id === task.pane));
+    const retained = await this.cli(["wait", `pane:${task.pane}`, "--timeout", "2", "--json"]);
+    this.assertEqual(retained.code, 7, retained.stderr);
+    this.assertEqual(JSON.parse(retained.stdout).tasks[0].id, task.id);
+  }
   async test_foreground_collects_nonzero_exit_output_after_pane_closes() {
     const reply = await this.cli([
         "run",
@@ -177,6 +204,14 @@ class Orchestration extends Runtime {
     await this.until(async () => (await this.task(first.id)).delivered);
     this.assertEqual(first.workspace, 1);
     this.assertTrue((await this.panes()).some((p: any) => p.id === first.pane));
+    const detail = await this.cli(["get", "reviewer", "--json"], parent);
+    this.assertEqual(detail.code, 0, detail.stderr);
+    this.assertEqual(JSON.parse(detail.stdout).session.parent, `pane:${parent}`);
+    this.assertEqual(JSON.parse(detail.stdout).session.task.id, `task:${first.id}`);
+    const parentDetail = await this.cli(["get", `pane:${parent}`, "--json"]);
+    this.assertTrue(
+      JSON.parse(parentDetail.stdout).session.helpers.some((h: any) => h.target === `pane:${first.pane}`),
+    );
     const busy = await this.cli(["message", "reviewer", "work", "--json"], parent);
     this.assertNotEqual(busy.code, 0);
     this.assertIn("AgentBusy", busy.stderr);

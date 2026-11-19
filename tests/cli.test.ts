@@ -45,17 +45,20 @@ class AgentCli extends Runtime {
       other = (await this.command("workspace.create", { name: "other", cwd: this.temp.name })).workspace,
       two = await this.new("Review", other);
     const compact = await this.run_cli("list");
-    this.assertIn("WORKSPACE / SESSION", compact);
-    this.assertIn("/ Build", compact);
-    this.assertIn("/ Review", compact);
+    this.assertIn("WORKSPACE", compact);
+    this.assertIn("SESSION", compact);
+    this.assertIn("PANE", compact);
+    this.assertIn("TAB", compact);
+    this.assertIn("Build", compact);
+    this.assertIn("Review", compact);
     this.assertEqual(await this.run_cli("ls"), compact);
     this.assertEqual(await this.run_cli("workspace", "list"), compact);
     const machines = JSON.parse(await this.run_cli("ls", "--all-machines"));
     this.assertEqual(machines.machines[0].machine, "local");
     this.assertTrue(machines.machines[0].ok);
     const filtered = await this.run_cli("ls", "--workspace", String(other));
-    this.assertIn("/ Review", filtered);
-    this.assertNotIn("/ Build", filtered);
+    this.assertIn("Review", filtered);
+    this.assertNotIn("Build", filtered);
     const json = await this.cli(["ls", "--workspace", other]);
     this.assertEqual(
       json.result.workspaces.map((w: any) => w.id),
@@ -68,11 +71,40 @@ class AgentCli extends Runtime {
     this.assertIn(`tab ${one.tab} "Build"`, tree);
     this.assertIn(`pane ${one.pane}`, tree);
     await this.cli(["pane", "hibernate", one.pane]);
-    this.assertNotIn("/ Build", await this.run_cli("ls"));
+    this.assertNotIn("Build", await this.run_cli("ls"));
     this.assertIn("1 inactive hidden (--all)", await this.run_cli("ls"));
     this.assertIn("hibernated", await this.run_cli("list", "--all"));
     this.assertIn("hibernated", await this.run_cli("ls", "--tree"));
     this.assertTrue((await this.cli(["list"])).result.panes.find((p: any) => p.id === one.pane).dormant);
+  }
+  async test_session_get_and_named_pane_commands() {
+    const one = await this.new("reviewer"),
+      two = await this.new("writer");
+    const detail = await this.cli(["get", "reviewer"]);
+    this.assertEqual(detail.session.pane, one.pane);
+    this.assertEqual(detail.session.tab, one.tab);
+    this.assertEqual(detail.session.workspace, 1);
+    this.assertEqual(detail.session.task, null);
+    this.assertIn("cwd:", await this.run_cli("get", `pane:${one.pane}`));
+    await this.cli(["pane", "send", "reviewer", "printf 'named_target_marker\\n'", "--enter"]);
+    await this.until(async () =>
+      (await this.cli(["pane", "read", "reviewer"])).result.text.includes("named_target_marker"),
+    );
+    await this.cli(["pane", "keys", "reviewer", "ctrl+c"]);
+    const viewer = await Viewer.create(this);
+    const viewerId = (await this.cli(["list"])).viewers[0].id;
+    await this.cli(["focus", "reviewer", "--viewer", viewerId]);
+    await viewer.poll();
+    this.assertEqual(viewer.state.pane, one.pane);
+    await this.cli(["pane", "swap", "reviewer", "writer"]);
+    // Tab names follow the tab; pane IDs follow the process.
+    this.assertEqual((await this.cli(["get", "writer"])).session.pane, one.pane);
+    this.assertEqual((await this.cli(["get", "reviewer"])).session.pane, two.pane);
+    await this.new("reviewer");
+    await this.cli(["get", "reviewer"], { error: "AmbiguousTarget" });
+    await this.cli(["pane", "send", "reviewer", "do not send"], { error: "AmbiguousTarget" });
+    this.assertEqual((await this.cli(["get", `pane:${one.pane}`])).session.pane, one.pane);
+    await viewer.close();
   }
   async test_memory_lines_reach_the_prompt_session_they_ran_for() {
     const ident = (

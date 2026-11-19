@@ -1,4 +1,6 @@
-import { Args } from "./cli";
+import { Args, messaged } from "./cli";
+import * as cli_session from "./cli_session";
+import * as agentOrder from "./agent_order";
 import * as rpc from "./rpc";
 import type { Daemon } from "./rpc_http";
 import type { RequestInput } from "./protocol";
@@ -23,6 +25,7 @@ export function handles(words: string[]): boolean {
   return (
     args.options.has("busy") ||
     args.options.has("wait") ||
+    args.options.has("workspace") ||
     !/^(current|[1-9][0-9]*|(?:pane|headless):[1-9][0-9]*)$/.test(args.positional[0] ?? "")
   );
 }
@@ -272,8 +275,52 @@ export function list(items: tasks.Task[]): string {
     : "no tasks\n";
 }
 export async function run(daemon: Daemon, words: string[]): Promise<void> {
-  const inv = await parse(words, Number(process.env.CORGI_PANE) || 0),
-    query = { caller: inv.caller, workspace: inv.workspace };
+  const inv = await parse(words, Number(process.env.CORGI_PANE) || 0);
+  const targeted =
+    inv.op === "message" || inv.op === "get" || inv.op === "cancel" || (inv.op === "wait" && !inv.children);
+  if (targeted) {
+    const target = inv.op === "message" ? inv.request.target! : "target" in inv ? inv.target : "";
+    if (target !== "parent" && !/^task:[1-9][0-9]*$/.test(target)) {
+      const catalog = await cli_session.load(daemon);
+      let session: cli_session.Session | null = null;
+      try {
+        session = catalog.resolve(target, inv);
+      } catch (error) {
+        if (!errors.is(error, "NoSession") || inv.op === "message") throw error;
+        const scope = catalog.scope(inv),
+          pane = /^(?:pane:)?([1-9][0-9]*)$/.exec(target),
+          matching = catalog.tasks.tasks.filter(
+            t => (pane ? t.pane === Number(pane[1]) : t.name === target) && (!scope || t.workspace === scope),
+          );
+        if (new Set(matching.map(t => t.workspace)).size > 1) throw Error("AmbiguousTarget");
+        const task = matching.at(-1);
+        if (!task) throw Error("NoTask");
+        if ("target" in inv) inv.target = `task:${task.id}`;
+        inv.workspace = task.workspace;
+      }
+      if (session) {
+        inv.workspace = session.workspace;
+        if (session.pane === null) {
+          if (inv.op !== "message" || new Args(words.slice(1)).options.has("busy") || inv.wait)
+            throw Error("PaneRequired");
+          const destination = agentOrder.parse(session.target)!;
+          const reply = await daemon.call("session.command", {
+            command: { "agent.message": { target: destination, text: inv.request.text } },
+          });
+          process.stdout.write(inv.json ? json.stringify(reply) + "\n" : messaged(reply, destination));
+          return;
+        }
+        if (inv.op === "message") {
+          const helper = catalog.tasks.helpers.find(
+            h => h.pane === session.pane && h.workspace === session.workspace && h.name === target,
+          );
+          inv.request.target = helper ? target : session.target;
+          inv.request.workspace = session.workspace;
+        } else if ("target" in inv) inv.target = session.target;
+      }
+    }
+  }
+  const query = { caller: inv.caller, workspace: inv.workspace };
   if (inv.op === "get" || inv.op === "cancel") {
     const reply = await daemon.call(inv.op === "get" ? "task.get" : "task.cancel", { ...query, target: inv.target }),
       task = tasks.decodeTask(reply.task);

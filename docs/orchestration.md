@@ -16,8 +16,9 @@ corgi task get task:123
 See the bundled `corgi --skill` instructions for the full workflow and `corgi
 help --all` for syntax. Commands require a running daemon. `task list` shows all
 tracked tasks on that daemon; `--workspace ID` filters it. Outside a managed
-pane, launching work and resolving names require `--workspace ID`; a canonical
-task ID can be collected anywhere.
+pane, launching work requires `--workspace ID`. Names resolve in the caller's
+workspace or, outside a managed pane, across workspaces when unique. Use
+`--workspace ID` or a canonical ID to disambiguate; task IDs can be collected anywhere.
 Helpers inherit their parent's workspace and cwd. Names are aliases within that
 workspace and do not follow mutable tab titles. Explicit parent links stay on
 one daemon, including when that daemon is selected through an existing remote

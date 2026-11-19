@@ -16,6 +16,7 @@ import helpText from "../assets/cli-help.txt" with { type: "text" };
 import * as i18n from "./i18n";
 import * as cli_help from "./cli_help";
 import * as cli_list from "./cli_list";
+import * as cli_session from "./cli_session";
 import * as agentOrder from "./agent_order";
 import skill from "../assets/corgi-skill.md" with { type: "text" };
 export const help = helpText;
@@ -31,6 +32,7 @@ const groups = new Set([
   "current",
   "list",
   "ls",
+  "get",
   "focus",
   "message",
   "grep",
@@ -95,6 +97,7 @@ const options = new Set([
 ]);
 const actions = new Set([
   "list",
+  "get",
   "current",
   "focus",
   "history",
@@ -210,6 +213,21 @@ export function id(value: string): number {
   if (!n) throw Error("Usage");
   return n;
 }
+/** Session names are resolved only after the rest of the command validates. */
+function paneTarget(value: string, caller: number): number | string {
+  if (value === "current") {
+    if (!caller) throw Error("NoCallerPane");
+    return caller;
+  }
+  const target = agentOrder.parse(value);
+  if (target) {
+    if ("headless" in target) throw Error("PaneRequired");
+    return target.pane;
+  }
+  if (/^\+?\d+$/.test(value)) return id(value);
+  if (/^(pane|headless):/.test(value)) throw Error("InvalidCharacter");
+  return value;
+}
 /** The real path of a directory, relative to this process's cwd. */
 export function directory(value: string): string {
   let path: string;
@@ -269,7 +287,7 @@ export class Args {
     for (const d of ["left", "right", "up", "down"]) if (this.flag(d)) return d;
     throw Error("Usage");
   }
-  beside(): object {
+  beside(target: (value: string) => number | string = id): object {
     for (const [flag, direction] of [
       ["left-of", "left"],
       ["right-of", "right"],
@@ -277,7 +295,7 @@ export class Args {
       ["below", "down"],
     ]) {
       const other = this.option(flag);
-      if (other !== null) return { other: id(other), direction };
+      if (other !== null) return { other: target(other), direction };
     }
     throw Error("Usage");
   }
@@ -290,7 +308,7 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
   const action = raw === "workspace.list" || raw === "ls" ? "list" : raw;
   if (!actions.has(action)) throw Error("Usage");
   let current = false,
-    target = 0,
+    target: number | string = 0,
     agent: agentOrder.Target | null = null;
   if (action === "message") {
     if (start === words.length) throw Error("Usage");
@@ -298,17 +316,22 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
     if ("pane" in agent) target = agent.pane;
   } else if (
     group !== "launcher" &&
-    !["list", "current", "tab.new", "workspace.new", "pane.idle", "claim", "history", "resume"].includes(action)
+    !["list", "get", "current", "tab.new", "workspace.new", "pane.idle", "claim", "history", "resume"].includes(action)
   ) {
     if (start === words.length) throw Error("Usage");
     current = words[start] === "current";
     if (current && group === "workspace") throw Error("Usage");
     if (current && !caller) throw Error("NoCallerPane");
-    target = current ? caller : id(words[start]);
+    target =
+      group === "pane" || action === "focus" ? paneTarget(words[start], caller) : current ? caller : id(words[start]);
     start++;
   }
   const args = new Args(words.slice(start)),
     json = args.flag("json");
+  const session_workspace =
+    ((group === "pane" && action !== "pane.idle") || action === "focus") && args.options.has("workspace")
+      ? id(args.required("workspace"))
+      : 0;
   const viewer =
     action === "focus"
       ? id(args.required("viewer"))
@@ -319,6 +342,7 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
         : null;
   let command: Record<string, any> | null = null,
     listing: cli_list.Options | null = null,
+    inspection: { target: string; workspace: number } | null = null,
     idle: { workspace: number; cwd: string; first: boolean } | null = null,
     launcher: {
       workspace: number;
@@ -338,6 +362,12 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
     command = { [op]: payload };
   };
   switch (action) {
+    case "get":
+      inspection = {
+        target: args.next(),
+        workspace: args.options.has("workspace") ? id(args.required("workspace")) : 0,
+      };
+      break;
     case "list":
       listing = {
         all: args.flag("all"),
@@ -468,21 +498,19 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
         targets: [
           target,
           ...args.positional.splice(0).map(value => {
-            if (value !== "current") return id(value);
-            if (!caller) throw Error("NoCallerPane");
-            return caller;
+            return paneTarget(value, caller);
           }),
         ],
       });
       break;
     case "pane.swap":
-      set(action, { target, other: id(args.next()) });
+      set(action, { target, other: paneTarget(args.next(), caller) });
       break;
     case "pane.split":
       set(action, { target, direction: args.direction(), cwd: args.cwd(), command: args.option("command") });
       break;
     case "tab.merge":
-      set(action, { target, ...args.beside() });
+      set(action, { target, ...args.beside(value => paneTarget(value, caller)) });
       break;
     case "tab.move":
       set(action, {
@@ -497,7 +525,9 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
     case "pane.move":
       set(action, {
         target,
-        destination: args.flag("new-tab") ? { new_tab: args.option("name") ?? "" } : { beside: args.beside() },
+        destination: args.flag("new-tab")
+          ? { new_tab: args.option("name") ?? "" }
+          : { beside: args.beside(value => paneTarget(value, caller)) },
       });
       break;
     case "pane.resize": {
@@ -547,6 +577,8 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
     viewer,
     command,
     ...(listing ? { listing } : {}),
+    ...(inspection ? { inspection } : {}),
+    ...(session_workspace ? { session_workspace } : {}),
     idle,
     launcher,
     ...(claim ? { claim } : {}),
@@ -1037,6 +1069,33 @@ export async function run(daemon: rpc_http.Daemon, args: string[], agent = false
   }
   const caller = Number(process.env.CORGI_PANE) || 0,
     inv = await parse(args, caller);
+  if (inv.inspection) {
+    const catalog = await cli_session.load(daemon),
+      session = catalog.resolve(inv.inspection.target, { caller, workspace: inv.inspection.workspace }),
+      detail = catalog.detail(session);
+    process.stdout.write(inv.json ? stringify({ ok: true, session: detail }) + "\n" : cli_session.details(detail));
+    return;
+  }
+  let catalog: cli_session.Catalog | null = null;
+  const resolve = async (value: number | string): Promise<number> => {
+    if (typeof value === "number") return value;
+    catalog ??= await cli_session.load(daemon);
+    const session = catalog.resolve(value, { caller, workspace: inv.session_workspace });
+    if (session.pane === null) throw Error("PaneRequired");
+    return session.pane;
+  };
+  if (typeof inv.target === "string") inv.target = await resolve(inv.target);
+  for (const q of Object.values(inv.command ?? {}) as {
+    target?: unknown;
+    other?: number | string;
+    destination?: { beside?: { other: number | string } };
+    targets?: (number | string)[];
+  }[]) {
+    if (typeof q.target === "string") q.target = await resolve(q.target);
+    if (q.other !== undefined) q.other = await resolve(q.other);
+    if (q.destination?.beside) q.destination.beside.other = await resolve(q.destination.beside.other);
+    if (q.targets) for (let i = 0; i < q.targets.length; i++) q.targets[i] = await resolve(q.targets[i]);
+  }
   const reading = inv.json ? null : inv.command?.["pane.read"],
     lines = reading?.lines;
   if (reading) reading.lines = Math.min(lines + 1, 10000);
@@ -1068,7 +1127,7 @@ export async function run(daemon: rpc_http.Daemon, args: string[], agent = false
     process.stdout.write(
       inv.json
         ? stringify(cli_list.select(reply, inv.listing.workspace)) + "\n"
-        : list(reply, { ...inv.listing, width: process.stdout.columns || 100 }),
+        : list(reply, { ...inv.listing, width: process.stdout.isTTY ? process.stdout.columns || 100 : Infinity }),
     );
     return;
   }

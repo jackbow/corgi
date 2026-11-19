@@ -63,7 +63,7 @@ test("help only skips values consumed by the command's parser", () => {
 });
 test("usage finds the lines for the longest command a line names", () => {
   expect(usage(help, ["pane", "split", "3", "--righ"]).map(line => line.trim())).toEqual([
-    "corgi pane split ID|current --right|--left|--up|--down [--cwd DIR] [--command SHELL_COMMAND]",
+    "corgi pane split TARGET --right|--left|--up|--down [--cwd DIR] [--command SHELL_COMMAND]",
   ]);
   expect(usage(help, ["pane", "move"])).toHaveLength(2);
   expect(usage(help, ["workspace", "new", "X"]).every(line => line.includes("corgi workspace"))).toBe(true);
@@ -119,7 +119,7 @@ test("command lines are rejected before connecting", async () => {
     [["pane", "idle", "3"]],
     [["pane", "idle", "--workspace", "0"]],
     [["pane", "split", "0", "--right"]],
-    [["pane", "split", "x", "--right"], "InvalidCharacter"],
+    [["pane", "split", "pane:0", "--right"], "InvalidCharacter"],
     [["pane", "split", "current", "--right"], "NoCallerPane"],
     [["pane", "split", "3"]],
     [["pane", "split", "3", "--right", "--up"]],
@@ -160,6 +160,9 @@ test("command lines are rejected before connecting", async () => {
     [["list", "extra"]],
     [["list", "--json", "--json"]],
     [["list", "--text"]],
+    [["get"]],
+    [["get", "reviewer", "--workspace", "0"]],
+    [["pane", "keys", "headless:3", "enter"], "PaneRequired"],
     [["ls", "--workspace", "0"]],
     [["ls", "--all", "--all"]],
     [["pane", "read", "3", "--tree"]],
@@ -175,6 +178,24 @@ test("command lines are rejected before connecting", async () => {
 });
 test("command lines parse to the request the daemon receives", async () => {
   const cases: [string[], any, number?][] = [
+    [["get", "reviewer", "--workspace", "2"], { action: "get", inspection: { target: "reviewer", workspace: 2 } }],
+    [
+      ["pane", "read", "pane:3"],
+      { action: "pane.read", target: 3, command: { "pane.read": { target: 3, lines: 100 } } },
+    ],
+    [
+      ["pane", "read", "reviewer", "--workspace", "2"],
+      {
+        action: "pane.read",
+        target: "reviewer",
+        session_workspace: 2,
+        command: { "pane.read": { target: "reviewer", lines: 100 } },
+      },
+    ],
+    [
+      ["pane", "swap", "reviewer", "writer"],
+      { action: "pane.swap", target: "reviewer", command: { "pane.swap": { target: "reviewer", other: "writer" } } },
+    ],
     [["list", "--json"], { action: "list", json: true, listing: { all: false, tree: false, workspace: 0 } }],
     [["workspace", "list"], { action: "list", listing: { all: false, tree: false, workspace: 0 } }],
     [["ls", "--all", "--workspace", "2"], { action: "list", listing: { all: true, tree: false, workspace: 2 } }],
@@ -433,7 +454,7 @@ test("list outlines workspaces, tabs, panes, headless agents and viewers", () =>
       "",
     ].join("\n"),
   );
-  expect(list(reply)).toContain("Corgi / Triage");
+  expect(list(reply)).toMatch(/Corgi\s+Triage/);
   expect(list(reply)).toContain("1 inactive hidden (--all)");
   expect(list(reply)).not.toContain("viewer 1");
 });
