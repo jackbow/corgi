@@ -36,8 +36,8 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
       `  corgi current                      调用命令的窗格的当前位置`,
     '["  corgi dev                     reload if changed; attach or relaunch viewer"]': () =>
       `  corgi dev                     有更改时重载；连接或重启客户端`,
-    '["  corgi focus ID|current --viewer ID  select in exactly one viewer"]': () =>
-      `  corgi focus ID|current --viewer ID  仅在指定客户端中选择`,
+    '["  corgi focus TARGET --viewer ID  select in exactly one viewer"]': () =>
+      `  corgi focus TARGET --viewer ID  仅在指定客户端中选择`,
     '["  corgi headless events PROVIDER SESSION [SEQ]   journal + pending requests"]': () =>
       `  corgi headless events PROVIDER SESSION [SEQ]   日志和待处理请求`,
     '["  corgi headless list              list headless sessions"]': () =>
@@ -83,14 +83,14 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
       `  corgi onboard                 打开入门设置，也可在设置完成后使用`,
     '["  corgi open DIR                show DIR\'s workspace; add one if none"]': () =>
       `  corgi open DIR                显示 DIR 的工作区；不存在则新建`,
-    '["  corgi pane hibernate ID|current... hibernate panes and stop their processes"]': () =>
-      `  corgi pane hibernate ID|current... 休眠窗格并停止其进程`,
+    '["  corgi pane hibernate TARGET... hibernate panes and stop their processes"]': () =>
+      `  corgi pane hibernate TARGET... 休眠窗格并停止其进程`,
     '["  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  shells at their prompt"]': () =>
       `  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  等待输入的 Shell`,
-    '["  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, arrows, etc."]': () =>
-      `  corgi pane keys ID|current KEY...    enter、esc、ctrl+c、方向键等`,
-    '["  corgi pane wake ID|current         resume or restart a pane"]': () =>
-      `  corgi pane wake ID|current         恢复或重新启动窗格`,
+    '["  corgi pane keys TARGET KEY...    enter, esc, ctrl+c, arrows, etc."]': () =>
+      `  corgi pane keys TARGET KEY...    enter、esc、ctrl+c、方向键等`,
+    '["  corgi pane wake TARGET         resume or restart a pane"]': () =>
+      `  corgi pane wake TARGET         恢复或重新启动窗格`,
     '["  corgi reload [ABSOLUTE_EXE]    replace daemon, preserve live processes"]': () =>
       `  corgi reload [ABSOLUTE_EXE]    替换守护进程，保留运行中的进程`,
     '["  corgi resume PROVIDER SESSION [--viewer ID] [--workspace ID]  show it: focus\\n    the pane already showing it, or resume it in a tab where its folder belongs"]':
@@ -995,6 +995,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Served links"]': () => `服务链接`,
     '["Served links will go offline."]': () => `服务链接将离线。`,
     '["Servers"]': () => `服务`,
+    '["Session details, task and helpers"]': () => `会话详情、任务和助手`,
     '["Session ended"]': () => `会话已结束`,
     '["Set clipboard-read = ask to enable paste with ","."]': v0 => `设置 clipboard-read = ask，即可用 ${v0} 粘贴。`,
     '["Settings"]': () => `设置`,
@@ -1536,8 +1537,8 @@ ${v1} 使用该账号。
       `  corgi current                      呼び出し元ペインの現在位置`,
     '["  corgi dev                     reload if changed; attach or relaunch viewer"]': () =>
       `  corgi dev                     変更があれば再読み込みし、ビューアーに接続または再起動`,
-    '["  corgi focus ID|current --viewer ID  select in exactly one viewer"]': () =>
-      `  corgi focus ID|current --viewer ID  指定したビューアーだけで選択`,
+    '["  corgi focus TARGET --viewer ID  select in exactly one viewer"]': () =>
+      `  corgi focus TARGET --viewer ID  指定したビューアーだけで選択`,
     '["  corgi headless events PROVIDER SESSION [SEQ]   journal + pending requests"]': () =>
       `  corgi headless events PROVIDER SESSION [SEQ]   イベント履歴と待機中の要求`,
     '["  corgi headless list              list headless sessions"]': () =>
@@ -1584,14 +1585,14 @@ ${v1} 使用该账号。
       `  corgi onboard                 設定済みでも初期設定を開く`,
     '["  corgi open DIR                show DIR\'s workspace; add one if none"]': () =>
       `  corgi open DIR                DIRのワークスペースを表示。なければ追加`,
-    '["  corgi pane hibernate ID|current... hibernate panes and stop their processes"]': () =>
-      `  corgi pane hibernate ID|current... ペインを休止し、プロセスを停止`,
+    '["  corgi pane hibernate TARGET... hibernate panes and stop their processes"]': () =>
+      `  corgi pane hibernate TARGET... ペインを休止し、プロセスを停止`,
     '["  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  shells at their prompt"]': () =>
       `  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  プロンプト待機中のシェル`,
-    '["  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, arrows, etc."]': () =>
-      `  corgi pane keys ID|current KEY...    enter、esc、ctrl+c、矢印キーなど`,
-    '["  corgi pane wake ID|current         resume or restart a pane"]': () =>
-      `  corgi pane wake ID|current         ペインを再開または再起動`,
+    '["  corgi pane keys TARGET KEY...    enter, esc, ctrl+c, arrows, etc."]': () =>
+      `  corgi pane keys TARGET KEY...    enter、esc、ctrl+c、矢印キーなど`,
+    '["  corgi pane wake TARGET         resume or restart a pane"]': () =>
+      `  corgi pane wake TARGET         ペインを再開または再起動`,
     '["  corgi reload [ABSOLUTE_EXE]    replace daemon, preserve live processes"]': () =>
       `  corgi reload [ABSOLUTE_EXE]    実行中のプロセスを維持してデーモンを置き換え`,
     '["  corgi resume PROVIDER SESSION [--viewer ID] [--workspace ID]  show it: focus\\n    the pane already showing it, or resume it in a tab where its folder belongs"]':
@@ -2531,6 +2532,7 @@ ${v1} 使用该账号。
     '["Served links"]': () => `公開リンク`,
     '["Served links will go offline."]': () => `公開リンクはオフラインになります。`,
     '["Servers"]': () => `サーバー`,
+    '["Session details, task and helpers"]': () => `セッションの詳細、タスクとヘルパー`,
     '["Session ended"]': () => `セッション終了`,
     '["Set clipboard-read = ask to enable paste with ","."]': v0 =>
       `${v0}で貼り付けるには、clipboard-read = askに設定してください。`,
@@ -3078,8 +3080,8 @@ Corgiに登録された全アカウントが対象になります。--accountで
       `  corgi current                      명령을 호출한 패널의 현재 위치`,
     '["  corgi dev                     reload if changed; attach or relaunch viewer"]': () =>
       `  corgi dev                     변경 시 다시 불러오기, 클라이언트 연결 또는 재시작`,
-    '["  corgi focus ID|current --viewer ID  select in exactly one viewer"]': () =>
-      `  corgi focus ID|current --viewer ID  지정한 클라이언트에서만 선택`,
+    '["  corgi focus TARGET --viewer ID  select in exactly one viewer"]': () =>
+      `  corgi focus TARGET --viewer ID  지정한 클라이언트에서만 선택`,
     '["  corgi headless events PROVIDER SESSION [SEQ]   journal + pending requests"]': () =>
       `  corgi headless events PROVIDER SESSION [SEQ]   기록과 대기 중인 요청`,
     '["  corgi headless list              list headless sessions"]': () =>
@@ -3125,14 +3127,14 @@ Corgiに登録された全アカウントが対象になります。--accountで
       `  corgi onboard                 설정을 마친 뒤에도 시작 안내 열기`,
     '["  corgi open DIR                show DIR\'s workspace; add one if none"]': () =>
       `  corgi open DIR                DIR의 작업 공간 표시, 없으면 생성`,
-    '["  corgi pane hibernate ID|current... hibernate panes and stop their processes"]': () =>
-      `  corgi pane hibernate ID|current... 창을 최대 절전 모드로 전환하고 프로세스 중지`,
+    '["  corgi pane hibernate TARGET... hibernate panes and stop their processes"]': () =>
+      `  corgi pane hibernate TARGET... 창을 최대 절전 모드로 전환하고 프로세스 중지`,
     '["  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  shells at their prompt"]': () =>
       `  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  입력을 기다리는 셸`,
-    '["  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, arrows, etc."]': () =>
-      `  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, 방향키 등`,
-    '["  corgi pane wake ID|current         resume or restart a pane"]': () =>
-      `  corgi pane wake ID|current         창 재개 또는 다시 시작`,
+    '["  corgi pane keys TARGET KEY...    enter, esc, ctrl+c, arrows, etc."]': () =>
+      `  corgi pane keys TARGET KEY...    enter, esc, ctrl+c, 방향키 등`,
+    '["  corgi pane wake TARGET         resume or restart a pane"]': () =>
+      `  corgi pane wake TARGET         창 재개 또는 다시 시작`,
     '["  corgi reload [ABSOLUTE_EXE]    replace daemon, preserve live processes"]': () =>
       `  corgi reload [ABSOLUTE_EXE]    데몬 교체, 실행 중인 프로세스 유지`,
     '["  corgi resume PROVIDER SESSION [--viewer ID] [--workspace ID]  show it: focus\\n    the pane already showing it, or resume it in a tab where its folder belongs"]':
@@ -4068,6 +4070,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Served links"]': () => `서비스 링크`,
     '["Served links will go offline."]': () => `서비스 링크는 오프라인이 됩니다.`,
     '["Servers"]': () => `서버`,
+    '["Session details, task and helpers"]': () => `세션 세부 정보, 작업 및 도우미`,
     '["Session ended"]': () => `세션 종료됨`,
     '["Set clipboard-read = ask to enable paste with ","."]': v0 =>
       `clipboard-read = ask로 설정하면 ${v0} 키로 붙여넣을 수 있습니다.`,
@@ -4617,8 +4620,8 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
       `  corgi current                      текущее расположение вызывающей панели`,
     '["  corgi dev                     reload if changed; attach or relaunch viewer"]': () =>
       `  corgi dev                     перезагрузить при изменениях; подключить или перезапустить клиент`,
-    '["  corgi focus ID|current --viewer ID  select in exactly one viewer"]': () =>
-      `  corgi focus ID|current --viewer ID  выбрать ровно в одном клиенте`,
+    '["  corgi focus TARGET --viewer ID  select in exactly one viewer"]': () =>
+      `  corgi focus TARGET --viewer ID  выбрать ровно в одном клиенте`,
     '["  corgi headless events PROVIDER SESSION [SEQ]   journal + pending requests"]': () =>
       `  corgi headless events PROVIDER SESSION [SEQ]   журнал + ожидающие запросы`,
     '["  corgi headless list              list headless sessions"]': () =>
@@ -4665,14 +4668,14 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
       `  corgi onboard                 открыть первоначальную настройку повторно`,
     '["  corgi open DIR                show DIR\'s workspace; add one if none"]': () =>
       `  corgi open DIR                показать пространство DIR; создать, если нет`,
-    '["  corgi pane hibernate ID|current... hibernate panes and stop their processes"]': () =>
-      `  corgi pane hibernate ID|current... перевести панели в спящий режим и остановить процессы`,
+    '["  corgi pane hibernate TARGET... hibernate panes and stop their processes"]': () =>
+      `  corgi pane hibernate TARGET... перевести панели в спящий режим и остановить процессы`,
     '["  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  shells at their prompt"]': () =>
       `  corgi pane idle [--workspace ID] [--cwd DIR] [--first]  оболочки, ожидающие ввода`,
-    '["  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, arrows, etc."]': () =>
-      `  corgi pane keys ID|current KEY...    enter, esc, ctrl+c, стрелки и т. д.`,
-    '["  corgi pane wake ID|current         resume or restart a pane"]': () =>
-      `  corgi pane wake ID|current         возобновить или перезапустить панель`,
+    '["  corgi pane keys TARGET KEY...    enter, esc, ctrl+c, arrows, etc."]': () =>
+      `  corgi pane keys TARGET KEY...    enter, esc, ctrl+c, стрелки и т. д.`,
+    '["  corgi pane wake TARGET         resume or restart a pane"]': () =>
+      `  corgi pane wake TARGET         возобновить или перезапустить панель`,
     '["  corgi reload [ABSOLUTE_EXE]    replace daemon, preserve live processes"]': () =>
       `  corgi reload [ABSOLUTE_EXE]    заменить сервер, сохранив работающие процессы`,
     '["  corgi resume PROVIDER SESSION [--viewer ID] [--workspace ID]  show it: focus\\n    the pane already showing it, or resume it in a tab where its folder belongs"]':
@@ -6047,6 +6050,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Served links"]': () => `Обслуживаемые ссылки`,
     '["Served links will go offline."]': () => `Обслуживаемые ссылки станут недоступны.`,
     '["Servers"]': () => `Серверы`,
+    '["Session details, task and helpers"]': () => `Данные сеанса, задача и помощники`,
     '["Session ended"]': () => `Сеанс завершён`,
     '["Set clipboard-read = ask to enable paste with ","."]': v0 =>
       `Установите clipboard-read = ask для вставки через ${v0}.`,

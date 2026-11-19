@@ -432,11 +432,20 @@ Commands print text; `--json` prints the daemon's reply as JSON instead. Take
 IDs from `corgi list`. `current` means the pane running the command, not UI focus.
 
 `corgi list` (alias `corgi ls`) shows one compact row per live pane or headless
-agent, with its ID, provider, workspace/name and status. `--all` includes exited,
+agent, with pane, tab and workspace IDs, provider, separate workspace/session
+names, and status. `--all` includes exited,
 hibernated and archived sessions; `--workspace ID` filters to one workspace.
 Use `corgi list --tree` for the full layout, activity, directories and viewer IDs.
 `--json` keeps the full daemon snapshot, including inactive sessions; the workspace
 filter also applies to JSON.
+
+`corgi get TARGET` shows a session's location, cwd, activity, latest task and
+parent/helpers; add `--json` for structured details. Pane commands and `focus`
+accept an ID, `pane:ID`, `current`, or an exact pane/agent/tab/helper name. Names
+use the caller's workspace, or all workspaces outside a managed pane;
+`--workspace ID` scopes them explicitly. Ambiguous names require an ID.
+`message`, `wait`, and `task get/cancel` also resolve session names. Headless
+agents support `get` and `message`; terminal operations need a pane.
 
 ```sh
 corgi list

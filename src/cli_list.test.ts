@@ -58,10 +58,10 @@ test("compact sessions follow visual order, prefer names and use aggregate headl
       .split("\n")
       .map(line => line.trim().split(/\s{2,}/)),
   ).toEqual([
-    ["ID", "AGENT", "WORKSPACE / SESSION", "STATUS"],
-    ["9", "claude", "api / Build", "needs input"],
-    ["10", "codex", "api / manual name", "working"],
-    ["headless:4", "codex", "api / Triage", "blocked"],
+    ["PANE", "TAB", "WS", "AGENT", "WORKSPACE", "SESSION", "STATUS"],
+    ["9", "20", "2", "claude", "api", "Build", "needs input"],
+    ["10", "20", "2", "codex", "api", "manual name", "working"],
+    ["headless:4", "-", "2", "codex", "api", "Triage", "blocked"],
     ["4 inactive hidden (--all)"],
   ]);
   expect(output).not.toContain("headless:5");
@@ -70,10 +70,10 @@ test("compact sessions follow visual order, prefer names and use aggregate headl
 
 test("--all includes dormant, exited and archived sessions without hiding their lifecycle", () => {
   const output = compact(snapshot(), { all: true });
-  expect(output).toMatch(/11\s+codex\s+api \/ api\s+hibernated/);
-  expect(output).toMatch(/12\s+-\s+api \/ bun test\s+exited/);
-  expect(output).toMatch(/13\s+-\s+web \/ web\s+archived/);
-  expect(output).toMatch(/headless:6\s+claude\s+api \/ api\s+exited/);
+  expect(output).toMatch(/11\s+21\s+2\s+codex\s+api\s+api\s+hibernated/);
+  expect(output).toMatch(/12\s+22\s+2\s+-\s+api\s+bun test\s+exited/);
+  expect(output).toMatch(/13\s+23\s+3\s+-\s+web\s+web\s+archived/);
+  expect(output).toMatch(/headless:6\s+-\s+2\s+claude\s+api\s+api\s+exited/);
   expect(output).not.toContain("hidden");
 });
 
@@ -123,7 +123,13 @@ test("untracked programs show their command or directory and running status", ()
       panes: [{ id: 7, cwd: "/src/app", command: "tail -f log" }],
     },
   };
-  expect(compact(reply)).toMatch(/7\s+-\s+api \/ tail -f log\s+running/);
+  expect(compact(reply)).toMatch(/7\s+8\s+1\s+-\s+api\s+tail -f log\s+running/);
   reply.result!.panes![0].command = "";
-  expect(compact(reply)).toMatch(/api \/ app\s+running/);
+  expect(compact(reply)).toMatch(/api\s+app\s+running/);
+});
+
+test("nonterminal output keeps full names for AI callers", () => {
+  const reply = snapshot();
+  reply.result.workspaces[0].name = "long workspace name ".repeat(12);
+  expect(compact(reply)).toContain(reply.result.workspaces[0].name);
 });

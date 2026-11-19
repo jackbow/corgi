@@ -70,8 +70,8 @@ running; new agent commands never start, upgrade, or restart it implicitly.
 `corgi list` (or `corgi ls`) lists live panes and headless agents, one row each:
 
 ```
-ID  AGENT   WORKSPACE / SESSION      STATUS
-31  claude  Corgi / Fix the parser   working
+PANE  TAB  WS  AGENT   WORKSPACE  SESSION         STATUS
+31    20   2   claude  Corgi      Fix the parser  working
 ```
 
 Use `--workspace ID` to narrow the list. `--all` includes exited, hibernated and
@@ -79,6 +79,22 @@ archived sessions; the default reports how many are hidden. `--tree` prints the
 full original workspace/tab/pane outline, including inactive panes, split
 positions, activity, directories and attached viewers. Pane IDs in compact rows
 are the same numeric IDs accepted by pane commands; headless agents use `headless:ID`.
+Workspace and session names have separate columns. `TAB` and `WS` are stable
+IDs, not viewer positions. Piped text keeps complete names; terminal output may
+shorten names to fit.
+
+`corgi get TARGET [--workspace ID] [--json]` shows one session's IDs, cwd,
+activity, latest tracked task, parent and helpers. It works for existing sessions
+without tracked tasks too. `task get` remains the way to collect an assignment's output.
+
+Pane commands and `focus` accept numeric IDs, `pane:ID`, `current`, and exact
+pane/agent/tab names or orchestration names. This also applies to other-pane
+arguments such as `pane swap` and `--right-of`. Names use the caller's workspace,
+or all workspaces outside Corgi; `--workspace ID` scopes them explicitly.
+Duplicate names fail with `AmbiguousTarget`; use an ID. Use `headless:ID` with
+`get` or `message`; terminal operations require a pane. `message`, task-aware
+`wait`, and `task get/cancel` accept the same names; task IDs still collect work
+after a command's pane exits. Tab/workspace commands continue to use their own IDs.
 
 Commands print text. Add `--json` for the daemon's full reply, such as the whole
 `list` snapshot, for `jq`. JSON retains inactive sessions and layout metadata;

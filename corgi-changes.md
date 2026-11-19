@@ -4,8 +4,10 @@ Application changes added during development.
 
 ## Compact CLI discovery
 
-- `list` and its new `ls` alias show one row per live pane or headless agent, with actionable IDs, provider, workspace/name and status. Inactive sessions are counted; `--all` includes them.
+- `list` and its new `ls` alias show one row per live pane or headless agent, with pane/tab/workspace IDs, provider, separate workspace/session names and status. Piped text keeps full names. Inactive sessions are counted; `--all` includes them.
 - `list --tree` preserves the full workspace/tab/pane outline, split positions, activity, directories and viewer IDs. `--workspace ID` filters text and JSON; default JSON keeps the full snapshot.
+- `get TARGET` shows session location, cwd, activity, latest task and parent/helper links, including sessions without tracked tasks.
+- Pane commands, focus and task commands resolve exact session/helper names consistently, with workspace scoping and ambiguity errors. Numeric pane IDs, `pane:ID`, `current` and canonical task IDs remain available; closed command tasks can still be collected.
 
 ## Task orchestration
 
