@@ -5,6 +5,7 @@ import { Style, colors, fg, fgRgb, bgRgb, mix, underline } from "./palette";
 import * as corgiAnimation from "./corgi_animation";
 import * as corgiFrames from "./corgi_frames";
 import { Terminal } from "./pane/terminal";
+import { Rect } from "./layout";
 import * as screen from "./fixtures/screen";
 import { View as ContextView } from "./usage/context_window";
 import * as agentSections from "./agent_sections";
@@ -1340,6 +1341,19 @@ test("context shows on the name line only near compaction and dims while compact
   // 38% of a 1M window is 95% of the way to a learned 400k: hot, faded toward the row.
   expect(has(out, fgRgb(mix(colors.hot, colors.bg, 60)) + "38%")).toBe(true);
 });
+test("a left panel sits between workspace navigation and conversation tabs with an independent right panel", () => {
+  const side = View.init(160, 40, true, 0, 0).withPanel(50).withLeftPanel(40);
+  expect(side.width).toBe(28);
+  expect(side.area()).toEqual(new Rect(68, 1, 42, 39));
+  expect(side.tabX()).toBe(68);
+  expect(side.hit(4, 0)).toEqual(View.init(160, 40, true, 0, 0).hit(4, 0));
+  const folded = View.init(100, 40, false, 0, 0).withLeftPanel(40);
+  expect(folded.area()).toEqual(new Rect(40, 1, 60, 39));
+  expect(folded.tabX()).toBe(40);
+  folded.drawer = "workspaces";
+  expect(folded.tabX()).toBe(40);
+});
+
 test("the drawer runs the workspace list to the bottom and leaves panes and tabs where folded", () => {
   const folded = View.init(100, 30, false, 0, 0);
   const open = View.init(100, 30, true, 0, 0);

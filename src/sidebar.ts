@@ -723,6 +723,8 @@ export class View {
   inner = false;
   /** Columns the review panel takes at the right edge. */
   panel = 0;
+  /** Columns between the sidebar and the conversation. */
+  left_panel = 0;
   /** The row being renamed in place, if any. */
   rename: RenameState | null = null;
 
@@ -878,8 +880,8 @@ export class View {
   static fitWidth(cols: number, width: number, preferred: number): number {
     return width > 0 ? clamp(preferred, 20, cols - 20) : width;
   }
-  static paneArea(cols: number, rows: number, width: number, panel: number, drawer: Section | null): Rect {
-    const x = drawer !== null ? 0 : width;
+  static paneArea(cols: number, rows: number, width: number, panel: number, drawer: Section | null, left = 0): Rect {
+    const x = (drawer !== null ? 0 : width) + left;
     return new Rect(x, 1, sat(cols - x, panel), sat(rows, 1));
   }
   static init(
@@ -1156,6 +1158,11 @@ export class View {
     result.panel = width;
     return result;
   }
+  withLeftPanel(width: number): View {
+    const result = this.clone();
+    result.left_panel = width;
+    return result;
+  }
   withRename(state: RenameState | null): View {
     const result = this.clone();
     result.rename = state;
@@ -1244,10 +1251,10 @@ export class View {
     writeEllipsis(w, message, this.width - 3);
   }
   area(): Rect {
-    return View.paneArea(this.cols, this.rows, this.width, this.panel, this.drawer);
+    return View.paneArea(this.cols, this.rows, this.width, this.panel, this.drawer, this.left_panel);
   }
   tabX(): number {
-    return this.width > 0 && this.drawer === null ? this.width : this.cols >= 64 ? 3 : 0;
+    return Math.max(this.area().x, this.cols >= 64 ? 3 : 0);
   }
   hit(x: number, y: number): Hit {
     if (this.framed()) return this.lists().hit(x - lists_x, y);

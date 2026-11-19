@@ -107,12 +107,17 @@ test("conversation PRs remain open beside independently selected GitHub PRs", as
     const terminal = new NativeTerminal(s.width, s.height);
     try {
       terminal.feed(s.frame());
-      const row = terminal
-        .text()
-        .split("\n")
-        .findIndex(line => line.includes("#9"));
+      const lines = terminal.text().split("\n"),
+        row = lines.findIndex(line => line.includes("#9")),
+        side = s.sidebarView([]),
+        column = lines[row].indexOf("#9");
       expect(row).toBeGreaterThanOrEqual(0);
-      await s.input(bytes(`\x1b[<0;6;${row + 1}M\x1b[<0;6;${row + 1}m`));
+      expect(column).toBeGreaterThan(side.width);
+      expect(column).toBeLessThan(s.area().x);
+      expect(s.area()).toEqual(side.area());
+      expect(side.tabX()).toBe(s.area().x);
+      expect(lines.some(line => line.slice(0, side.width).includes("PRs"))).toBe(false);
+      await s.input(bytes(`\x1b[<0;${column + 1};${row + 1}M\x1b[<0;${column + 1};${row + 1}m`));
     } finally {
       terminal.destroy();
     }
@@ -120,6 +125,8 @@ test("conversation PRs remain open beside independently selected GitHub PRs", as
     expect(s.conversation_prs.open).toBe(true);
     expect(s.conversation_prs.focused).toBe(false);
     expect(s.keyboard).toBe("review");
+    expect(s.area().w).toBeGreaterThanOrEqual(30);
+    expect(s.area().x + s.area().w + s.sidebarView([]).panel).toBe(s.width);
     await s.perform({ name: "conversation-prs" });
     expect(s.conversation_prs.open).toBe(false);
     expect(s.keyboard).toBe("review");
@@ -129,8 +136,16 @@ test("conversation PRs remain open beside independently selected GitHub PRs", as
     expect(s.conversation_prs.focused).toBe(false);
     expect(s.keyboard).toBe("review");
     expect(s.pull_request.fullscreen).toBe(false);
-    s.frame();
-    await s.input(bytes("\x1b[<0;6;11M\x1b[<0;6;11m"));
+    const screen = new NativeTerminal(s.width, s.height);
+    try {
+      screen.feed(s.frame());
+      const lines = screen.text().split("\n"),
+        row = lines.findIndex(line => line.includes("#12")),
+        column = lines[row].indexOf("#12");
+      await s.input(bytes(`\x1b[<0;${column + 1};${row + 1}M\x1b[<0;${column + 1};${row + 1}m`));
+    } finally {
+      screen.destroy();
+    }
     expect(s.pull_request.ref.number).toBe(12);
     expect(s.conversation_prs.items.map((p: { number: number }) => p.number)).toEqual([9, 12]);
     first.state = "MERGED";
@@ -145,6 +160,44 @@ test("conversation PRs remain open beside independently selected GitHub PRs", as
     s.switchWorkspace(1);
     s.frame();
     expect(s.conversation_prs.items).toHaveLength(1);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("the conversation PR column preserves workspace navigation and fits narrow windows", async () => {
+  const s = controller();
+  s.width = 160;
+  s.height = 40;
+  s.input_state.attached = true;
+  s.receiveSnapshot(folders("/a", "/b"));
+  try {
+    const before = s.area();
+    await s.perform({ name: "conversation-prs" });
+    s.frame();
+    const side = s.sidebarView([]);
+    expect(side.width).toBe(before.x);
+    expect(s.area().x).toBe(before.x + 40);
+    const row = Array.from({ length: s.height }, (_, y) => y).find(y => {
+      const hit = side.hit(4, y);
+      return hit.tag === "workspace" && hit.workspace === 1;
+    })!;
+    expect(row).toBeDefined();
+    await s.input(bytes(`\x1b[<0;5;${row + 1}M\x1b[<0;5;${row + 1}m`));
+    expect(s.current().id).toBe(2);
+    expect(s.conversation_prs.open).toBe(true);
+    await s.input(bytes(`\x1b[<0;${side.width};10M\x1b[<32;34;10M\x1b[<0;34;10m`));
+    expect(s.sidebarView([]).width).toBe(34);
+    expect(s.area().x).toBe(74);
+    for (const width of [100, 70, 60, 40]) {
+      s.width = width;
+      expect(s.area()).toEqual(s.sidebarView([]).area());
+      expect(s.area().w).toBeGreaterThanOrEqual(30);
+      expect(s.area().x + s.area().w).toBe(width);
+      s.frame();
+    }
+    await s.perform({ name: "conversation-prs" });
+    expect(s.sidebarView([]).left_panel).toBe(0);
   } finally {
     viewer.close(s);
   }

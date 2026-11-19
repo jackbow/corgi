@@ -213,6 +213,7 @@ function drawDocking(w: Writer, state: Docking, panes: Pane[], area: Rect): Rect
 export interface Ui {
   pr_search?: ConversationPRSearch | null;
   conversation_prs_draw?: (w: Writer) => void;
+  conversation_prs_width?: number;
   docking: Docking | null;
   prefs: Preferences;
   pointer: Pointer | null;
@@ -778,7 +779,8 @@ export function sidebarView(u: Ui, width: number, height: number): SidebarView {
   let side = SidebarView.init(width, height, u.sidebar_open, u.sidebar_offset, entries.length, u.prefs.sidebar_split)
     .withSearch(u.agent_search)
     .withWidth(u.prefs.sidebar_width)
-    .withPanel(u.review_width);
+    .withPanel(u.review_width)
+    .withLeftPanel(u.conversation_prs_width ?? 0);
   side.resources = u.prefs.resources;
   side.gpus = resourceTooltip.gpuCount(u.resources) > 0;
   side.drawer = u.sidebar_drawer;

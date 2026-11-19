@@ -1476,6 +1476,7 @@ export class Controller {
       width,
       this.reviewWidth(width),
       this.sidebar_focus?.drawer ?? null,
+      this.conversationPRWidth(width),
     );
   }
   sidebarView(entries: Entry[]): sidebar.View {
@@ -1490,7 +1491,7 @@ export class Controller {
     )
       .withSearch(this.agentSearch())
       .withWidth(this.host.prefs.sidebar_width);
-    view = view.withPanel(this.reviewWidth(view.width));
+    view = view.withPanel(this.reviewWidth(view.width)).withLeftPanel(this.conversationPRWidth(view.width));
     // Workspace rows, and so paging, depend on whether readings are shown.
     view.resources = this.prefs.resources;
     view.gpus = resourceTooltip.gpuCount(this.runtime.resources) > 0;
@@ -8435,9 +8436,18 @@ export class Controller {
       this.dirty = true;
       return;
     }
-    if (!cl.tab_drag && !this.hasMenu() && !this.name_dialog && !this.signin) {
-      const width = this.sidebarView([]).width;
-      if (this.conversation_prs.open && x < width - 1 && y > 0) {
+    if (
+      !cl.tab_drag &&
+      !cl.divider &&
+      !this.sidebar_drag &&
+      !this.review_drag &&
+      !this.review.resizing &&
+      !this.hasMenu() &&
+      !this.name_dialog &&
+      !this.signin
+    ) {
+      const rect = this.conversationPRRect();
+      if (rect?.contains(x, y)) {
         this.pointer = { x, y };
         if (!release && button === 0) this.giveKeyboard("pane");
         this.followConversationPRs();
@@ -10475,7 +10485,7 @@ export class Controller {
   /** No modal, drag, or selection is claiming the pointer right now. */
   private hoverIdle(): boolean {
     return (
-      !(this.conversation_prs.open && this.pointer !== null && this.pointer.x < this.sidebarView([]).width) &&
+      !(this.pointer !== null && this.conversationPRRect()?.contains(this.pointer.x, this.pointer.y)) &&
       this.signin_exit === null &&
       !this.hasMenu() &&
       this.menu() === null &&
@@ -10769,10 +10779,14 @@ export class Controller {
       this.height,
       render.ui({
         pr_search: this.pr_search,
+        conversation_prs_width: this.sidebarView([]).left_panel,
         conversation_prs_draw: this.conversation_prs.open
           ? (w: Writer) => {
-              const width = this.sidebarView([]).width;
-              if (width > 0) this.conversation_prs.draw(w, new Rect(0, 1, width - 1, this.height - 1));
+              const rect = this.conversationPRRect();
+              if (!rect) return;
+              this.conversation_prs.draw(w, new Rect(rect.x, rect.y, rect.w - 1, rect.h));
+              w.write(new palette.Style({ fg: "line", bg: "bg" }).sgr());
+              for (let y = rect.y; y < rect.y + rect.h; y++) w.write(w.cup(y + 1, rect.x + rect.w) + "│");
             }
           : undefined,
         prefs: this.host.prefs,
@@ -10927,8 +10941,20 @@ export class Controller {
   /** The review panel's columns, or 0 while it is closed or can't fit beside panes. */
   private reviewWidth(sidebar_width: number): number {
     return this.review.open || this.pull_request.open
-      ? panel.Panel.fit(this.host.prefs.review_width, this.width - sidebar_width)
+      ? panel.Panel.fit(
+          this.host.prefs.review_width,
+          this.width - sidebar_width - this.conversationPRWidth(sidebar_width),
+        )
       : 0;
+  }
+  private conversationPRWidth(sidebar_width: number): number {
+    if (!this.conversation_prs.open || this.reviewFullscreen()) return 0;
+    const width = Math.min(40, this.width - sidebar_width - 30);
+    return width >= 24 ? width : 0;
+  }
+  private conversationPRRect(): Rect | null {
+    const side = this.sidebarView([]);
+    return side.left_panel > 0 ? new Rect(side.area().x - side.left_panel, 0, side.left_panel, this.height) : null;
   }
   private reviewRect(): Rect | null {
     if (this.reviewFullscreen()) return new Rect(0, 0, this.width, this.height);
