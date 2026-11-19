@@ -2,21 +2,7 @@
 
 See [HACKING.md](HACKING.md) for development workflows and architecture.
 
-## Local workflow
-
-This is a solo project; we are not collaborating with anyone else.
-
-- Work directly on `main` exclusively. Do not create or use feature branches.
-- Do not create pull requests.
-- Do not create or use git worktrees unless explicitly instructed.
-
-These rules take precedence over generic branch, PR, and collaboration workflows.
-
-## Local functionality changes
-
-For every functional change relative to upstream `origin/main`, update
-[corgi-changes.md](corgi-changes.md) in the same commit. Include additions,
-behavior changes, and bug fixes; keep existing entries accurate.
+If `AGENTS.local.md` exists, read it for checkout-specific workflow instructions.
 
 ## Commands
 

@@ -9,6 +9,7 @@ src/remote/web/dist/
 /site/.generated/
 *.log
 .DS_Store
+/AGENTS.local.md
 
 # Keep curated benchmark and test logs.
 !results/*.log

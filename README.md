@@ -8,6 +8,44 @@ Terminal multiplexer for humans (and agents). Powered by
 
 [![Corgi with Claude Code and Codex running side by side](https://corgi.computer/images/hero.gif)](https://corgi.computer)
 
+## How this fork differs from upstream
+
+This fork extends [tals/corgi:main](https://github.com/tals/corgi/tree/main)
+with the workflows below. See [corgi-changes.md](corgi-changes.md) for the detailed
+feature list and behavior changes.
+
+- **GitHub PR viewer:** open PR links in a conversation's persistent viewer,
+  inspect checks, reviews, discussions, and stacked PRs, retry failed checks,
+  and mark ready or merge. Reply to review threads, post PR comments, and send
+  comments to the agent with file, line, and code context.
+- **Conversation PR lists and search:** collect links from user and agent
+  messages, including later mentions by number. Cmd+Ctrl+G toggles a resizable
+  list between workspace navigation and the conversation, with repository
+  grouping, sorting, relative timestamps, and folded merged PRs. Visibility
+  is saved per conversation. Cmd+Shift+K finds conversations by PR number or link.
+- **Diff viewing:** local and PR diffs open fullscreen, with Cmd+Shift+Enter
+  switching to pane mode. Resize, hide, search, expand, or collapse the file
+  tree; use the draggable change minimap in full-file views. Tests start hidden
+  (`t` toggles them); `Z` toggles full-file context. PR diffs support refresh,
+  stale indicators, and reopening with Cmd+Shift+B, retaining navigation and notes.
+- **CLI and task orchestration:** compact `list`/`ls` output, detailed
+  `list --tree` and `get`, consistent session-name targeting, tracked command
+  and helper-agent runs, task-aware waits, and queued or steering messages.
+- **Workspace and agent navigation:** move tabs between workspaces, keep tab
+  and agent ordering aligned, and switch agent scope with Cmd+Shift+A.
+  Archived conversations restore at a clean prompt with a resume hint.
+- **Phone access and notifications:** a paired Tailscale phone app with
+  conversation history, terminal control, agent management, launch profiles,
+  archives, and web push. macOS alerts show conversation titles and previews
+  and open the originating conversation when clicked.
+- **Recovery and development polish:** ordered asynchronous recovery saves,
+  retained local task and notification state across upstream migrations,
+  portable development helpers with explicit SSH destinations, and fixes for
+  resource-history and native-buffer crashes.
+
+To use these additions, build this checkout via [Development](#development).
+The installer below installs upstream releases.
+
 ## Install
 
 macOS (Apple Silicon) or Linux (amd64 or arm64):
