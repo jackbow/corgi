@@ -17,6 +17,20 @@ import {
 
 import { snapshot } from "./fixtures/pull_request";
 
+test("diff revision checks read only the current commit IDs and reject invalid responses", async () => {
+  const s = snapshot(),
+    calls: string[][] = [];
+  const client = new Client(async args => {
+    calls.push(args);
+    return JSON.stringify({ headRefOid: s.head, baseRefOid: s.base });
+  });
+  expect(await client.revisions(s.ref)).toEqual({ head: s.head, base: s.base });
+  expect(calls).toEqual([["pr", "view", s.ref.url, "--json", "headRefOid,baseRefOid"]]);
+  await expect(
+    new Client(async () => JSON.stringify({ headRefOid: "bad", baseRefOid: s.base })).revisions(s.ref),
+  ).rejects.toThrow("invalid PR revision");
+});
+
 test("PR URLs normalize subpages and fragments and reject other hosts and invalid IDs", () => {
   expect(parse("https://github.com/acme/app/pull/12/files#diff-abc")).toEqual(snapshot().ref);
   for (const url of [

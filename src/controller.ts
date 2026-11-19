@@ -664,6 +664,7 @@ export class Controller {
   }
   private pr_views = new Map<string, pullRequestPanel.Panel>();
   private pr_diffs = new Map<string, panel.Panel>();
+  private pr_diff_sources = new Map<string, { snapshot: pullRequest.Snapshot; checked: number; checking: boolean }>();
   private reviewOwner(): string {
     const pane = this.runtime.workspaces.items.length ? this.focused() : null;
     const owner = pane?.agent.conversation ? `conversation:${pane.agent.conversation}` : `pane:${pane?.id ?? 0}`;
@@ -671,7 +672,7 @@ export class Controller {
   }
   get review(): panel.Panel {
     const remote = this.pr_diffs.get(this.reviewOwner());
-    return remote?.open && remote.remote ? remote : this.local_review;
+    return remote?.remote ? remote : this.local_review;
   }
   get pull_request(): pullRequestPanel.Panel {
     const owner = this.reviewOwner();
@@ -3916,7 +3917,8 @@ export class Controller {
         break;
       }
       case "pull-request-refresh":
-        if (this.pull_request.ref) void this.pull_request.show(this.pull_request.ref, true);
+        if (this.review.remote && !this.pull_request.open) void this.refreshPRDiff();
+        else if (this.pull_request.ref) void this.pull_request.show(this.pull_request.ref, true);
         break;
       case "pull-request-browser":
         if (this.pull_request.ref) this.effects.push({ open_url: this.pull_request.ref.url });
@@ -4545,6 +4547,7 @@ export class Controller {
         review.summarized = this.local_review.summarized;
         review.resized = this.local_review.resized;
         this.pr_diffs.set(owner, review);
+        this.pr_diff_sources.set(owner, { snapshot, checked: Date.now(), checking: false });
         review.showRemote(
           snapshot.ref.url,
           `${snapshot.ref.repo} #${snapshot.ref.number}`,
@@ -4580,6 +4583,79 @@ export class Controller {
   }
   private reviewFullscreen(): boolean {
     return this.pull_request.open ? this.pull_request.fullscreen : this.review.fullscreen;
+  }
+  private pollPRDiff(): void {
+    const owner = this.reviewOwner(),
+      source = this.pr_diff_sources.get(owner),
+      review = this.pr_diffs.get(owner);
+    if (
+      !source ||
+      !review?.remote ||
+      !review.open ||
+      review.remote_refreshing ||
+      source.checking ||
+      Date.now() - source.checked < 60_000
+    )
+      return;
+    const snapshot = source.snapshot;
+    source.checked = Date.now();
+    source.checking = true;
+    void this.pr_cache.client
+      .revisions(snapshot.ref)
+      .then(fresh => {
+        if (this.pr_diff_sources.get(owner) !== source || source.snapshot !== snapshot || !review.remote) return;
+        review.remote_stale = fresh.head !== snapshot.head || fresh.base !== snapshot.base;
+        review.remote_error = "";
+      })
+      .catch(error => {
+        if (source.snapshot === snapshot) review.remote_error = (error as Error).message;
+      })
+      .finally(() => {
+        source.checking = false;
+        this.dirty = true;
+        this.wake();
+      });
+  }
+  private async refreshPRDiff(): Promise<void> {
+    const owner = this.reviewOwner(),
+      source = this.pr_diff_sources.get(owner),
+      review = this.pr_diffs.get(owner),
+      p = this.pull_request;
+    if (!source || !review?.remote || review.remote_refreshing) return;
+    review.remote_refreshing = true;
+    review.remote_error = "";
+    this.dirty = true;
+    this.wake();
+    try {
+      const snapshot = await this.pr_cache.refresh(source.snapshot.ref),
+        patch = await this.pr_cache.client.diff(snapshot),
+        files = remoteDiff.files(patch);
+      if (this.pr_diffs.get(owner) !== review || !review.remote || review.remote !== snapshot.ref.url) return;
+      review.showRemote(
+        snapshot.ref.url,
+        `${snapshot.ref.repo} #${snapshot.ref.number}`,
+        snapshot.base,
+        snapshot.head,
+        files,
+        review.dest,
+        async file =>
+          remoteDiff.context(
+            file,
+            await this.pr_cache.client.content(snapshot, file.change.path, file.change.kind === "deleted"),
+          ),
+        true,
+      );
+      source.snapshot = snapshot;
+      source.checked = Date.now();
+      if (p.ref?.url === snapshot.ref.url) p.snapshot = snapshot;
+      if (review.saved()?.full_context) await review.refresh();
+    } catch (error) {
+      review.remote_error = (error as Error).message;
+    } finally {
+      review.remote_refreshing = false;
+      this.dirty = true;
+      this.wake();
+    }
   }
   clearEffects(): void {
     this.effects = [];
@@ -9663,6 +9739,7 @@ export class Controller {
       this.dirty = true;
     }
     this.wakeFocused();
+    this.pollPRDiff();
     this.pollPrompt();
     if (!valid()) return;
     if (this.agent_drag?.scrolling()) {
@@ -10689,8 +10766,8 @@ export class Controller {
           ? this.sidebar_drag === "width"
             ? "horizontal"
             : "vertical"
-          : this.review.splitting
-            ? "vertical"
+          : this.review.resizing
+            ? this.review.resizing
             : this.input_state.divider && !this.input_state.divider.cancelled
               ? this.input_state.divider.hit.axis
               : null,
@@ -10876,14 +10953,14 @@ export class Controller {
   private toggleReview(): void {
     this.followReview();
     if (!this.review.open) return this.openReview();
-    if (this.keyboard !== "review") return this.giveKeyboard("review");
+    if (this.keyboard !== "review" && !this.review.remote) return this.giveKeyboard("review");
     this.closeReview();
   }
   private openReview(): void {
     if (!this.reviewable) return this.notice(i18n.t` Review changes on the remote machine`);
     this.review.follow(this.reviewTarget());
     this.review.show();
-    if (!this.review.fullscreen) this.review.toggleFullscreen();
+    if (!this.review.remote && !this.review.fullscreen) this.review.toggleFullscreen();
     this.giveKeyboard("review");
     this.selection = null;
     this.cancelDividers();
@@ -10905,6 +10982,7 @@ export class Controller {
       return;
     }
     if (this.review.remote) {
+      this.pollPRDiff();
       this.review.dest = this.reviewTarget();
       if (this.review.fullscreen && this.keyboard === "pane") this.giveKeyboard("review");
       return;
@@ -10925,7 +11003,7 @@ export class Controller {
     if (!this.review.open && this.keyboard === "review") this.giveKeyboard("pane");
   }
   private closeReview(): void {
-    this.review.hide();
+    this.review.hide(this.review.remote !== null);
     if (this.keyboard === "review") this.giveKeyboard("pane");
     this.review_drag = false;
     this.review_pressed = false;
@@ -10969,6 +11047,9 @@ export class Controller {
   /** Carries out what the panel asked for: paste notes into a pane, copy them, or let go. */
   private async reviewEffect(effect: panel.Effect): Promise<void> {
     switch (effect.kind) {
+      case "refresh":
+        await this.perform({ name: "pull-request-refresh" });
+        break;
       case "pull-request":
         await this.perform({ name: "pull-request", value: effect.url });
         break;

@@ -8,6 +8,8 @@ Application changes added during development.
 
 ## Diff viewer defaults
 
+- Drag the fullscreen file tree's vertical divider to resize it. The tree toolbar can expand or collapse every directory.
+- PR diffs remain the conversation's active diff when hidden, so Cmd+Shift+B closes and reopens the same view. **Refresh** (`r`) loads the latest revisions while retaining navigation and notes; failed refreshes retain the displayed diff. Open PR diffs check their head and base once a minute and show **stale** when either changes.
 - `z` or the clickable **files** hint hides and shows the file tree. With the tree focused, `/` filters file paths; Up/Down choose a match, Enter opens it, and Escape clears the filter. `/` in the diff still searches its contents.
 - Full-file views show a clickable minimap with red deletion marks, green addition marks, and a viewport indicator. The map follows wrapped rows, comments, and unified or split layouts.
 - Local and PR diffs open fullscreen. Cmd+Shift+Enter toggles between fullscreen and a pane beside the agent.

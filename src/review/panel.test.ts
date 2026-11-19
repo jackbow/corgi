@@ -111,6 +111,76 @@ function remotePanel(paths: string[]) {
   return p;
 }
 
+test("the fullscreen tree divider drags horizontally and keeps room for the diff", () => {
+  const p = remotePanel(["app.ts", "other.ts"]);
+  p.toggleFullscreen();
+  try {
+    let rows = screen(p, 120, 30);
+    const y = rows.findIndex(row => row.includes(" old")),
+      x = rows[y].indexOf("│", 1),
+      before = rows[y].indexOf("old");
+    p.mouse("press", x, y);
+    expect(p.resizing).toBe("horizontal");
+    p.mouse("drag", x + 10, y);
+    p.mouse("release", x + 10, y);
+    expect(p.resizing).toBeNull();
+    rows = screen(p, 120, 30);
+    expect(rows[y].indexOf("old")).toBe(before + 10);
+    const kept = p.review(-3).tree_width;
+    p.toggleFullscreen();
+    p.toggleFullscreen();
+    expect(p.review(-3).tree_width).toBe(kept);
+    const divider = rows[y].indexOf("│", 1);
+    p.mouse("press", divider, y);
+    p.mouse("drag", 999, y);
+    p.mouse("release", 999, y);
+    expect(p.review(-3).tree_width).toBeLessThanOrEqual(78);
+    expect(screen(p, 120, 30).join("\n")).toContain("old");
+  } finally {
+    p.hide();
+  }
+});
+
+test("the tree button collapses and expands every directory", () => {
+  const p = remotePanel(["src/a.ts", "src/nested/b.ts", "docs/a.md"]);
+  try {
+    const click = (label: string) => {
+      const rows = screen(p, 100, 35),
+        y = rows.findIndex(row => row.includes(label));
+      expect(y).toBeGreaterThanOrEqual(0);
+      p.mouse("press", rows[y].indexOf(label), y);
+      p.mouse("release", rows[y].indexOf(label), y);
+    };
+    click("Collapse all");
+    let rows = screen(p, 100, 35);
+    expect(rows.slice(0, p.splitRow!).join("\n")).not.toContain("a.ts");
+    click("Expand all");
+    rows = screen(p, 100, 35);
+    expect(rows.slice(0, p.splitRow!).join("\n")).toContain("a.ts");
+    expect(rows.slice(0, p.splitRow!).join("\n")).toContain("b.ts");
+  } finally {
+    p.hide();
+  }
+});
+
+test("PR diffs expose refresh and stale state without interpreting typed r as a shortcut", () => {
+  const p = remotePanel(["app.ts"]);
+  try {
+    p.remote_stale = true;
+    const rows = screen(p, 120, 30),
+      y = rows.findIndex(row => row.includes("Refresh · r"));
+    expect(rows[y]).toContain("stale");
+    p.mouse("press", rows[y].indexOf("Refresh"), y);
+    expect(p.takeEffect()).toEqual({ kind: "refresh" });
+    expect(key(p, "r")).toEqual({ kind: "refresh" });
+    key(p, "/");
+    expect(key(p, "r")).toEqual({ kind: "none" });
+    expect(p.typingArea()?.text).toBe("r");
+  } finally {
+    p.hide();
+  }
+});
+
 test("files toggle is clickable and z hides the tree in fullscreen and pane mode", () => {
   const p = remotePanel(["app.ts", "other.ts"]);
   try {

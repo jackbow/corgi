@@ -171,6 +171,14 @@ const threadFields =
   "id isResolved path line originalLine startLine originalStartLine diffSide isOutdated " + threadComments;
 export class Client {
   constructor(readonly execute: Run = run) {}
+  async revisions(ref: Ref): Promise<{ head: string; base: string }> {
+    const meta = object(JSON.parse(await this.execute(["pr", "view", ref.url, "--json", "headRefOid,baseRefOid"]))),
+      head = string(meta.headRefOid),
+      base = string(meta.baseRefOid);
+    if (![head, base].every(sha => /^[a-f0-9]{40,64}$/i.test(sha)))
+      throw new Error("GitHub returned an invalid PR revision");
+    return { head, base };
+  }
   private async pages(endpoint: string): Promise<unknown[]> {
     const separator = endpoint.includes("?") ? "&" : "?";
     const raw: unknown = JSON.parse(
