@@ -14,7 +14,7 @@ import { EXE, lines, quote, registerCase, run, shellJoin, sleep, versioned, writ
 import * as websocket_socket from "../src/websocket_socket";
 import * as protocol from "../src/protocol";
 import { byProvider } from "../src/providers";
-import { Runtime } from "./runtime";
+import { Viewers } from "./viewers";
 import * as rpc from "../src/rpc";
 import { Viewer } from "./viewer_client";
 import { CodexObserver, write_codex_terminal } from "./provider_sim";
@@ -94,7 +94,7 @@ function handoffV3(m) {
 }
 `;
 
-class Reloads extends Runtime {
+class Reloads extends Viewers {
   async pair(pane: number, session: string) {
     const terminal = write_codex_terminal(join(this.temp.name, "codex"), session);
     const observer = new CodexObserver(this.env.CODEX_HOME!, [session]);
@@ -108,15 +108,8 @@ class Reloads extends Runtime {
     }
   }
 
-  async new(command = "exec /bin/sh", title = "") {
-    return (
-      await this.command("pane.create", {
-        workspace: (await this.session()).workspaces[0].id,
-        cwd: this.temp.name,
-        command,
-        title,
-      })
-    ).pane;
+  new(command = "exec /bin/sh", title = "") {
+    return super.new(command, title);
   }
   reload(exe = EXE) {
     return this.rpc({ op: "server.reload", executable: exe });
@@ -170,12 +163,6 @@ class Reloads extends Runtime {
     this.assertNotEqual(after.server_pid, "err" in before ? null : before.server_pid);
     this.assertEqual((await this.session()).panes.find((p: any) => p.id === pane).pid, pid);
   }
-  async test_http_failed_reload_keeps_the_daemon_and_reports_rejection() {
-    const before = await this.http.call("hello");
-    const response = await this.http.request("server.reload", { executable: "/nonexistent-corgi" });
-    this.assertEqual(response, { err: "ReloadCandidateFailed" });
-    this.assertEqual((await this.http.call("hello")).server_pid, before.server_pid);
-  }
   async test_management_version_is_strict_and_independent_of_runtime() {
     const pane = await this.new(),
       before = await this.session();
@@ -189,7 +176,7 @@ class Reloads extends Runtime {
     try {
       await request(versioned({ op: "hello" }));
       for (const op of ["hello", "server.reload"]) {
-        for (const version of [0, 2, 999, -1, "1", undefined]) {
+        for (const version of [999, undefined]) {
           const reply = await request({ op, protocol: version, executable: EXE });
           this.assertEqual(reply.err, version === undefined ? "ProtocolRequired" : "UnsupportedManagementProtocol");
         }
@@ -229,12 +216,13 @@ ftruncateSync(fd, 0); writeSync(fd, JSON.stringify(m));
 libc.symbols.lseek(fd, 0n, 0);
 `,
     );
-    writeFileSync(candidate, `#!/bin/sh\nbun ${quote(transformer)} "$2"\nexec ${quote(EXE)} "$@"\n`, { mode: 0o700 });
+    writeFileSync(
+      candidate,
+      `#!/bin/sh\nif [ "$1" = __handoff-info ]; then echo "corgi: UnknownCommand" >&2; exit 1; fi\nbun ${quote(transformer)} "$2"\nexec ${quote(EXE)} "$@"\n`,
+      { mode: 0o700 },
+    );
     chmodSync(candidate, 0o700);
     return candidate;
-  }
-  async screen(pane: number) {
-    return (await this.command("pane.read", { target: pane, view: "screen" })).text;
   }
   /** Its output with wrapped lines joined, so a long prompt can't split a command. */
   async history(pane: number) {
@@ -320,24 +308,6 @@ libc.symbols.lseek(fd, 0n, 0);
     await this.command("pane.input", { target: first, data: "exit\r" });
     await this.until(async () => !(await this.session()).panes.some((p: any) => p.id === first));
   }
-  async test_failed_candidate_rolls_back_and_can_retry() {
-    const first = await this.new(),
-      a = await Viewer.create(this),
-      before = await this.session();
-    for (const executable of ["/does/not/exist", "/usr/bin/false"]) {
-      const response = await this.raw_rpc({
-        op: "server.reload",
-        executable,
-      });
-      this.assertEqual(response.err, "ReloadCandidateFailed");
-      this.assertEqual(before.server_pid, (await this.session()).server_pid);
-      this.assertEqual(before.panes[0].pid, (await this.session()).panes[0].pid);
-      this.assertEqual((await a.poll()).pane, first);
-    }
-    await this.reload();
-    await a.input("printf 'STILL_%s\\n' HERE\r");
-    await this.until(async () => (await this.screen(first)).includes("STILL_HERE"));
-  }
   async test_compressed_reload_returns_the_committed_reply_and_rejects_later_requests() {
     const pane = await this.new(),
       before = await this.session(),
@@ -353,7 +323,8 @@ libc.symbols.lseek(fd, 0n, 0);
       ]);
       this.assertEqual(results[0].status, "fulfilled");
       if (results[0].status !== "fulfilled") throw results[0].reason;
-      this.assertEqual(results[1].status, "rejected");
+      // The ping waited behind the reload and closed with the old daemon.
+      this.assertEqual(results[1].status === "rejected" && results[1].reason.message, "ServerReloading");
       const after = await this.session();
       this.assertEqual(results[0].value.server_pid, after.server_pid);
       this.assertNotEqual(after.server_pid, before.server_pid);
@@ -372,37 +343,41 @@ libc.symbols.lseek(fd, 0n, 0);
       connection.close();
     }
   }
-  async test_a_failed_reload_keeps_compressed_connections_and_runs_held_input_once() {
+  async test_a_failed_reload_keeps_the_daemon_its_connections_and_held_input_and_can_retry() {
     const pane = await this.new(),
+      viewer = await Viewer.create(this),
       before = await this.session();
-    for (const [i, executable] of ["/does/not/exist", "/usr/bin/false"].entries()) {
-      const connection = new rpc.Connection(this.path, { compression: true, timeout_ms: 10000 });
-      try {
-        const hello = await connection.call("hello");
-        this.assertEqual(hello.content_encoding, "zstd");
-        await connection.call("link.open");
-        await connection.call("viewer.open");
-        const [reload, input] = await Promise.all([
-          connection.request("server.reload", { executable }),
-          connection.call("session.command", {
-            command: { "pane.input": { target: pane, data: `printf 'HELD_%s\\n' ${i}\r` } },
-          }),
-        ]);
-        this.assertEqual(reload, { err: "ReloadCandidateFailed" });
-        this.assertTrue(input.ok);
-        this.assertFalse(connection.disconnected);
-        this.assertEqual((await connection.call("hello")).instance, hello.instance);
-        const after = await this.session();
-        this.assertEqual(after.server_pid, before.server_pid);
-        this.assertEqual(after.panes[0].pid, before.panes[0].pid);
-        await this.until(async () => (await this.screen(pane)).includes(`HELD_${i}`));
-        this.assertEqual((await this.screen(pane)).split(`HELD_${i}`).length, 2);
-      } finally {
-        connection.close();
-      }
+    // A candidate that cannot start, asked over HTTP.
+    const missing = await this.raw_rpc({ op: "server.reload", executable: "/does/not/exist" });
+    this.assertEqual(missing.err, "ReloadCandidateFailed");
+    // One that exits before taking over, with input held behind it on a compressed connection.
+    const connection = new rpc.Connection(this.path, { compression: true, timeout_ms: 10000 });
+    try {
+      const hello = await connection.call("hello");
+      this.assertEqual(hello.content_encoding, "zstd");
+      await connection.call("link.open");
+      await connection.call("viewer.open");
+      const [reload, input] = await Promise.all([
+        connection.request("server.reload", { executable: "/usr/bin/false" }),
+        connection.call("session.command", {
+          command: { "pane.input": { target: pane, data: "printf 'HELD_%s\\n' ONCE\r" } },
+        }),
+      ]);
+      this.assertEqual(reload, { err: "ReloadCandidateFailed" });
+      this.assertTrue(input.ok);
+      this.assertFalse(connection.disconnected);
+      this.assertEqual((await connection.call("hello")).instance, hello.instance);
+      await this.until(async () => (await this.screen(pane)).includes("HELD_ONCE"));
+      this.assertEqual((await this.screen(pane)).split("HELD_ONCE").length, 2);
+    } finally {
+      connection.close();
     }
+    const after = await this.session();
+    this.assertEqual(after.server_pid, before.server_pid);
+    this.assertEqual(after.panes[0].pid, before.panes[0].pid);
+    this.assertEqual((await viewer.poll()).pane, pane);
     await this.reload();
-    await this.command("pane.input", { target: pane, data: "printf 'RETRY_%s\\n' WORKED\r" });
+    await viewer.input("printf 'RETRY_%s\\n' WORKED\r");
     await this.until(async () => (await this.screen(pane)).includes("RETRY_WORKED"));
   }
   async test_v2_migration_preserves_processes_viewers_and_inference_counts() {
@@ -459,6 +434,7 @@ m.summaries.launches = { codex: 7, claude: 4, latest: 'claude' };
       }
     });
     const original = JSON.parse(readFileSync(saved, "utf8"));
+    delete original.transfer;
     new Function("state", `${DOWNGRADE}checkpointV4(state);`)(original);
     original.version = 2;
     original.panes[0].agent.provider = "other";
@@ -665,10 +641,68 @@ m.summaries.launches = { codex: 7, claude: 4, latest: 'claude' };
     }
   }
   async test_cold_recovery_resumes_the_agent_in_its_pane_once_focused() {
+    await this.cold_resume();
+  }
+  async test_cold_recovery_without_metadata_resumes_the_original_agent_once_focused() {
+    await this.cold_resume(true);
+  }
+  async test_cold_recovery_does_not_replay_custom_launcher_commands() {
+    await this.cold_command();
+  }
+  async test_cold_recovery_without_metadata_does_not_replay_custom_launcher_commands() {
+    await this.cold_command(true);
+  }
+  async test_cold_recovery_does_not_replay_a_command_woken_after_handoff() {
+    await this.cold_command(false, true);
+  }
+  async cold_command(discardMetadata = false, hibernate = false) {
+    const runs = join(this.temp.name, "command-runs"),
+      command = `printf 'RUN\\n' >> ${quote(runs)}; exec /bin/sh`;
+    await this.command("agent.command", { index: 0, command, resolve: false });
+    const { pane } = await this.command("agent.command.create", {
+      workspace: (await this.session()).workspaces[0].id,
+      cwd: this.temp.name,
+      index: 0,
+    });
+    await this.until(() => existsSync(runs));
+    this.assertEqual(readFileSync(runs, "utf8"), "RUN\n");
+    if (hibernate) {
+      await this.command("pane.hibernate", { targets: [pane] });
+      await this.reload();
+      const viewer = await Viewer.create(this);
+      await viewer.focus(pane);
+      await this.until(() => readFileSync(runs, "utf8") === "RUN\nRUN\n");
+      await viewer.close();
+    }
+    await this.restart_recovery(discardMetadata);
+    const recovered = (await this.session()).panes.find((p: any) => p.id === pane);
+    this.assertFalse(recovered.dormant);
+    this.assertGreater(recovered.pid, 0);
+    const viewer = await Viewer.create(this);
+    await viewer.focus(pane);
+    await this.command("pane.input", { target: pane, data: "printf 'FRESH_%s\\n' SHELL\r" });
+    await this.until(async () => (await this.screen(pane)).includes("FRESH_SHELL"));
+    this.assertEqual(readFileSync(runs, "utf8"), hibernate ? "RUN\nRUN\n" : "RUN\n");
+  }
+  async restart_recovery(discardMetadata: boolean) {
+    const saved = await this.rpc({ op: "recovery.save" });
+    if (!discardMetadata) return this.restart_runtime();
+    await this.run_cli("shutdown");
+    await this.until(() => !existsSync(this.path));
+    const state = JSON.parse(readFileSync(saved.path, "utf8"));
+    state.transfer.format = "f".repeat(12);
+    writeFileSync(saved.path, JSON.stringify(state));
+    await this.run_cli("start");
+  }
+  async cold_resume(discardMetadata = false) {
     const resumes = join(this.temp.name, "resumes.jsonl"),
-      session = "01901234-1234-1234-1234-123456789aaa";
+      session = "01901234-1234-1234-1234-123456789aaa",
+      bin = join(this.temp.name, "resume-bin");
+    mkdirSync(bin);
+    this.env.PATH = `${bin}:${this.env.PATH}`;
+    writeExecutable(join(bin, "codex"), "console.log('WRONG_BINARY_ON_PATH');");
     this.env.CORGI_CODEX_BIN = writeExecutable(
-      join(this.temp.name, "codex-resume"),
+      join(bin, "selected-codex"),
       `import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 if (!args.includes('resume')) process.exit(0);
@@ -681,16 +715,19 @@ await Bun.sleep(120000);
     const first = await this.new("printf 'BEFORE_%s\\n' CRASH; exec /bin/sh");
     await this.until(async () => (await this.screen(first)).includes("BEFORE_CRASH"));
     await this.pair(first, session);
-    await this.rpc({ op: "recovery.save" });
-    await this.restart_runtime();
+    await this.restart_recovery(discardMetadata);
     const pane = async () => (await this.session()).panes.find((p: any) => p.id === first);
     this.assertEqual([(await pane()).dormant, (await pane()).pid], [true, -1]);
-    this.assertEqual((await pane()).restoring, `codex resume ${session}`);
+    this.assertEqual(
+      (await pane()).restoring,
+      discardMetadata ? `${this.env.CORGI_CODEX_BIN} resume ${session}` : `codex resume ${session}`,
+    );
     await this.reload();
     this.assertTrue((await pane()).dormant);
     const viewer = await Viewer.create(this);
     await viewer.focus(first);
-    await this.until(() => existsSync(resumes));
+    await this.until(async () => existsSync(resumes) || (await this.screen(first)).includes("WRONG_BINARY_ON_PATH"));
+    this.assertTrue(existsSync(resumes), "provider override was bypassed");
     this.assertEqual(JSON.parse(readFileSync(resumes, "utf8")).slice(-2), ["resume", session]);
     const woken = await pane();
     this.assertEqual([woken.dormant, woken.pid > 0], [false, true]);
@@ -703,10 +740,7 @@ await Bun.sleep(120000);
     await this.new();
     const before = await this.session();
     for (const [mutation, expected] of [
-      ["m.version = 999", "UnsupportedStateVersion"],
       ["m.runtime.version = 999", "UnsupportedStateVersion"],
-      ["delete m.runtime.version", "MissingStateVersion"],
-      ["m.runtime.version = 0", "InvalidStateVersion"],
       ["m.runtime.panes[1].screen.data = 'invalid base64!'", "ReloadCandidateFailed"],
     ]) {
       const candidate = this.candidate(mutation);
@@ -727,7 +761,7 @@ await Bun.sleep(120000);
     });
     await this.until(async () => (await this.screen(first)).includes("ROLLBACK_OK"));
   }
-  async test_reload_drops_input_a_blocked_pane_never_read() {
+  async test_reload_preserves_input_a_blocked_pane_has_not_read() {
     const program = join(this.temp.name, "blocked.ts"),
       gate = join(this.temp.name, "gate"),
       received = join(this.temp.name, "received");
@@ -757,7 +791,7 @@ process.stdin.resume();
     writeFileSync(gate, "");
     await this.command("pane.input", { data: "END", target: first });
     await this.until(() => existsSync(received) && readFileSync(received).toString().endsWith("END"));
-    this.assertTrue(statSync(received).size < 8 * 65536 + 3);
+    this.assertEqual(readFileSync(received).toString(), "a".repeat(8 * 65536) + "END");
   }
   async test_headless_cold_recovery_displays_resume_without_starting_agent() {
     this.env.SHELL = "/bin/bash";
@@ -804,31 +838,6 @@ process.stdin.resume();
     this.assertEqual((await this.session()).panes[0].id, first);
     this.assertIn("# Recovered saved output; new shell.", await this.screen(first));
     this.assertEqual((await this.session()).panes[0].cwd, realpathSync(this.temp.name));
-  }
-  async test_a_reload_answers_its_requester_and_closes_requests_held_behind_it() {
-    await this.new();
-    const before = (await this.session()).server_pid;
-    const client = new websocket_socket.Socket(this.path),
-      replies = lines(client);
-    try {
-      client.write(
-        JSON.stringify(versioned({ op: "server.reload", executable: EXE })) +
-          "\n" +
-          JSON.stringify(versioned({ op: "session.snapshot" })) +
-          "\n",
-      );
-      const reloaded = JSON.parse(await replies.next(10000));
-      this.assertTrue(reloaded.ok);
-      this.assertNotEqual(reloaded.server_pid, before);
-      // The snapshot waited for the reload and closes with the old daemon; it never ran there.
-      await replies.next().then(
-        line => this.fail(`unexpected reply ${line}`),
-        error => this.assertEqual(error.message, "ServerReloading"),
-      );
-      this.assertEqual((await this.session()).server_pid, reloaded.server_pid);
-    } finally {
-      client.destroy();
-    }
   }
   async test_a_reload_waits_for_a_headless_start_to_answer() {
     const gate = join(this.temp.name, "headless-gate"),

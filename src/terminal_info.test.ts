@@ -1,8 +1,33 @@
 import { test, expect } from "bun:test";
 import * as terminal_info from "./terminal_info";
-function fragmented(p: terminal_info.Probe, bytes: string) {
-  return Buffer.concat(Array.from(Buffer.from(bytes), byte => p.feed(Buffer.from([byte])))).toString();
-}
+import { fragmented } from "./fixtures/probe";
+test("pasted Escape prefixes stay literal and do not swallow the terminator", () => {
+  const paste = "\x1b[200~hello\x1b[200~\x1b[20\x1b[0n\x1b]11;rgb:ff/ff/ff\x07\x1b\x1b[201~",
+    data = Buffer.from(paste + "\x1b[0n");
+  for (let split = 0; split <= data.length; split++) {
+    const p = new terminal_info.Probe();
+    p.pacer.stamp(0);
+    const out = Buffer.concat([p.feed(data.subarray(0, split), 1), p.feed(data.subarray(split), 2)]);
+    expect(out.toString()).toBe(paste);
+    expect(p.paste).toBe(false);
+    expect(p.pacer.unanswered()).toBe(false);
+    expect(p.theme.background).toBeNull();
+  }
+});
+test("paste terminators survive expiry between every byte", () => {
+  const p = new terminal_info.Probe(),
+    paste = "\x1b[200~hello\x1b\x1b[201~";
+  const out = [p.feed("\x1b[200~", 0)];
+  for (const [i, byte] of [...Buffer.from("hello\x1b\x1b[201~")].entries()) {
+    out.push(p.feed(Uint8Array.of(byte), i * 200));
+    out.push(p.expire(i * 200 + 101));
+  }
+  expect(Buffer.concat(out).toString()).toBe(paste);
+  expect(p.paste).toBe(false);
+  p.pacer.stamp(5000);
+  expect(p.feed("\x1b[0n", 5001).length).toBe(0);
+  expect(p.pacer.unanswered()).toBe(false);
+});
 test("host color probe separates fragmented replies from keys and paste", () => {
   const p = new terminal_info.Probe();
   expect(fragmented(p, "hi\x1b]10;rgb:aaaa/bbbb/cccc\x1b\\\x1b]11;rgb:12/34/56\x07\x1b]4;2;rgb:1/2/3\x07!")).toBe(
@@ -33,6 +58,33 @@ test("frame status answers are consumed across fragments but not inside pasted t
   const pasted = "\x1b[200~\x1b[0n\x1b[201~";
   expect(p.feed(pasted).toString()).toBe(pasted);
   expect(p.pacer.unanswered()).toBe(true);
+});
+test("Escape before a frame status answer preserves the key without holding frames", () => {
+  for (const escape of ["\x1b", "\x1b\x1b"]) {
+    const input = escape + "\x1b[0n";
+    for (let split = 0; split <= input.length; split++) {
+      const p = new terminal_info.Probe();
+      p.pacer.stamp(0);
+      p.feed("\x1b[0n", 1);
+      p.pacer.stamp(10);
+      const output = Buffer.concat([p.feed(input.slice(0, split), 20), p.feed(input.slice(split), 21)]);
+      expect(output.toString()).toBe(escape);
+      expect(p.pacer.unanswered()).toBe(false);
+      expect(p.pacer.waiting(1010)).toBe(false);
+      expect(p.pacer.lost).toBe(0);
+    }
+  }
+});
+test("consecutive Escapes preserve pasted replies and ordinary key sequences", () => {
+  const p = new terminal_info.Probe();
+  expect(fragmented(p, "\x1b\x1b[0n")).toBe("\x1b");
+  const pasted = "\x1b[200~\x1b\x1b[0n\x1b[201~";
+  p.pacer.stamp(10);
+  expect(fragmented(p, pasted)).toBe(pasted);
+  expect(p.pacer.unanswered()).toBe(true);
+  expect(fragmented(p, "\x1b\x1b[A\x1bx")).toBe("\x1b\x1b[A\x1bx");
+  expect(p.feed("\x1b\x1b", 20).toString()).toBe("\x1b");
+  expect(p.expire(120).toString()).toBe("\x1b");
 });
 test("badge replies are consumed across fragments but not inside pasted text", () => {
   const p = new terminal_info.Probe(),

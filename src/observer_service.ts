@@ -141,6 +141,7 @@ function running(server: Server, pane: Pane) {
   if (!pane.manual_resume || pane.dormant || pane.terminal.initial_input !== null) return;
   pane.manual_resume = false;
   pane.manual_command = null;
+  pane.recovery_command = null;
   changed(server);
 }
 function attention(server: Server, ding: boolean, state: string, target: AttentionTarget) {
@@ -245,7 +246,8 @@ export function claimPane(server: Server, query: Request<"pane.agent">) {
   pane.releaseDetection();
   pane.detection.claim = claim;
   pane.resume_hint = new ResumeHint();
-  if (pane.launch?.agent) pane.launch = null;
+  if (pane.launch?.agent || pane.recovery_command !== null) pane.launch = null;
+  pane.recovery_command = null;
   detectPane(server, pane);
   changed(server);
 }

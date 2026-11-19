@@ -103,6 +103,8 @@ Application changes added during development.
 
 ## Compatibility and validation
 
+- Integrated upstream saved-state revisions and config-file settings while retaining local task state and notification targets. Recovery keeps asynchronous, ordered writes with the new versioned envelope.
+
 - Cancelling or completing sign-in can clean up a staged account even when the system denies process listing; the sign-in process itself is still stopped.
 - Tests isolate managed provider settings and avoid requiring directory-watch events or external account-database commands. Hook assertions use bounded waits so missing events fail without hanging.
 

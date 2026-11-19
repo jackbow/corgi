@@ -28,6 +28,22 @@ const snapshot = () => ({
   })),
   panes: [10, 11, 20, 21, 30, 31].map(id => ({ id, name: `pane-${id}`, cols: 80, rows: 24 })),
 });
+/** The daemon's view: `session` when it changed, and `controls`. */
+const reply = (session: object | null, controls: protocol.Wire<protocol.Control[]>) =>
+  ({
+    type: "view",
+    viewer_protocol: protocol.viewer_version,
+    session,
+    session_hash: 0n,
+    resources: null,
+    resources_hash: 0n,
+    surfaces: [],
+    controls,
+    viewer: 1,
+    bell_seq: 0n,
+    bell_kind: "none",
+    detach: false,
+  }) as unknown as protocol.Reply<"viewer.sync">;
 const never = transport(async () => {
   throw Error("UnexpectedRequest");
 });
@@ -149,7 +165,6 @@ test("terminal input waits in its pane before its surface and after navigating a
     view.switchWorkspace(2);
     pane.terminal.send("late");
     expect(Buffer.from(pane.terminal.pending).toString()).toBe("earlylate");
-    expect(endpoint.waiting()).toBe(9);
     endpoint.render();
     expect(endpoint.ready).toBe(false);
   } finally {
@@ -216,21 +231,6 @@ test("a focus control that comes before the session showing its pane waits for i
   const view = new Controller(endpoint.machine);
   endpoint.controller = view;
   const machine = endpoint.machine;
-  const reply = (session: object | null, controls: protocol.Wire<protocol.Control[]>) =>
-    ({
-      type: "view",
-      viewer_protocol: protocol.viewer_version,
-      session,
-      session_hash: 0n,
-      resources: null,
-      resources_hash: 0n,
-      surfaces: [],
-      controls,
-      viewer: 1,
-      bell_seq: 0n,
-      bell_kind: "none",
-      detach: false,
-    }) as unknown as protocol.Reply<"viewer.sync">;
   const two = snapshot();
   two.workspaces = two.workspaces.slice(0, 2);
   two.panes = two.panes.filter(p => p.id < 30);
@@ -261,21 +261,6 @@ test("a focus control waits past any time limit while the daemon says its pane i
     }),
   );
   const view = new Controller(machine);
-  const reply = (session: object | null, controls: protocol.Wire<protocol.Control[]>) =>
-    ({
-      type: "view",
-      viewer_protocol: protocol.viewer_version,
-      session,
-      session_hash: 0n,
-      resources: null,
-      resources_hash: 0n,
-      surfaces: [],
-      controls,
-      viewer: 1,
-      bell_seq: 0n,
-      bell_kind: "none",
-      detach: false,
-    }) as unknown as protocol.Reply<"viewer.sync">;
   // A session from before pane 31's workspace was made.
   const without = snapshot();
   without.workspaces = without.workspaces.slice(0, 2);

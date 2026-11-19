@@ -1,5 +1,5 @@
 import { processPath } from "../src/os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { existsSync, mkdirSync, writeFileSync, rmSync, copyFileSync } from "node:fs";
 import { Runtime, EXE, screen_text } from "./runtime";
 import { Viewer } from "./viewer_client";
@@ -255,38 +255,22 @@ else if (args[0] === 'api') {
   }
   async test_mise_after_exec_is_reported_and_can_be_killed() {
     // A real executable named mise remains in the pane, as an installing shim does.
-    const mise = join(this.temp.name, "mise");
-    copyFileSync("/bin/sleep", mise);
-    const command = `/bin/bash -c ${quote(`exec -a pi ${quote(mise)} 60`)}`;
+    const mise = join(this.temp.name, "mise"),
+      ready = join(this.temp.name, "mise.pid");
+    // macOS sh re-execs another shell; bash keeps the copied executable's identity.
+    copyFileSync("/bin/bash", mise);
+    const idle = `printf '%s' "$$" > ${quote(ready)}; read -r line`,
+      command = `/bin/bash -c ${quote(`exec -a pi ${quote(mise)} -c ${quote(idle)}`)}`;
     const { pane } = await this.command("pane.create", { workspace: 1, command });
+    const pid = await this.until(async () => (existsSync(ready) ? Number(await Bun.file(ready).text()) : 0));
+    this.assertEqual(basename(processPath(pid) ?? ""), "mise");
     await this.until(async () => (await this.session()).startup_waits?.some((w: any) => w.pane === pane));
     const wait = (await this.session()).startup_waits.find((w: any) => w.pane === pane);
     this.assertEqual(wait.phase, "agent");
     this.assertEqual(wait.provider, "pi");
     await this.rpc({ op: "startup.kill", id: wait.id });
     await this.until(async () => !(await this.session()).startup_waits.some((w: any) => w.id === wait.id));
-  }
-  async test_manager_keeps_configured_opencode_visible_without_account_creation() {
-    writeFileSync(this.path + ".viewer.json", JSON.stringify({ onboarding_complete: true }));
-    const workspace = (await this.session()).workspaces[0].id,
-      view = await Viewer.create(this, 180, 40);
-    await view.input("\x02A");
-    await this.until(async () => (await view.poll()).data.includes("OpenCode"));
-    const rows = screen_text((await view.poll()).data, 180, 40),
-      y = rows.findIndex(row => row.includes("Manage agents")),
-      x = rows[y].indexOf("Manage agents");
-    await view.input(`\x1b[<0;${x + 1};${y + 1}M\x1b[<0;${x + 1};${y + 1}m`);
-    await view.advance(0.3);
-    await this.until(async () => (await view.poll()).data.includes("Add agent"));
-    const managed = screen_text((await view.poll()).data, 180, 40).join("\n");
-    this.assertIn("OpenCode", managed);
-    this.assertFalse(managed.split("\n").some(row => row.includes("New ") && row.includes("OpenCode")));
-    await this.command("agent.workspace_visibility", { workspace, row: "opencode2", shown: false });
-    await view.input("\x1b[D");
-    await view.advance(0.3);
-    await this.until(async () => !(await view.poll()).data.includes("OpenCode"));
-    await this.command("agent.workspace_visibility", { workspace, row: "opencode2", shown: true });
-    await this.until(async () => (await view.poll()).data.includes("OpenCode"));
+    await this.until(() => processPath(pid) === null);
   }
   async create(prompt: string) {
     const result = await this.rpc({

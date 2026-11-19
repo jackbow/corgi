@@ -18,6 +18,7 @@ import * as session from "./session";
 import * as worktreeAdd from "./worktree_add";
 import * as link from "./link";
 import * as client_socket from "./fixtures/client_socket";
+import { scopedEnv } from "./fixtures/env";
 function fixture() {
   const server = new Server("", "", "0".repeat(64));
   return {
@@ -138,6 +139,28 @@ test("shutdown waits for the final recovery write before destroying the runtime"
     destroy.mockRestore();
   }
 });
+/** A daemon whose model reads wait until the test settles `pending`, and a
+ * client whose requests wait until it resumes. */
+function modelReads() {
+  const { server, dispose } = fixture(),
+    pending = Promise.withResolvers<agentModels.Choice[]>(),
+    reader = spyOn(agentModels, "read").mockReturnValue(pending.promise),
+    socket = new client_socket.Recorder(),
+    cl = server.addClient(socket, false);
+  return {
+    server,
+    pending,
+    reader,
+    socket,
+    cl,
+    close() {
+      pending.resolve([]);
+      reader.mockRestore();
+      cl.close();
+      dispose();
+    },
+  };
+}
 test("session snapshots are shared by subscribers and skipped without them", () => {
   const { server, dispose } = fixture(),
     snapshot = spyOn(session, "snapshot"),
@@ -581,11 +604,7 @@ test("model requests use their workspace or cwd and keep legacy requests valid",
 });
 
 test("a model read doesn't hold its connection, and requests for the same list share it", async () => {
-  const { server, dispose } = fixture(),
-    pending = Promise.withResolvers<agentModels.Choice[]>(),
-    reader = spyOn(agentModels, "read").mockReturnValue(pending.promise),
-    socket = new client_socket.Recorder(),
-    cl = server.addClient(socket, false);
+  const { server, pending, reader, socket, cl, close } = modelReads();
   try {
     cl.pending.push(
       { op: "launcher.models", row: "codex", protocol: protocol.version, request_id: 17 },
@@ -603,10 +622,7 @@ test("a model read doesn't hold its connection, and requests for the same list s
       { ok: true, models: [{ id: "gpt", name: "GPT" }], request_id: 18 },
     ]);
   } finally {
-    pending.resolve([]);
-    reader.mockRestore();
-    cl.close();
-    dispose();
+    close();
   }
 });
 
@@ -646,11 +662,7 @@ test("pending model discovery releases the shared request queue", async () => {
 
 for (const failure of [false, true]) {
   test(`model discovery preserves pipelined reply order on ${failure ? "failure" : "success"}`, async () => {
-    const { server, dispose } = fixture(),
-      pending = Promise.withResolvers<agentModels.Choice[]>(),
-      reader = spyOn(agentModels, "read").mockReturnValue(pending.promise),
-      socket = new client_socket.Recorder(),
-      cl = server.addClient(socket, false);
+    const { server, pending, reader, socket, cl, close } = modelReads();
     try {
       cl.pending.push(
         { op: "launcher.models", row: "codex", protocol: protocol.version },
@@ -679,59 +691,52 @@ for (const failure of [false, true]) {
     } finally {
       pending.resolve([]);
       await (server as any).jobs;
-      reader.mockRestore();
-      cl.close();
-      dispose();
+      close();
     }
   });
 }
 
-for (const request_id of [undefined, 41])
-  for (const failure of [false, true]) {
-    test(`a handoff cancels a ${request_id ? "tagged" : "untagged"} model read and ignores its late ${failure ? "failure" : "success"}`, async () => {
-      const { server, dispose } = fixture(),
-        pending = Promise.withResolvers<agentModels.Choice[]>(),
-        reader = spyOn(agentModels, "read").mockReturnValue(pending.promise),
-        socket = new client_socket.Recorder(),
-        cl = server.addClient(socket, false);
-      try {
-        cl.pending.push(
-          {
-            op: "launcher.models",
-            row: "codex",
-            protocol: protocol.version,
-            ...(request_id === undefined ? {} : { request_id }),
-          },
-          { op: "ping", protocol: protocol.version },
-        );
-        cl.resume();
-        await (server as any).jobs;
-        server.pause();
-        expect(reader.mock.calls[0][2].aborted).toBe(true);
-        await Bun.sleep(0);
-        const errors = () => socket.lines().filter(r => !r.ok);
-        expect(errors()).toEqual([{ err: "Cancelled", request_id }]);
-        if (failure) pending.reject(Error("LateFailure"));
-        else pending.resolve([{ id: "late", name: "Late" }]);
-        await pending.promise.catch(() => {});
-        await Bun.sleep(0);
-        expect(errors()).toEqual([{ err: "Cancelled", request_id }]);
-        // A failed handoff resumes the client without an extra reply or a stuck busy flag.
-        cl.resume();
-        await (server as any).jobs;
-        await Bun.sleep(0);
-        await (server as any).jobs;
-        const replies = socket.lines();
-        expect(replies).toHaveLength(2);
-        expect(replies.filter(r => r.ok)).toHaveLength(1);
-      } finally {
-        pending.resolve([]);
-        reader.mockRestore();
-        cl.close();
-        dispose();
-      }
-    });
-  }
+for (const [request_id, failure] of [
+  [undefined, false],
+  [41, true],
+] as const) {
+  test(`a handoff cancels a ${request_id ? "tagged" : "untagged"} model read and ignores its late ${failure ? "failure" : "success"}`, async () => {
+    const { server, pending, reader, socket, cl, close } = modelReads();
+    try {
+      cl.pending.push(
+        {
+          op: "launcher.models",
+          row: "codex",
+          protocol: protocol.version,
+          ...(request_id === undefined ? {} : { request_id }),
+        },
+        { op: "ping", protocol: protocol.version },
+      );
+      cl.resume();
+      await (server as any).jobs;
+      server.pause();
+      expect(reader.mock.calls[0][2].aborted).toBe(true);
+      await Bun.sleep(0);
+      const errors = () => socket.lines().filter(r => !r.ok);
+      expect(errors()).toEqual([{ err: "Cancelled", request_id }]);
+      if (failure) pending.reject(Error("LateFailure"));
+      else pending.resolve([{ id: "late", name: "Late" }]);
+      await pending.promise.catch(() => {});
+      await Bun.sleep(0);
+      expect(errors()).toEqual([{ err: "Cancelled", request_id }]);
+      // A failed handoff resumes the client without an extra reply or a stuck busy flag.
+      cl.resume();
+      await (server as any).jobs;
+      await Bun.sleep(0);
+      await (server as any).jobs;
+      const replies = socket.lines();
+      expect(replies).toHaveLength(2);
+      expect(replies.filter(r => r.ok)).toHaveLength(1);
+    } finally {
+      close();
+    }
+  });
+}
 
 test("startup waits are shared, cancellable, and removed when their reporter disconnects", async () => {
   const { server, dispose } = fixture(),
@@ -779,9 +784,8 @@ test("startup waits are shared, cancellable, and removed when their reporter dis
 test("a numbered command sent again over a link gets its reply without running twice", async () => {
   const { server, dispose } = fixture();
   // The new workspace is saved; keep it out of the user's state.
-  const state = mkdtempSync(join(tmpdir(), "corgi-link-state-")),
-    env = process.env.CORGI_ENV_DIR;
-  process.env.CORGI_ENV_DIR = state;
+  const state = mkdtempSync(join(tmpdir(), "corgi-link-state-"));
+  using env = scopedEnv({ CORGI_ENV_DIR: state });
   try {
     const cl = server.addClient(null, false),
       queued = spyOn(cl, "queue");
@@ -802,8 +806,6 @@ test("a numbered command sent again over a link gets its reply without running t
     expect(replies[1].ok).toBe(true);
   } finally {
     await (server as any).workspaceWrites;
-    if (env === undefined) delete process.env.CORGI_ENV_DIR;
-    else process.env.CORGI_ENV_DIR = env;
     dispose();
     rmSync(state, { recursive: true, force: true });
   }
@@ -906,12 +908,14 @@ test("a handoff carries links and its requester, never connections", () => {
 test("a format-6 rollback gets a listener and its requester as a client, without links", () => {
   const { server, dispose } = fixture();
   server.links.set("kept", new link.Link("kept"));
+  server.runtime.panes.push(new Pane(1, Terminal.create(20, 4), "/tmp"));
   try {
     const saved = handoff.captureManifest(server, 12, null, -1, true),
       before = json.stringify(saved);
     expect(saved.older_updater).toBe(true);
     const older = handoffRollback.downgrade(saved, 9);
     expect([older.version, older.listener, older.requester]).toEqual([6, 9, 12]);
+    expect(json.clone(older.runtime)).toEqual(json.clone(saved.runtime));
     expect(older.clients.map(client => [client.fd, client.viewer])).toEqual([[12, false]]);
     expect(older).not.toHaveProperty("links");
     expect(older).not.toHaveProperty("instance");

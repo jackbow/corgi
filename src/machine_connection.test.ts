@@ -2,6 +2,8 @@ import { sshEndpoint } from "./ssh_path";
 import { expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "./fixtures/websocket_server";
+import { lines } from "./fixtures/lines";
+import { until } from "./fixtures/until";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Endpoint, localEndpoint } from "./machine_connection";
@@ -9,6 +11,92 @@ import { Probe } from "./terminal_info";
 import { Host } from "./host";
 import * as protocol from "./protocol";
 import * as machine_path from "./machine_path";
+
+/** A daemon that keeps links, and drops the connection the first time it gets
+ * a command, after running it, the way a network fails between the two. */
+async function flakyDaemon(remote = false) {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-link-"));
+  const path = join(dir, "control.sock");
+  const seen: { op: string; seq?: number }[] = [];
+  let instance = "first",
+    dropped = false;
+  const snapshot = {
+    workspaces: [
+      {
+        id: 1,
+        name: "one",
+        cwd: "/tmp",
+        model: { nodes: [{ pane: 1 }], tabs: [{ id: 1, root: 0, title: "" }], revision: 0 },
+      },
+    ],
+    panes: [
+      {
+        id: 1,
+        workspace: 1,
+        tab: 1,
+        cols: 80,
+        rows: 24,
+        agent: { provider: null, attention: "none", observation: { completed: 0, read: 0 } },
+      },
+    ],
+    conversations: [],
+    native_sessions: [],
+  };
+  const server = createServer(socket => {
+    socket.on("error", () => {});
+    lines(socket, line => {
+      const request = JSON.parse(line);
+      seen.push({ op: request.op, seq: request.seq });
+      const reply = (value: unknown) =>
+        socket.write(JSON.stringify({ ...(value as object), request_id: request.request_id }) + "\n");
+      switch (request.op) {
+        case "hello":
+          reply({
+            type: "hello",
+            protocol: protocol.version,
+            viewer_protocol: protocol.viewer_version,
+            capabilities: protocol.capabilities,
+            instance,
+          });
+          break;
+        case "link.open":
+          reply({ ok: true, link: `link-${instance}` });
+          break;
+        case "link.resume":
+          reply(
+            request.link === `link-${instance}` ? { ok: true, link: request.link, viewer: false } : { err: "NoLink" },
+          );
+          break;
+        case "session.command":
+          if (!dropped) {
+            dropped = true;
+            socket.destroy();
+            return;
+          }
+          reply({ ok: true, result: { pane: 1, tab: 1, workspace: 1, text: null, closed_panes: [] } });
+          break;
+        default:
+          reply(snapshot);
+      }
+    });
+  });
+  await new Promise<void>(resolve => server.listen(path, resolve));
+  const endpoint = remote
+    ? new Endpoint("work", true, ["work"], machine_path.local(path), new Probe(), new Host())
+    : localEndpoint(path, new Probe(), new Host());
+  return {
+    endpoint,
+    seen,
+    replace: () => (instance = "second"),
+    connect: () => Reflect.get(endpoint, "connect").call(endpoint) as Promise<void>,
+    disconnect: () => Reflect.get(endpoint, "disconnect").call(endpoint),
+    close: async () => {
+      await endpoint.close();
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
 
 test("endpoint completion wakes presentation without pumping continuously", async () => {
   const endpoint = localEndpoint("/tmp/corgi-scheduling-test/control.sock", new Probe(), new Host());
@@ -78,170 +166,29 @@ test("input arriving during an endpoint task runs immediately after completion",
 });
 
 test("a machine keeps its data across reconnects to its daemon but not the daemon's replacement", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "corgi-endpoint-"));
-  const path = join(dir, "control.sock");
-  let instance = "first";
-  const snapshot = {
-    workspaces: [
-      {
-        id: 1,
-        name: "one",
-        cwd: "/tmp",
-        model: { nodes: [{ pane: 1 }], tabs: [{ id: 1, root: 0, title: "" }], revision: 0 },
-      },
-    ],
-    panes: [
-      {
-        id: 1,
-        workspace: 1,
-        tab: 1,
-        cols: 80,
-        rows: 24,
-        agent: { provider: null, attention: "none", observation: { completed: 0, read: 0 } },
-      },
-    ],
-    conversations: [],
-    native_sessions: [],
-  };
-  const server = createServer(socket => {
-    let buffer = "";
-    socket.setEncoding("utf8");
-    socket.on("data", chunk => {
-      buffer += chunk;
-      for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
-        const request = JSON.parse(buffer.slice(0, end)),
-          op = request.op;
-        buffer = buffer.slice(end + 1);
-        const hello = {
-          type: "hello",
-          protocol: protocol.version,
-          viewer_protocol: protocol.viewer_version,
-          capabilities: protocol.capabilities,
-          instance,
-        };
-        socket.write(JSON.stringify({ ...(op === "hello" ? hello : snapshot), request_id: request.request_id }) + "\n");
-      }
-    });
-  });
-  await new Promise<void>(resolve => server.listen(path, resolve));
-  const endpoint = localEndpoint(path, new Probe(), new Host());
-  const connect = () => Reflect.get(endpoint, "connect").call(endpoint) as Promise<void>;
-  const disconnect = () => Reflect.get(endpoint, "disconnect").call(endpoint);
+  const daemon = await flakyDaemon(),
+    endpoint = daemon.endpoint;
   try {
-    await connect();
+    await daemon.connect();
     const runtime = endpoint.machine.runtime,
       expire = spyOn(endpoint.controller!.model_cache, "expire");
     endpoint.machine.last_control = 5n;
-    disconnect();
-    await connect();
+    daemon.disconnect();
+    await daemon.connect();
     expect(endpoint.machine.runtime).toBe(runtime);
     expect(expire).not.toHaveBeenCalled();
     // Each connection numbers its controls from the start.
     expect(endpoint.machine.last_control).toBe(0n);
-    instance = "second";
-    disconnect();
-    await connect();
+    daemon.replace();
+    daemon.disconnect();
+    await daemon.connect();
     expect(endpoint.machine.runtime).not.toBe(runtime);
     // Its agents may differ, and so may their models.
     expect(expire).toHaveBeenCalledTimes(1);
   } finally {
-    await endpoint.close();
-    server.close();
-    rmSync(dir, { recursive: true, force: true });
+    await daemon.close();
   }
 });
-
-/** A daemon that keeps links, and drops the connection the first time it gets
- * a command, after running it, the way a network fails between the two. */
-async function flakyDaemon(remote = false) {
-  const dir = mkdtempSync(join(tmpdir(), "corgi-link-"));
-  const path = join(dir, "control.sock");
-  const seen: { op: string; seq?: number }[] = [];
-  let instance = "first",
-    dropped = false;
-  const snapshot = {
-    workspaces: [
-      {
-        id: 1,
-        name: "one",
-        cwd: "/tmp",
-        model: { nodes: [{ pane: 1 }], tabs: [{ id: 1, root: 0, title: "" }], revision: 0 },
-      },
-    ],
-    panes: [
-      {
-        id: 1,
-        workspace: 1,
-        tab: 1,
-        cols: 80,
-        rows: 24,
-        agent: { provider: null, attention: "none", observation: { completed: 0, read: 0 } },
-      },
-    ],
-    conversations: [],
-    native_sessions: [],
-  };
-  const server = createServer(socket => {
-    let buffer = "";
-    socket.setEncoding("utf8");
-    socket.on("error", () => {});
-    socket.on("data", chunk => {
-      buffer += chunk;
-      for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
-        const request = JSON.parse(buffer.slice(0, end));
-        buffer = buffer.slice(end + 1);
-        seen.push({ op: request.op, seq: request.seq });
-        const reply = (value: unknown) =>
-          socket.write(JSON.stringify({ ...(value as object), request_id: request.request_id }) + "\n");
-        switch (request.op) {
-          case "hello":
-            reply({
-              type: "hello",
-              protocol: protocol.version,
-              viewer_protocol: protocol.viewer_version,
-              capabilities: protocol.capabilities,
-              instance,
-            });
-            break;
-          case "link.open":
-            reply({ ok: true, link: `link-${instance}` });
-            break;
-          case "link.resume":
-            reply(
-              request.link === `link-${instance}` ? { ok: true, link: request.link, viewer: false } : { err: "NoLink" },
-            );
-            break;
-          case "session.command":
-            if (!dropped) {
-              dropped = true;
-              socket.destroy();
-              return;
-            }
-            reply({ ok: true, result: { pane: 1, tab: 1, workspace: 1, text: null, closed_panes: [] } });
-            break;
-          default:
-            reply(snapshot);
-        }
-      }
-    });
-  });
-  await new Promise<void>(resolve => server.listen(path, resolve));
-  const endpoint = remote
-    ? new Endpoint("work", true, ["work"], machine_path.local(path), new Probe(), new Host())
-    : localEndpoint(path, new Probe(), new Host());
-  return {
-    endpoint,
-    seen,
-    replace: () => (instance = "second"),
-    connect: () => Reflect.get(endpoint, "connect").call(endpoint) as Promise<void>,
-    disconnect: () => Reflect.get(endpoint, "disconnect").call(endpoint),
-    close: async () => {
-      await endpoint.close();
-      server.close();
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
-}
 
 test("a command whose reply a dropped connection lost is sent again with its number and answered once", async () => {
   const daemon = await flakyDaemon();
@@ -249,7 +196,7 @@ test("a command whose reply a dropped connection lost is sent again with its num
     await daemon.connect();
     const command = { command: { "pane.close": { target: 1 } } } as const;
     const reply = daemon.endpoint.machine.connection.request("session.command", command);
-    while (!daemon.seen.some(r => r.op === "session.command")) await Bun.sleep(1);
+    await until(() => daemon.seen.some(r => r.op === "session.command"));
     daemon.disconnect();
     await daemon.connect();
     expect(await reply).toMatchObject({ ok: true, result: { pane: 1 } });
@@ -271,7 +218,7 @@ test("a retry after a pause opens a fresh link, so the numbers it dropped leave 
       (error: Error) => error.message,
     );
     // Its number is taken, it's never answered, and pausing drops it.
-    while (!daemon.seen.some(r => r.op === "session.command")) await Bun.sleep(1);
+    await until(() => daemon.seen.some(r => r.op === "session.command"));
     daemon.endpoint.pause();
     expect(await dropped).toBe("ReplyLost");
     daemon.endpoint.retry();
@@ -296,7 +243,7 @@ test("a command in flight when its daemon is replaced fails, since it may have r
       () => "answered",
       (error: Error) => error.message,
     );
-    while (!daemon.seen.some(r => r.op === "session.command")) await Bun.sleep(1);
+    await until(() => daemon.seen.some(r => r.op === "session.command"));
     daemon.disconnect();
     daemon.replace();
     await daemon.connect();
@@ -531,6 +478,38 @@ test("out-of-order numbered replies only acknowledge a contiguous prefix", async
   }
 });
 
+test("a connect from online or at startup shows nothing for its first second", async () => {
+  const endpoint = localEndpoint("/tmp/corgi-status-test/control.sock", new Probe(), new Host());
+  const presence = () => {
+    const { online, connecting, stopped, connection_status } = endpoint.machine.presence();
+    // Rows stay in keyboard navigation throughout.
+    expect(stopped).toBe(false);
+    return { online, connecting, label: connection_status?.label ?? null };
+  };
+  const age = (ms: number) => {
+    const spell = Reflect.get(endpoint, "connecting");
+    Reflect.set(endpoint, "connecting", { ...spell, since: spell.since - ms });
+  };
+  try {
+    expect(presence()).toEqual({ online: false, connecting: false, label: null });
+    age(1000);
+    expect(presence()).toEqual({ online: false, connecting: true, label: "connecting" });
+    endpoint.status = "online";
+    Reflect.set(endpoint, "connected", true);
+    // A reconnect looks online until it's taken a second.
+    endpoint.status = "connecting";
+    expect(presence()).toEqual({ online: true, connecting: false, label: null });
+    age(1000);
+    expect(presence()).toEqual({ online: false, connecting: true, label: "reconnecting" });
+    // After an outage that showed, it says so at once.
+    endpoint.status = "offline";
+    endpoint.status = "connecting";
+    expect(presence()).toEqual({ online: false, connecting: true, label: "reconnecting" });
+  } finally {
+    await endpoint.close();
+  }
+});
+
 test("cached identity does not describe the first connection as a reconnect", async () => {
   const endpoint = localEndpoint("/tmp/corgi-status-test/control.sock", new Probe(), new Host());
   try {
@@ -599,6 +578,31 @@ const recoveryProfile = {
   home: "/tmp",
   bridge: "/unused",
 };
+/** An SSH machine with a saved link, whose connecting step hangs until the
+ * test closes it and whose spare dials are counted instead of made. */
+function hungReconnect() {
+  const endpoint = sshEndpoint(recoveryProfile, new Probe(), new Host());
+  const clock = spyOn(performance, "now").mockReturnValue(1000);
+  let finish!: (value: boolean) => void;
+  const step = spyOn(endpoint as any, "step").mockImplementation(
+    () => new Promise<boolean>(resolve => (finish = resolve)),
+  );
+  const race = spyOn(endpoint as any, "race").mockResolvedValue(undefined);
+  Reflect.set(endpoint, "link", "saved-link");
+  return {
+    endpoint,
+    clock,
+    race,
+    async close() {
+      finish(false);
+      await Reflect.get(endpoint, "task");
+      await endpoint.close();
+      clock.mockRestore();
+      step.mockRestore();
+      race.mockRestore();
+    },
+  };
+}
 
 test("a primary timeout preserves the spare handshake, while pause cancels it", async () => {
   const endpoint = sshEndpoint(recoveryProfile, new Probe(), new Host());
@@ -624,14 +628,7 @@ test("a primary timeout preserves the spare handshake, while pause cancels it", 
 });
 
 test("a hung reconnect gets a spare dial without racing a first connection", async () => {
-  const endpoint = sshEndpoint(recoveryProfile, new Probe(), new Host());
-  const clock = spyOn(performance, "now").mockReturnValue(1000);
-  let finish!: (value: boolean) => void;
-  const step = spyOn(endpoint as any, "step").mockImplementation(
-    () => new Promise<boolean>(resolve => (finish = resolve)),
-  );
-  const race = spyOn(endpoint as any, "race").mockResolvedValue(undefined);
-  Reflect.set(endpoint, "link", "saved-link");
+  const { endpoint, clock, race, close } = hungReconnect();
   try {
     endpoint.pump(false);
     clock.mockReturnValue(10000);
@@ -659,24 +656,12 @@ test("a hung reconnect gets a spare dial without racing a first connection", asy
     expect(race).toHaveBeenCalledTimes(3);
     Reflect.set(endpoint, "data", null);
   } finally {
-    finish(false);
-    await Reflect.get(endpoint, "task");
-    await endpoint.close();
-    clock.mockRestore();
-    step.mockRestore();
-    race.mockRestore();
+    await close();
   }
 });
 
 test("a long outage gets fresh dials at the retries' pace, not every few seconds", async () => {
-  const endpoint = sshEndpoint(recoveryProfile, new Probe(), new Host());
-  const clock = spyOn(performance, "now").mockReturnValue(1000);
-  let finish!: (value: boolean) => void;
-  const step = spyOn(endpoint as any, "step").mockImplementation(
-    () => new Promise<boolean>(resolve => (finish = resolve)),
-  );
-  const race = spyOn(endpoint as any, "race").mockResolvedValue(undefined);
-  Reflect.set(endpoint, "link", "saved-link");
+  const { endpoint, clock, race, close } = hungReconnect();
   try {
     endpoint.pump(false);
     Reflect.set(endpoint, "connected", true);
@@ -690,12 +675,7 @@ test("a long outage gets fresh dials at the retries' pace, not every few seconds
     endpoint.pump(false);
     expect(race).toHaveBeenCalledTimes(1);
   } finally {
-    finish(false);
-    await Reflect.get(endpoint, "task");
-    await endpoint.close();
-    clock.mockRestore();
-    step.mockRestore();
-    race.mockRestore();
+    await close();
   }
 });
 
@@ -733,6 +713,8 @@ test("a spare that takes over brings its own data connection, already dialed", a
   }
 });
 
+const typedBytes = (typed: { bytes: number[] }[]) => typed.flatMap(t => t.bytes);
+
 test("planned reconnect bounds input already queued and releases a full hold without spreading arguments", async () => {
   for (const bytes of [64 * 1024, 256 * 1024]) {
     const endpoint = localEndpoint("/tmp/corgi-handoff-input/control.sock", new Probe(), new Host());
@@ -740,7 +722,7 @@ test("planned reconnect bounds input already queued and releases a full hold wit
       endpoint.enqueue(new Uint8Array(bytes).fill(120));
       Reflect.get(endpoint, "holdHandoffInput").call(endpoint);
       const held = Reflect.get(endpoint, "handoff");
-      expect(held.input.length).toBe(bytes === 64 * 1024 ? bytes : 0);
+      expect(typedBytes(held.input).length).toBe(bytes === 64 * 1024 ? bytes : 0);
       expect(Reflect.get(endpoint, "input")).toEqual([]);
       if (bytes > 64 * 1024) {
         expect(endpoint.error).toBe("Input queue full; unsent input discarded");
@@ -751,7 +733,7 @@ test("planned reconnect bounds input already queued and releases a full hold wit
       Reflect.set(endpoint, "resumed", true);
       Reflect.get(endpoint, "pumpUi").call(endpoint);
       expect(Reflect.get(endpoint, "handoff")).toBeNull();
-      expect(Reflect.get(endpoint, "input")).toEqual(bytes === 64 * 1024 ? Array(bytes).fill(120) : [121]);
+      expect(typedBytes(Reflect.get(endpoint, "input"))).toEqual(bytes === 64 * 1024 ? Array(bytes).fill(120) : [121]);
     } finally {
       await endpoint.close();
     }
@@ -775,6 +757,67 @@ test("typing into an idle viewer goes at once, not at the idle step's pace", asy
   }
 });
 
+test("keys keep whether they came while dropping, through a reload, and the view routes them so", async () => {
+  const endpoint = localEndpoint("/tmp/corgi-handoff-input/control.sock", new Probe(), new Host());
+  try {
+    const view = Reflect.get(endpoint, "view").call(endpoint);
+    view.input_state.attached = true;
+    Reflect.set(endpoint, "settled", true);
+    const routed: [string, boolean][] = [],
+      expired: boolean[] = [];
+    view.input = async (data: Uint8Array, _current: () => boolean, dropped: boolean) =>
+      void routed.push([Buffer.from(data).toString(), dropped]);
+    view.expireInput = async (_current: () => boolean, dropped: boolean) => void expired.push(dropped);
+    endpoint.enqueue(Buffer.from("a"));
+    Reflect.get(endpoint, "holdHandoffInput").call(endpoint);
+    endpoint.enqueue(Buffer.from("b"), true);
+    endpoint.enqueue(Buffer.from("c"), true);
+    endpoint.generation++;
+    endpoint.ready = true;
+    Reflect.set(endpoint, "resumed", true);
+    Reflect.get(endpoint, "pumpUi").call(endpoint);
+    await Reflect.get(endpoint, "ui_task");
+    expect(routed).toEqual([
+      ["a", false],
+      ["bc", true],
+    ]);
+    // What the view holds back of the last keys came while dropping too.
+    expect(expired).toEqual([true]);
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test("switching machines while routing reload input discards later batches", async () => {
+  const endpoint = localEndpoint("/tmp/corgi-handoff-input/control.sock", new Probe(), new Host());
+  try {
+    const view = Reflect.get(endpoint, "view").call(endpoint);
+    view.input_state.attached = true;
+    Reflect.set(endpoint, "settled", true);
+    const routed: [string, boolean][] = [],
+      expired: boolean[] = [];
+    view.input = async (data: Uint8Array, _current: () => boolean, dropped: boolean) => {
+      routed.push([Buffer.from(data).toString(), dropped]);
+      endpoint.deactivate();
+    };
+    view.expireInput = async (_current: () => boolean, dropped: boolean) => void expired.push(dropped);
+    endpoint.enqueue(Buffer.from("switch"));
+    Reflect.get(endpoint, "holdHandoffInput").call(endpoint);
+    endpoint.enqueue(Buffer.from("dropped"), true);
+    endpoint.enqueue(Buffer.from("later"));
+    endpoint.generation++;
+    endpoint.ready = true;
+    Reflect.set(endpoint, "resumed", true);
+    Reflect.get(endpoint, "pumpUi").call(endpoint);
+    await Reflect.get(endpoint, "ui_task");
+    expect(routed).toEqual([["switch", false]]);
+    expect(expired).toEqual([]);
+    expect(Reflect.get(endpoint, "input")).toEqual([]);
+  } finally {
+    await endpoint.close();
+  }
+});
+
 test("keys held through a reload still go after a retry or a pause", async () => {
   for (const action of ["retry", "pause"] as const) {
     const endpoint = localEndpoint("/tmp/corgi-handoff-input/control.sock", new Probe(), new Host());
@@ -784,7 +827,7 @@ test("keys held through a reload still go after a retry or a pause", async () =>
       endpoint.enqueue(Uint8Array.of(98));
       endpoint[action]();
       expect(Reflect.get(endpoint, "handoff")).toBeNull();
-      expect(Reflect.get(endpoint, "input")).toEqual([97, 98]);
+      expect(typedBytes(Reflect.get(endpoint, "input"))).toEqual([97, 98]);
     } finally {
       await endpoint.close();
     }

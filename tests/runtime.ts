@@ -173,6 +173,8 @@ export class Runtime extends TestCase {
     delete this.env.CODEX_THREAD_ID;
     delete this.env.CLAUDE_CODE_SESSION_KIND;
     delete this.env.CORGI_PANE;
+    // A developer environment's own files must not stand in for the test's.
+    delete this.env.CORGI_ENV_DIR;
     Object.assign(this.env, this.extraEnv);
     const preferences = join(this.env.XDG_STATE_HOME!, "corgi/viewer.json");
     mkdirSync(join(preferences, ".."), { recursive: true });
@@ -185,6 +187,20 @@ export class Runtime extends TestCase {
     if (this.configure) await this.configure();
     await this.run_cli("start");
     this.started = true;
+  }
+  /** config.json, where viewers keep shortcuts and the other settings a person chooses. */
+  configFile(): string {
+    return join(this.env.XDG_CONFIG_HOME!, "corgi/config.json");
+  }
+  /** Sets `changes` in config.json, as a hand edit would, keeping the rest. */
+  writeConfig(changes: Record<string, unknown>): void {
+    const file = this.configFile();
+    let saved: Record<string, unknown> = {};
+    try {
+      saved = JSON.parse(readFileSync(file, "utf8"));
+    } catch {}
+    mkdirSync(join(file, ".."), { recursive: true });
+    writeFileSync(file, JSON.stringify({ ...saved, ...changes }));
   }
   async tearDown() {
     const errors: unknown[] = [];
@@ -342,6 +358,20 @@ export class Runtime extends TestCase {
         command: { [operation]: payload },
       })
     ).result;
+  }
+  /** The text `pane`'s screen shows. */
+  async screen(pane: number): Promise<string> {
+    return (await this.command("pane.read", { target: pane, view: "screen" })).text;
+  }
+  /** Has `provider`'s hook report that the agent in `pane` started session `session`. */
+  session_start(pane: number, session: string, provider = "claude") {
+    return this.rpc({
+      op: "hook",
+      pane,
+      provider,
+      seq: 1,
+      event: { hook_event_name: "SessionStart", session_id: session },
+    });
   }
   raw_rpc(value: any): Promise<any> {
     return this.http.post(versioned(value), 8000);

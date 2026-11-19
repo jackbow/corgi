@@ -4,7 +4,6 @@ import * as archiveSummary from "./archive_summary";
 //! are RPC operations. Mirrors controller.zig; methods that call the daemon
 //! are async and run one at a time from the viewer loop.
 import { homedir, hostname } from "node:os";
-import { existsSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as keys from "./keys";
@@ -399,6 +398,8 @@ export class Controller {
   /** Saved preferences as this viewer last loaded or set them. The sidebar
    * width is live while dragging and saved on release. */
   closePreferences: (() => void) | null = null;
+  /** The preference files' problems as last reported, one per line. */
+  private preference_problems = "";
   get prefs(): Preferences {
     return this.host.prefs;
   }
@@ -543,6 +544,11 @@ export class Controller {
   connection_card: ConnectionCard | null = null;
   /** The shown machine hasn't caught up for a while. */
   sync_notice: SyncNotice | null = null;
+  /** The input being routed came while its machine's notice dropped input:
+   * what it means for a pane goes nowhere. */
+  private dropping_input = false;
+  /** The last press came while dropping: its drag and release go with it. */
+  private press_dropped = false;
   signal_bars = new signalBars.Images();
   hide_connection_signals = false;
   resource_aim: resourceTooltip.Aim | null = null;
@@ -1023,7 +1029,7 @@ export class Controller {
       if (kept) shown(pane);
       const keys = value.take();
       if (!keys.length) return;
-      if (value.machine === this.machine) this.sendInput(p.terminal, keys);
+      if (value.machine === this.machine) this.sendInput(p.terminal, keys, false);
       else p.terminal.send(keys);
     });
   }
@@ -1038,7 +1044,9 @@ export class Controller {
   private typeOpening(bytes: number[]): boolean {
     const opening = this.openingFocus();
     if (!opening) return false;
-    if (!opening.type(bytes)) this.notice(i18n.t` Too much typed for a pane still opening; the rest was dropped`);
+    // Dropped as it came, rather than held for the pane.
+    if (!this.dropping_input && !opening.type(bytes))
+      this.notice(i18n.t` Too much typed for a pane still opening; the rest was dropped`);
     return true;
   }
   /** Keys for the pane with the keyboard. */
@@ -1564,54 +1572,27 @@ export class Controller {
     this.review_state ??= reviewState.Store.open(this.connection.daemon?.socket ?? this.machine.name);
   }
   loadPreferences(): void {
-    this.prefs = preferences.load();
+    this.prefs = preferences.load(true);
     localeHost.initialize(this.prefs.language);
     this.closePreferences?.();
     try {
-      if (existsSync(preferences.path()) && preferences.readExisting(preferences.path()) === null)
-        this.notice(i18n.t`Invalid viewer.json; using default preferences until the file is repaired.`);
-      this.closePreferences = keybindingFile.observe(preferences.path(), saved => {
-        if (saved) this.prefs.workspace_order = saved.workspace_order;
-        if (saved && saved.language !== this.prefs.language) {
-          this.prefs.language = saved.language;
-          localeHost.initialize(saved.language);
-          this.help.configure(this.prefs.preset, this.prefs.prefix, this.prefs.keys);
-          this.dirty = true;
-        }
-        if (!saved) {
-          this.help.error = i18n.t`Invalid viewer.json; keeping the working shortcuts.`;
-          this.notice(this.help.error);
-        } else if (
-          saved.preset !== this.prefs.preset ||
-          saved.prefix !== this.prefs.prefix ||
-          JSON.stringify(saved.keys) !== JSON.stringify(this.prefs.keys)
-        ) {
-          this.prefs.preset = saved.preset;
-          this.prefs.prefix = saved.prefix;
-          this.prefs.keys = saved.keys;
-          this.repeat_until = 0;
-          if (this.help_visible) {
-            const editing = this.help.edit !== null;
-            this.help.configure(saved.preset, saved.prefix, saved.keys);
-            this.help.accept(saved.keys);
-            if (editing) this.help.error = i18n.t`Shortcuts changed on disk. Reopen the shortcut to edit it.`;
-          } else this.prefix = false;
-          if (!this.remote_links && ghosttyIntegration.available()) {
-            try {
-              if (
-                ghosttyIntegration.refresh({ preset: saved.preset, prefix: saved.prefix, bindings: saved.bindings() })
-              )
-                this.notice(i18n.t`Shortcuts reloaded. Reload Ghostty to update its menu shortcuts.`);
-            } catch {
-              this.notice(i18n.t`Shortcuts reloaded; could not update the Ghostty integration.`);
-            }
-          }
-          this.dirty = true;
-        }
-        this.wake?.();
-      });
+      const where = preferences.paths();
+      this.reportPreferences(preferences.inspect(where).problems);
+      const settings = keybindingFile.observe(where.config, () =>
+          this.reloadSettings(preferences.inspectConfig(where.config)),
+        ),
+        state = keybindingFile.observe(where.viewer, () => {
+          // One being rewritten by hand keeps the order this viewer has.
+          const saved = preferences.inspectViewer(where.viewer);
+          if (saved) this.prefs.workspace_order = saved.workspace_order;
+          this.wake?.();
+        });
+      this.closePreferences = () => {
+        settings();
+        state();
+      };
     } catch {
-      this.notice(i18n.t`Could not watch viewer.json for shortcut changes.`);
+      this.notice(i18n.t`Could not watch config.json for shortcut changes.`);
     }
     this.review.tree_rows = this.prefs.review_tree_rows;
     this.prompt.choice = this.prefs.prompt_model === "auto" ? null : (this.prefs.prompt_model ?? null);
@@ -1621,6 +1602,57 @@ export class Controller {
         prefix: this.prefs.prefix,
         theme: this.prefs.theme,
       });
+  }
+  /** Applies config.json as edited on disk: its language and shortcuts take effect now. */
+  private reloadSettings(reading: { prefs: Preferences | null; problems: preferences.Problem[] }): void {
+    const saved = reading.prefs;
+    if (saved && saved.language !== this.prefs.language) {
+      this.prefs.language = saved.language;
+      localeHost.initialize(saved.language);
+      this.help.configure(this.prefs.preset, this.prefs.prefix, this.prefs.keys);
+      this.dirty = true;
+    }
+    if (!saved) {
+      this.help.error = i18n.t`Invalid config.json; keeping the working shortcuts.`;
+      this.notice(this.help.error);
+    } else if (
+      saved.preset !== this.prefs.preset ||
+      saved.prefix !== this.prefs.prefix ||
+      JSON.stringify(saved.keys) !== JSON.stringify(this.prefs.keys)
+    ) {
+      this.prefs.preset = saved.preset;
+      this.prefs.prefix = saved.prefix;
+      this.prefs.keys = saved.keys;
+      this.repeat_until = 0;
+      if (this.help_visible) {
+        const editing = this.help.edit !== null;
+        this.help.configure(saved.preset, saved.prefix, saved.keys);
+        this.help.accept(saved.keys);
+        if (editing) this.help.error = i18n.t`Shortcuts changed on disk. Reopen the shortcut to edit it.`;
+      } else this.prefix = false;
+      if (!this.remote_links && ghosttyIntegration.available()) {
+        try {
+          if (ghosttyIntegration.refresh({ preset: saved.preset, prefix: saved.prefix, bindings: saved.bindings() }))
+            this.notice(i18n.t`Shortcuts reloaded. Reload Ghostty to update its menu shortcuts.`);
+        } catch {
+          this.notice(i18n.t`Shortcuts reloaded; could not update the Ghostty integration.`);
+        }
+      }
+      this.dirty = true;
+    }
+    if (saved) this.reportPreferences(reading.problems);
+    this.wake?.();
+  }
+  /** Names the first problem with the preference files once each time the
+   * list changes, so this viewer's own saves don't repeat it. */
+  private reportPreferences(problems: preferences.Problem[]): void {
+    const seen = problems.map(p => `${p.file}: ${p.text}`).join("\n");
+    if (seen === this.preference_problems) return;
+    this.preference_problems = seen;
+    if (!problems.length) return;
+    const first = `${basename(problems[0].file)}: ${problems[0].text}`,
+      more = problems.length - 1;
+    this.notice(more ? i18n.t`${first} (+${more} more)` : first);
   }
   /** Forgets what the last connection to the daemon agreed, before the next
    * one opens. The panes, selection and menus stay. */
@@ -1820,8 +1852,7 @@ export class Controller {
   navigateWorkspace(forward: boolean): void {
     const ids = this.workspaceRows(false, true)
       .filter(row => {
-        const presence = this.rowOf(row.id)!.machine.presence();
-        return presence.online || presence.connecting;
+        return !this.rowOf(row.id)!.machine.presence().stopped;
       })
       .map(row => row.id);
     if (!ids.length) return;
@@ -1960,8 +1991,7 @@ export class Controller {
     return [
       ...this.workspaceRows()
         .filter(row => {
-          const presence = this.rowOf(row.id)!.machine.presence();
-          return presence.online || presence.connecting;
+          return !this.rowOf(row.id)!.machine.presence().stopped;
         })
         .map(row => row.id),
       ...(this.archived_expanded ? this.archivedWorkspaces().map(ws => this.rowKey(ws.id)) : []),
@@ -2937,9 +2967,9 @@ export class Controller {
         break;
       case "save":
         try {
-          preferences.updateKeys(this.prefs, result.config);
-          this.prefs.keys = result.config;
-          this.help.accept(result.config);
+          const saved = preferences.updateKeys(this.prefs, result.config);
+          this.prefs.keys = saved.keys;
+          this.help.accept(saved.keys);
           if (
             !this.remote_links &&
             (await ghosttyIntegration.refresh({
@@ -4483,9 +4513,11 @@ export class Controller {
     this.click_series = { pane, x, y, top, w: rect.w, h: rect.h, count, at: now };
     return count;
   }
-  private sendInput(term: Terminal, bytes: string | Uint8Array | number[]): void {
+  /** Input for a pane; `typed` is input being routed, which goes nowhere
+   * when it came while the machine dropped it. */
+  private sendInput(term: Terminal, bytes: string | Uint8Array | number[], typed = true): void {
     // Nothing reads a dormant pane's input.
-    if (this.pane(term.id)?.dormant) return;
+    if (this.pane(term.id)?.dormant || (typed && this.dropping_input)) return;
     this.marked_unread.delete(term.id);
     if (bytes.length > 0) {
       this.flushPendingCopy();
@@ -4499,6 +4531,19 @@ export class Controller {
       this.dirty = true;
     }
     term.send(bytes);
+  }
+  /** Re-encodes a host SGR report for the app in `rect`, in the protocol it
+   * chose. Points outside `rect` reach the app only while a button is held. */
+  private sendMouse(term: Terminal, rect: Rect, button: number, x: number, y: number, release: boolean): void {
+    // A press, its drag and its release go, or are dropped, together.
+    const held = release || isDrag(button);
+    if (!release && isButton(button)) this.press_dropped = this.dropping_input;
+    if (held ? this.press_dropped : this.dropping_input) return;
+    const report = viewerNative.encodeMouse(term.handle, button, x - rect.x, y - rect.y, release);
+    // Only a hover, with no button held (extra buttons set bit 128), may give
+    // way to the next: a drag's every point stays, as do presses and the wheel.
+    if (!release && isHover(button) && (button & 128) === 0) term.move(report, button);
+    else term.send(report);
   }
   private queueEffect(effect: Effect): void {
     if ("open_url" in effect) {
@@ -7346,6 +7391,8 @@ export class Controller {
     if (byte === 27 && this.retryPending()) return this.perform({ name: "cancel-retry" });
     const p = this.focused();
     if (p) {
+      // A key that never reaches the agent doesn't answer it.
+      if (this.dropping_input) return;
       this.sendInput(p.terminal, [byte]);
       acknowledge(p.agent.observation, p.agent.observation.completed);
       p.agent.attention = "none";
@@ -7378,8 +7425,8 @@ export class Controller {
     if (this.conversation_prs.open && this.conversation_prs.focused) return "discard";
     if (this.reviewKeys() && (!this.pull_request.open || this.pull_request.compose)) return "review";
     if (this.hasMenu() || this.reviewKeys()) return "discard";
-    // A pane still opening takes no pastes.
-    if (this.openingFocus()) return "discard";
+    // A pane still opening takes no pastes, nor one whose machine drops input.
+    if (this.openingFocus() || this.dropping_input) return "discard";
     const p = this.focused();
     return p ? { pane: p.id } : "discard";
   }
@@ -7511,7 +7558,7 @@ export class Controller {
                 this.promptImage(path);
             } else {
               const path = await this.uploadImage(result.path, mime, progress);
-              if (shown()) this.pasteText(target, path);
+              if (shown()) this.pasteText(target, path, false);
             }
           }
         } else if ("relay" in result) await this.relayPaste(target, result.relay, progress, lane, shown);
@@ -7549,7 +7596,8 @@ export class Controller {
   private pasteClipboardText(target: Paste, text: string): void {
     // The check Ghostty makes before a paste reaches Corgi.
     if (!viewerNative.isSafePaste(text)) return this.notice(i18n.t`Paste refused: it contains an end-of-paste marker`);
-    this.pasteText(target, text);
+    // The clipboard's answer to a paste that was taken when it came.
+    this.pasteText(target, text, false);
   }
   /** Has the daemon offer the clipboard in the program's own paste event,
    * or pastes it as text or an image's path when the daemon can't. */
@@ -7589,7 +7637,7 @@ export class Controller {
     }
     if (pasted || !shown()) return;
     if (relayed.text !== null) return this.pasteClipboardText(target, relayed.text);
-    if (relayed.image) return this.pasteText(target, relayed.image.path);
+    if (relayed.image) return this.pasteText(target, relayed.image.path, false);
   }
   /** A paste a pane refused, since its last is still on its way. */
   private pasteRefused(): void {
@@ -7597,7 +7645,8 @@ export class Controller {
   }
   /** Pastes `text` as the host terminal would have: control characters
    * become spaces, and a pane gets it bracketed if it asked to be. */
-  private pasteText(target: Paste, text: string): void {
+  /** `typed` as `sendInput` takes it. */
+  private pasteText(target: Paste, text: string, typed = true): void {
     this.input_state.active = true;
     this.dirty = true;
     if (typeof target === "object") {
@@ -7605,7 +7654,7 @@ export class Controller {
       if (!p) return this.notice(i18n.t`The pane closed before the paste arrived`);
       if (!p.terminal.pasteStart()) return this.pasteRefused();
       try {
-        this.sendInput(p.terminal, viewerNative.encodePaste(text, p.terminal.bracketedPaste()));
+        this.sendInput(p.terminal, viewerNative.encodePaste(text, p.terminal.bracketedPaste()), typed);
       } finally {
         p.terminal.pasteEnd();
       }
@@ -7759,7 +7808,17 @@ export class Controller {
     this.pastePane()?.terminal.pasteAbort();
     this.input_state = Object.assign(new InputState(), { attached, watched });
   }
-  async input(data: Uint8Array, current = () => true): Promise<void> {
+  /** Routes input; `dropped` says it came while its machine dropped input. */
+  async input(data: Uint8Array, current = () => true, dropped = false): Promise<void> {
+    this.dropping_input = dropped;
+    try {
+      await this.route(data, current);
+    } finally {
+      this.dropping_input = false;
+    }
+  }
+  private async route(data: Uint8Array, current: () => boolean): Promise<void> {
+    if (!current()) return;
     const cl = this.input_state,
       machine = this.machine;
     if (data.length > 0) cl.active = true;
@@ -7774,8 +7833,11 @@ export class Controller {
         }
         const buf = cl.keybuf,
           byte = buf[used];
-        if (byte !== 27) {
-          if (cl.paste !== null) {
+        if (cl.paste !== null) {
+          const head = latin1(buf.slice(used, used + keys.paste_end.length));
+          if (keys.paste_end.startsWith(head)) {
+            if (head.length < keys.paste_end.length) break;
+          } else {
             let end = used + 1;
             while (end < buf.length && buf[end] !== 27) end++;
             this.closePasteCard();
@@ -7785,6 +7847,8 @@ export class Controller {
             used = end;
             continue;
           }
+        }
+        if (byte !== 27) {
           if (byte >= 128) {
             const decoded = keyboard.textKey(buf.slice(used, used + 4));
             if (decoded.length === 0) break;
@@ -7840,6 +7904,11 @@ export class Controller {
           this.link_tooltip.cancel();
           this.dirty = true;
           break;
+        }
+        if (buf[used + 1] === 27) {
+          await this.key(27);
+          used += 1;
+          continue;
         }
         if (
           cl.paste === null &&
@@ -8933,7 +9002,7 @@ export class Controller {
         if (p.id !== id) continue;
         const held = this.pane(id);
         if (!held) break;
-        sendMouse(held.terminal, p.rect, button, x, y, release);
+        this.sendMouse(held.terminal, p.rect, button, x, y, release);
       }
       return;
     }
@@ -9482,7 +9551,7 @@ export class Controller {
       // Hover never moves focus. The encoder drops it unless the app
       // tracks all motion.
       if (hover) {
-        if (app_mouse) sendMouse(term, p.rect, button, x, y, release);
+        if (app_mouse) this.sendMouse(term, p.rect, button, x, y, release);
         return;
       }
       const clicks = release ? 0 : this.countClick(series, p.id, p.rect, term, button, x, y);
@@ -9536,7 +9605,7 @@ export class Controller {
       }
       if (app_mouse) {
         if (!release && isButton(button)) cl.pane_press = p.id;
-        sendMouse(term, p.rect, button, x, y, release);
+        this.sendMouse(term, p.rect, button, x, y, release);
         return;
       }
       if (release) {
@@ -9707,7 +9776,17 @@ export class Controller {
   async settle(): Promise<void> {
     await this.tasks.idle();
   }
-  async expireInput(current = () => true): Promise<void> {
+  /** Expires held input, as `input` routed it: `dropped` says it came
+   * while its machine dropped input. */
+  async expireInput(current = () => true, dropped = false): Promise<void> {
+    this.dropping_input = dropped;
+    try {
+      await this.expire(current);
+    } finally {
+      this.dropping_input = false;
+    }
+  }
+  private async expire(current: () => boolean): Promise<void> {
     const machine = this.machine,
       input = this.input_state;
     const valid = () => current() && this.machine === machine && this.input_state === input;
@@ -10709,7 +10788,8 @@ export class Controller {
         connection_card: this.connection_card,
         sync_notice: this.sync_notice,
         pane_opening: this.openingFocus() !== null,
-        signal_bars: this.supports_kitty_graphics && !this.hide_connection_signals ? this.signal_bars : null,
+        signal_bars: this.supports_kitty_graphics ? this.signal_bars : null,
+        signal_bars_hidden: this.hide_connection_signals,
         git_hover: this.hoverIdle() ? this.git_hover : null,
         grip_hover: this.grip_hover,
         git_card: (tooltip_ready || this.git_card.pinned) && git_ws ? this.git_card : null,
@@ -11226,15 +11306,6 @@ function gitPushMessage(err: string): string {
     default:
       return err;
   }
-}
-/** Re-encodes a host SGR report for the app in `rect`, in the protocol it
- * chose. Points outside `rect` reach the app only while a button is held. */
-function sendMouse(term: Terminal, rect: Rect, button: number, x: number, y: number, release: boolean): void {
-  const report = viewerNative.encodeMouse(term.handle, button, x - rect.x, y - rect.y, release);
-  // Only a hover, with no button held (extra buttons set bit 128), may give
-  // way to the next: a drag's every point stays, as do presses and the wheel.
-  if (!release && isHover(button) && (button & 128) === 0) term.move(report, button);
-  else term.send(report);
 }
 /** What the prompt calls a pane: its label, its agent, or what runs in it. */
 function paneName(p: Pane): string {

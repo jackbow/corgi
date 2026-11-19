@@ -44,6 +44,36 @@ function emptyView() {
   return new View(new Model(), new Selection());
 }
 const count = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+type Rows = (x: number, y: number, h: number, dimmed: boolean) => string;
+/** A pane's terminal that draws `rows`, with no links. */
+function stubTerminal(rows: Rows = () => "", cursor: { x: number; y: number } | null = null) {
+  return {
+    updateRender() {},
+    hyperlinks: () => [],
+    cursor: () => cursor,
+    cursorStyle: () => "default",
+    rows: (_id: number, x: number, y: number, _w: number, h: number, dimmed: boolean) => rows(x, y, h, dimmed),
+  };
+}
+/** Rows that say at their corner whether they were dimmed. */
+const marked: Rows = (x, y, _h, dimmed) => `\x1b[${y + 1};${x + 1}H${dimmed ? "dimmed" : "plain"}`;
+/** Each row numbered, "dim" before it when dimmed. */
+const numbered: Rows = (x, y, h, dimmed) =>
+  Array.from({ length: h }, (_, row) => `\x1b[${y + row + 1};${x + 1}H${dimmed ? "dim" : ""}row${row}`).join("");
+/** A pane at a prompt in /w/corgi, showing `terminal`. */
+function stubPane(fields: Partial<Omit<Pane, "terminal">>, terminal = stubTerminal()): Pane {
+  return {
+    id: 1,
+    label: "",
+    cwd: "/w/corgi",
+    command: "",
+    brand: null,
+    agent: agent(),
+    restoring: "",
+    ...fields,
+    terminal,
+  } as unknown as Pane;
+}
 
 test("the empty sidebar's New keycap prefers short direct bindings and falls back to the prefix", () => {
   const u = ui({ sidebar_open: true, message: "", copy_mode: false });
@@ -55,7 +85,7 @@ test("the empty sidebar's New keycap prefers short direct bindings and falls bac
   expect(frame(emptyView(), [], 100, 30, u)).toContain(palette.keycap + " Ctrl+A c ");
 });
 
-test("machine reception uses cached Kitty pixels, falls back to blocks, and yields to retry text and cards", () => {
+test("machine reception uses cached Kitty pixels, falls back to blocks, and yields to retry text, cards and menus", () => {
   const images = new SignalBars();
   const row = sidebar.workspaceEntry({
     id: 1,
@@ -74,10 +104,17 @@ test("machine reception uses cached Kitty pixels, falls back to blocks, and yiel
     cell_pixels: { width: 10, height: 20 },
   });
   const draw = () => frame(null, [], 120, 40, u);
-  expect(draw()).toContain("█");
+  // The first frame keeps the bars' room while their image uploads.
+  expect(draw()).not.toContain("█");
   expect(images.end()).toContain("f=32");
   const withImage = draw();
   expect(withImage).toContain("a=p,i=730404");
+  // Under a menu drawn over the frame, they keep their room but aren't placed.
+  u.signal_bars_hidden = true;
+  const hidden = draw();
+  expect(hidden).not.toContain("a=p,i=730404");
+  expect(hidden).not.toContain("█");
+  u.signal_bars_hidden = false;
   row.connecting = true;
   row.connection_status = { label: "connecting", seconds: 4, color: "warm" };
   expect(draw()).toContain("connecting 4s");
@@ -93,7 +130,7 @@ test("machine reception uses cached Kitty pixels, falls back to blocks, and yiel
 
 test("setup clips signal bars at its border and restores them when closed", () => {
   const images = new SignalBars(),
-    host = Terminal.create(130, 30);
+    host = Terminal.create(134, 30);
   const u = ui({
     message: "",
     copy_mode: false,
@@ -105,19 +142,19 @@ test("setup clips signal bars at its border and restores them when closed", () =
     cell_pixels: { width: 8, height: 16 },
   });
   const draw = () => {
-    host.feed(images.begin() + frame(null, [], 130, 30, u) + images.end());
-    return host.surface(1).surface.images!.filter(p => p.image.width === 32);
+    host.feed(images.begin() + frame(null, [], 134, 30, u) + images.end());
+    return host.surface(1).surface.images!.filter(p => p.image.width === 16);
   };
   try {
     draw();
     const [shown] = draw();
-    expect(shown.source_width).toBe(32);
+    expect(shown.source_width).toBe(16);
     u.corgi_setup = SetupMenu.open();
     const [clipped] = draw();
     expect(clipped.x).toBe(shown.x);
     expect(clipped.source_width).toBe(8);
     u.corgi_setup = null;
-    expect(draw()[0].source_width).toBe(32);
+    expect(draw()[0].source_width).toBe(16);
   } finally {
     host.destroy();
   }
@@ -327,23 +364,7 @@ test("agent tab names preserve Unicode and clip by cells without shifting the ne
   const id = m.newTab("");
   m.newTab("next");
   selection.reconcile(m);
-  const terminal = {
-    updateRender() {},
-    hyperlinks: () => [],
-    cursor: () => null,
-    cursorStyle: () => "default",
-    rows: () => "",
-  };
-  const pane = {
-    id,
-    label: "",
-    cwd: "/tmp",
-    command: "",
-    brand: null,
-    agent: agent({ provider: "claude" }),
-    restoring: "",
-    terminal,
-  } as unknown as Pane;
+  const pane = stubPane({ id, cwd: "/tmp", agent: agent({ provider: "claude" }) });
   const screen = new Terminal(40, 10);
   try {
     for (const [name, label] of [
@@ -375,15 +396,7 @@ test("a tab wears its program's mark after its number, once the host holds it, a
   m.newTab("");
   m.newTab("");
   selection.reconcile(m);
-  const terminal = {
-    updateRender() {},
-    hyperlinks: () => [],
-    cursor: () => null,
-    cursorStyle: () => "default",
-    rows: () => "",
-  };
-  const pane = (id: number, command: string, brand: Pane["brand"]) =>
-    ({ id, label: "", cwd: "/w/corgi", command, brand, agent: agent(), restoring: "", terminal }) as unknown as Pane;
+  const pane = (id: number, command: string, brand: Pane["brand"]) => stubPane({ id, command, brand });
   const panes = [pane(m.firstPane(m.tabs[0].root), "node", "node"), pane(m.firstPane(m.tabs[1].root), "htop", null)];
   const icons = new Icons();
   const shown = (fields: Partial<Ui> = {}) =>
@@ -810,22 +823,7 @@ test("the launcher dims the panes behind it", () => {
   const selection = new Selection();
   const id = m.newTab("");
   selection.reconcile(m);
-  const pane: any = {
-    id,
-    label: "",
-    cwd: "/w/corgi",
-    command: "",
-    agent: agent(),
-    restoring: "",
-    terminal: {
-      updateRender() {},
-      hyperlinks: () => [],
-      cursor: () => null,
-      cursorStyle: () => "default",
-      rows: (_id: number, x: number, y: number, _w: number, _h: number, dimmed: boolean) =>
-        `\x1b[${y + 1};${x + 1}H${dimmed ? "dimmed" : "plain"}`,
-    },
-  };
+  const pane = stubPane({ id }, stubTerminal(marked));
   const u = ui({ pointer: null, message: "", copy_mode: false });
   expect(frame(new View(m, selection), [pane], 100, 30, u)).toContain("plain");
   u.agent_launcher = new LauncherMenu({ workspace: 1, selected: "codex", last: "codex", pinned: true });
@@ -874,16 +872,7 @@ test("a swap preview on a single-pane tab stays below the tabs and inside the pa
 test("a ghost dims the bottom half of the pane area, each row where entering leaves it", () => {
   const area = new Rect(28, 1, 72, 20),
     rect = new Rect(29, 2, 70, 18);
-  const pane: any = {
-    id: 3,
-    label: "",
-    agent: { name: "release notes", provider: "claude" },
-    terminal: {
-      updateRender() {},
-      rows: (_id: number, x: number, y: number, _w: number, h: number, dimmed: boolean) =>
-        Array.from({ length: h }, (_, row) => `\x1b[${y + row + 1};${x + 1}H${dimmed ? "dim" : ""}row${row}`).join(""),
-    },
-  };
+  const pane = stubPane({ id: 3, agent: agent({ name: "release notes", provider: "claude" }) }, stubTerminal(numbered));
   const out = new Writer();
   drawGhost(out, { pane, rect, area });
   const text = out.buffered();
@@ -900,14 +889,7 @@ test("a workspace ghost dims the top half with its tabs, each row where switchin
   const selection = new Selection();
   const id = m.newTab("notes");
   selection.reconcile(m);
-  const pane: any = {
-    id,
-    terminal: {
-      updateRender() {},
-      rows: (_id: number, x: number, y: number, _w: number, h: number, dimmed: boolean) =>
-        Array.from({ length: h }, (_, row) => `\x1b[${y + row + 1};${x + 1}H${dimmed ? "dim" : ""}row${row}`).join(""),
-    },
-  };
+  const pane = stubPane({ id }, stubTerminal(numbered));
   const side = sidebar.View.init(100, 21, true, 0, 0);
   const out = new Writer();
   const covered = drawWorkspaceGhost(out, { name: "alpha", view: new View(m, selection) }, [pane], side, 100, "corgi");
@@ -1001,23 +983,7 @@ test("the prompt draws over dimmed panes, with no pane cursor, and places brand 
   const selection = new Selection();
   const id = m.newTab("");
   selection.reconcile(m);
-  const pane: any = {
-    id,
-    label: "",
-    cwd: "/w/corgi",
-    command: "",
-    brand: null,
-    agent: agent({ provider: "claude" }),
-    restoring: "",
-    terminal: {
-      updateRender() {},
-      hyperlinks: () => [],
-      cursor: () => ({ x: 0, y: 0 }),
-      cursorStyle: () => "default",
-      rows: (_id: number, x: number, y: number, _w: number, _h: number, dimmed: boolean) =>
-        `\x1b[${y + 1};${x + 1}H${dimmed ? "dimmed" : "plain"}`,
-    },
-  };
+  const pane = stubPane({ id, agent: agent({ provider: "claude" }) }, stubTerminal(marked, { x: 0, y: 0 }));
   const icons = new Icons(),
     cell = { width: 9, height: 18 },
     view = new View(m, selection),

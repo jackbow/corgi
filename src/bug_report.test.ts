@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as bugReport from "./bug_report";
 import * as terminal_info from "./terminal_info";
+import { fragmented } from "./fixtures/probe";
 import { status } from "./corgi_setup";
 import type { Rgb } from "./palette";
 
@@ -377,6 +378,7 @@ const extras: bugReport.Extras = {
   updates: ["Automatic updates: on", "current: 1.2.3"],
   settings: '{\n  "shell": "/bin/zsh"\n}\n',
   preferences: "",
+  config: "",
   warnings: ["error: b", "warn(ports): a (×2)"],
 };
 
@@ -591,10 +593,6 @@ test("the CLI links the prefilled issue where the terminal takes links, else nam
   expect(bugReport.hyperlinks({ FORCE_HYPERLINK: "1" }, false)).toBe(true);
   expect(bugReport.hyperlinks({ FORCE_HYPERLINK: "0", TERM_PROGRAM: "ghostty" }, true)).toBe(false);
 });
-
-function fragmented(p: terminal_info.Probe, bytes: string) {
-  return Buffer.concat(Array.from(Buffer.from(bytes), byte => p.feed(Buffer.from([byte])))).toString();
-}
 
 test("a report reads plain terminal data and keeps its own snapshot", () => {
   const info: terminal_info.Info = {

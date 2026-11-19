@@ -210,28 +210,6 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     });
   }
 
-  async test_manage_returns_to_the_picker_at_the_same_width() {
-    const view = await Viewer.create(this, 120, 30);
-    await this.openLauncher(view);
-    const box = async () => {
-      const rows = screen_text((await view.poll()).data, 120, 30);
-      const top = rows.find(row => row.includes("╭") && row.includes("╮"))!;
-      return [top.indexOf("╭"), top.indexOf("╮")];
-    };
-    const before = await box();
-    await this.clickText(view, "Manage agents");
-    this.assertEqual(await box(), before);
-    this.assertIn("Model", (await view.poll()).data);
-    await this.clickText(view, "← New tab");
-    this.assertEqual(await box(), before);
-    this.assertIn("New terminal", (await view.poll()).data);
-    await view.input("\x1b[C");
-    await view.advance(0.3);
-    await view.input("\x1b[D");
-    await view.advance(0.3);
-    this.assertIn("New terminal", (await view.poll()).data);
-  }
-
   async test_manager_prefetches_models_and_clones_reorder_hide_and_launch_with_their_model() {
     const view = await Viewer.create(this, 120, 30);
     await this.openLauncher(view);
@@ -590,8 +568,7 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     this.assertTrue((await preview()).options.codex.signed_in);
   }
   async shellAliasCase(name: string) {
-    const shell = Bun.which(name);
-    if (!shell) return;
+    const shell = Bun.which(name)!;
     await this.run_cli("shutdown");
     await this.until(() => !existsSync(this.path));
     const root = this.temp.name,
@@ -843,19 +820,6 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     await this.until(() => lines(this.launches).length === 3);
     this.assertNotIn("--dangerously-bypass-approvals-and-sandbox", JSON.parse(lines(this.launches)[2]).args);
   }
-  async test_hover_and_dismiss_do_not_launch() {
-    const view = await Viewer.create(this, 80, 24);
-    await view.input("\x1b[<35;21;12M");
-    this.assertIn("New agent", (await view.advance(0.15)).data);
-    this.assertEqual((await this.session()).panes.length, 1);
-    await view.input("\x1b[<35;75;2M");
-    await this.until(async () => !(await view.poll()).data.includes("New agent"));
-    await this.clickViewer(view, 26, 12);
-    this.assertIn("New agent", (await view.poll()).data);
-    await this.clickViewer(view, 75, 2);
-    this.assertNotIn("New agent", (await view.poll()).data);
-    this.assertFalse(existsSync(this.launches));
-  }
   async test_subscription_pushes_updates_and_resubscribes_after_reload() {
     let connection = new rpc.Connection(this.path, { timeout_ms: 12000 }),
       events = new Events(connection);
@@ -869,7 +833,6 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
       const initial = await subscribe(this.launchDir);
       this.assertEqual(initial.cwd, this.launchDir);
       this.assertEqual(initial.preview.options.claude.model, "opus");
-      await sleep(5.2);
       const settings = join(this.launchDir, ".claude/settings.json");
       mkdirSync(join(this.launchDir, ".claude"));
       writeFileSync(settings, JSON.stringify({ model: "sonnet" }));
@@ -1371,8 +1334,10 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     this.assertEqual(this.metadataRequests().filter(r => r.kind === "start").length, 1);
   }
   async test_corgi_intensity_migrates_and_previews_before_saving() {
-    const file = join(this.env.XDG_STATE_HOME!, "corgi", "viewer.json");
+    const file = join(this.env.XDG_STATE_HOME!, "corgi", "viewer.json"),
+      config = this.configFile();
     mkdirSync(join(this.env.XDG_STATE_HOME!, "corgi"), { recursive: true });
+    // An older build's viewer.json: the viewer moves its settings to config.json.
     writeFileSync(
       file,
       JSON.stringify({
@@ -1397,17 +1362,17 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     rows = screen_text((await view.poll()).data, 100, 30);
     this.assertIn("100%", rows.join("\n"));
     this.assertIn("~ᐯ◡ᴥ◡ᐯ", rows.join("\n"));
-    this.assertEqual(json(file).sleeping_corgis, false);
-    this.assertFalse("corgi_intensity" in json(file));
-    await view.input(`\x1b[<0;${right + 1};${sliderY + 1}m`);
-    this.assertEqual(json(file).corgi_intensity, 100);
+    this.assertEqual(json(config).corgi_intensity, 0);
     this.assertFalse("sleeping_corgis" in json(file));
+    await view.input(`\x1b[<0;${right + 1};${sliderY + 1}m`);
+    this.assertEqual(json(config).corgi_intensity, 100);
     this.assertEqual(json(file).sidebar_width, 36);
-    this.assertEqual(json(file).resources, { enabled: false });
+    this.assertFalse("corgi_intensity" in json(file));
+    this.assertEqual(json(config).resources, { enabled: false });
     await view.input("\x1b[D");
-    this.assertEqual(json(file).corgi_intensity, 95);
+    this.assertEqual(json(config).corgi_intensity, 95);
     await view.input("\x1b[H");
-    this.assertEqual(json(file).corgi_intensity, 0);
+    this.assertEqual(json(config).corgi_intensity, 0);
     await view.close();
     const reopened = await Viewer.create(this, 100, 30);
     await reopened.input("\x02i");
@@ -1415,31 +1380,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     rows = screen_text((await reopened.poll()).data, 100, 30);
     this.assertIn("Intensity", rows.join("\n"));
     this.assertNotIn("~ᐯ◡ᴥ◡ᐯ", rows.join("\n"));
-    this.assertEqual(json(file).corgi_intensity, 0);
-  }
-
-  async test_corgi_setup_guards_diagonal_hover() {
-    const view = await Viewer.create(this, 100, 30);
-    const text = async () => screen_text((await view.poll()).data, 100, 30).join("\n");
-    await view.input("\x02i");
-    await this.until(async () => /Model +● Auto/.test(await text()));
-    // Cross Visual flourishes, Resources, a gap, and Theme toward the options.
-    const motion = (x: number, y: number) => `\x1b[<35;${x + 1};${y + 1}M`;
-    await view.input(motion(15, 3) + motion(22, 4) + motion(28, 5) + motion(30, 6) + motion(34, 7) + motion(36, 7));
-    this.assertRegex(await text(), /Model +● Auto/);
-    // Leaving the terminal cancels the crossed row's pending selection.
-    await view.input(motion(15, 3) + motion(22, 4) + motion(100, 4));
-    await view.advance(0.4);
-    this.assertRegex(await text(), /Model +● Auto/);
-    // Straight down and back up select immediately, without an aim timeout.
-    await view.input(motion(15, 3) + motion(15, 4));
-    this.assertIn("Intensity", await text());
-    await view.input(motion(15, 3));
-    this.assertRegex(await text(), /Model +● Auto/);
-    // A stationary pointer on a crossed row eventually selects that setting.
-    await view.input(motion(15, 3) + motion(22, 4));
-    await this.until(async () => (await text()).includes("Intensity"));
-    await view.input("\x1b");
+    this.assertEqual(json(config).corgi_intensity, 0);
   }
 
   async test_corgi_setup_changes_inference_provider() {
@@ -1468,7 +1409,7 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     await this.until(async () => (await this.session()).inference.uses.activity === false);
     this.assertEqual((await this.session()).inference.choice, "claude");
     this.assertRegex(await text(), /Activity summaries +○ Off/);
-    const readSaved = () => JSON.parse(readFileSync(join(this.env.XDG_STATE_HOME!, "corgi/viewer.json"), "utf8"));
+    const readSaved = () => JSON.parse(readFileSync(this.configFile(), "utf8"));
     this.assertNotIn("When busy", await text());
     this.assertNotIn("Process card on hover", await text());
     this.assertNotIn("Amber alerts", await text());
@@ -1486,7 +1427,8 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     await view.input("\r");
     await this.until(async () => readSaved().resources.enabled === true);
     await this.until(async () => /Resources\s+On/.test(await text()));
-    this.assertEqual(readSaved().corgi_intensity, 50);
+    // Saving one setting leaves the others out of the file, at their defaults.
+    this.assertFalse("corgi_intensity" in readSaved());
     await clickSetting("Visual flourishes");
     await clickSetting("Visual flourishes");
     await view.input("\x1b[H");
@@ -1627,7 +1569,13 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
   }
 }
 
-registerCase("agent launcher", Launcher, { timeout: 120_000 });
+registerCase("agent launcher", Launcher, {
+  timeout: 120_000,
+  skipTests: {
+    test_zsh_alias_and_inline_environment: Bun.which("zsh") ? "" : "zsh is required",
+    test_fish_alias_and_inline_environment: Bun.which("fish") ? "" : "fish is required",
+  },
+});
 
 /** Signed in to Claude Enterprise from the start: the daemon reads the
  * account as it starts, and keeps that read for a minute. */

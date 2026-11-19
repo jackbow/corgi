@@ -6,7 +6,7 @@ See [HACKING.md](HACKING.md) for development workflows and architecture.
 
 This is a solo project; we are not collaborating with anyone else.
 
-- Work directly on `jb/main` exclusively. Do not create or use feature branches.
+- Work directly on `main` exclusively. Do not create or use feature branches.
 - Do not create pull requests.
 - Do not create or use git worktrees unless explicitly instructed.
 
@@ -14,7 +14,7 @@ These rules take precedence over generic branch, PR, and collaboration workflows
 
 ## Local functionality changes
 
-For every functional change relative to `main`, update
+For every functional change relative to upstream `origin/main`, update
 [corgi-changes.md](corgi-changes.md) in the same commit. Include additions,
 behavior changes, and bug fixes; keep existing entries accurate.
 
@@ -29,7 +29,9 @@ behavior changes, and bug fixes; keep existing entries accurate.
 - **Format:** `bun format.ts` runs the pinned Prettier (Bun's own settings,
   `.prettierrc`) over the TypeScript; `--check` only lists files.
 - **Integration tests:** `bun build.ts --test`, then
-  `bun integration.ts` (or name suites). See `tests/README.md`.
+  `bun integration.ts` (or name suites). See `tests/README.md`. The
+  harness's own suites need only the native layer, as the unit tests do:
+  `bun integration.ts --standalone`.
   Parallel runs are flaky under load; rerun a failing suite with `--jobs 1`
   before investigating.
 - **Run it:** `./go.ts` (`--temp`, `--env NAME`, `--reload`; see README).
@@ -118,8 +120,10 @@ that produced the code.
 
 **Saved formats.** Anything serialized into a checkpoint or handoff is
 checked by the schema snapshots in `src/fixtures/`. A new field
-with a default only needs a refreshed snapshot. A rename, removal or change
-of meaning needs a migration step; see [HACKING.md](HACKING.md#change-protocols-or-saved-formats).
+needs an explicit state revision and a refreshed snapshot. A rename, removal
+or change of meaning also needs a revision, even when the structure stays the
+same. Use `bun tools/state_revision.ts "Describe the saved-state change"`;
+see [HACKING.md](HACKING.md#change-protocols-or-saved-formats).
 Mark code kept only for older peers with `XXX: Remove for next protocol bump.`,
 and before bumping any version, run `git grep -n "XXX: Remove for next"`.
 
