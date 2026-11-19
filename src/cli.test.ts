@@ -83,6 +83,8 @@ test("usage finds the lines for the longest command a line names", () => {
   expect(helpFor(help, ["tab", "new"])).toContain("[--command SHELL_COMMAND]");
   expect(helpFor(help, ["pane", "split"])).toContain("[--command SHELL_COMMAND]");
   expect(helpFor(help, [])).toBe(help);
+  expect(handles(["ls"])).toBe(true);
+  expect(helpFor(help, ["ls", "--help"])).toBe(helpFor(help, ["list", "--help"]));
 });
 
 test("bare command groups localize human help and preserve English agent help", async () => {
@@ -158,6 +160,9 @@ test("command lines are rejected before connecting", async () => {
     [["list", "extra"]],
     [["list", "--json", "--json"]],
     [["list", "--text"]],
+    [["ls", "--workspace", "0"]],
+    [["ls", "--all", "--all"]],
+    [["pane", "read", "3", "--tree"]],
     [["launcher"]],
     [["launcher", "bogus"]],
     [["launcher", "list", "codex"]],
@@ -170,8 +175,10 @@ test("command lines are rejected before connecting", async () => {
 });
 test("command lines parse to the request the daemon receives", async () => {
   const cases: [string[], any, number?][] = [
-    [["list", "--json"], { action: "list", json: true }],
-    [["workspace", "list"], { action: "list" }],
+    [["list", "--json"], { action: "list", json: true, listing: { all: false, tree: false, workspace: 0 } }],
+    [["workspace", "list"], { action: "list", listing: { all: false, tree: false, workspace: 0 } }],
+    [["ls", "--all", "--workspace", "2"], { action: "list", listing: { all: true, tree: false, workspace: 2 } }],
+    [["list", "--tree"], { action: "list", listing: { all: false, tree: true, workspace: 0 } }],
     [["current"], { action: "current" }, 5],
     [["focus", "3", "--viewer", "9"], { action: "focus", target: 3, viewer: 9 }],
     [["history"], { action: "history", history: { limit: 20 } }],
@@ -413,7 +420,7 @@ test("list outlines workspaces, tabs, panes, headless agents and viewers", () =>
     },
     viewers: [{ id: 1, workspace: 2, pane: 9, watched: true }],
   };
-  expect(list(reply)).toBe(
+  expect(list(reply, { tree: true })).toBe(
     [
       'workspace 2 "Corgi" /src',
       "  tab 20: 9 left of 10",
@@ -426,6 +433,9 @@ test("list outlines workspaces, tabs, panes, headless agents and viewers", () =>
       "",
     ].join("\n"),
   );
+  expect(list(reply)).toContain("Corgi / Triage");
+  expect(list(reply)).toContain("1 inactive hidden (--all)");
+  expect(list(reply)).not.toContain("viewer 1");
 });
 test("a chat whose commands run where its environment can't reach names itself with --chat", async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "corgi-chat-"))),

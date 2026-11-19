@@ -1,5 +1,7 @@
 Agent controls (--json prints the daemon's reply as JSON):
-  corgi list [--json]                 layout, panes, agents, viewers
+  corgi list [--workspace ID] [--all] [--json]  live sessions; --all includes inactive
+  corgi ls [--workspace ID] [--all] [--tree] [--json]
+  corgi list --tree [--workspace ID] [--json]  layout, panes, agents, viewers
   corgi run [--bg] [--name NAME] [--cwd DIR] [--workspace ID] -- COMMAND [ARG...]
   corgi run [--bg] --agent AGENT [--name NAME] PROMPT|--stdin
     [--parent PANE|--no-parent] [--no-notify] [--timeout SECONDS] [--json]
@@ -9,7 +11,7 @@ Agent controls (--json prints the daemon's reply as JSON):
   corgi task list [--workspace ID] [--json]
   corgi task get TASK|NAME|pane:ID [--workspace ID] [--json]
   corgi task cancel TASK|NAME|pane:ID [--workspace ID] [--json]
-  corgi workspace list
+  corgi workspace list [--workspace ID] [--all] [--tree] [--json]
   corgi workspace new NAME [--cwd DIR]
   corgi workspace edit ID [--name NAME] [--cwd DIR]
   corgi workspace close ID          requires an empty workspace

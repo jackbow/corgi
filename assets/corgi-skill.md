@@ -67,17 +67,22 @@ discovery: it attaches the UI.
 The installed binary is the authority for syntax. The runtime must already be
 running; new agent commands never start, upgrade, or restart it implicitly.
 
-`corgi list` outlines each workspace's tabs and their panes, with each pane's
-agent and state, then the attached viewers:
+`corgi list` (or `corgi ls`) lists live panes and headless agents, one row each:
 
 ```
-workspace 2 "Corgi" /home/me/corgi
-  tab 20 "Backend": 31 left of (42 above 43)
-    pane 31 claude working "Fix the parser" (used: Bash)
+ID  AGENT   WORKSPACE / SESSION      STATUS
+31  claude  Corgi / Fix the parser   working
 ```
+
+Use `--workspace ID` to narrow the list. `--all` includes exited, hibernated and
+archived sessions; the default reports how many are hidden. `--tree` prints the
+full original workspace/tab/pane outline, including inactive panes, split
+positions, activity, directories and attached viewers. Pane IDs in compact rows
+are the same numeric IDs accepted by pane commands; headless agents use `headless:ID`.
 
 Commands print text. Add `--json` for the daemon's full reply, such as the whole
-`list` snapshot, for `jq`.
+`list` snapshot, for `jq`. JSON retains inactive sessions and layout metadata;
+`--workspace ID` filters its workspace, pane, headless and viewer collections.
 
 Use IDs from results, never tab positions or example IDs. IDs are scoped to the
 runtime selected by `CORGI_SOCKET`. Pane IDs survive moves between workspaces.
@@ -156,7 +161,7 @@ still starting with `NoConversation`. It prints `messaged â€¦` or `typed into â€
 adding `queued while it works` when the agent was mid-turn. `DeliveryUnknown`
 means the agent may have it: read its pane before sending again. Its target is
 a pane ID, `current`, or `headless:ID` for an agent without a pane, as
-`corgi list` prints them.
+`corgi list --tree` prints them.
 Send honors bracketed paste and optionally appends encoded Enter. Keys honor the
 terminal's keyboard protocol; all keys are validated before any bytes are sent.
 Use `--` before text beginning with `--`. Input delivery is not proof an agent
@@ -172,7 +177,7 @@ corgi history --limit 30
 corgi resume claude 0f315d2b-dd8d-4ce2-93db-6831458ca975 --viewer 7
 ```
 
-A viewer is one attached screen; `corgi list` ends with each viewer's ID, the
+A viewer is one attached screen; `corgi list --tree` ends with each viewer's ID, the
 workspace it shows and its selected pane. Focus selects a pane in that viewer,
 switching to its workspace. `history` lists past conversations newest first,
 with the provider and session that `resume` takes, the title, folder and age.
