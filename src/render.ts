@@ -1,4 +1,5 @@
 import type * as workspaceArchive from "./workspace_archive";
+import type { Popup as ConversationPRSearch } from "./conversation_pr_search";
 import * as i18n from "./i18n";
 //! One complete frame of the viewer: tabs, panes, sidebar and overlays.
 //! Mirrors render.zig.
@@ -210,6 +211,7 @@ function drawDocking(w: Writer, state: Docking, panes: Pane[], area: Rect): Rect
 }
 
 export interface Ui {
+  pr_search?: ConversationPRSearch | null;
   conversation_prs_draw?: (w: Writer) => void;
   docking: Docking | null;
   prefs: Preferences;
@@ -581,6 +583,7 @@ function noOverlay(u: Ui): boolean {
 /** Nothing open over the screen, though the sidebar may have the keyboard. */
 function noPopup(u: Ui): boolean {
   return (
+    !u.pr_search &&
     u.startup_card === null &&
     u.scope_menu === null &&
     u.agent_launcher === null &&
@@ -601,6 +604,7 @@ function noPopup(u: Ui): boolean {
 /** Dialogs, the launcher, Corgi setup, the prompt, the workspace drawer and the review panel's keys dim the panes behind them. */
 function dimsPanes(u: Ui): boolean {
   return (
+    !!u.pr_search ||
     u.dialog !== null ||
     u.archive_dialog !== null ||
     u.agent_launcher !== null ||
@@ -1414,6 +1418,10 @@ export function frame(
   if (u.connection_card && noOverlay(u)) {
     connectivityCard.draw(w, u.connection_card);
     cover(u.connection_card.rect);
+    pane_cursor = null;
+  }
+  if (u.pr_search) {
+    cover(u.pr_search.draw(w, width, height));
     pane_cursor = null;
   }
   if (u.images && u.cell_pixels) {

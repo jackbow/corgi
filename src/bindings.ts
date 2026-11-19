@@ -682,6 +682,12 @@ for (const [preset, list] of Object.entries(tables)) {
   list.push({ key: 9, mods: { ctrl: true, shift: true }, prefixed: false, action: { name: "prev" } });
   list.push({ key: 103, mods: { super: true, shift: true }, prefixed: false, action: { name: "pull-request-toggle" } });
   list.push({ key: 103, mods: { super: true, ctrl: true }, prefixed: false, action: { name: "conversation-prs" } });
+  list.push({
+    key: 107,
+    mods: { super: true, shift: true },
+    prefixed: false,
+    action: { name: "find-pr-conversation" },
+  });
   list.push({ key: 98, mods: { super: true, shift: true }, prefixed: false, action: { name: "review" } });
   list.push({ key: 97, mods: { super: true, shift: true }, prefixed: false, action: { name: "toggle-agent-scope" } });
   if (preset !== "cmux")
