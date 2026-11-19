@@ -24,7 +24,8 @@ Application changes added during development.
 ## GitHub PR viewer
 
 - PR links mentioned by either the user or assistant appear in each agent's sidebar row, ordered by latest mention. Later `#123` or bare `123` mentions raise an already linked PR when its number is unambiguous in that conversation. Working agents keep their activity summary above the links.
-- Cmd+Option+G toggles a separate **Conversation PRs** list in the left sidebar, which stays open while different PRs open in the GitHub PR viewer. It shows repository, number, title, and GitHub created/updated timestamps; `n` toggles latest-mention/PR-number sorting, Enter opens the selected PR, and `r` refreshes metadata.
+- Cmd+Option+G toggles a separate **Conversation PRs** list in the left sidebar, which stays open while different PRs open in the GitHub PR viewer. Repositories are grouped by default (`g` toggles grouping), with owner-free PR labels and created/updated ages on one line. `s` cycles latest mention, PR number, created, and updated sorting; `n`/`c`/`u` select number/created/updated directly. Merged PRs live in a collapsed section at the bottom (`m` toggles it). Enter opens the selected PR and `r` refreshes metadata.
+- Agent sidebar PR links use muted gray and omit merged PRs. Opening PR details does not change mention order; transcript rebuilds publish only complete lists so older mentions do not temporarily reorder links.
 
 - PR and local/remote diff views survive viewer restarts and conversation resumes, including navigation and diff layout, keyed by provider session identity.
 - Readiness shows unresolved comments, compact **Mark ready** and **Merge** buttons, and a **Resolve conflicts with Codex** button that launches a background `gpt-6.1-sol` agent at medium effort to resolve in an isolated worktree and push the fix.

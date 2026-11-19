@@ -52,6 +52,12 @@ function controller(): any {
     }).request,
   });
   s.machine.profiles.loaded = true;
+  s.conversation_prs.readDetails = async () => ({
+    title: "Fix widgets",
+    createdAt: "2026-11-01T12:00:00Z",
+    updatedAt: "2026-11-18T15:30:00Z",
+    state: "OPEN",
+  });
   s.model_cache = new agentModels.Cache(
     () => {},
     async () => [],
@@ -84,6 +90,7 @@ test("conversation PRs remain open beside independently selected GitHub PRs", as
     title: "Fix widgets",
     createdAt: "2026-11-01T12:00:00Z",
     updatedAt: "2026-11-18T15:30:00Z",
+    state: "OPEN",
   });
   s.pull_request.cache.cached = async (ref: { number: number }) => (ref.number === 12 ? first : second);
   s.pull_request.cache.refresh = async (ref: { number: number }) => (ref.number === 12 ? first : second);
@@ -102,8 +109,17 @@ test("conversation PRs remain open beside independently selected GitHub PRs", as
     expect(s.conversation_prs.selected).toBe(1);
     expect(s.pasteTarget()).toBe("discard");
     s.frame();
-    await s.input(bytes("\x1b[<0;6;10M\x1b[<0;6;10m"));
+    await s.input(bytes("\x1b[<0;6;11M\x1b[<0;6;11m"));
     expect(s.pull_request.ref.number).toBe(12);
+    expect(s.conversation_prs.items.map((p: { number: number }) => p.number)).toEqual([9, 12]);
+    first.state = "MERGED";
+    s.pull_request.changed();
+    expect(
+      s
+        .agentEntries()
+        .find((e: sidebar.Entry) => e.conversation === 17)
+        .pull_requests.map((p: { number: number }) => p.number),
+    ).toEqual([9]);
     expect(s.conversation_prs.open).toBe(true);
     await s.perform({ name: "pull-request-close" });
     expect(s.conversation_prs.open).toBe(true);
@@ -112,7 +128,7 @@ test("conversation PRs remain open beside independently selected GitHub PRs", as
     expect(s.conversation_prs.items).toEqual([]);
     s.switchWorkspace(1);
     s.frame();
-    expect(s.conversation_prs.items).toHaveLength(2);
+    expect(s.conversation_prs.items).toHaveLength(1);
   } finally {
     viewer.close(s);
   }

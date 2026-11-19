@@ -172,3 +172,53 @@ test("OpenCode user mentions are read from its store, including WAL updates", as
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("bounded transcript rebuilds preserve the complete list until history is fully scanned", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "corgi-pr-rebuild-")),
+    file = join(dir, "session.jsonl");
+  const runtime = new Runtime(),
+    pane = new Pane(1, Terminal.create(20, 4), dir);
+  const actor = runtime.conversations.get("codex", "session");
+  runtime.workspaces.items = [new Workspace(1, dir)];
+  runtime.panes.push(pane);
+  pane.attachment.select(actor);
+  actor.state.transcript = new Path(file);
+  const tracker = new Tracker();
+  actor.pull_requests = [{ ...refForTest(7), mentioned: 1 }];
+  const previous = actor.pull_requests;
+  const message = (text: string, role = "user") =>
+    JSON.stringify({
+      type: "response_item",
+      payload: { type: "message", role, content: [{ type: "input_text", text }] },
+    }) + "\n";
+  const header = JSON.stringify({ type: "session_meta", payload: { id: "session", cwd: dir } }) + "\n";
+  const padding = message("x".repeat(100000), "tool").repeat(24);
+  let changes = 0;
+  try {
+    await writeFile(file, header + message(url(12)) + padding + message(url(9)));
+    await tracker.refresh(runtime, () => changes++, 0);
+    expect(actor.pull_requests).toBe(previous);
+    await tracker.refresh(runtime, () => changes++, 2000);
+    expect(actor.pull_requests).toBe(previous);
+    await tracker.refresh(runtime, () => changes++, 4000);
+    expect(actor.pull_requests.map(p => p.number)).toEqual([9, 12]);
+    expect(changes).toBe(1);
+    const complete = actor.pull_requests;
+    await tracker.refresh(runtime, () => changes++, 6000);
+    expect(actor.pull_requests).toBe(complete);
+    await writeFile(file, header + message(url(9)) + padding + message(url(12)));
+    await tracker.refresh(runtime, () => changes++, 8000);
+    expect(actor.pull_requests).toBe(complete);
+    await tracker.refresh(runtime, () => changes++, 10000);
+    expect(actor.pull_requests).toBe(complete);
+    await tracker.refresh(runtime, () => changes++, 12000);
+    expect(actor.pull_requests.map(p => p.number)).toEqual([12, 9]);
+    expect(changes).toBe(2);
+  } finally {
+    tracker.stopped = true;
+    runtime.destroy();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+function refForTest(number: number) {
+  return { url: url(number), repo: "acme/app", number };
+}
