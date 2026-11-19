@@ -15,6 +15,7 @@ import type { Summary as ArchiveSummary } from "./archive_summary";
 import type { Brand } from "./process_name";
 import * as tabIcons from "./tab_icons";
 import type { Cell } from "./fork_hero";
+import type { Mention } from "./conversation_prs";
 import { url as portUrl } from "./trackers/ports";
 import { cpuText, memoryText } from "./trackers/resources";
 import { View as ContextView } from "./usage/context_window";
@@ -61,6 +62,40 @@ export function unlit(entries: Entry[], spot: Spotlight | null): boolean[] {
 }
 /** The lists draw one column in: column 0 stays free for the focused list's box. */
 export const lists_x = 1;
+/** Positions match the links drawn in an agent's detail row. */
+export function prAt(v: View, entries: Entry[], x: number, y: number): string | null {
+  const index = agentIndexAt(v, entries, x, y);
+  if (index === null) return null;
+  const e = entries[index];
+  const inset = v.framed() ? lists_x : 0;
+  v = v.lists();
+  const top = v.middle() + 2 + v.pinned(v.offset).length + v.rowsBefore(index) - v.rowsBefore(v.offset) + e.slide;
+  if (y !== top + (e.state === "working" ? 2 : 1)) return null;
+  let column = 4 + inset;
+  const badge = displayWidth(subagentBadge(e.subagents, e.children));
+  const end = inset + v.width - 2 - badge - Number(badge > 0);
+  for (const ref of e.pull_requests) {
+    const width = displayWidth(`#${ref.number}`);
+    if (column + width > end) break;
+    if (x >= column && x < column + width) return ref.url;
+    column += width + 1;
+  }
+  return null;
+}
+function writePRs(w: Writer, refs: Mention[], room: number) {
+  let used = 0;
+  for (const ref of refs) {
+    const label = `#${ref.number}`,
+      width = displayWidth(label);
+    if (used + Number(used > 0) + width > room) break;
+    if (used) {
+      w.write(" ");
+      used++;
+    }
+    w.write(`${fg("accent")}\x1b]8;;${ref.url}\x1b\\${label}\x1b]8;;\x1b\\`);
+    used += width;
+  }
+}
 /** The drag grip in the middle of the rule between the lists. */
 const split_grip = " ⠶⠶⠶ ";
 /** Drops what `bytes` writes from row `end` (0-based) down and above row
@@ -217,6 +252,7 @@ export interface Subagents {
   waiting: boolean;
 }
 export interface Entry {
+  pull_requests: Mention[];
   worktree: { workspace: number; path: string; ghost: boolean; end?: boolean } | null;
   conversation: number;
   children: number;
@@ -265,6 +301,7 @@ export function entry(fields: Partial<Entry> & { target: Target }): Entry {
   return {
     worktree: null,
     conversation: 0,
+    pull_requests: [],
     children: 0,
     exit: null,
     reopened: false,
@@ -996,7 +1033,9 @@ export class View {
     }
   }
   static height(e: Entry): number {
-    const content = isHeading(e.target) ? 1 + Number(e.group.gap === true) : 2;
+    const content = isHeading(e.target)
+      ? 1 + Number(e.group.gap === true)
+      : 2 + Number(e.state === "working" && e.pull_requests.length > 0);
     return content + (e.worktree?.ghost ? Number("worktree" in e.target) + Number(e.worktree.end === true) : 0);
   }
   /** The headers of the groups the entry at `from` belongs to, which stay
@@ -1925,7 +1964,8 @@ export class View {
     const selected = ghost || e.focused;
     const background = selected ? colors.selected : hovered ? hover_rgb : colors.bg;
     const row_bg = selected ? selected_bg : hovered ? hover_bg : bg("bg");
-    for (let row = 0; row < 2; row++) {
+    const rows = 2 + Number(e.state === "working" && e.pull_requests.length > 0);
+    for (let row = 0; row < rows; row++) {
       if (y + row >= v.listEnd()) break;
       w.write(`${w.cup(y + row + 1, x + 1)}\x1b[0m${row_bg}`);
       w.splat(" ", v.width - 1);
@@ -1938,7 +1978,9 @@ export class View {
       const branch = e.focused ? "┣" : last_in_group ? "╰" : "├";
       const through = e.focused || !last_in_group;
       w.write(`${w.cup(y + 1, x + 1)}${rail}${row_bg}${branch}`);
-      if (through && y + 1 < v.listEnd()) w.write(`${w.cup(y + 2, x + 1)}${e.focused ? "┃" : "│"}`);
+      if (through)
+        for (let row = 1; row < rows && y + row < v.listEnd(); row++)
+          w.write(`${w.cup(y + row + 1, x + 1)}${e.focused ? "┃" : "│"}`);
       w.write(`\x1b[0m${row_bg}`);
     }
     const dot = indicator(e, selected);
@@ -2031,7 +2073,9 @@ export class View {
       selected,
       puff_ms: dream && dream.key === animation_key ? dream.puff_ms : null,
     });
-    if (mode === "herding") {
+    if (e.pull_requests.length > 0 && e.state !== "working") {
+      writePRs(w, e.pull_requests, detail_room);
+    } else if (mode === "herding") {
       w.write(presentation!.writeHerding(detail_room, now_ms));
     } else if (mode !== "content") {
       w.write(presentation!.writeCorgi(detail_room, now_ms, e.state === "working", sleep));
@@ -2065,10 +2109,16 @@ export class View {
       const color = e.subagents.blocked > 0 ? fg("warm") : fg("accent");
       w.write(`${w.cup(y + 2, x + v.width - 1 - badge_width)}${color}${badge}`);
     }
+    if (e.state === "working" && e.pull_requests.length > 0) {
+      w.write(`${w.cup(y + 3, x + underline_x)}${line}`);
+      w.splat(" ", v.width - 1 - underline_x);
+      w.write(w.cup(y + 3, x + 5));
+      writePRs(w, e.pull_requests, detail_room);
+    }
     w.write("\x1b[24;59m");
     // Without the group rail, the focused agent takes the active workspace's bar.
     const bar = ghost ? ghost_bar : e.focused && !grouped ? active_bar : gilded ? row_bg + star_trim + "▏" : "";
-    if (bar.length > 0) for (let row = 0; row < 2; row++) w.write(`${w.cup(y + row + 1, x + 1)}${bar}\x1b[0m`);
+    if (bar.length > 0) for (let row = 0; row < rows; row++) w.write(`${w.cup(y + row + 1, x + 1)}${bar}\x1b[0m`);
     if (rename !== null && rename.message !== null) {
       const below = y + 1 < v.drawEnd(v.badge("below"));
       v.drawMessage(w, rename.message, below ? y + 1 : y - 1, below ? row_bg : bg("bg"));

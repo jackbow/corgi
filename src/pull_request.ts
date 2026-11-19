@@ -4,28 +4,13 @@ import { mkdir, readFile, readdir, rename, rm, stat, utimes, writeFile } from "n
 import { homedir } from "node:os";
 import { join } from "node:path";
 import * as subprocess from "./subprocess";
+import { parse, type Ref } from "./pull_request_ref";
+export { parse, type Ref } from "./pull_request_ref";
 
 export const stale_ms = 2 * 24 * 60 * 60 * 1000;
 export const cache_size = 100;
 export function stale(snapshot: Snapshot, now = Date.now()): boolean {
   return snapshot.state !== "MERGED" && (now < snapshot.fetched || now - snapshot.fetched >= stale_ms);
-}
-export interface Ref {
-  repo: string;
-  number: number;
-  url: string;
-}
-export function parse(value: string): Ref | null {
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password)
-      return null;
-    const match = /^\/([\w.-]+\/[\w.-]+)\/pull\/([1-9]\d*)(?:\/|$)/.exec(url.pathname);
-    if (!match || !Number.isSafeInteger(Number(match[2]))) return null;
-    return { repo: match[1], number: Number(match[2]), url: `https://github.com/${match[1]}/pull/${match[2]}` };
-  } catch {
-    return null;
-  }
 }
 export type CheckState = "pending" | "failed" | "passed";
 export interface Check {

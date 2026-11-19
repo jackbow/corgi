@@ -25,8 +25,10 @@ import * as agentRetry from "./agent_retry";
 import type { Title } from "./pane/terminal";
 import type { Actor } from "./conversations";
 import { HeldHooks, type Held } from "./held_hooks";
+import { Tracker as ConversationPRs } from "./conversation_prs";
 
 type Workers = {
+  pull_requests: ConversationPRs;
   transcripts: TranscriptWorker;
   /** Each account's observer, by provider and account. */
   observers: Map<string, { provider: Provider; account: string; observer: Observer }>;
@@ -43,6 +45,7 @@ const services = new WeakMap<Server, Workers>();
 export function start(server: Server) {
   if (services.has(server)) return services.get(server)!;
   const workers = {
+    pull_requests: new ConversationPRs(),
     transcripts: TranscriptWorker.start(),
     observers: new Map(
       Provider.all.flatMap(p => {
@@ -592,6 +595,7 @@ export async function tick(server: Server) {
     for (const result of workers.summaries.takeLinks())
       if (result && runtime.link_labels.apply(result, now)) changed(server);
     workers.usage.reconcile(runtime);
+    void workers.pull_requests.refresh(runtime, () => changed(server));
     applyUsage(server, workers);
     workers.transcripts.reconcile(runtime.conversations.items);
     for (const result of workers.transcripts.take()) {
@@ -678,6 +682,7 @@ export function unpause(server: Server) {
 export function stop(server: Server) {
   const workers = services.get(server);
   if (!workers) return;
+  workers.pull_requests.stopped = true;
   workers.transcripts.stop();
   for (const { observer } of workers.observers.values()) observer.stop();
   workers.usage.stop();
