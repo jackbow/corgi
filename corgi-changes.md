@@ -2,6 +2,10 @@
 
 Application changes added during development.
 
+## Archived workspace restore
+
+- Restoring an archived pane moves its saved screen into scrollback and opens a clean shell prompt, so the resume command no longer overlaps the old agent UI. Staged commands show a **Press Enter to resume** hint.
+
 ## Diff viewer defaults
 
 - Local and PR diffs open fullscreen. Cmd+Shift+Enter toggles between fullscreen and a pane beside the agent.

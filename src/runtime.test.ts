@@ -523,12 +523,15 @@ test("waking a dormant agent into a shell types its command without running it",
   const { r, w } = setup();
   try {
     const p = dormant(r, w, new Launch({ provider: "codex", yolo: true }));
+    p.terminal.resize(80, 10);
     await p.sleep();
     await r.wake(p.id, wakeOptions, true);
     expect(p.dormant).toBe(false);
     expect(p.ghost).toBeNull();
     expect(p.terminal.pid).toBeGreaterThan(0);
-    expect(p.terminal.text()).toContain("OLD SCREEN");
+    expect(p.terminal.text()).not.toContain("OLD SCREEN");
+    expect(p.terminal.history()).toContain("OLD SCREEN");
+    expect(p.terminal.text()).toContain("# Press Enter to resume");
     expect(p.terminal.initial_input).toBe(`codex --dangerously-bypass-approvals-and-sandbox resume agent-session`);
   } finally {
     r.destroy();
