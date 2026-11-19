@@ -98,16 +98,33 @@ test("conversation PRs remain open beside independently selected GitHub PRs", as
     await s.perform({ name: "conversation-prs" });
     s.frame();
     expect(s.conversation_prs.items.map((p: { number: number }) => p.number)).toEqual([9, 12]);
-    await s.input(bytes("\r"));
+    expect(s.conversation_prs.focused).toBe(false);
+    expect(s.keyboard).toBe("pane");
+    const terminal = new NativeTerminal(s.width, s.height);
+    try {
+      terminal.feed(s.frame());
+      const row = terminal
+        .text()
+        .split("\n")
+        .findIndex(line => line.includes("#9"));
+      expect(row).toBeGreaterThanOrEqual(0);
+      await s.input(bytes(`\x1b[<0;6;${row + 1}M\x1b[<0;6;${row + 1}m`));
+    } finally {
+      terminal.destroy();
+    }
     expect(s.pull_request.ref.number).toBe(9);
     expect(s.conversation_prs.open).toBe(true);
     expect(s.conversation_prs.focused).toBe(false);
+    expect(s.keyboard).toBe("review");
+    await s.perform({ name: "conversation-prs" });
+    expect(s.conversation_prs.open).toBe(false);
+    expect(s.keyboard).toBe("review");
+    s.pull_request.fullscreen = true;
     await s.perform({ name: "conversation-prs" });
     expect(s.conversation_prs.open).toBe(true);
-    expect(s.conversation_prs.focused).toBe(true);
-    await s.input(bytes("\x1b[57353u"));
-    expect(s.conversation_prs.selected).toBe(1);
-    expect(s.pasteTarget()).toBe("discard");
+    expect(s.conversation_prs.focused).toBe(false);
+    expect(s.keyboard).toBe("review");
+    expect(s.pull_request.fullscreen).toBe(false);
     s.frame();
     await s.input(bytes("\x1b[<0;6;11M\x1b[<0;6;11m"));
     expect(s.pull_request.ref.number).toBe(12);
@@ -8074,6 +8091,29 @@ test("sending PR comments falls back to copying for shells and rejects unsafe pa
   } finally {
     paste.mockRestore();
     copy.mockRestore();
+    viewer.close(s);
+  }
+});
+
+test("Cmd+Ctrl+G toggles PR list visibility on every press without taking agent input", async () => {
+  const { s, sent } = steering();
+  try {
+    await s.input(bytes("\x1b[103;13u"));
+    expect(s.conversation_prs.open).toBe(true);
+    expect(s.conversation_prs.focused).toBe(false);
+    expect(s.keyboard).toBe("pane");
+    await s.input(bytes("x"));
+    expect(sent).toEqual([[1, "x"]]);
+    await s.input(bytes("\x1b[103;13u"));
+    expect(s.conversation_prs.open).toBe(false);
+    expect(s.keyboard).toBe("pane");
+    await s.input(bytes("\x1b[103;13u"));
+    expect(s.conversation_prs.open).toBe(true);
+    s.conversation_prs.focused = true;
+    await s.input(bytes("\x1b[103;13u"));
+    expect(s.conversation_prs.open).toBe(false);
+    expect(s.conversation_prs.focused).toBe(false);
+  } finally {
     viewer.close(s);
   }
 });

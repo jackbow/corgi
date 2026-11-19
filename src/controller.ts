@@ -3834,15 +3834,15 @@ export class Controller {
         this.togglePrompt();
         break;
       case "conversation-prs": {
-        const close = this.conversation_prs.open && this.conversation_prs.focused;
         this.closeMenu();
-        this.conversation_prs.open = !close;
+        this.conversation_prs.open = !this.conversation_prs.open;
+        this.conversation_prs.focused = false;
         if (this.conversation_prs.open) {
           this.sidebar_open = true;
-          this.giveKeyboard("pane");
+          if (this.pull_request.open) this.pull_request.fullscreen = false;
+          else this.review.unzoom();
           this.followConversationPRs();
         }
-        this.conversation_prs.focused = !close;
         this.dirty = true;
         break;
       }
