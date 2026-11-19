@@ -4,6 +4,7 @@ Application changes added during development.
 
 ## Task orchestration
 
+- `task list` works without caller or workspace context, lists all daemon tasks by default, and supports an explicit workspace filter. Text rows identify their workspace; empty results print `no tasks`.
 - `run` launches commands or configured agent helpers in ordinary tabs, with retained task IDs, workspace names, output tails, and exit results.
 - Task-aware `wait` supports completion, fresh command output, child any/all waits, timeout without cancellation, and reconnecting across live reloads.
 - Tracked messages support reject, FIFO queue, and provider-supported steering. Helper links and deferred parent notifications remain separate from native subagents; helpers survive parent closure.

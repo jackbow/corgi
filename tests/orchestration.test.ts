@@ -14,6 +14,28 @@ class Orchestration extends Runtime {
   async task(id: number) {
     return (await this.rpc({ op: "task.get", target: `task:${id}` })).task;
   }
+  async test_task_listing_works_outside_a_pane_with_optional_workspace_filter() {
+    const empty = await this.cli(["task", "list"]);
+    this.assertEqual(empty.code, 0, empty.stderr);
+    this.assertEqual(empty.stdout, "no tasks\n");
+    const started = await this.cli(["run", "--workspace", "1", "--bg", "--json", "--", "/bin/sh", "-c", "sleep 10"]),
+      task = JSON.parse(started.stdout).task;
+    const listed = await this.cli(["task", "list"]);
+    this.assertEqual(listed.code, 0, listed.stderr);
+    this.assertIn(`task:${task.id}`, listed.stdout);
+    this.assertIn("workspace:1", listed.stdout);
+    const filtered = await this.cli(["task", "list", "--workspace", "1", "--json"]);
+    this.assertEqual(filtered.code, 0, filtered.stderr);
+    this.assertEqual(
+      JSON.parse(filtered.stdout).snapshot.tasks.map((t: any) => t.id),
+      [task.id],
+    );
+    const stale = await this.cli(["task", "list"], 999999);
+    this.assertEqual(stale.code, 0, stale.stderr);
+    const missing = await this.cli(["task", "list", "--workspace", "999999"]);
+    this.assertNotEqual(missing.code, 0);
+    this.assertIn("NoWorkspace", missing.stderr);
+  }
   async test_foreground_collects_nonzero_exit_output_after_pane_closes() {
     const reply = await this.cli([
         "run",

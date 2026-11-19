@@ -876,7 +876,12 @@ export class Server {
         reply.ok({ task: { ...task, prompt: "" } });
         return;
       }
-      case "task.list":
+      case "task.list": {
+        const workspace = request.payload.workspace || null;
+        if (workspace !== null) this.runtime.getWorkspace(workspace);
+        reply.ok({ snapshot: this.runtime.tasks.snapshot(workspace, null, null) });
+        return;
+      }
       case "task.subscribe": {
         const q = request.payload,
           task = "target" in q && q.target ? taskService.get(this.runtime, { ...q, target: q.target }) : null,
