@@ -8,6 +8,7 @@ import { Writer } from "../text";
 import * as panel from "./panel";
 import * as i18n from "../i18n";
 import * as remote from "./remote";
+import * as palette from "../palette";
 
 let root = "";
 const run = (...args: string[]) =>
@@ -96,6 +97,154 @@ test("remote PR snapshots use the diff viewer without following or rereading the
 });
 const key = (p: panel.Panel, k: string | panel.Named) =>
   p.key(k.length === 1 ? { text: k } : { named: k as panel.Named });
+
+function remotePanel(paths: string[]) {
+  const p = new panel.Panel();
+  p.showRemote(
+    "https://github.com/acme/app/pull/12",
+    "PR",
+    "b".repeat(40),
+    "a".repeat(40),
+    remote.files(paths.map(path => `diff --git a/${path} b/${path}\n@@ -1 +1 @@\n-old\n+new\n`).join("")),
+    null,
+  );
+  return p;
+}
+
+test("files toggle is clickable and z hides the tree in fullscreen and pane mode", () => {
+  const p = remotePanel(["app.ts", "other.ts"]);
+  try {
+    const r = p.review(-3);
+    key(p, "down");
+    for (const fullscreen of [true, false]) {
+      if (p.fullscreen !== fullscreen) p.toggleFullscreen();
+      let rows = screen(p, 100, 25);
+      const y = rows.findIndex(row => row.includes("z files")),
+        x = rows[y].indexOf("z files");
+      p.mouse("press", x, y);
+      expect(r.tree_hidden).toBe(true);
+      expect(r.part).toBe("diff");
+      rows = screen(p, 100, 25);
+      expect(rows.join("\n")).not.toContain("other.ts");
+      expect(p.splitRow).toBeNull();
+      key(p, "z");
+      expect(screen(p, 100, 25).join("\n")).toContain("other.ts");
+      expect(r.tree_hidden).toBe(false);
+    }
+  } finally {
+    p.hide();
+  }
+});
+
+test("tree search filters paths, accepts pasted text, navigates results and opens a file", () => {
+  const p = remotePanel(["app.ts", "src/Widget.ts", "src/WidgetView.ts", "docs/widget.md"]);
+  try {
+    const r = p.review(-3);
+    key(p, "/");
+    expect(p.typing).toBe(true);
+    for (const byte of Buffer.from("SRC/WIDGET")) p.pasteByte(byte);
+    let rows = screen(p, 100, 28);
+    expect(rows.join("\n")).toContain("Widget.ts");
+    expect(rows.join("\n")).toContain("WidgetView.ts");
+    expect(rows.slice(0, p.splitRow!).join("\n")).not.toContain("widget.md");
+    expect(r.tree_sel).toBe("f:src/Widget.ts");
+    key(p, "down");
+    expect(r.tree_sel).toBe("f:src/WidgetView.ts");
+    key(p, "up");
+    key(p, "enter");
+    expect(r.path).toBe("src/Widget.ts");
+    expect(r.part).toBe("diff");
+    expect(p.typing).toBe(false);
+    key(p, "/");
+    expect(r.find).not.toBeNull();
+    expect(r.tree_find?.editing).toBe(false);
+    key(p, "escape");
+    key(p, "tab");
+    key(p, "escape");
+    expect(r.tree_find).toBeNull();
+    rows = screen(p, 100, 28);
+    expect(rows.join("\n")).toContain("widget.md");
+  } finally {
+    p.hide();
+  }
+});
+
+test("an empty tree search cannot open a file and Escape restores the tree", () => {
+  const p = remotePanel(["app.ts"]);
+  try {
+    key(p, "/");
+    for (const ch of "missing") key(p, ch);
+    expect(screen(p).join("\n")).toContain("no match");
+    const before = p.review(-3).path;
+    key(p, "down");
+    key(p, "enter");
+    expect(p.review(-3).path).toBe(before);
+    expect(p.typing).toBe(true);
+    key(p, "escape");
+    expect(p.typing).toBe(false);
+    expect(screen(p).join("\n")).toContain("All files");
+  } finally {
+    p.hide();
+  }
+});
+
+test("the full-file minimap marks both change types and clicks jump in unified and split views", () => {
+  const p = new panel.Panel(),
+    patch =
+      "diff --git a/long.ts b/long.ts\n@@ -1,180 +1,180 @@\n" +
+      Array.from({ length: 180 }, (_, i) =>
+        i === 10 || i === 150 ? `-old${i}\n+new${i}` : ` line${i}${i === 80 ? " long".repeat(60) : ""}`,
+      ).join("\n") +
+      "\n";
+  p.showRemote("https://github.com/acme/app/pull/12", "PR", "b".repeat(40), "a".repeat(40), remote.files(patch), null);
+  try {
+    const r = p.review(-3);
+    key(p, "tab");
+    key(p, "z");
+    expect(screen(p, 100, 25).some(row => /[−+]│\s*$/.test(row))).toBe(false);
+    key(p, "Z");
+    key(p, "home");
+    key(p, "c");
+    p.key({ text: "a wrapped comment ".repeat(12) });
+    key(p, "enter");
+    expect(r.notes).toHaveLength(1);
+    for (const split of [false, true]) {
+      r.split = split;
+      let rows = screen(p, 100, 25);
+      const marks = rows.map((row, y) => ({ row, y })).filter(({ row }) => /−\+[│▐]\s*$/.test(row));
+      expect(marks.length).toBeGreaterThan(0);
+      expect(rows.some(row => /▐\s*$/.test(row))).toBe(true);
+      const w = new Writer();
+      p.draw(w, 0, 0, 100, 25, true);
+      const raw = w.buffered();
+      expect(raw).toContain(palette.fgRgb(palette.colors.hot) + palette.bgRgb(palette.colors.surface) + "−");
+      expect(raw).toContain(palette.fgRgb(palette.colors.accent) + palette.bgRgb(palette.colors.surface) + "+");
+      const last = marks.at(-1)!;
+      p.mouse("press", last.row.indexOf("−+"), last.y);
+      rows = screen(p, 100, 25);
+      expect(r.top).toBeGreaterThan(100);
+      expect(rows.join("\n")).toContain("new150");
+      expect(r.anchor).toBeNull();
+      const first = marks[0];
+      p.mouse("press", first.row.indexOf("−+"), first.y);
+      expect(screen(p, 100, 25).join("\n")).toContain("new10");
+      expect(r.top).toBeLessThan(25);
+    }
+    key(p, "z");
+    p.toggleFullscreen();
+    const full = screen(p, 120, 25),
+      last = full
+        .map((row, y) => ({ row, y }))
+        .filter(({ row }) => /−\+[│▐]\s*$/.test(row))
+        .at(-1)!;
+    p.mouse("press", last.row.indexOf("−+"), last.y);
+    expect(screen(p, 120, 25).join("\n")).toContain("new150");
+    key(p, "Z");
+    expect(screen(p, 100, 25).some(row => /−\+[│▐]\s*$/.test(row))).toBe(false);
+  } finally {
+    p.hide();
+  }
+});
 
 function folderCheckout(): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "corgi-review-folder-")));
