@@ -19,6 +19,9 @@ class Hibernation extends Runtime {
   async history(pane: number) {
     return (await this.command("pane.read", { target: pane, view: "history" })).text;
   }
+  async screen(pane: number) {
+    return (await this.command("pane.read", { target: pane, view: "screen" })).text;
+  }
   reload() {
     return this.rpc({ op: "server.reload", executable: EXE });
   }
@@ -211,9 +214,13 @@ class Hibernation extends Runtime {
     await this.idle(id);
     await this.until(async () => {
       await viewer.poll();
-      return screen_text(viewer.state.data, 100, 30).join("\n").includes("claude --resume ordinary-claude");
+      return screen_text(viewer.state.data, 100, 30).join("\n").includes("# Press Enter to resume");
     });
+    await this.until(async () => (await this.history(id)).includes("claude --resume ordinary-claude"));
     this.assertEqual((await this.pane(id)).agent.state, "unknown");
+    this.assertIn("# Press Enter to resume", await this.screen(id));
+    this.assertNotIn("Working (esc to interrupt)", await this.screen(id));
+    this.assertIn("Working (esc to interrupt)", await this.history(id));
     this.assertEqual((await this.session()).workspaces[0].archived, false);
     await this.reload();
     await this.idle(id);

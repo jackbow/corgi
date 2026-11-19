@@ -86,6 +86,7 @@ Click it, or select it with `prefix w` and press Enter or Right, to expand it.
 Each entry shows its saved agent states and program counts, largest first.
 Use the wheel or Up/Down to browse long archived lists. Opening one unarchives it;
 entering each pane opens a shell with its restore command ready for Enter.
+Saved output remains in scrollback; a clean prompt shows **Press Enter to resume**.
 Agents and other programs wait for you to run those commands. Its menu's **Unarchive workspace** reveals it
 without waking any panes. Keep at least one workspace active.
 Starting new work in an archived workspace, or moving an awake pane into it,

@@ -226,6 +226,20 @@ test("a faded snapshot puts back the blank rows and the cursor", () => {
       expect(info(fresh).cursor).toEqual(info(old).cursor);
     });
 });
+test("clearing a restored TUI keeps every row in scrollback and starts a clean prompt", () =>
+  terminals(40, 10, 2, ([old, fresh]) => {
+    old.feed("\x1b[HHEADER\x1b[4;1HMESSAGE\x1b[9;1HINPUT\x1b[10;1HFOOTER\x1b[4;1H");
+    fresh.feed(old.fadedSnapshot());
+    fresh.clearScreen();
+    expect(fresh.liveText().trim()).toBe("");
+    expect(info(fresh).cursor).toMatchObject({ x: 0, y: 0 });
+    fresh.feed("# Press Enter to resume\r\n$ codex resume saved-session");
+    expect(fresh.liveText()).toContain("# Press Enter to resume\n$ codex resume saved-session");
+    for (const text of ["HEADER", "MESSAGE", "INPUT", "FOOTER"]) {
+      expect(fresh.liveText()).not.toContain(text);
+      expect(fresh.history()).toContain(text);
+    }
+  }));
 test("terminal reports host colors and keeps application overrides", () =>
   terminals(20, 4, 1, ([t]) => {
     t.feed("\x1b]10;?\x1b\\\x1b]11;?\x1b\\");

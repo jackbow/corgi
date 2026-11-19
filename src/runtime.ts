@@ -980,7 +980,11 @@ export class Runtime {
       try {
         t.applyTheme(opts.theme);
         t.feed(p.terminal.fadedSnapshot());
-        if (staged !== null) t.feed(hint.banner(Math.trunc(Date.now() / 1000)));
+        t.clearScreen();
+        if (staged !== null) {
+          t.feed(hint.banner(Math.trunc(Date.now() / 1000)));
+          t.feed("# Press Enter to resume\r\n\r\n");
+        }
         await t.spawn(await Store.directory(p.cwd), opts.socket, id, opts.executable, null, false);
       } catch (e) {
         t.destroy();
@@ -1006,7 +1010,9 @@ export class Runtime {
       t.applyTheme(opts.theme);
       if (shell) {
         t.feed(old);
+        t.clearScreen();
         t.feed(hint.banner(Math.trunc(Date.now() / 1000)));
+        t.feed("# Press Enter to resume\r\n\r\n");
       }
       await t.spawn(
         await Store.directory(p.cwd),

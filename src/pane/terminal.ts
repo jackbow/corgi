@@ -297,6 +297,10 @@ export class Terminal extends EventEmitter {
   history(): string {
     return this.native({ op: "history" });
   }
+  /** Move the visible screen into scrollback and start fresh at the top. */
+  clearScreen(): void {
+    this.feed(`\x1b[${this.rows};1H` + "\r\n".repeat(this.rows) + "\x1b[H");
+  }
   liveText(): string {
     const revision = this.surface_revision;
     if (this.live_text?.revision === revision) return this.live_text.text;
