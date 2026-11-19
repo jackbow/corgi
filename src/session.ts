@@ -608,6 +608,7 @@ function arrangeInner(r: Runtime, request: Arrangement): Result {
 }
 function agentView(r: Runtime, a: any, conversation: number) {
   return {
+    pull_requests: r.conversations.byId(conversation)?.pull_requests ?? [],
     conversation,
     subagents: a.subagents,
     changed_at: a.changed_at,

@@ -50,6 +50,9 @@ export type Context = {
 };
 /** A provider's past conversations, as corgi grep reads them. */
 export interface Search {
+  /** A provider store for a session with no transcript file. */
+  source?(session: string): string;
+  jsonl?(input: string, tools?: boolean): Normalized;
   /** Bump it when this provider decodes differently, and its conversations are
    * indexed again as searches reach them. */
   version: number;

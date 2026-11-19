@@ -33,6 +33,8 @@ import {
   type Snapshot as Worktrees,
 } from "./worktrees";
 import type { Progress as ImageProgress } from "./image_upload";
+import type { Mention } from "./conversation_prs";
+import { parse as parsePR } from "./pull_request_ref";
 
 export interface Transport {
   /** The daemon over HTTP, for a request that may outlast this connection. */
@@ -476,6 +478,7 @@ export function acknowledge(o: Observation, through: bigint): void {
 }
 /** protocol.zig's `Agent`, as the snapshot sends it. */
 export interface Agent {
+  pull_requests: Mention[];
   conversation: number;
   subagents: { running: number; blocked: number; waiting: boolean };
   name: string;
@@ -500,6 +503,14 @@ export interface Agent {
 }
 export function agent(value: any = {}): Agent {
   return {
+    pull_requests: Array.isArray(value.pull_requests)
+      ? value.pull_requests.flatMap((item: { url?: unknown; mentioned?: unknown }) => {
+          const ref = typeof item?.url === "string" ? parsePR(item.url) : null;
+          return ref && typeof item.mentioned === "number" && Number.isSafeInteger(item.mentioned)
+            ? [{ ...ref, mentioned: item.mentioned }]
+            : [];
+        })
+      : [],
     conversation: Number(value.conversation ?? 0),
     subagents: {
       running: Number(value.subagents?.running ?? 0),
