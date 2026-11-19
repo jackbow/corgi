@@ -83,6 +83,7 @@ import * as linkTooltip from "./link_tooltip";
 import * as linkThumbnail from "./link_thumbnail";
 import * as pullRequest from "./pull_request";
 import * as pullRequestPanel from "./pull_request_panel";
+import * as conversationPRPanel from "./conversation_pr_panel";
 import * as remoteDiff from "./review/remote";
 import * as reviewState from "./review_state";
 import * as paneImages from "./pane_images";
@@ -637,6 +638,16 @@ export class Controller {
   }
   private local_review = new panel.Panel();
   private pr_cache = new pullRequest.Cache();
+  readonly conversation_prs = new conversationPRPanel.Panel();
+  private sidebar_pr_pressed: { url: string; target: Target } | null = null;
+  private followConversationPRs() {
+    const pane = this.runtime.workspaces.items.length ? this.focused() : null;
+    this.conversation_prs.follow(this.reviewOwner(), pane?.agent.pull_requests ?? []);
+    this.conversation_prs.changed = () => {
+      this.dirty = true;
+      this.wake();
+    };
+  }
   private pr_views = new Map<string, pullRequestPanel.Panel>();
   private pr_diffs = new Map<string, panel.Panel>();
   private reviewOwner(): string {
@@ -1221,6 +1232,7 @@ export class Controller {
   }
   /** Hands the keyboard to `to`. A drawer the sidebar had goes away with it. */
   private giveKeyboard(to: Keyboard): void {
+    this.conversation_prs.focused = false;
     const from = this.keyboard;
     if (from === to) return;
     if (to !== "review") {
@@ -3768,6 +3780,19 @@ export class Controller {
       case "prompt":
         this.togglePrompt();
         break;
+      case "conversation-prs": {
+        const close = this.conversation_prs.open && this.conversation_prs.focused;
+        this.closeMenu();
+        this.conversation_prs.open = !close;
+        if (this.conversation_prs.open) {
+          this.sidebar_open = true;
+          this.giveKeyboard("pane");
+          this.followConversationPRs();
+        }
+        this.conversation_prs.focused = !close;
+        this.dirty = true;
+        break;
+      }
       case "pull-request": {
         const ref = pullRequest.parse(String(act.value || this.pull_request.ref?.url || ""));
         if (!ref) {
@@ -4386,6 +4411,7 @@ export class Controller {
     this.effects.push(effect);
   }
   private openPullRequest(ref: pullRequest.Ref): void {
+    this.conversation_prs.focused = false;
     this.pr_diff_generation++;
     this.review.hide();
     this.review.preview(null);
@@ -7063,6 +7089,12 @@ export class Controller {
       const act = bindings.lookup(this.prefs.bindings(), false, byte, {});
       if (act) return this.perform(act);
     }
+    if (this.conversation_prs.open && this.conversation_prs.focused) {
+      const command = this.conversation_prs.key(panel.byte_keys[byte] ?? String.fromCharCode(byte));
+      if (command) await this.perform(command);
+      this.dirty = true;
+      return;
+    }
     if (this.reviewKeys() && !this.copy_mode) {
       const k = this.reviewByte(byte);
       if (k) await this.reviewKey(k);
@@ -7163,6 +7195,7 @@ export class Controller {
     if (this.corgi_setup?.editing || this.corgi_setup?.modelSearch()) return "setup";
     if (this.agent_picker) return "picker";
     if (this.editingName()) return "name";
+    if (this.conversation_prs.open && this.conversation_prs.focused) return "discard";
     if (this.reviewKeys() && !this.pull_request.open) return "review";
     if (this.hasMenu() || this.reviewKeys()) return "discard";
     // A pane still opening takes no pastes.
@@ -7744,7 +7777,12 @@ export class Controller {
             // Resolve Corgi shortcuts before encoding for the child. A
             // Kitty Ctrl-B/Ctrl-T are otherwise invisible to the byte handlers.
             const owned =
-              this.hasMenu() || this.editingName() || this.copy_mode || this.search_mode || this.reviewKeys();
+              this.hasMenu() ||
+              this.editingName() ||
+              this.copy_mode ||
+              this.search_mode ||
+              this.reviewKeys() ||
+              (this.conversation_prs.open && this.conversation_prs.focused);
             // Corgi's own text boxes read some keys in sequences legacy encoding can't make.
             const edit = owned ? keyboard.editSequence(key_event) : null;
             const legacy = Array.from(
@@ -7944,7 +7982,7 @@ export class Controller {
           this.fitNameDialog();
           this.name_dialog.sequence(text);
           this.dirty = true;
-        } else if (this.reviewKeys()) {
+        } else if (this.reviewKeys() || (this.conversation_prs.open && this.conversation_prs.focused)) {
           const named = parsed_key === null ? null : reviewNamed(parsed_key);
           if (named) await this.reviewKey({ named });
         } else if (this.copy_mode && parsed_key === "page_up") this.scroll(-20);
@@ -8127,6 +8165,37 @@ export class Controller {
     const x = sat(xs, 1);
     const y = sat(ys, 1);
     const release = seq[seq.length - 1] === "m";
+    if (!cl.tab_drag && !this.hasMenu() && !this.name_dialog && !this.signin) {
+      const width = this.sidebarView([]).width;
+      if (this.conversation_prs.open && x < width - 1 && y > 0) {
+        this.pointer = { x, y };
+        if (!release && button === 0) this.giveKeyboard("pane");
+        this.followConversationPRs();
+        const command = this.conversation_prs.mouse(button, x, y, release);
+        if (command) await this.perform(command);
+        this.dirty = true;
+        return;
+      }
+      if (!release && button === 0) this.conversation_prs.focused = false;
+      if (release) this.conversation_prs.mouse(button, x, y, true);
+      if (!this.conversation_prs.open && button === 0 && (x < width || this.sidebar_pr_pressed !== null)) {
+        const entries = this.sidebarEntries(),
+          side = this.sidebarView(entries);
+        const url = sidebar.prAt(side, entries, x, y);
+        const target = sidebar.agentAt(side, entries, x, y)?.target;
+        if (!release) this.sidebar_pr_pressed = url && target ? { url, target } : null;
+        else if (this.sidebar_pr_pressed !== null) {
+          const pressed = this.sidebar_pr_pressed;
+          this.sidebar_pr_pressed = null;
+          if (pressed.url === url && target && sidebar.sameTarget(pressed.target, target)) {
+            this.selectAgent(target);
+            await this.perform({ name: "pull-request", value: url! });
+          }
+          return;
+        }
+        if (url) return;
+      }
+    }
     if (cl.tab_drag) {
       const drag = cl.tab_drag;
       this.pointer = { x, y };
@@ -10142,6 +10211,7 @@ export class Controller {
   /** No modal, drag, or selection is claiming the pointer right now. */
   private hoverIdle(): boolean {
     return (
+      !(this.conversation_prs.open && this.pointer !== null && this.pointer.x < this.sidebarView([]).width) &&
       this.signin_exit === null &&
       !this.hasMenu() &&
       this.menu() === null &&
@@ -10422,6 +10492,7 @@ export class Controller {
     );
     const card = this.paste_card;
     const focused = this.focused();
+    this.followConversationPRs();
     this.followReview();
     const review_width = this.reviewFullscreen() ? this.width : this.sidebarView([]).panel,
       review_focused = this.keyboard === "review" && review_width > 0,
@@ -10432,6 +10503,12 @@ export class Controller {
       this.width,
       this.height,
       render.ui({
+        conversation_prs_draw: this.conversation_prs.open
+          ? (w: Writer) => {
+              const width = this.sidebarView([]).width;
+              if (width > 0) this.conversation_prs.draw(w, new Rect(0, 1, width - 1, this.height - 1));
+            }
+          : undefined,
         prefs: this.host.prefs,
         pointer: this.pointer,
         iterm2_pointer: this.host.iterm2_pointer,
@@ -10764,6 +10841,12 @@ export class Controller {
     return byte >= 32 && byte < 127 ? { text: String.fromCharCode(byte) } : null;
   }
   private async reviewKey(k: panel.Key): Promise<void> {
+    if (this.conversation_prs.open && this.conversation_prs.focused) {
+      const command = this.conversation_prs.key("named" in k ? k.named : k.text);
+      if (command) await this.perform(command);
+      this.dirty = true;
+      return;
+    }
     if (this.pull_request.open) {
       const command = this.pull_request.key(k);
       if (command) await this.perform(command);

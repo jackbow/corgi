@@ -58,11 +58,38 @@ import {
   rowDetail,
   activityKind,
   corgiMode,
+  prAt,
 } from "./sidebar";
 import { Dialog } from "./name_dialog";
 import type { RenameTarget } from "./inline_rename";
 
 const selected_bg = palette.bg("selected");
+test("PR links replace idle dogs and add a row below working activity with matching hit targets", () => {
+  const url = "https://github.com/acme/app/pull/12";
+  for (const state of ["idle", "working"]) {
+    const entries = [
+      entry({
+        target: { pane: 1 },
+        state,
+        activity: "Fixing widgets",
+        pull_requests: [{ url, repo: "acme/app", number: 12, mentioned: 1 }],
+      }),
+      entry({ target: { pane: 2 } }),
+    ];
+    const view = View.init(120, 40, true, 0, entries.length).withEntries(entries);
+    expect(View.height(entries[0])).toBe(state === "working" ? 3 : 2);
+    const w = new Writer();
+    view.draw(w, entries, []);
+    expect(w.buffered()).toContain(`\x1b]8;;${url}\x1b\\#12`);
+    const top = view.middle() + 2;
+    const rows = hostText(w.buffered(), 120, 40).split("\n");
+    expect(rows[top + (state === "working" ? 2 : 1)].slice(5, 8)).toBe("#12");
+    expect(prAt(view, entries, 5, top + (state === "working" ? 2 : 1))).toBe(url);
+    expect(prAt(view, entries, 4, top + (state === "working" ? 2 : 1))).toBeNull();
+    expect(prAt(view, entries, 4, top)).toBeNull();
+    expect(view.hit(4, top + View.height(entries[0]))).toEqual({ tag: "entry", entry: 1 });
+  }
+});
 const count = (haystack: string, needle: string) => haystack.split(needle).length - 1;
 const has = (haystack: string, needle: string) => haystack.includes(needle);
 const draw = (view: View, entries: Entry[], workspaces: WorkspaceEntry[], now?: number) => {

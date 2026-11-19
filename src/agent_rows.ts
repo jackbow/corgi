@@ -30,6 +30,7 @@ export function rows(runtime: mirror.Runtime, ws: mirror.Workspace, now_ms: numb
   const rows: Row[] = tabs.flat().map(p => ({
     entry: sidebar.entry({
       conversation: p.agent.conversation,
+      pull_requests: p.agent.pull_requests,
       target: { pane: p.id },
       starred: starred({ pane: p.id }),
       starting: starting({ pane: p.id }),
@@ -68,6 +69,7 @@ export function rows(runtime: mirror.Runtime, ws: mirror.Workspace, now_ms: numb
     });
     if (session.agent) {
       entry.conversation = session.agent.conversation;
+      entry.pull_requests = session.agent.pull_requests;
       entry.subagents = { ...session.agent.subagents };
       entry.name = session.agent.name;
       entry.activity = session.agent.activity;

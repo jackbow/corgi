@@ -1,0 +1,56 @@
+import { expect, test } from "bun:test";
+import { Panel } from "./conversation_pr_panel";
+import { parse } from "./pull_request";
+import { Rect } from "./layout";
+import { Writer } from "./text";
+const ref = (n: number) => ({ ...parse(`https://github.com/acme/app/pull/${n}`)!, mentioned: n });
+const details = { title: "Fix widgets", createdAt: "2026-11-01T12:00:00Z", updatedAt: "2026-11-18T15:30:00Z" };
+test("the PR list changes sort, renders metadata, and stays open when opening different PRs", async () => {
+  const p = new Panel(async () => details);
+  p.open = p.focused = true;
+  p.follow("one", [ref(12), ref(9)]);
+  await Bun.sleep(0);
+  expect(p.items.map(p => p.number)).toEqual([12, 9]);
+  p.key("n");
+  expect(p.items.map(p => p.number)).toEqual([9, 12]);
+  p.key("up");
+  expect(p.key("enter")).toEqual({ name: "pull-request", value: ref(9).url });
+  const w = new Writer();
+  p.draw(w, new Rect(0, 1, 40, 24));
+  expect(w.buffered()).toContain("Fix widgets");
+  expect(w.buffered()).toContain("Created 2026-11-01 12:00Z");
+  expect(w.buffered()).toContain("Updated 2026-11-18 15:30Z");
+  p.mouse(0, 5, 9, false);
+  expect(p.mouse(0, 5, 9, true)).toEqual({ name: "pull-request", value: ref(12).url });
+  expect(p.open).toBe(true);
+  p.follow("two", [ref(5)]);
+  expect(p.items.map(p => p.number)).toEqual([5]);
+  expect(p.selected).toBe(0);
+});
+test("unavailable metadata preserves links and refresh retries", async () => {
+  let calls = 0;
+  const p = new Panel(async () => {
+    if (++calls === 1) throw Error("offline");
+    return details;
+  });
+  p.open = true;
+  p.follow("one", [ref(12)]);
+  await Bun.sleep(0);
+  const w = new Writer();
+  p.draw(w, new Rect(0, 1, 40, 20));
+  expect(w.buffered()).toContain("Unavailable");
+  expect(p.key("enter")?.value).toBe(ref(12).url);
+  p.key("r");
+  await Bun.sleep(0);
+  expect(calls).toBe(2);
+});
+test("hovering the PR list leaves the detail viewer's keyboard focus alone", () => {
+  const p = new Panel(async () => details);
+  p.open = true;
+  p.follow("one", [ref(12)]);
+  p.draw(new Writer(), new Rect(0, 1, 40, 20));
+  p.mouse(35, 5, 5, false);
+  expect(p.focused).toBe(false);
+  p.mouse(0, 5, 5, false);
+  expect(p.focused).toBe(true);
+});
