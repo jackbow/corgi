@@ -119,6 +119,7 @@ const keyGroups = (): KeyGroup[] => [
     i18n.t`File list`,
     [
       [i18n.t`Open`, "enter"],
+      [i18n.t`Find`, "/"],
       [i18n.t`Sort, reverse`, "o O"],
       [i18n.t`Hide, resize`, "z < >"],
     ],
@@ -240,6 +241,7 @@ class Review {
   /** The wheel scrolled the tree; it follows the selection again when that moves. */
   tree_free = false;
   tree_hidden = false;
+  tree_find: { query: textArea.TextArea; editing: boolean } | null = null;
   toggled = new Set<string>();
   cur = 0;
   top = 0;
@@ -614,7 +616,9 @@ export class Panel {
   typingArea(): textArea.TextArea | null {
     if (!this.open || !this.target) return null;
     const r = this.review(this.target.pane);
-    return r.folder_input ?? r.compose?.area ?? r.find?.query ?? null;
+    return (
+      r.folder_input ?? r.compose?.area ?? (r.tree_find?.editing ? r.tree_find.query : null) ?? r.find?.query ?? null
+    );
   }
   /** The note box's text as last drawn: its first cell, and how many rows and columns it shows. */
   private compose_at: { x: number; y: number; rows: number; w: number; start?: number } | null = null;
@@ -647,7 +651,10 @@ export class Panel {
       r.folder_error = null;
       void r.folder_input.refresh();
     } else if (r.compose) r.compose.area.insert(text);
-    else if (r.find) {
+    else if (r.tree_find?.editing) {
+      r.tree_find.query.insert(text === "\n" ? " " : text);
+      this.filterTree(r);
+    } else if (r.find) {
       r.find.query.insert(text === "\n" ? " " : text);
       const now = this.current(),
         flow = now ? this.sections(r, now) : [];
@@ -1200,12 +1207,33 @@ export class Panel {
   }
   /** The list's rows: "All files", then a tree by name or one list newest edit first. */
   private listRows(r: Review, paths: string[], edited: Map<string, number> | null): ListRow[] {
+    const query = r.tree_find?.query.text.trim().toLowerCase();
+    if (query) return tree.flat(this.fileOrder(r, paths, edited).filter(path => path.toLowerCase().includes(query)));
     return [
       all_row,
       ...(r.sort === "edited" && edited
         ? tree.flat(tree.byEdited(paths, edited, r.reversed))
         : tree.rows(paths, r.toggled, false, r.sort === "name" && r.reversed)),
     ];
+  }
+  private filterTree(r: Review): void {
+    const now = this.current();
+    r.tree_sel = now
+      ? (this.listRows(
+          r,
+          now.changes.map(ch => ch.path),
+          now.edited,
+        )[0]?.id ?? null)
+      : null;
+    r.tree_top = 0;
+    r.tree_free = false;
+  }
+  private toggleTree(r: Review): void {
+    r.tree_hidden = !r.tree_hidden;
+    if (r.tree_hidden) {
+      r.part = "diff";
+      if (r.tree_find) r.tree_find.editing = false;
+    }
   }
   /** The files the diff area shows: on "All files" every one in the list's
    * order, else the selected one. */
@@ -1258,6 +1286,7 @@ export class Panel {
   private collapse(r: Review, now: Now, path: string): void {
     if (path !== r.path) r.anchor = null;
     r.part = "diff";
+    if (r.tree_find) r.tree_find.editing = false;
     r.path = path;
     r.cur = 0;
     r.free = false;
@@ -1440,6 +1469,45 @@ export class Panel {
         }
         r.compose = null;
       } else if (text) c.area.insert(text);
+      return { kind: "none" };
+    }
+    if (r.tree_find?.editing) {
+      const f = r.tree_find,
+        edit = named && typed(named),
+        before = f.query.text;
+      if (named === "escape") r.tree_find = null;
+      else if (named === "up" || named === "down" || named === "enter") {
+        const rows = now
+            ? this.listRows(
+                r,
+                now.changes.map(ch => ch.path),
+                now.edited,
+              )
+            : [],
+          at = Math.max(
+            0,
+            rows.findIndex(row => row.id === r.tree_sel),
+          );
+        if (named === "enter") {
+          const row = rows[at];
+          if (row?.kind === "file" && now) {
+            this.choose(
+              r,
+              row.path,
+              now.changes.map(ch => ch.path),
+            );
+            r.part = "diff";
+            f.editing = false;
+          } else if (row?.kind === "all") {
+            this.showAll(r);
+            r.part = "diff";
+            f.editing = false;
+          }
+        } else r.tree_sel = rows[Math.max(0, Math.min(rows.length - 1, at + (named === "down" ? 1 : -1)))]?.id ?? null;
+        r.tree_free = false;
+      } else if (edit) f.query.apply(edit);
+      else if (text) f.query.insert(text);
+      if (f.query.text !== before) this.filterTree(r);
       return { kind: "none" };
     }
     if (r.find) {
@@ -1730,7 +1798,11 @@ export class Panel {
         r.list = { at: 0 };
         break;
       case "/":
-        if (d || r.all) {
+        if (r.part === "tree" && !r.tree_hidden) {
+          r.tree_find ??= { query: new textArea.TextArea("", false), editing: false };
+          r.tree_find.editing = true;
+          this.filterTree(r);
+        } else if (d || r.all) {
           r.find = { query: new textArea.TextArea("", false), hits: [], by_row: new Map(), at: -1 };
           r.part = "diff";
         }
@@ -1761,8 +1833,7 @@ export class Panel {
         this.openPicker(r, now.co);
         break;
       case "z":
-        r.tree_hidden = !r.tree_hidden;
-        if (r.tree_hidden) r.part = "diff";
+        this.toggleTree(r);
         break;
       case "<":
       case ">":
@@ -1776,6 +1847,7 @@ export class Panel {
         return { kind: "hide" };
       case "escape":
         if (r.anchor !== null) r.anchor = null;
+        else if (r.part === "tree" && r.tree_find) r.tree_find = null;
         else return { kind: "leave" };
         break;
       default:
@@ -2056,6 +2128,7 @@ export class Panel {
   /** Gives keys to the file list, on the file shown, or to the diff. */
   private focusPart(r: Review, part: Part): void {
     r.part = part;
+    if (part === "diff" && r.tree_find) r.tree_find.editing = false;
     if (part === "tree" && (r.all || r.path)) r.tree_sel = r.all ? "all" : "f:" + r.path;
     r.tree_free = false;
   }
@@ -2163,6 +2236,7 @@ export class Panel {
     if (!hit) return;
     if (hit.unit !== undefined) {
       r.part = "diff";
+      if (r.tree_find) r.tree_find.editing = false;
       r.anchor = null;
       if (hit.path !== undefined) r.path = hit.path;
       r.cur = hit.unit;
@@ -2561,6 +2635,7 @@ export class Panel {
     if (r.tree_hidden && changes.length) {
       const label = i18n.t` z: files `;
       c.text(c.w - displayWidth(label) - 2, ty, label, colors.faint);
+      c.hit(c.w - displayWidth(label) - 2, ty, displayWidth(label), 1, { act: () => this.toggleTree(r) });
     }
     const dy = ty + 1,
       dh = c.h - 1 - dy;
@@ -2613,6 +2688,32 @@ export class Panel {
     focused: boolean,
     limit = this.tree_rows,
   ): number {
+    if (r.tree_find && room > 1) {
+      const f = r.tree_find,
+        q = f.query;
+      q.width = Math.max(1, c.w - 4);
+      c.text(1, ty, "/", palette.colors.strong);
+      let start = 0;
+      while (displayWidth(q.text.slice(start, q.caret)) >= q.width)
+        start += String.fromCodePoint(q.text.codePointAt(start)!).length;
+      this.drawTyped(
+        c,
+        q,
+        { start, end: q.text.length },
+        3,
+        ty,
+        focused && f.editing ? displayWidth(q.text.slice(start, q.caret)) : null,
+      );
+      c.hit(0, ty, c.w, 1, {
+        act: () => {
+          f.editing = true;
+          r.part = "tree";
+        },
+      });
+      ty++;
+      room--;
+      limit = Math.max(1, limit - 1);
+    }
     const colors = palette.colors,
       rows = this.listRows(r, paths, edited),
       now = Date.now(),
@@ -2625,6 +2726,7 @@ export class Panel {
     }
     r.tree_top = Math.min(Math.max(0, r.tree_top), Math.max(0, rows.length - height));
     c.hit(0, ty, c.w, height, { wheel: "tree" });
+    if (!rows.length) c.text(2, ty, i18n.t`no match`, colors.faint);
     const byPath = new Map(changes.map(ch => [ch.path, ch]));
     rows.slice(r.tree_top, r.tree_top + height).forEach((row, i) => {
       const y = ty + i,
@@ -2694,6 +2796,7 @@ export class Panel {
           act: () => {
             r.part = "tree";
             r.tree_sel = row.id;
+            if (r.tree_find) r.tree_find.editing = false;
             if (r.all || r.path !== row.path) this.choose(r, row.path, paths);
           },
         });
@@ -2773,6 +2876,8 @@ export class Panel {
     }
     const sections = this.sections(r, now);
     if (sections.length === 0) return;
+    const minimap = r.full_context && c.w >= min_width && sections.some(s => s.d && s.units.length) ? c : null;
+    if (minimap) c = c.view(0, 0, c.w - 3, c.h);
     const gutter = Math.max(3, ...sections.map(s => s.d?.gutter() ?? 0)),
       code_x = gutter + 2,
       column_w = r.split ? Math.floor((c.w - 1) / 2) : c.w,
@@ -3075,7 +3180,50 @@ export class Panel {
     if (shown !== undefined && shown_head !== undefined && ys[shown_head] + items[shown_head].h - 1 < top) {
       this.drawHead(c, r, now, items[shown_head].s, dy, dy, dy + dh, focused);
     }
-    if (total > dh) {
+    if (minimap && total > 0) {
+      // Separate columns retain additions and deletions sharing the same bucket.
+      const marks = Array.from({ length: dh }, () => ({ add: false, del: false }));
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind !== "unit") continue;
+        const kinds = [item.pair.old, item.pair.new].map(at => {
+          const unit = at === null ? null : item.s.units[at];
+          return unit?.kind === "row" ? item.d.rows[unit.row].kind : "context";
+        });
+        const first = Math.min(dh - 1, Math.floor((ys[i] * dh) / total)),
+          last = Math.min(dh - 1, Math.floor(((ys[i] + item.h - 1) * dh) / total));
+        for (let j = first; j <= last; j++) {
+          marks[j].add ||= kinds.includes("insertion");
+          marks[j].del ||= kinds.includes("deletion");
+        }
+      }
+      const start = Math.floor((top * dh) / total),
+        end = Math.max(start + 1, Math.ceil(((top + dh) * dh) / total)),
+        x = minimap.w - 3;
+      marks.forEach((mark, row) => {
+        const visible = row >= start && row < end,
+          bg = visible ? colors.selected : colors.surface;
+        minimap.put(x, dy + row, mark.del ? "−" : " ", colors.hot, bg);
+        minimap.put(x + 1, dy + row, mark.add ? "+" : " ", colors.accent, bg);
+        minimap.put(x + 2, dy + row, visible ? "▐" : "│", visible ? colors.strong : colors.line, bg);
+        minimap.hit(x, dy + row, 3, 1, {
+          act: () => {
+            r.top = Math.max(0, Math.min(total - dh, Math.round(((row + 0.5) * total) / dh - dh / 2)));
+            r.free = true;
+            r.landmark = null;
+            r.anchor = null;
+            r.part = "diff";
+            if (r.tree_find) r.tree_find.editing = false;
+            const index = items.findIndex((item, i) => item.kind === "unit" && ys[i] + item.h > r.top + dh / 2),
+              item = items[index];
+            if (item?.kind === "unit") {
+              r.path = item.s.change.path;
+              r.cur = item.at;
+            }
+          },
+        });
+      });
+    } else if (total > dh) {
       const thumb = Math.max(1, Math.round((dh * dh) / total)),
         at = dy + Math.round(((dh - thumb) * top) / Math.max(1, total - dh));
       for (let j = 0; j < thumb; j++) c.put(c.w - 1, at + j, "▐", colors.line);
@@ -3383,6 +3531,12 @@ export class Panel {
         if (act) c.hit(start, y, x - start - 2, 1, { act });
       }
     };
+    if (r.tree_find?.editing)
+      return hints([
+        ["↑/↓", i18n.t`file`],
+        ["enter", i18n.t`open`],
+        ["esc", i18n.t`cancel`],
+      ]);
     if (r.find) {
       const q = r.find.query,
         caret = focused ? q.position().col : null,
@@ -3457,11 +3611,14 @@ export class Panel {
       r.full_context ? i18n.t`hunks` : i18n.t`full file`,
       () => this.key({ text: "Z" }),
     ];
+    const files: [string, string, () => void] = ["z", i18n.t`files`, () => this.toggleTree(r)];
     if (r.part === "tree" && !r.tree_hidden)
       return hints(
         [
           view,
           context,
+          files,
+          ["/", i18n.t`find`, () => this.key({ text: "/" })],
           ["j/k", i18n.t`file`],
           ["enter", i18n.t`open`],
           [
@@ -3480,23 +3637,39 @@ export class Panel {
     const d = now?.file?.loaded.kind === "diff" ? now.file.loaded.diff : null;
     const units = d && r.path ? this.units(r, d, r.path) : [];
     if (now && r.path && this.isCollapsed(r, now, r.path))
-      return hints([view, context, ["enter", i18n.t`unfold`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]], close);
+      return hints(
+        [view, context, files, ["enter", i18n.t`unfold`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]],
+        close,
+      );
     if (now?.change?.generated && !r.loaded.has(now.change.path))
       return hints(
-        [view, context, ["enter", i18n.t`load the diff`], ["f", i18n.t`next file`], send, ["?", i18n.t`keys`]],
+        [view, context, files, ["enter", i18n.t`load the diff`], ["f", i18n.t`next file`], send, ["?", i18n.t`keys`]],
         close,
       );
     if (units[r.cur]?.kind === "fold")
-      return hints([view, context, ["→", i18n.t`expand`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]], close);
+      return hints(
+        [view, context, files, ["→", i18n.t`expand`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]],
+        close,
+      );
     if (d && now && this.noteAt(r, d, units, now))
       return hints(
-        [view, context, ["e", i18n.t`edit`], ["d", i18n.t`delete`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]],
+        [
+          view,
+          context,
+          files,
+          ["e", i18n.t`edit`],
+          ["d", i18n.t`delete`],
+          ["]/[", i18n.t`hunk`],
+          send,
+          ["?", i18n.t`keys`],
+        ],
         close,
       );
     hints(
       [
         view,
         context,
+        files,
         ["v", i18n.t`select`],
         ["c", i18n.t`comment`],
         ["]/[", i18n.t`hunk`],
