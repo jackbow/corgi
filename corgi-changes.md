@@ -23,6 +23,9 @@ Application changes added during development.
 
 ## GitHub PR viewer
 
+- Discussion comments can be sent to the conversation's agent input with the PR link, author, file/line range, old-side/outdated markers, and GitHub's saved code context. Sending pastes without submitting; shell panes copy the comment instead.
+- Review threads show numbered diff previews where GitHub provides them. **Reply to thread** posts a native review reply; **New comment** (`c`) posts a PR-wide comment. The multiline composer uses Enter for a new line and Tab to select **Post to GitHub** or **Cancel**. Failed posts retain the draft; a successful post clears it even if refreshing fails.
+
 - PR links mentioned by either the user or assistant are collected per conversation, ordered by latest mention. Later `#123` or bare `123` mentions raise an already linked PR when its number is unambiguous in that conversation. PR links stay in the Conversation PRs panel; agent sidebar rows keep their usual activity and animation.
 - Cmd+Ctrl+G toggles a separate **Conversation PRs** list in the left sidebar, which stays open while different PRs open in the GitHub PR viewer. Repositories use rounded group boxes by default (`g` toggles grouping), with bold PR numbers, owner-free labels, fully wrapped titles, and created/updated ages on one line. `s` cycles latest mention, PR number, created, and updated sorting; `n`/`c`/`u` select number/created/updated directly. Merged PRs live in a collapsed section at the bottom (`m` toggles it). Enter opens the selected PR and `r` refreshes metadata.
 - Cmd+Shift+K opens a PR conversation search popup across tracked workspaces. Type a PR number or paste its GitHub link for inline results showing workspace and agent title; Up/Down select and Enter switches to the conversation. Links disambiguate repositories, and merged PR mentions remain searchable. Esc closes the popup.

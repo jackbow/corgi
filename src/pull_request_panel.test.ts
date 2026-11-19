@@ -550,3 +550,163 @@ test("status refresh preserves discussion navigation and ignores late updates af
   expect(p.snapshot?.ref.url).toBe(next.ref.url);
   expect(p.snapshot?.unresolved).not.toBe(99);
 });
+
+test("discussion renders saved file context and exposes send, reply and new comment controls", () => {
+  const p = new Panel(),
+    s = snapshot();
+  s.threads = [
+    {
+      id: "t",
+      path: "app.ts",
+      line: 3,
+      resolved: false,
+      comments: [
+        {
+          author: "alice",
+          body: "Fix this",
+          path: "app.ts",
+          at: "2026-01-01",
+          diffHunk: "@@ -2 +2,2 @@\n same\n+added",
+        },
+      ],
+    },
+  ];
+  s.comments = [{ author: "bob", body: "Looks good", path: "", at: "2026-01-02" }];
+  p.snapshot = s;
+  p.ref = s.ref;
+  p.tab = "discussion";
+  const rows = p.rows(70),
+    text = rows.map(r => r.text).join("\n");
+  for (const label of ["app.ts:3", "+added", "New comment", "Send to agent", "Reply to thread"])
+    expect(text).toContain(label);
+  const send = rows.find(
+    r => r.action?.name === "pull-request-comment-send" && p.commentTarget(String(r.action.value))?.thread,
+  );
+  expect(p.commentTarget(String(send?.action?.value))?.comment.author).toBe("alice");
+  p.snapshot = snapshot(13);
+  expect(p.commentTarget(String(send?.action?.value))).toBeNull();
+  expect(p.commentTarget("invalid")).toBeNull();
+});
+test("comment composer edits shortcut letters, multiline UTF-8 paste and explicit posting", () => {
+  const p = new Panel();
+  p.snapshot = snapshot();
+  p.ref = p.snapshot.ref;
+  p.beginComment();
+  for (const text of "rqumadf123") expect(p.key({ text })).toBeNull();
+  p.key({ named: "enter" });
+  for (const byte of Buffer.from("héllo\r\nworld")) p.pasteByte(byte);
+  expect(p.compose?.area.text).toBe("rqumadf123\nhéllo\nworld");
+  p.key({ named: "left" });
+  p.key({ text: "!" });
+  expect(p.compose?.area.text).toEndWith("worl!d");
+  screen(p, 70, 30);
+  p.key({ named: "tab" });
+  expect(p.key({ named: "enter" })).toEqual({ name: "pull-request-comment-post" });
+  p.key({ named: "tab" });
+  expect(p.key({ named: "enter" })).toEqual({ name: "pull-request-comment-cancel" });
+  p.key({ named: "shift_tab" });
+  p.key({ text: "z" });
+  expect(p.key({ named: "enter" })).toBeNull();
+  expect(p.compose?.area.text).toContain("z\n");
+  expect(p.key({ named: "escape" })).toEqual({ name: "pull-request-comment-cancel" });
+});
+test("failed comments retain drafts; accepted comments clear even when refresh fails", async () => {
+  const p = new Panel(),
+    s = snapshot(),
+    calls: unknown[] = [];
+  p.snapshot = s;
+  p.ref = s.ref;
+  s.threads = [{ id: "t", path: "x.ts", comments: [], resolved: true }];
+  p.beginComment("not-in-pr");
+  expect(p.compose).toBeNull();
+  p.beginComment("t");
+  p.compose!.area.insert("Reply");
+  p.cache.client.mutate = async () => {
+    throw new Error("offline");
+  };
+  await p.postComment();
+  expect(p.compose?.area.text).toBe("Reply");
+  expect(p.error).toBe("offline");
+  p.cache.client.mutate = async (snapshot, mutation) => {
+    calls.push([snapshot.ref.url, mutation]);
+  };
+  p.cache.refresh = async () => {
+    throw new Error("offline");
+  };
+  await p.postComment();
+  expect(calls).toEqual([[s.ref.url, { kind: "comment", body: "Reply", thread: "t" }]]);
+  expect(p.compose).toBeNull();
+  expect(p.error).toContain("Comment posted; refresh failed");
+  await p.postComment();
+  expect(calls).toHaveLength(1);
+});
+test("in-flight comment stays bound to its original PR when the viewer navigates", async () => {
+  const p = new Panel(),
+    a = snapshot(),
+    b = snapshot(13),
+    write = deferred<void>();
+  p.snapshot = a;
+  p.ref = a.ref;
+  p.beginComment();
+  p.compose!.area.insert("Hello");
+  p.cache.client.mutate = () => write.promise;
+  p.cache.refresh = async ref => {
+    expect(ref.url).toBe(a.ref.url);
+    return a;
+  };
+  const posting = p.postComment();
+  p.ref = b.ref;
+  p.snapshot = b;
+  p.compose = null;
+  write.resolve();
+  await posting;
+  expect(p.snapshot).toBe(b);
+  expect(p.busy).toBe(false);
+});
+
+test("legacy cached discussion refetches file context even for merged PRs", async () => {
+  const p = new Panel(),
+    old = snapshot(),
+    fresh = snapshot();
+  old.state = fresh.state = "MERGED";
+  delete old.discussionVersion;
+  let reads = 0;
+  p.cache.cached = async () => old;
+  p.cache.refresh = async () => {
+    reads++;
+    return fresh;
+  };
+  await p.show(old.ref);
+  expect(reads).toBe(1);
+  expect(p.snapshot?.discussionVersion).toBe(1);
+});
+test("send targets retain comment identity when refreshed comments change order", () => {
+  const p = new Panel(),
+    s = snapshot();
+  const first = { author: "alice", body: "First", at: "2026-01-01", path: "" },
+    second = { ...first, body: "Second" };
+  p.snapshot = s;
+  p.ref = s.ref;
+  p.tab = "discussion";
+  s.comments = [first, second];
+  const value = String(p.rows(70).find(r => r.action?.name === "pull-request-comment-send")!.action!.value);
+  s.comments.reverse();
+  expect(p.commentTarget(value)?.comment.body).toBe("First");
+  first.body = "Edited";
+  expect(p.commentTarget(value)).toBeNull();
+});
+test("long pasted drafts scroll to the caret while keeping the posting controls visible", () => {
+  const p = new Panel();
+  p.snapshot = snapshot();
+  p.ref = p.snapshot.ref;
+  p.beginComment();
+  screen(p, 40, 20);
+  for (const byte of Buffer.from(Array.from({ length: 30 }, (_, i) => `Line ${i}`).join("\n"))) p.pasteByte(byte);
+  const rows = screen(p, 40, 20);
+  expect(rows.join("\n")).toContain("Line 29");
+  expect(rows.join("\n")).toContain("Post to GitHub");
+  expect(p.top).toBeGreaterThan(0);
+  p.key({ named: "home" });
+  p.key({ named: "up" });
+  expect(p.compose?.area.position().row).toBe(28);
+});

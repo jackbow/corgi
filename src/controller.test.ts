@@ -7992,3 +7992,81 @@ test("previous local diff selection and layout restore instead of the path edito
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("PR comments paste into agent input with file and line context without submitting", async () => {
+  const { s, sent } = steering(),
+    snap = prSnapshot(),
+    paste = spyOn(s.pane(1).terminal, "bracketedPaste").mockReturnValue(true);
+  const comment = {
+    author: "reviewer",
+    body: "Please fix",
+    at: "2026-01-01",
+    path: "app.ts",
+    diffHunk: "@@ -2 +2 @@\n-old\n+new",
+  };
+  snap.threads = [{ id: "t", path: "app.ts", line: 2, resolved: false, comments: [comment] }];
+  s.pull_request.cache.cached = async () => snap;
+  try {
+    await s.perform({ name: "pull-request", value: snap.ref.url });
+    await Promise.resolve();
+    s.pull_request.fullscreen = true;
+    await s.perform({ name: "pull-request-comment-send", value: JSON.stringify([snap.ref.url, "t", comment]) });
+    expect(sent).toHaveLength(1);
+    expect(sent[0][0]).toBe(1);
+    expect(sent[0][1]).toContain("File: app.ts:2");
+    expect(sent[0][1]).toContain("Please fix");
+    expect(sent[0][1]).toEndWith("\x1b[201~");
+    expect(s.pull_request.fullscreen).toBe(false);
+    expect(s.keyboard).toBe("pane");
+  } finally {
+    paste.mockRestore();
+    viewer.close(s);
+  }
+});
+test("PR comment composer receives keyboard and bracketed paste instead of the agent", async () => {
+  const { s, sent } = steering(),
+    snap = prSnapshot();
+  s.pull_request.cache.cached = async () => snap;
+  try {
+    await s.perform({ name: "pull-request", value: snap.ref.url });
+    await Promise.resolve();
+    await s.perform({ name: "pull-request-comment" });
+    await s.input(bytes("rguq\r\x1b[200~héllo\r\nworld\x1b[201~"));
+    expect(s.pull_request.compose?.area.text).toBe("rguq\nhéllo\nworld");
+    expect(sent).toEqual([]);
+    await s.perform({ name: "pull-request-comment-cancel" });
+    expect(s.pull_request.compose).toBeNull();
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("sending PR comments falls back to copying for shells and rejects unsafe paste markers", async () => {
+  const { s, sent } = steering(),
+    snap = prSnapshot(),
+    paste = spyOn(s.pane(1).terminal, "bracketedPaste").mockReturnValue(false),
+    copy = spyOn(s, "copyText").mockImplementation(() => {});
+  const comment = { author: "reviewer", body: "Do this", at: "2026-01-01", path: "" };
+  snap.comments = [comment];
+  s.pull_request.cache.cached = async () => snap;
+  try {
+    await s.perform({ name: "pull-request", value: snap.ref.url });
+    await Promise.resolve();
+    const send = () =>
+      s.perform({ name: "pull-request-comment-send", value: JSON.stringify([snap.ref.url, null, comment]) });
+    await send();
+    expect(sent).toEqual([]);
+    expect(copy).toHaveBeenCalledTimes(1);
+    expect(s.pull_request.error).toContain("copied instead");
+    paste.mockReturnValue(true);
+    comment.body = "Unsafe\x1b[201~marker";
+    await send();
+    expect(sent).toEqual([]);
+    expect(copy).toHaveBeenCalledTimes(1);
+    expect(s.pull_request.error).toContain("cannot send safely");
+  } finally {
+    paste.mockRestore();
+    copy.mockRestore();
+    viewer.close(s);
+  }
+});

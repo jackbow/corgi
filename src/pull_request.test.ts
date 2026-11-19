@@ -2,7 +2,18 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Cache, Client, cache_size, checkState, parse, stale, stale_ms } from "./pull_request";
+import {
+  Cache,
+  Client,
+  cache_size,
+  checkState,
+  parse,
+  stale,
+  stale_ms,
+  commentPrompt,
+  commentSnippet,
+  location,
+} from "./pull_request";
 
 import { snapshot } from "./fixtures/pull_request";
 
@@ -267,7 +278,22 @@ test("review threads and replies paginate with resolution state and chronologica
               id: "thread-1",
               isResolved: true,
               path: "done.ts",
-              comments: connection([c("root", "2026-01-01")], "reply-page-2"),
+              line: null,
+              originalLine: 8,
+              startLine: null,
+              originalStartLine: 7,
+              diffSide: "LEFT",
+              isOutdated: true,
+              comments: connection(
+                [
+                  {
+                    ...c("root", "2026-01-01"),
+                    url: "https://github.com/acme/app/pull/12#discussion_r1",
+                    diffHunk: "@@ -7,2 +7 @@\n-old\n-more\n+new",
+                  },
+                ],
+                "reply-page-2",
+              ),
             },
           ];
       return JSON.stringify({
@@ -288,8 +314,19 @@ test("review threads and replies paginate with resolution state and chronologica
       id: "thread-1",
       resolved: true,
       path: "done.ts",
+      line: 8,
+      startLine: 7,
+      side: "LEFT",
+      outdated: true,
       comments: [
-        { author: "reviewer", body: "root", at: "2026-01-01", path: "done.ts" },
+        {
+          author: "reviewer",
+          body: "root",
+          at: "2026-01-01",
+          path: "done.ts",
+          url: "https://github.com/acme/app/pull/12#discussion_r1",
+          diffHunk: "@@ -7,2 +7 @@\n-old\n-more\n+new",
+        },
         { author: "reviewer", body: "reply", at: "2026-01-03", path: "done.ts" },
       ],
     },
@@ -527,4 +564,62 @@ test("full file content uses the pinned head and the compare merge base for dele
   expect(await client.content(s, "deleted.ts", true)).toBe("pinned content\n");
   expect(calls[1]).toContain(`repos/acme/app/compare/${s.base}...${s.head}`);
   expect(calls[2]).toContain(`repos/acme/app/contents/deleted.ts?ref=${mergeBase}`);
+});
+
+test("comments post to the displayed PR and replies use its native review thread", async () => {
+  const s = snapshot(),
+    calls: string[][] = [];
+  s.state = "MERGED";
+  s.threads = [{ id: "thread-12", path: "app.ts", resolved: true, comments: [] }];
+  const client = new Client(async args => {
+    calls.push(args);
+    return JSON.stringify({ data: {} });
+  });
+  const body = "First line\nSecond line with `code` and $literal";
+  await client.mutate(s, { kind: "comment", body });
+  expect(calls[0]).toEqual(["api", "--method", "POST", "repos/acme/app/issues/12/comments", "-f", "body=" + body]);
+  await client.mutate(s, { kind: "comment", body, thread: "thread-12" });
+  expect(calls[1][1]).toBe("graphql");
+  expect(calls[1]).toContain("thread=thread-12");
+  expect(calls[1]).toContain("body=" + body);
+  expect(calls[1].join(" ")).toContain("addPullRequestReviewThreadReply");
+  await expect(client.mutate(s, { kind: "comment", body: "  " })).rejects.toThrow("Write a comment");
+  await expect(client.mutate(s, { kind: "comment", body, thread: "other-pr" })).rejects.toThrow("Thread is no longer");
+  expect(calls).toHaveLength(2);
+  const failed = new Client(async () => JSON.stringify({ errors: [{ message: "Replies are disabled" }] }));
+  await expect(failed.mutate(s, { kind: "comment", body, thread: "thread-12" })).rejects.toThrow(
+    "Replies are disabled",
+  );
+});
+test("agent comment context includes saved old-side ranges and numbered code", () => {
+  const s = snapshot(),
+    comment = {
+      author: "reviewer",
+      body: "Check this",
+      at: "2026-01-01",
+      path: "app.ts",
+      diffHunk: "@@ -7,2 +7,2 @@\n same\n-old\n+new",
+    };
+  const thread = {
+    id: "t",
+    resolved: false,
+    path: "app.ts",
+    comments: [comment],
+    line: 8,
+    startLine: 7,
+    side: "LEFT" as const,
+    outdated: true,
+  };
+  expect(location(thread)).toBe("app.ts:7-8 (old side) (outdated)");
+  expect(commentSnippet(thread)).toEqual(["7  7   same", "8    -old"]);
+  const prompt = commentPrompt(s, comment, thread);
+  for (const text of [s.ref.url, "File: app.ts:7-8 (old side) (outdated)", "@reviewer", "Check this", "8    -old"])
+    expect(prompt).toContain(text);
+  expect(commentSnippet({ ...thread, side: "RIGHT", startLine: undefined, outdated: false })).toEqual([
+    "7  7   same",
+    "8    -old",
+    "  8  +new",
+  ]);
+  expect(commentPrompt(s, { ...comment, path: "", diffHunk: undefined })).not.toContain("Code context");
+  expect(commentSnippet({ ...thread, comments: [] })).toEqual([]);
 });
