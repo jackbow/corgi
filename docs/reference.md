@@ -3,6 +3,8 @@
 Corgi keeps terminals and agents running in workspaces. Each workspace has a
 folder, tabs and split panes. Start with the [installation guide](../README.md);
 building and working on Corgi are covered in [HACKING](../HACKING.md).
+For command runs, helper agents, queues, and task-aware waits, see
+[task orchestration](orchestration.md).
 
 ## Set up and import
 

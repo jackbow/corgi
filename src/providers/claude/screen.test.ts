@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { answered, composer, screen } from "./screen";
+import { answered, composer, screen, ready } from "./screen";
 import { PromptWatch } from "../../detection";
 const line = "─".repeat(40);
 const screens = {
@@ -10,6 +10,14 @@ const screens = {
   question: `${line}\n ☐ Color\n\nPick a color\n\n❯ 1. Red\n  2. Blue\n  3. Type something.\n${line}\n  4. Chat about this\n\nEnter to select · ↑/↓ to navigate · Esc to cancel`,
   question_last: `${line}\n ☐ Color\n\nPick a color\n\n  1. Red\n  2. Blue\n  3. Type something.\n${line}\n❯ 4. Chat about this\n\nEnter to select · ↑/↓ to navigate · Esc to cancel`,
 };
+test("automated Claude messages defer around recognized drafts and dialogs", () => {
+  expect(ready(screens.idle)).toBe(true);
+  expect(ready(screens.typed)).toBe(false);
+  expect(ready(screens.working)).toBe(false);
+  expect(ready(screens.permission)).toBe(false);
+  expect(ready(screens.question_last)).toBe(false);
+  expect(ready(screens.question)).toBe(false);
+});
 test("Claude's screen reads its title and the prompts it shares with Codex", () => {
   expect(screen("✳ Task", "> ")).toBe("idle");
   expect(screen("⠋ Task", screens.working)).toBe("working");

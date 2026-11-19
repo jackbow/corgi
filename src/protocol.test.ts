@@ -135,7 +135,7 @@ test("the ops that wait for an import, a reload or a push", () => {
       .map(op => `${op} ${protocol.exclusion(op)}\n`)
       .join(""),
   ).toBe(
-    "session.command layout\nserver.reload reload\ngit.push push\nonboarding.handoff import\nonboarding.copy import\nshutdown shutdown\n",
+    "session.command layout\ntask.start layout\ntask.message layout\nserver.reload reload\ngit.push push\nonboarding.handoff import\nonboarding.copy import\nshutdown shutdown\n",
   );
 });
 test("a session command stays strict inside a lenient request", () => {

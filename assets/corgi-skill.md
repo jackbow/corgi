@@ -8,6 +8,55 @@ description: Use Corgi to manage panes, tabs, agents, and workspaces, message ag
 Corgi organizes a persistent runtime into workspaces, tabs, and panes. Panes own
 running terminals; tabs hold split trees. Each attached viewer owns its selection.
 
+## Run tasks and delegate
+
+```sh
+corgi run --name tests -- bun test
+corgi run --bg --agent codex --name reviewer "Review this branch"
+corgi message reviewer "Check error handling" --busy queue --wait
+corgi wait reviewer
+corgi wait --children any
+corgi wait --children all
+corgi task get task:123
+```
+
+`run` creates ordinary tabs. Helpers inherit the calling agent's workspace and
+cwd; outside Corgi, supply `--workspace ID`. `--agent` names an existing launcher,
+including its saved model/account/options. Command argv follows `--`; use
+`-- sh -c '...'` for shell expressions. Names are workspace-scoped aliases;
+`task:N` IDs always identify one assignment. Existing numeric/pane targets also
+support tracked messages when `--busy` or `--wait` is supplied.
+
+Use `--bg` to launch several helpers, then wait. Foreground runs and waits check
+in after 180 seconds by default (`--timeout SECONDS`); timeout and Ctrl+C leave
+the task running. A command returns its exit code, timeout returns 124, and an
+agent needing attention returns 1. Read `--json`'s reason and task states.
+
+The default busy policy is `reject`. `queue` submits FIFO at idle boundaries;
+`steer` joins the current turn, supported by Codex and updated OMP integrations.
+Unsupported steering fails explicitly. A queued task can be withdrawn with
+`corgi task cancel TASK`. Running work is stopped with existing pane controls.
+An uncertain delivery is never retried; inspect the helper before cancelling
+unsent work or closing/replacing its pane. Plain numeric `message` without
+orchestration flags retains its existing delivery behavior.
+
+`wait NAME` binds its latest tracked task; startup idle never completes a launch
+assignment. `--children any` collects unseen child news; `all` waits on accepted
+work present when called, returning when each task finishes or needs attention.
+`wait TASK --output TEXT` watches only command output after registration. Output
+gaps return `output_truncated`, so a lost readiness marker cannot imply success.
+
+Parents receive automatic completion, attention, and exit notes at safe idle
+boundaries; `--no-notify` disables them for that helper. Helpers can explicitly
+report with `corgi message parent TEXT --busy queue`. Closing the parent leaves
+helpers running. No parent-bound cleanup or cross-daemon links are performed.
+
+Results survive pane closure. Output is a merged, escape-stripped terminal tail
+(256 KiB), with truncation reported. The daemon retains 256 settled assignments
+plus pending work and each live helper's latest task. Live reload preserves
+orchestration; cold recovery marks unfinished work unknown and never replays
+prompts. Use existing pane/transcript reading for the complete agent session.
+
 ## Discover before acting
 
 For runtime commands, run `corgi --help`, then `corgi list`. `corgi tab` and

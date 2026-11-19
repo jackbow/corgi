@@ -143,6 +143,7 @@ export const adapter: Adapter = {
     typed: { command: renaming.command, empty: renaming.empty, holds: renaming.holds },
   },
   message: {
+    steer: (session, turn, text, account) => message.send(control(account), session, text, turn),
     channel: async (session, connected, account) =>
       session.length === 36 && connected ? text => message.send(control(account), session, text) : null,
     empty: renaming.empty,

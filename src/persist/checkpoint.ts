@@ -180,6 +180,7 @@ export function capture(r: Runtime, live: boolean) {
     next_workspace: r.workspaces.next_id,
     next_pane: r.workspaces.next_pane_id,
     next_session: r.next_session,
+    tasks: r.tasks.save(),
     revision: r.revision,
     next_conversation: r.conversations.next_id,
     worktree_placements: r.worktree_tracker.capture(),
@@ -537,6 +538,7 @@ export async function restore(
     }
   }
   breadcrumbs.restore(state.breadcrumbs);
+  r.tasks.restore(state.tasks, live);
   breadcrumbs.record(live ? "restored_live" : "restored_cold");
   // Daemons that never pruned saved every conversation they had seen.
   r.pruneConversations();

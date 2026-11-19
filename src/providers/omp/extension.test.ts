@@ -42,7 +42,7 @@ const waitForHook=async predicate=>{
   const deadline=Date.now()+2000;
   while(Date.now()<deadline){
     let sent=[];try{sent=readFileSync(${JSON.stringify(log)},"utf8").trim().split("\\n").map(line=>JSON.parse(line))}catch{}
-    if(sent.some(predicate))return;
+    const found=sent.find(predicate);if(found)return found;
     await new Promise(resolve=>setTimeout(resolve,10));
   }
   throw Error("Expected hook was not received");
@@ -125,6 +125,23 @@ await send("after");
   expect(entries.filter((e: { type: string }) => e.type === "prompt")).toEqual([
     { type: "prompt", data: { prompt: "review this" } },
     { type: "prompt", data: { prompt: "after" } },
+  ]);
+});
+test("omp steering requires the expected active turn and never silently queues", async () => {
+  const { entries } = await drive(`
+await emit("session_start");
+const { sockets } = await import(${JSON.stringify(join(import.meta.dir, "../pi/socket.ts"))});
+const omp=sockets("omp",()=>process.env.PI_CODING_AGENT_DIR);
+await omp.steer("s1","old","no","").then(()=>{throw Error("SteeredIdle");},e=>{if(e.message!=="SteeringUnsupported")throw e;});
+await emit("agent_start");
+const {turn}=await waitForHook(e=>e.event==="UserPromptSubmit");
+await omp.steer("s1",turn,"steer me","");
+await omp.steer("s1","wrong","no","").then(()=>{throw Error("SteeredWrongTurn");},e=>{if(e.message!=="SteeringUnsupported")throw e;});
+await emit("tool_approval_requested",{toolName:"bash",toolCallId:"t1"});
+await omp.steer("s1",turn,"no","").then(()=>{throw Error("SteeredApproval");},e=>{if(e.message!=="SteeringUnsupported")throw e;});
+`);
+  expect(entries.filter((e: { type: string }) => e.type === "prompt")).toEqual([
+    { type: "prompt", data: { prompt: "steer me" } },
   ]);
 });
 test("omp shows approvals, plan reviews and questions as waiting on the user", async () => {

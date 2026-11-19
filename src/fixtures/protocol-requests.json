@@ -351,5 +351,31 @@
   },
   "account.signin.close": {
     "id": "0123456789abcdef"
+  },
+  "task.start": {
+    "workspace": 1,
+    "argv": [
+      "true"
+    ]
+  },
+  "task.message": {
+    "target": "pane:1",
+    "text": "hello"
+  },
+  "task.get": {
+    "target": "task:1"
+  },
+  "task.list": {
+    "workspace": 1
+  },
+  "task.cancel": {
+    "target": "task:1"
+  },
+  "task.subscribe": {
+    "target": "task:1"
+  },
+  "task.ack": {
+    "caller": 1,
+    "through": 1
   }
 }

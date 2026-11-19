@@ -24,6 +24,7 @@ export function overview(
       [
         ["corgi", "", i18n.t`Start Corgi or attach to it`],
         ["open", "~/src/app", i18n.t`Show a folder's workspace, or add one`],
+        ["run", "-- bun test", "run, wait, task list/get/cancel"],
         ["keys", "tmux", i18n.t`List shortcuts; Ctrl+B opens the menu`],
       ],
     ],
@@ -96,6 +97,15 @@ export function commands(): string {
   return [
     i18n.t`Agent controls (--json prints the daemon's reply as JSON):`,
     i18n.t`  corgi list [--json]                 layout, panes, agents, viewers`,
+    "  corgi run [--bg] [--name NAME] [--cwd DIR] [--workspace ID] -- COMMAND [ARG...]",
+    "  corgi run [--bg] --agent AGENT [--name NAME] PROMPT|--stdin",
+    "    [--parent PANE|--no-parent] [--no-notify] [--timeout SECONDS] [--json]",
+    "  corgi wait TASK|NAME|pane:ID [--output TEXT] [--timeout SECONDS] [--json]",
+    "  corgi wait --children any|all [--timeout SECONDS] [--json]",
+    "  corgi message NAME|parent|pane:ID TEXT|--stdin [--busy reject|queue|steer] [--wait]",
+    "  corgi task list [--workspace ID] [--json]",
+    "  corgi task get TASK|NAME|pane:ID [--workspace ID] [--json]",
+    "  corgi task cancel TASK|NAME|pane:ID [--workspace ID] [--json]",
     "  corgi workspace list",
     "  corgi workspace new NAME [--cwd DIR]",
     "  corgi workspace edit ID [--name NAME] [--cwd DIR]",

@@ -34,8 +34,13 @@ export function flags(args: string[]): { flag: boolean | null; args: string[] } 
   let flag: boolean | null = null,
     literal = false;
   const rest: string[] = [];
-  for (const arg of args) {
-    if (!literal && arg === "--agent") flag = true;
+  const run = args.find(arg => arg !== "--agent" && arg !== "--no-agent") === "run";
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!literal && run && rest[0] === "run" && arg === "--agent") {
+      rest.push(arg);
+      if (i + 1 < args.length) rest.push(args[++i]);
+    } else if (!literal && arg === "--agent") flag = true;
     else if (!literal && arg === "--no-agent") flag = false;
     else {
       if (arg === "--") literal = true;

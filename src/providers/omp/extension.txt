@@ -153,6 +153,7 @@ export default function (pi) {
           const r = JSON.parse(bytes);
           if(r.session !== ctx.sessionManager.getSessionId()) return socket.end('{"ok":false}\n');
           if(r.prompt !== undefined) {
+            if(r.steer !== undefined && (r.steer !== turn || !turn || compacting || prompts)) return socket.end('{"ok":false}\n');
             // Without deliverAs, omp starts a turn when idle and steers a running one.
             // While it compacts, Corgi types the prompt instead, as Pi's editor queues it.
             if(typeof r.prompt !== "string" || !r.prompt || compacting) return socket.end('{"ok":false}\n');
@@ -165,7 +166,7 @@ export default function (pi) {
             pi.setSessionName(r.name).then(() => socket.end('{"ok":true,"automatic":true}\n'), () => socket.end('{"ok":false}\n'));
             return;
           }
-          socket.end('{"ok":true,"automatic":true,"prompts":true}\n');
+          socket.end('{"ok":true,"automatic":true,"prompts":true,"steering":true}\n');
         } catch { socket.destroy(); }
       });
     });
