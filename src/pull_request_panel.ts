@@ -6,6 +6,7 @@ import { Rect } from "./layout";
 import * as palette from "./palette";
 import { Writer } from "./text";
 import * as pr from "./pull_request";
+import * as textArea from "./text_area";
 import type { Key } from "./review/panel";
 
 export type Tab = "overview" | "discussion" | "stack";
@@ -45,6 +46,11 @@ interface Target {
   component: tui.MouseRegion;
 }
 export class Panel {
+  compose: { snapshot: pr.Snapshot; thread?: string; area: textArea.TextArea } | null = null;
+  private pasted = new textArea.Typed();
+  private pastedCR = false;
+  private followCaret = false;
+  private composeRow = 0;
   open = false;
   fullscreen = false;
   ref: pr.Ref | null = null;
@@ -76,6 +82,73 @@ export class Panel {
   changed: () => void = () => {};
   constructor(readonly cache = new pr.Cache()) {}
 
+  beginComment(thread?: string): void {
+    if (!this.snapshot || this.busy || (thread !== undefined && !this.snapshot.threads.some(t => t.id === thread)))
+      return;
+    this.confirmation = null;
+    this.compose = { snapshot: this.snapshot, thread, area: new textArea.TextArea() };
+    this.top = 0;
+    this.selected = -1;
+    this.followCaret = true;
+    this.pasted = new textArea.Typed();
+    this.pastedCR = false;
+    this.error = "";
+  }
+  pasteByte(byte: number): void {
+    if (!this.compose || this.busy) return;
+    const cr = this.pastedCR;
+    this.pastedCR = byte === 13;
+    if (byte === 10 && cr) return;
+    const text = this.pasted.take(byte);
+    this.followCaret = true;
+    if (text !== null && ((byte >= 32 && byte !== 127) || byte === 10 || byte === 13 || byte === 9))
+      this.compose.area.insert(text === "\r" ? "\n" : text === "\t" ? "    " : text);
+  }
+  commentTarget(value: string): { comment: pr.Comment; thread?: pr.Thread } | null {
+    try {
+      const [url, id, key] = JSON.parse(value);
+      if (!this.snapshot || url !== this.snapshot.ref.url || !key) return null;
+      const thread = id === null ? undefined : this.snapshot.threads.find(t => t.id === id);
+      if (id !== null && !thread) return null;
+      const comment = (thread?.comments ?? this.snapshot.comments).find(
+        c => c.at === key.at && c.author === key.author && c.body === key.body && c.url === key.url,
+      );
+      return comment ? { comment, thread } : null;
+    } catch {
+      return null;
+    }
+  }
+  async postComment(): Promise<void> {
+    const draft = this.compose;
+    if (!draft || this.busy) return;
+    this.busy = true;
+    this.error = "";
+    this.changed();
+    let posted = false;
+    try {
+      await this.cache.client.mutate(draft.snapshot, { kind: "comment", body: draft.area.text, thread: draft.thread });
+      posted = true;
+      if (this.compose === draft) {
+        this.compose = null;
+        this.tab = "discussion";
+        this.unresolvedOnly = false;
+        this.top = 0;
+        if (draft.thread) {
+          this.openThreads.add(draft.thread);
+          this.foldedThreads.delete(draft.thread);
+        }
+      }
+      const fresh = await this.cache.refresh(draft.snapshot.ref, true);
+      if (this.ref?.url === fresh.ref.url) this.snapshot = fresh;
+    } catch (error) {
+      const message = (error as Error).message;
+      if (this.ref?.url === draft.snapshot.ref.url)
+        this.error = posted ? i18n.t`Comment posted; refresh failed: ${message}` : message;
+    } finally {
+      this.busy = false;
+      this.changed();
+    }
+  }
   async show(ref: pr.Ref, force = false): Promise<void> {
     const same = ref.url === this.ref?.url;
     this.open = true;
@@ -85,6 +158,7 @@ export class Panel {
     const generation = ++this.generation;
     this.statusRefreshing = false;
     if (!same) {
+      this.compose = null;
       this.snapshot = null;
       this.top = this.cursor = 0;
       this.unresolvedOnly = false;
@@ -104,7 +178,7 @@ export class Panel {
         this.snapshot = cached;
         this.changed();
       }
-      if (!force && cached && !pr.stale(cached)) return;
+      if (!force && cached && cached.discussionVersion === 1 && !pr.stale(cached)) return;
       this.refreshing = true;
       this.changed();
       const snapshot = await this.cache.refresh(ref);
@@ -222,6 +296,33 @@ export class Panel {
     };
     const button = (label: string, command: Action, color: palette.Token = "accent", prefix?: string) =>
       rows.push({ text: " " + label, action: command, color, framed, prefix });
+    if (this.compose) {
+      const draft = this.compose,
+        area = draft.area;
+      const thread = draft.snapshot.threads.find(t => t.id === draft.thread);
+      const location = thread ? pr.location(thread) : "";
+      section(thread ? i18n.t`Reply · ${location}` : i18n.t`New PR comment`);
+      prose(draft.snapshot.ref.url, "muted");
+      if (thread) prose(location, "muted");
+      prose(i18n.t`Enter: new line · Tab: Post / Cancel · Esc: cancel`, "faint");
+      space();
+      area.width = Math.max(1, contentWidth() - 2);
+      const caret = area.position();
+      this.composeRow = rows.length + caret.row;
+      for (const [index, line] of area.lines().entries()) {
+        const text = clean(area.text.slice(line.start, line.end));
+        const offset = area.caret - line.start;
+        const glyph = String.fromCodePoint((text + " ").codePointAt(offset) ?? 32);
+        const shown =
+          index === caret.row && this.selected === -1
+            ? ink(text.slice(0, offset)) + "\x1b[7m" + glyph + "\x1b[27m" + ink(text.slice(offset + glyph.length))
+            : ink(text || " ");
+        emit(" " + shown);
+      }
+      space();
+      endCard();
+      return rows;
+    }
     if (this.confirmation) {
       const c = this.confirmation;
       const target = `${c.snapshot.ref.repo} #${c.snapshot.ref.number}`,
@@ -344,6 +445,7 @@ export class Panel {
         resolved = s.threads.length - unresolved;
       prose(i18n.t`${unresolved} unresolved · ${resolved} resolved threads`, unresolved ? "warm" : "muted");
       button(this.unresolvedOnly ? i18n.t`Unresolved only · u` : i18n.t`All discussion · u`, action("filter"));
+      button(i18n.t`New comment · c`, action("comment"));
       endCard();
       const entries = [
         ...(this.unresolvedOnly ? [] : s.comments).map(comment => ({ at: comment.at, comment, thread: null })),
@@ -362,7 +464,7 @@ export class Panel {
       if (!entries.length) prose(i18n.t`No comments`, "muted");
       for (const entry of entries) {
         const thread = entry.thread;
-        section(thread ? thread.path : "@" + entry.comment!.author);
+        section(thread ? pr.location(thread) : "@" + entry.comment!.author);
         if (thread) {
           const open = thread.resolved ? this.openThreads.has(thread.id) : !this.foldedThreads.has(thread.id);
           const status = thread.resolved ? i18n.t`✓ Resolved` : i18n.t`● Unresolved`;
@@ -373,11 +475,19 @@ export class Panel {
             action("thread", thread.id),
             thread.resolved ? "muted" : "warm",
           );
+          prose(pr.location(thread), "muted");
           prose(i18n.t`${count} comments · ${updated}`, "faint");
           if (!open) {
             endCard();
             continue;
           }
+        }
+        if (thread) {
+          const snippet = pr.commentSnippet(thread);
+          if (snippet.length) prose(i18n.t`Code · old / new line`, "faint");
+          for (const line of snippet)
+            prose(line, /^\s*\d*\s+\d*\s+\+/.test(line) ? "accent" : /^\s*\d*\s+\d*\s+-/.test(line) ? "hot" : "muted");
+          if (snippet.length) space();
         }
         for (const comment of entry.comment
           ? [entry.comment]
@@ -386,8 +496,13 @@ export class Panel {
           prose(comment.at + (comment.path && !thread ? " · " + comment.path : ""), "muted");
           space();
           markdown(comment.body);
+          button(
+            i18n.t`Send to agent`,
+            action("comment-send", JSON.stringify([s.ref.url, thread?.id ?? null, comment])),
+          );
           space();
         }
+        if (thread) button(i18n.t`Reply to thread`, action("comment-reply", thread.id));
         endCard();
       }
     } else {
@@ -448,7 +563,34 @@ export class Panel {
   }
   key(key: Key): Action | null {
     const k = "text" in key ? key.text : key.named;
+    if (this.compose) {
+      if (k === "escape") return this.busy ? null : action("comment-cancel");
+      if (k === "tab" || k === "shift_tab") {
+        const choices = [
+          -1,
+          ...this.targets.flatMap((t, i) =>
+            ["pull-request-comment-post", "pull-request-comment-cancel"].includes(t.command.name) ? [i] : [],
+          ),
+        ];
+        this.selected =
+          choices[(choices.indexOf(this.selected) + (k === "tab" ? 1 : -1) + choices.length) % choices.length];
+        return null;
+      }
+      if (k === "enter" && this.targets[this.selected]?.command.name.startsWith("pull-request-comment-"))
+        return this.targets[this.selected].command;
+      if (this.busy) return null;
+      this.selected = -1;
+      if ("text" in key) this.compose.area.insert(key.text);
+      else {
+        const edit =
+          { home: "line_start", end: "line_end", ctrl_u: "line_backspace", ctrl_d: "delete", enter: "newline" }[k] ?? k;
+        if (textArea.isEdit(edit)) this.compose.area.apply(edit);
+      }
+      this.followCaret = true;
+      return null;
+    }
     const shortcuts: Record<string, Action> = {
+      c: action("comment"),
       q: action("close"),
       escape: action(this.confirmation ? "cancel" : "leave"),
       d: action("diff"),
@@ -602,6 +744,10 @@ export class Panel {
     this.bodyHeight = Math.max(1, height - 10);
     const modalWidth = this.confirmation ? Math.max(8, Math.min(inner - 4, 64)) : inner;
     this.visible = this.rows(modalWidth);
+    if (this.compose && this.followCaret) {
+      this.top = Math.max(Math.min(this.top, this.composeRow), this.composeRow - this.bodyHeight + 1);
+      this.followCaret = false;
+    }
     this.clamp();
     const modalInset = Math.floor((inner - modalWidth) / 2),
       modalTop = this.confirmation ? Math.max(0, Math.floor((this.bodyHeight - this.visible.length) / 2)) : 0;
@@ -626,7 +772,17 @@ export class Panel {
     }
     const footer = height - 4;
     lines[footer] = ink("─".repeat(inner), "line");
-    if (this.confirmation) {
+    if (this.compose) {
+      lines[footer + 1] =
+        control(" " + i18n.t`Post to GitHub`, action("comment-post"), 0, footer + 1, Math.floor(inner / 2)) +
+        control(
+          " " + i18n.t`Cancel` + " · Esc",
+          action("comment-cancel"),
+          Math.floor(inner / 2),
+          footer + 1,
+          inner - Math.floor(inner / 2),
+        );
+    } else if (this.confirmation) {
       lines[footer + 1] = control(" " + i18n.t`Cancel` + " · Esc", action("cancel"), 0, footer + 1, inner);
     } else {
       const third = Math.floor(inner / 3);

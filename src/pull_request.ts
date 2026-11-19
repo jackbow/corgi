@@ -24,12 +24,18 @@ export interface Comment {
   body: string;
   at: string;
   path: string;
+  url?: string;
+  diffHunk?: string;
 }
 export interface Thread {
   id: string;
   resolved: boolean;
   path: string;
   comments: Comment[];
+  line?: number;
+  startLine?: number;
+  side?: "LEFT" | "RIGHT";
+  outdated?: boolean;
 }
 export interface Review {
   author: string;
@@ -64,6 +70,7 @@ export interface Snapshot {
   checks: Check[];
   stack: StackEntry[];
   fetched: number;
+  discussionVersion?: number;
   statusFetched?: number;
   unresolved?: number;
 }
@@ -108,6 +115,7 @@ export type Method = "squash" | "merge" | "rebase";
 export type Mutation =
   | { kind: "merge" | "enable-auto"; method: Method }
   | { kind: "disable-auto" }
+  | { kind: "comment"; body: string; thread?: string }
   | { kind: "ready" }
   | { kind: "retry"; check?: string };
 export type Run = (args: string[]) => Promise<string>;
@@ -133,6 +141,7 @@ const comment = (v: unknown): Comment => {
     body: string(c.body),
     at: string(c.created_at) || string(c.submitted_at),
     path: string(c.path),
+    ...(typeof c.html_url === "string" ? { url: c.html_url } : {}),
   };
 };
 export function checkState(status: unknown, conclusion: unknown): CheckState {
@@ -157,8 +166,9 @@ function actionJob(value: unknown, repo: string): string | undefined {
   }
 }
 const threadComments =
-  "comments(first:100, after:$commentAfter) { nodes { author { login } body createdAt } pageInfo { hasNextPage endCursor } }";
-const threadFields = "id isResolved path " + threadComments;
+  "comments(first:100, after:$commentAfter) { nodes { author { login } body createdAt url diffHunk } pageInfo { hasNextPage endCursor } }";
+const threadFields =
+  "id isResolved path line originalLine startLine originalStartLine diffSide isOutdated " + threadComments;
 export class Client {
   constructor(readonly execute: Run = run) {}
   private async pages(endpoint: string): Promise<unknown[]> {
@@ -214,7 +224,14 @@ export class Client {
           comments.push(
             ...array(page.nodes).map(value => {
               const c = object(value);
-              return { author: login(c.author), body: string(c.body), at: string(c.createdAt), path };
+              return {
+                author: login(c.author),
+                body: string(c.body),
+                at: string(c.createdAt),
+                path,
+                ...(typeof c.url === "string" ? { url: c.url } : {}),
+                ...(typeof c.diffHunk === "string" ? { diffHunk: c.diffHunk } : {}),
+              };
             }),
           );
           const info = object(page.pageInfo);
@@ -229,7 +246,18 @@ export class Client {
           );
           page = object(object(next.node).comments);
         }
-        result.push({ id, path, resolved: node.isResolved === true, comments });
+        const line = node.line ?? node.originalLine,
+          startLine = node.startLine ?? node.originalStartLine;
+        result.push({
+          id,
+          path,
+          resolved: node.isResolved === true,
+          comments,
+          ...(typeof line === "number" ? { line } : {}),
+          ...(typeof startLine === "number" ? { startLine } : {}),
+          ...(node.diffSide === "LEFT" || node.diffSide === "RIGHT" ? { side: node.diffSide } : {}),
+          ...(typeof node.isOutdated === "boolean" ? { outdated: node.isOutdated } : {}),
+        });
       }
       const info = object(connection.pageInfo);
       after = info.hasNextPage ? string(info.endCursor) : "";
@@ -361,6 +389,7 @@ export class Client {
       checks,
       unresolved: threads.filter(t => !t.resolved).length,
       stack,
+      discussionVersion: 1,
       fetched: Date.now(),
     };
   }
@@ -485,6 +514,26 @@ export class Client {
     ]);
   }
   async mutate(snapshot: Snapshot, mutation: Mutation): Promise<void> {
+    if (mutation.kind === "comment") {
+      if (!mutation.body.trim()) throw new Error("Write a comment first");
+      if (mutation.thread !== undefined) {
+        if (!snapshot.threads.some(thread => thread.id === mutation.thread))
+          throw new Error("Thread is no longer in this PR view");
+        await this.graphql(
+          "mutation($thread:ID!,$body:String!) { addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$thread,body:$body}) { comment { id } } }",
+          { thread: mutation.thread, body: mutation.body },
+        );
+      } else
+        await this.execute([
+          "api",
+          "--method",
+          "POST",
+          `repos/${snapshot.ref.repo}/issues/${snapshot.ref.number}/comments`,
+          "-f",
+          "body=" + mutation.body,
+        ]);
+      return;
+    }
     if (mutation.kind === "retry") {
       const checks = snapshot.checks.filter(
         check => check.state === "failed" && check.id && (mutation.check === undefined || check.id === mutation.check),
@@ -635,6 +684,7 @@ function validSnapshot(value: unknown, ref: Ref): value is Snapshot {
     typeof v.autoMerge === "boolean" &&
     (v.unresolved === undefined ||
       (typeof v.unresolved === "number" && Number.isSafeInteger(v.unresolved) && v.unresolved >= 0)) &&
+    (v.discussionVersion === undefined || v.discussionVersion === 1) &&
     (v.statusFetched === undefined || (typeof v.statusFetched === "number" && Number.isFinite(v.statusFetched))) &&
     typeof v.fetched === "number" &&
     Number.isFinite(v.fetched) &&
@@ -642,7 +692,7 @@ function validSnapshot(value: unknown, ref: Ref): value is Snapshot {
     Array.isArray(v.reviews) &&
     v.reviews.every(r => typeof object(r).author === "string" && typeof object(r).state === "string") &&
     Array.isArray(v.comments) &&
-    v.comments.every(c => ["author", "body", "at", "path"].every(key => typeof object(c)[key] === "string")) &&
+    v.comments.every(validComment) &&
     Array.isArray(v.threads) &&
     v.threads.every(t => {
       const thread = object(t);
@@ -651,7 +701,12 @@ function validSnapshot(value: unknown, ref: Ref): value is Snapshot {
         typeof thread.path === "string" &&
         typeof thread.resolved === "boolean" &&
         Array.isArray(thread.comments) &&
-        thread.comments.every(c => ["author", "body", "at", "path"].every(key => typeof object(c)[key] === "string"))
+        thread.comments.every(validComment) &&
+        ["line", "startLine"].every(
+          key => thread[key] === undefined || (Number.isSafeInteger(thread[key]) && Number(thread[key]) > 0),
+        ) &&
+        (thread.side === undefined || thread.side === "LEFT" || thread.side === "RIGHT") &&
+        (thread.outdated === undefined || typeof thread.outdated === "boolean")
       );
     }) &&
     Array.isArray(v.checks) &&
@@ -677,4 +732,64 @@ function validSnapshot(value: unknown, ref: Ref): value is Snapshot {
       );
     })
   );
+}
+
+function validComment(value: unknown): boolean {
+  const c = object(value);
+  return (
+    ["author", "body", "at", "path"].every(key => typeof c[key] === "string") &&
+    ["url", "diffHunk"].every(key => c[key] === undefined || typeof c[key] === "string")
+  );
+}
+export function location(thread: Thread): string {
+  return (
+    thread.path +
+    (thread.line
+      ? `:${thread.startLine && thread.startLine !== thread.line ? thread.startLine + "-" : ""}${thread.line}`
+      : "") +
+    (thread.side === "LEFT" ? " (old side)" : "") +
+    (thread.outdated ? " (outdated)" : "")
+  );
+}
+/** GitHub's saved diff, with both old and new line numbers. */
+export function commentSnippet(thread: Thread): string[] {
+  const hunk = thread.comments.find(c => c.diffHunk)?.diffHunk;
+  if (!hunk) return [];
+  let old = 0,
+    next = 0;
+  const lines: { text: string; line: number }[] = [];
+  for (const text of hunk.split("\n")) {
+    const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text);
+    if (header) {
+      old = Number(header[1]);
+      next = Number(header[2]);
+      continue;
+    }
+    if (![" ", "+", "-"].includes(text[0])) continue;
+    const removed = text[0] === "-",
+      added = text[0] === "+";
+    lines.push({
+      text: `${added ? "" : old}\t${removed ? "" : next}\t${text}`,
+      line: thread.side === "LEFT" ? (added ? 0 : old) : removed ? 0 : next,
+    });
+    if (!added) old++;
+    if (!removed) next++;
+  }
+  const target = lines.findIndex(l => l.line === thread.line),
+    end = target < 0 ? lines.length : target + 1;
+  return lines.slice(Math.max(0, end - 8), end).map(l => l.text.replaceAll("\t", "  "));
+}
+export function commentPrompt(snapshot: Snapshot, comment: Comment, thread?: Thread): string {
+  return [
+    `PR comment on ${snapshot.ref.url}`,
+    comment.url || "",
+    thread ? `File: ${location(thread)}` : comment.path ? `File: ${comment.path}` : "",
+    `@${comment.author} (${comment.at}):`,
+    comment.body,
+    ...(thread && commentSnippet(thread).length
+      ? ["Code context (old / new line):", "```diff", ...commentSnippet(thread), "```"]
+      : []),
+  ]
+    .filter(Boolean)
+    .join("\n");
 }

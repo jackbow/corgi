@@ -3937,6 +3937,38 @@ export class Controller {
           void p.mutate({ kind: "ready" });
         break;
       }
+      case "pull-request-comment":
+        this.pull_request.beginComment();
+        break;
+      case "pull-request-comment-reply":
+        this.pull_request.beginComment(String(act.value));
+        break;
+      case "pull-request-comment-post":
+        void this.pull_request.postComment();
+        break;
+      case "pull-request-comment-cancel":
+        if (!this.pull_request.busy) this.pull_request.compose = null;
+        break;
+      case "pull-request-comment-send": {
+        const view = this.pull_request,
+          target = view.commentTarget(String(act.value));
+        if (!target || !view.snapshot) break;
+        view.error = "";
+        const text = pullRequest.commentPrompt(view.snapshot, target.comment, target.thread),
+          pane = this.focused();
+        if (!pane || !pane.terminal.bracketedPaste()) {
+          this.copyText(text);
+          view.error = i18n.t`Agent input unavailable; comment copied instead.`;
+        } else if (!viewerNative.isSafePaste(text))
+          view.error = i18n.t`Comment contains an end-of-paste marker; cannot send safely.`;
+        else {
+          this.pasteText({ pane: pane.id }, text);
+          view.fullscreen = false;
+          this.giveKeyboard("pane");
+          this.focusPane(pane.id);
+        }
+        break;
+      }
       case "pull-request-filter":
         this.pull_request.unresolvedOnly = !this.pull_request.unresolvedOnly;
         this.pull_request.top = 0;
@@ -7266,7 +7298,7 @@ export class Controller {
     if (this.agent_picker) return "picker";
     if (this.editingName()) return "name";
     if (this.conversation_prs.open && this.conversation_prs.focused) return "discard";
-    if (this.reviewKeys() && !this.pull_request.open) return "review";
+    if (this.reviewKeys() && (!this.pull_request.open || this.pull_request.compose)) return "review";
     if (this.hasMenu() || this.reviewKeys()) return "discard";
     // A pane still opening takes no pastes.
     if (this.openingFocus()) return "discard";
@@ -7304,7 +7336,11 @@ export class Controller {
       const d = this.name_dialog;
       return d instanceof newWorkspace.Dialog && d.browser.focused ? d.browser.field.area : d.area;
     }
-    return this.reviewKeys() ? this.review.typingArea() : null;
+    return this.reviewKeys()
+      ? this.pull_request.open
+        ? (this.pull_request.compose?.area ?? null)
+        : this.review.typingArea()
+      : null;
   }
   private pastePane(): Pane | null {
     const target = this.input_state.paste;
@@ -7626,7 +7662,10 @@ export class Controller {
         await this.signin?.input(Uint8Array.from(bytes));
         break;
       case "review":
-        for (const byte of bytes) this.review.pasteByte(byte);
+        for (const byte of bytes) {
+          if (this.pull_request.open) this.pull_request.pasteByte(byte);
+          else this.review.pasteByte(byte);
+        }
         break;
       case "prompt":
         for (const byte of bytes) this.prompt.pasteByte(byte);

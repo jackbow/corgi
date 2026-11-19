@@ -22,6 +22,7 @@ export function snapshot(number = 12): Snapshot {
     threads: [],
     checks: [],
     stack: [],
+    discussionVersion: 1,
     fetched: Date.now(),
   };
 }

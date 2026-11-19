@@ -378,6 +378,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Agent controls (--json prints the daemon\'s reply as JSON):"]': () =>
       `智能体控制（--json 将守护进程的响应以 JSON 输出）：`,
     '["Agent default"]': () => `智能体默认值`,
+    '["Agent input unavailable; comment copied instead."]': () => `智能体输入不可用；评论已复制。`,
     '["Agent launch command"]': () => `智能体启动命令`,
     '["Agent or new terminal"]': () => `智能体或新终端`,
     '["Agent settings are shared; order and visibility belong to each workspace."]': () =>
@@ -481,6 +482,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Closed without merging"]': () => `已关闭，未合并`,
     '["Cmd+T/D/W, workspace numbers and related bindings replace host actions."]': () =>
       `Cmd+T/D/W、工作区编号等快捷键将接管终端原有操作。`,
+    '["Code · old / new line"]': () => `代码 · 旧 / 新行号`,
     '["Come back"]': () => `返回`,
     '["Command"]': () => `命令`,
     '["Command forwarding is not confirmed"]': () => `尚未确认 Command 键转发`,
@@ -491,6 +493,8 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Commands print text; --json prints the daemon\'s reply as JSON instead."]': () =>
       `命令默认输出文本；使用 --json 则将守护进程的响应以 JSON 输出。`,
     '["Comment"]': () => `批注`,
+    '["Comment contains an end-of-paste marker; cannot send safely."]': () => `评论包含粘贴结束标记，无法安全发送。`,
+    '["Comment posted; refresh failed: ",""]': v0 => `评论已发布；刷新失败：${v0}`,
     '["Comments and reviews"]': () => `评论和审查`,
     '["Commit"]': () => `提交`,
     '["Commit details unavailable"]': () => `无法获取提交详情`,
@@ -589,6 +593,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Enlarge panel to view PR"]': () => `扩大面板以查看 PR`,
     '["Enter a command."]': () => `请输入命令。`,
     '["Enter a workspace name."]': () => `请输入工作区名称。`,
+    '["Enter: new line · Tab: Post / Cancel · Esc: cancel"]': () => `Enter：换行 · Tab：发布 / 取消 · Esc：取消`,
     '["Environment"]': () => `环境变量`,
     '["Esc Back"]': () => `Esc 返回`,
     '["Esc Back · Space select · E expand"]': () => `Esc 返回 · Space 选择 · E 展开`,
@@ -768,8 +773,10 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Never answered, so frames never wait."]': () => `从未收到响应，因此画面不等待。`,
     '["New"]': () => `新建`,
     '["New "," account"]': v0 => `新建 ${v0} 账号`,
+    '["New PR comment"]': () => `新建 PR 评论`,
     '["New agent"]': () => `新建智能体`,
     '["New command"]': () => `新建命令`,
+    '["New comment · c"]': () => `新建评论 · c`,
     '["New custom command"]': () => `新建自定义命令`,
     '["New line"]': () => `换行`,
     '["New panes and splits start in this shell."]': () => `新窗格和分屏使用此 Shell 启动。`,
@@ -880,6 +887,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Play Moonlander"]': () => `玩 Moonlander`,
     '["Please attach ",", on the machine Corgi runs on."]': v0 => `请附上 Corgi 所在机器上的 ${v0}。`,
     '["Please attach ","."]': v0 => `请附上 ${v0}。`,
+    '["Post to GitHub"]': () => `发布到 GitHub`,
     '["Prefix"]': () => `前缀键`,
     '["Prefix + classic splits"]': () => `前缀键 + 经典分屏`,
     '["Prefix + home row"]': () => `前缀键 + 基准键位`,
@@ -938,6 +946,8 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Reopen directly"]': () => `直接重开`,
     '["Reopen last closed agent"]': () => `重开最近关闭的智能体`,
     '["Reopen tab"]': () => `重开标签页`,
+    '["Reply to thread"]': () => `回复讨论串`,
+    '["Reply · ",""]': v0 => `回复 · ${v0}`,
     '["Report a bug"]': () => `报告问题`,
     '["Resize"]': () => `调整大小`,
     '["Resize directly"]': () => `直接调整大小`,
@@ -1893,6 +1903,8 @@ ${v1} 使用该账号。
     '["Agent controls (--json prints the daemon\'s reply as JSON):"]': () =>
       `エージェント操作（--jsonでデーモンの応答をJSON出力）：`,
     '["Agent default"]': () => `エージェントの既定値`,
+    '["Agent input unavailable; comment copied instead."]': () =>
+      `エージェントに入力できないため、コメントをコピーしました。`,
     '["Agent launch command"]': () => `エージェントの起動コマンド`,
     '["Agent or new terminal"]': () => `エージェントか新しい端末`,
     '["Agent settings are shared; order and visibility belong to each workspace."]': () =>
@@ -2001,6 +2013,7 @@ ${v1} 使用该账号。
     '["Closed without merging"]': () => `マージせずにクローズ`,
     '["Cmd+T/D/W, workspace numbers and related bindings replace host actions."]': () =>
       `Cmd+T/D/Wやワークスペース番号などが端末本体の操作に優先します。`,
+    '["Code · old / new line"]': () => `コード · 旧 / 新行番号`,
     '["Come back"]': () => `戻る`,
     '["Command"]': () => `コマンド`,
     '["Command forwarding is not confirmed"]': () => `Commandキーの転送を確認できません`,
@@ -2011,6 +2024,9 @@ ${v1} 使用该账号。
     '["Commands print text; --json prints the daemon\'s reply as JSON instead."]': () =>
       `通常はテキストを出力します。--jsonを付けるとデーモンの応答をJSONで出力します。`,
     '["Comment"]': () => `コメント`,
+    '["Comment contains an end-of-paste marker; cannot send safely."]': () =>
+      `コメントに貼り付け終了マーカーが含まれるため、安全に送信できません。`,
+    '["Comment posted; refresh failed: ",""]': v0 => `コメントを投稿しましたが、更新に失敗しました: ${v0}`,
     '["Comments and reviews"]': () => `コメントとレビュー`,
     '["Commit"]': () => `コミット`,
     '["Commit details unavailable"]': () => `コミットの詳細を取得できません`,
@@ -2115,6 +2131,8 @@ ${v1} 使用该账号。
     '["Enlarge panel to view PR"]': () => `PRを表示するにはパネルを拡大`,
     '["Enter a command."]': () => `コマンドを入力してください。`,
     '["Enter a workspace name."]': () => `ワークスペース名を入力してください。`,
+    '["Enter: new line · Tab: Post / Cancel · Esc: cancel"]': () =>
+      `Enter: 改行 · Tab: 投稿 / キャンセル · Esc: キャンセル`,
     '["Environment"]': () => `環境変数`,
     '["Esc Back"]': () => `Esc 戻る`,
     '["Esc Back · Space select · E expand"]': () => `Esc 戻る · Space 選択 · E 展開`,
@@ -2298,8 +2316,10 @@ ${v1} 使用该账号。
     '["Never answered, so frames never wait."]': () => `応答がないため、描画時に応答を待ちません。`,
     '["New"]': () => `新規`,
     '["New "," account"]': v0 => `新しい${v0}アカウント`,
+    '["New PR comment"]': () => `新しいPRコメント`,
     '["New agent"]': () => `新しいエージェント`,
     '["New command"]': () => `新しいコマンド`,
+    '["New comment · c"]': () => `新しいコメント · c`,
     '["New custom command"]': () => `新しいカスタムコマンド`,
     '["New line"]': () => `改行`,
     '["New panes and splits start in this shell."]': () => `新しいペインや分割したペインで使うシェルです。`,
@@ -2414,6 +2434,7 @@ ${v1} 使用该账号。
     '["Play Moonlander"]': () => `Moonlanderで遊ぶ`,
     '["Please attach ",", on the machine Corgi runs on."]': v0 => `Corgiが動作するマシン上の${v0}を添付してください。`,
     '["Please attach ","."]': v0 => `${v0}を添付してください。`,
+    '["Post to GitHub"]': () => `GitHubに投稿`,
     '["Prefix"]': () => `プレフィックス`,
     '["Prefix + classic splits"]': () => `プレフィックス + 標準分割`,
     '["Prefix + home row"]': () => `プレフィックス + HJKL`,
@@ -2473,6 +2494,8 @@ ${v1} 使用该账号。
     '["Reopen directly"]': () => `直接開き直す`,
     '["Reopen last closed agent"]': () => `最後に閉じたエージェントを再開`,
     '["Reopen tab"]': () => `タブを開き直す`,
+    '["Reply to thread"]': () => `スレッドに返信`,
+    '["Reply · ",""]': v0 => `返信 · ${v0}`,
     '["Report a bug"]': () => `バグを報告`,
     '["Resize"]': () => `サイズ変更`,
     '["Resize directly"]': () => `直接サイズ変更`,
@@ -3435,6 +3458,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Agent controls (--json prints the daemon\'s reply as JSON):"]': () =>
       `에이전트 제어(--json은 데몬 응답을 JSON으로 출력):`,
     '["Agent default"]': () => `에이전트 기본값`,
+    '["Agent input unavailable; comment copied instead."]': () => `에이전트에 입력할 수 없어 댓글을 복사했습니다.`,
     '["Agent launch command"]': () => `에이전트 실행 명령`,
     '["Agent or new terminal"]': () => `에이전트 또는 새 터미널`,
     '["Agent settings are shared; order and visibility belong to each workspace."]': () =>
@@ -3543,6 +3567,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Closed without merging"]': () => `병합 없이 닫힘`,
     '["Cmd+T/D/W, workspace numbers and related bindings replace host actions."]': () =>
       `Cmd+T/D/W, 작업 공간 번호와 관련 단축키가 호스트의 동작을 대신합니다.`,
+    '["Code · old / new line"]': () => `코드 · 이전 / 새 줄 번호`,
     '["Come back"]': () => `돌아오기`,
     '["Command"]': () => `명령`,
     '["Command forwarding is not confirmed"]': () => `Command 키 전달을 확인하지 못했습니다`,
@@ -3553,6 +3578,9 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Commands print text; --json prints the daemon\'s reply as JSON instead."]': () =>
       `명령은 텍스트를 출력합니다. --json을 사용하면 데몬 응답을 JSON으로 출력합니다.`,
     '["Comment"]': () => `메모`,
+    '["Comment contains an end-of-paste marker; cannot send safely."]': () =>
+      `댓글에 붙여넣기 종료 표시가 있어 안전하게 보낼 수 없습니다.`,
+    '["Comment posted; refresh failed: ",""]': v0 => `댓글은 게시했지만 새로고침하지 못했습니다: ${v0}`,
     '["Comments and reviews"]': () => `댓글 및 리뷰`,
     '["Commit"]': () => `커밋`,
     '["Commit details unavailable"]': () => `커밋 상세 정보 없음`,
@@ -3656,6 +3684,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Enlarge panel to view PR"]': () => `PR을 보려면 패널을 확대하세요`,
     '["Enter a command."]': () => `명령을 입력하세요.`,
     '["Enter a workspace name."]': () => `작업 공간 이름을 입력하세요.`,
+    '["Enter: new line · Tab: Post / Cancel · Esc: cancel"]': () => `Enter: 줄 바꿈 · Tab: 게시 / 취소 · Esc: 취소`,
     '["Environment"]': () => `환경 변수`,
     '["Esc Back"]': () => `Esc 뒤로`,
     '["Esc Back · Space select · E expand"]': () => `Esc 뒤로 · Space 선택 · E 펼치기`,
@@ -3839,8 +3868,10 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Never answered, so frames never wait."]': () => `응답한 적이 없어 프레임 출력을 지연하지 않습니다.`,
     '["New"]': () => `새로 만들기`,
     '["New "," account"]': v0 => `새 ${v0} 계정`,
+    '["New PR comment"]': () => `새 PR 댓글`,
     '["New agent"]': () => `새 에이전트`,
     '["New command"]': () => `새 명령`,
+    '["New comment · c"]': () => `새 댓글 · c`,
     '["New custom command"]': () => `새 사용자 지정 명령`,
     '["New line"]': () => `줄 바꿈`,
     '["New panes and splits start in this shell."]': () => `새 패널과 분할 화면은 이 셸로 시작합니다.`,
@@ -3953,6 +3984,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Please attach ",", on the machine Corgi runs on."]': v0 =>
       `Corgi를 실행 중인 컴퓨터의 ${v0} 파일을 첨부해 주세요.`,
     '["Please attach ","."]': v0 => `${v0} 파일을 첨부해 주세요.`,
+    '["Post to GitHub"]': () => `GitHub에 게시`,
     '["Prefix"]': () => `접두 키`,
     '["Prefix + classic splits"]': () => `접두 키 + 기본 분할`,
     '["Prefix + home row"]': () => `접두 키 + 홈 포지션`,
@@ -4011,6 +4043,8 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Reopen directly"]': () => `직접 다시 열기`,
     '["Reopen last closed agent"]': () => `마지막으로 닫은 에이전트 열기`,
     '["Reopen tab"]': () => `탭 다시 열기`,
+    '["Reply to thread"]': () => `스레드에 답글`,
+    '["Reply · ",""]': v0 => `답글 · ${v0}`,
     '["Report a bug"]': () => `버그 신고`,
     '["Resize"]': () => `크기 조절`,
     '["Resize directly"]': () => `직접 크기 조절`,
@@ -5355,6 +5389,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Agent controls (--json prints the daemon\'s reply as JSON):"]': () =>
       `Управление агентами (--json выводит ответ сервера в JSON):`,
     '["Agent default"]': () => `По умолчанию у агента`,
+    '["Agent input unavailable; comment copied instead."]': () => `Ввод агента недоступен; комментарий скопирован.`,
     '["Agent launch command"]': () => `Команда запуска агента`,
     '["Agent or new terminal"]': () => `Агент или новый терминал`,
     '["Agent settings are shared; order and visibility belong to each workspace."]': () =>
@@ -5465,6 +5500,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Closed without merging"]': () => `Закрыт без слияния`,
     '["Cmd+T/D/W, workspace numbers and related bindings replace host actions."]': () =>
       `Cmd+T/D/W, номера пространств и связанные сочетания заменят действия терминала.`,
+    '["Code · old / new line"]': () => `Код · старая / новая строка`,
     '["Come back"]': () => `Вернуться`,
     '["Command"]': () => `Команда`,
     '["Command forwarding is not confirmed"]': () => `Передача клавиш Command не подтверждена`,
@@ -5475,6 +5511,9 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Commands print text; --json prints the daemon\'s reply as JSON instead."]': () =>
       `Команды выводят текст; --json выводит ответ сервера в формате JSON.`,
     '["Comment"]': () => `Комментировать`,
+    '["Comment contains an end-of-paste marker; cannot send safely."]': () =>
+      `Комментарий содержит маркер конца вставки; безопасная отправка невозможна.`,
+    '["Comment posted; refresh failed: ",""]': v0 => `Комментарий опубликован; ошибка обновления: ${v0}`,
     '["Comments and reviews"]': () => `Комментарии и отзывы`,
     '["Commit"]': () => `Коммит`,
     '["Commit details unavailable"]': () => `Данные коммита недоступны`,
@@ -5606,6 +5645,8 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Enlarge panel to view PR"]': () => `Увеличьте панель для просмотра PR`,
     '["Enter a command."]': () => `Введите команду.`,
     '["Enter a workspace name."]': () => `Введите название пространства.`,
+    '["Enter: new line · Tab: Post / Cancel · Esc: cancel"]': () =>
+      `Enter: новая строка · Tab: публикация / отмена · Esc: отмена`,
     '["Environment"]': () => `Окружение`,
     '["Esc Back"]': () => `Esc Назад`,
     '["Esc Back · Space select · E expand"]': () => `Esc Назад · Space выбрать · E развернуть`,
@@ -5790,8 +5831,10 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Never answered, so frames never wait."]': () => `Ответа не было; кадры не ожидают.`,
     '["New"]': () => `Создать`,
     '["New "," account"]': v0 => `Новый аккаунт ${v0}`,
+    '["New PR comment"]': () => `Новый комментарий к PR`,
     '["New agent"]': () => `Новый агент`,
     '["New command"]': () => `Новая команда`,
+    '["New comment · c"]': () => `Новый комментарий · c`,
     '["New custom command"]': () => `Новая команда`,
     '["New line"]': () => `Новая строка`,
     '["New panes and splits start in this shell."]': () => `Новые панели запускаются с этой оболочкой.`,
@@ -5908,6 +5951,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Please attach ",", on the machine Corgi runs on."]': v0 =>
       `Приложите ${v0} с компьютера, на котором работает Corgi.`,
     '["Please attach ","."]': v0 => `Приложите ${v0}.`,
+    '["Post to GitHub"]': () => `Опубликовать в GitHub`,
     '["Prefix"]': () => `Префикс`,
     '["Prefix + classic splits"]': () => `Префикс + классическое разделение`,
     '["Prefix + home row"]': () => `Префикс + основной ряд`,
@@ -5967,6 +6011,8 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Reopen directly"]': () => `Открыть снова напрямую`,
     '["Reopen last closed agent"]': () => `Открыть последнего закрытого агента`,
     '["Reopen tab"]': () => `Открыть вкладку снова`,
+    '["Reply to thread"]': () => `Ответить в обсуждении`,
+    '["Reply · ",""]': v0 => `Ответ · ${v0}`,
     '["Report a bug"]': () => `Сообщить об ошибке`,
     '["Resize"]': () => `Размер`,
     '["Resize directly"]': () => `Изменить размер напрямую`,
