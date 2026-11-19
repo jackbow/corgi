@@ -4,6 +4,7 @@ import { parse } from "./pull_request";
 import { Rect } from "./layout";
 import { Writer } from "./text";
 import * as palette from "./palette";
+import { Terminal } from "./pane/terminal";
 const ref = (n: number, repo = "acme/app") => ({ ...parse(`https://github.com/${repo}/pull/${n}`)!, mentioned: n });
 const details: Details = {
   title: "Fix widgets",
@@ -16,6 +17,15 @@ function draw(p: Panel, height = 24) {
   const w = new Writer();
   p.draw(w, new Rect(0, 1, 45, height), now);
   return w.buffered();
+}
+function screen(output: string, width = 45, height = 24) {
+  const terminal = new Terminal(width, height + 1);
+  try {
+    terminal.feed(output);
+    return terminal.text();
+  } finally {
+    terminal.destroy();
+  }
 }
 test("the PR list changes sort, renders compact metadata, and stays open when opening different PRs", async () => {
   const p = new Panel(async () => details);
@@ -30,9 +40,10 @@ test("the PR list changes sort, renders compact metadata, and stays open when op
   const out = draw(p);
   expect(out).toContain("Fix widgets");
   expect(out).toContain("Created 17d ago · Updated 1h ago");
-  expect(out).toContain("#9 app");
+  expect(screen(out)).toContain("#9 app");
   expect(out).not.toContain("acme/");
   expect(out).toContain(new palette.Style({ fg: "muted", bg: "selected" }).sgr());
+  expect(out).toContain(new palette.Style({ fg: "strong", bg: "selected", bold: true }).sgr() + "› #9");
   p.mouse(0, 5, 10, false);
   expect(p.mouse(0, 5, 10, true)).toEqual({ name: "pull-request", value: ref(12).url });
   expect(p.open).toBe(true);
@@ -84,10 +95,15 @@ test("repo grouping defaults on, keeps distinct owners separate, and can be togg
   expect(p.items.map(p => p.number)).toEqual([9, 7, 8, 12]);
   expect(p.items[p.selected].number).toBe(9);
   expect(draw(p)).toContain("Grouped by repo");
+  const grouped = screen(draw(p));
+  expect(grouped).toContain("╭─ app ");
+  expect(grouped).toContain("╰──");
+  expect(grouped).toContain("│ Fix widgets");
   p.key("g");
   expect(p.items.map(p => p.number)).toEqual([12, 9, 8, 7]);
   expect(p.items[p.selected].number).toBe(9);
   expect(draw(p)).toContain("Ungrouped");
+  expect(screen(draw(p))).not.toContain("╭");
   p.mouse(0, 5, 3, false);
   p.mouse(0, 5, 3, true);
   expect(p.grouped).toBe(true);
@@ -105,18 +121,21 @@ test("merged PRs collapse at the bottom, expand with mouse or keyboard, and neve
   expect(p.sidebar(refs).map(p => p.number)).toEqual([9, 5]);
   let out = draw(p);
   expect(out).toContain("▸ Merged (1)");
-  expect(out).not.toContain("#12");
+  expect(screen(out)).not.toContain("#12");
   p.key("down");
   p.key("down");
   expect(p.key("enter")).toBeNull();
   expect(p.mergedOpen).toBe(true);
   expect(p.items.map(p => p.number)).toEqual([9, 5, 12]);
   out = draw(p);
-  expect(out.indexOf("Merged (1)")).toBeGreaterThan(out.indexOf("#5"));
+  expect(screen(out).indexOf("Merged (1)")).toBeGreaterThan(screen(out).indexOf("#5"));
   p.key("down");
   expect(p.key("enter")?.value).toBe(ref(12).url);
-  p.mouse(0, 5, 12, false);
-  p.mouse(0, 5, 12, true);
+  const mergedRow = screen(draw(p))
+    .split("\n")
+    .findIndex(row => row.includes("Merged (1)"));
+  p.mouse(0, 5, mergedRow, false);
+  p.mouse(0, 5, mergedRow, true);
   expect(p.mergedOpen).toBe(false);
   p.key("m");
   p.follow("two", [ref(12)]);
@@ -170,8 +189,11 @@ test("scrolling grouped and expanded lists keeps keyboard and mouse on the same 
   expect(p.selected).toBe(19);
   draw(p, 12);
   expect(p.top).toBeGreaterThan(0);
-  p.mouse(0, 5, 9, false);
-  expect(p.mouse(0, 5, 9, true)?.value).toBe(p.items[19].url);
+  const lastRow = screen(draw(p, 12), 45, 12)
+    .split("\n")
+    .findIndex(row => row.includes(`#${p.items[19].number} `));
+  p.mouse(0, 5, lastRow, false);
+  expect(p.mouse(0, 5, lastRow, true)?.value).toBe(p.items[19].url);
   p.follow("one", [ref(1)]);
   draw(p, 12);
   expect(p.top).toBe(0);
@@ -185,4 +207,48 @@ test("hovering the PR list leaves the detail viewer's keyboard focus alone", () 
   expect(p.focused).toBe(false);
   p.mouse(0, 5, 6, false);
   expect(p.focused).toBe(true);
+});
+test("full titles wrap inside repo boxes, and every wrapped line opens its PR", async () => {
+  const title = "Preserve the complete pull request title while navigating between repositories and reviewing changes";
+  for (const grouped of [true, false]) {
+    const p = new Panel(async () => ({ ...details, title }));
+    p.open = true;
+    p.grouped = grouped;
+    p.follow("one", [ref(12), ref(9)]);
+    await Bun.sleep(0);
+    const text = screen(draw(p, 45), 45, 45),
+      lines = text.split("\n");
+    const start = lines.findIndex(line => line.includes("#12 app"));
+    const titleRows = lines.slice(start + 1).slice(
+      0,
+      lines.slice(start + 1).findIndex(line => /Created |C 17d/.test(line)),
+    );
+    expect(titleRows.map(line => line.replace(/^\s*│ ?| ?│\s*$/g, "").trim()).join(" ")).toBe(title);
+    for (let i = 0; i < titleRows.length; i++) {
+      p.mouse(0, 6, start + 1 + i, false);
+      expect(p.mouse(0, 6, start + 1 + i, true)?.value).toBe(ref(12).url);
+    }
+  }
+});
+test("long Unicode titles keep their tail accessible by scrolling within one PR", async () => {
+  const title = "完整标题 ".repeat(18) + "FINAL-TITLE-WORDS";
+  const p = new Panel(async () => ({ ...details, title }));
+  p.open = true;
+  p.follow("one", [ref(12)]);
+  await Bun.sleep(0);
+  const render = () => {
+    const w = new Writer();
+    p.draw(w, new Rect(0, 1, 27, 12), now);
+    return screen(w.buffered(), 27, 12);
+  };
+  expect(render()).not.toContain("FINAL-TITLE-WORDS");
+  for (let i = 0; i < 10; i++) {
+    p.mouse(65, 6, 7, false);
+    render();
+  }
+  expect(render()).toContain("FINAL-TITLE-WORDS");
+  expect(p.selected).toBe(0);
+  expect(p.top).toBeGreaterThan(0);
+  p.key("up");
+  expect(render()).toContain("#12 app");
 });

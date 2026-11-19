@@ -3,7 +3,7 @@ import type { Action } from "./action";
 import { sorted, type Mention, type Sort as MentionSort } from "./conversation_prs";
 import * as pr from "./pull_request";
 import { Rect } from "./layout";
-import { Writer, ellipsis } from "./text";
+import { Writer, ellipsis, wrap, displayWidth } from "./text";
 import * as palette from "./palette";
 
 export interface Details {
@@ -52,6 +52,8 @@ interface Row {
   text: string;
   color: palette.Token;
   index: number | null;
+  frame?: "top" | "body" | "bottom";
+  number?: string;
 }
 export class Panel {
   open = false;
@@ -73,6 +75,7 @@ export class Panel {
   private pending = new Set<string>();
   private wanted = new Map<string, Mention>();
   private pressed: string | null = null;
+  private reveal = true;
   constructor(private readDetails: Load = load) {}
   sidebar(refs: Mention[]): Mention[] {
     for (const ref of refs) this.wanted.set(ref.url, ref);
@@ -94,6 +97,7 @@ export class Panel {
       this.selected = this.top = 0;
       this.mergedOpen = false;
       this.items = [];
+      this.reveal = true;
     }
     this.mentions = mentions;
     this.arrange();
@@ -139,37 +143,49 @@ export class Panel {
   }
   private rows(now = Date.now(), width = this.rect.w - 2): Row[] {
     const rows: Row[] = [];
-    let repo = "";
     const append = (refs: Mention[]) => {
+      let repo = "";
+      const framed = this.grouped && width >= 6,
+        room = Math.max(1, width - (framed ? 4 : 0));
+      const close = () => {
+        if (framed && repo) rows.push({ text: "", color: "line", index: null, frame: "bottom" });
+      };
       for (const ref of refs) {
         const index = this.items.indexOf(ref),
           details = this.details.get(ref.url),
           created = age(details?.createdAt, now),
           updated = age(details?.updatedAt, now),
           timestamps = `Created ${created} · Updated ${updated}`;
-        if (this.grouped && repo !== ref.repo) {
+        if (framed && repo !== ref.repo) {
+          close();
+          if (rows.length) rows.push({ text: "", color: "text", index: null });
           repo = ref.repo;
-          rows.push({ text: repoName(ref), color: "strong", index: null });
+          rows.push({ text: repoName(ref), color: "strong", index: null, frame: "top" });
+        } else if (repo) {
+          rows.push({ text: "", color: "text", index: null, frame: framed ? "body" : undefined });
         }
+        repo = ref.repo;
+        const frame: Row["frame"] = framed ? "body" : undefined;
+        const number = `${index === this.selected ? "›" : " "} #${ref.number}`;
         rows.push(
-          { text: `${index === this.selected ? "›" : " "} #${ref.number} ${repoName(ref)}`, color: "muted", index },
+          { text: `${number} ${repoName(ref)}`, color: "muted", index, frame, number },
+          ...wrap(
+            clean(details?.title ?? (this.errors.has(ref.url) ? "Unavailable · r to retry" : "Loading…")),
+            room,
+          ).map(text => ({ text, color: "text" as const, index, frame })),
           {
-            text: details?.title ?? (this.errors.has(ref.url) ? "Unavailable · r to retry" : "Loading…"),
-            color: "text",
-            index,
-          },
-          {
-            text: timestamps.length <= width ? timestamps : `C ${created} · U ${updated}`,
+            text: timestamps.length <= room ? timestamps : `C ${created} · U ${updated}`,
             color: "muted",
             index,
+            frame,
           },
         );
       }
+      close();
     };
     append(this.items.filter(ref => !this.isMerged(ref)));
     if (this.merged.length) {
       rows.push({ text: `${this.mergedOpen ? "▾" : "▸"} Merged (${this.merged.length})`, color: "accent", index: -1 });
-      repo = "";
       if (this.mergedOpen) append(this.merged);
     }
     return rows;
@@ -188,6 +204,7 @@ export class Panel {
     return ref ? { name: "pull-request", value: ref.url } : null;
   }
   key(key: string): Action | null {
+    this.reveal = true;
     switch (key) {
       case "escape":
         this.focused = false;
@@ -238,7 +255,9 @@ export class Panel {
       return null;
     }
     if (!release && (button === 64 || button === 65)) {
-      this.move(button === 64 ? -1 : 1);
+      const count = Math.max(0, this.rect.h - 5);
+      this.top = Math.max(0, Math.min(Math.max(0, this.rows().length - count), this.top + (button === 64 ? -3 : 3)));
+      this.reveal = false;
       return null;
     }
     if (button !== 0) return null;
@@ -259,6 +278,7 @@ export class Panel {
     return this.activate();
   }
   draw(w: Writer, rect: Rect, now = Date.now()) {
+    if (rect.w !== this.rect.w || rect.h !== this.rect.h) this.reveal = true;
     this.rect = rect;
     const normal = new palette.Style({ fg: "text", bg: "bg" }).sgr();
     const line = (row: number, text: string, color: palette.Token = "text", selected = false) => {
@@ -277,15 +297,41 @@ export class Panel {
       count = Math.max(0, rect.h - 5);
     const start = rows.findIndex(row => row.index === this.selected),
       end = rows.findLastIndex(row => row.index === this.selected);
-    if (start >= 0) {
+    if (this.reveal && start >= 0) {
       this.top = Math.min(this.top, start);
       if (end >= this.top + count) this.top = Math.min(start, end - count + 1);
     }
+    this.reveal = false;
     this.top = Math.max(0, Math.min(this.top, Math.max(0, rows.length - count)));
     if (!rows.length && count) line(4, "No PR links mentioned yet", "muted");
-    rows
-      .slice(this.top, this.top + count)
-      .forEach((row, i) => line(4 + i, row.text, row.color, row.index !== null && row.index === this.selected));
+    rows.slice(this.top, this.top + count).forEach((row, i) => {
+      const y = rect.y + 5 + i,
+        width = Math.max(0, rect.w - 2),
+        selected = row.index !== null && row.index === this.selected,
+        bg = selected ? "selected" : row.frame ? "surface" : "bg";
+      const ink = (value: string, fg: palette.Token, bold = false) => new palette.Style({ fg, bg, bold }).sgr() + value;
+      w.write(w.cup(y, rect.x + 2));
+      if (row.frame === "top") {
+        const label = ellipsis(` ${row.text} `, Math.max(0, width - 4));
+        w.write(
+          ink("╭─", "line") +
+            ink(label, "strong", true) +
+            ink("─".repeat(Math.max(0, width - 3 - displayWidth(label))) + "╮", "line"),
+        );
+      } else if (row.frame === "bottom") {
+        w.write(ink("╰" + "─".repeat(Math.max(0, width - 2)) + "╯", "line"));
+      } else {
+        const room = Math.max(0, width - (row.frame ? 4 : 0)),
+          text = ellipsis(row.text, room);
+        if (row.frame) w.write(ink("│ ", "line"));
+        if (row.number) {
+          const number = ellipsis(row.number, room);
+          w.write(ink(number, "strong", true) + ink(text.slice(number.length), row.color));
+        } else w.write(ink(text, row.color));
+        w.write(ink(" ".repeat(Math.max(0, room - displayWidth(text))), row.color));
+        if (row.frame) w.write(ink(" │", "line"));
+      }
+    });
     line(rect.h - 1, "↵ open · m merged · r refresh · q close", "muted");
     w.write(normal);
   }
