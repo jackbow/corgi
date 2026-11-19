@@ -61,6 +61,97 @@ function controller(): any {
 const bytes = (text: string) => new TextEncoder().encode(text);
 const c = (text: string) => text.charCodeAt(0);
 
+test("conversation PRs remain open beside independently selected GitHub PRs", async () => {
+  const s = controller(),
+    snapshot = folders("/a", "/b");
+  const first = prSnapshot(12),
+    second = prSnapshot(9);
+  snapshot.panes[0].agent = {
+    ...agent(),
+    provider: "codex",
+    conversation: 17,
+    pull_requests: [
+      { ...first.ref, mentioned: 1 },
+      { ...second.ref, mentioned: 2 },
+    ],
+  } as any;
+  snapshot.panes[1].agent = { ...agent(), provider: "codex", conversation: 18 } as any;
+  s.width = 160;
+  s.height = 40;
+  s.input_state.attached = true;
+  s.receiveSnapshot(snapshot);
+  s.conversation_prs.readDetails = async () => ({
+    title: "Fix widgets",
+    createdAt: "2026-11-01T12:00:00Z",
+    updatedAt: "2026-11-18T15:30:00Z",
+  });
+  s.pull_request.cache.cached = async (ref: { number: number }) => (ref.number === 12 ? first : second);
+  s.pull_request.cache.refresh = async (ref: { number: number }) => (ref.number === 12 ? first : second);
+  try {
+    await s.perform({ name: "conversation-prs" });
+    s.frame();
+    expect(s.conversation_prs.items.map((p: { number: number }) => p.number)).toEqual([9, 12]);
+    await s.input(bytes("\r"));
+    expect(s.pull_request.ref.number).toBe(9);
+    expect(s.conversation_prs.open).toBe(true);
+    expect(s.conversation_prs.focused).toBe(false);
+    await s.perform({ name: "conversation-prs" });
+    expect(s.conversation_prs.open).toBe(true);
+    expect(s.conversation_prs.focused).toBe(true);
+    await s.input(bytes("\x1b[57353u"));
+    expect(s.conversation_prs.selected).toBe(1);
+    expect(s.pasteTarget()).toBe("discard");
+    s.frame();
+    await s.input(bytes("\x1b[<0;6;10M\x1b[<0;6;10m"));
+    expect(s.pull_request.ref.number).toBe(12);
+    expect(s.conversation_prs.open).toBe(true);
+    await s.perform({ name: "pull-request-close" });
+    expect(s.conversation_prs.open).toBe(true);
+    s.switchWorkspace(2);
+    s.frame();
+    expect(s.conversation_prs.items).toEqual([]);
+    s.switchWorkspace(1);
+    s.frame();
+    expect(s.conversation_prs.items).toHaveLength(2);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a sidebar PR link opens in the linked agent's conversation", async () => {
+  const s = controller(),
+    snapshot = folders("/a", "/b"),
+    pr = prSnapshot(12);
+  snapshot.panes[0].agent = { ...agent(), provider: "codex", conversation: 17 } as any;
+  snapshot.panes[1].agent = {
+    ...agent(),
+    provider: "codex",
+    conversation: 18,
+    pull_requests: [{ ...pr.ref, mentioned: 1 }],
+  } as any;
+  s.width = 160;
+  s.height = 40;
+  s.prefs.agents = "all";
+  s.input_state.attached = true;
+  s.receiveSnapshot(snapshot);
+  s.pull_request.cache.cached = async () => pr;
+  s.pull_request.cache.refresh = async () => pr;
+  try {
+    s.frame();
+    const entries = s.sidebarEntries(),
+      side = s.sidebarView(entries);
+    const y = Array.from({ length: s.height }, (_, y) => y).find(y => sidebar.prAt(side, entries, 5, y) === pr.ref.url);
+    expect(y).toBeDefined();
+    await s.input(bytes(`\x1b[<0;6;${y! + 1}M\x1b[<0;6;${y! + 1}m`));
+    expect(s.current().id).toBe(2);
+    expect(s.pull_request.ref.url).toBe(pr.ref.url);
+    s.switchWorkspace(1);
+    expect(s.pull_request.open).toBe(false);
+  } finally {
+    viewer.close(s);
+  }
+});
+
 test("a notification selects its conversation across workspaces and ignores a reused pane", async () => {
   const s = controller(),
     snapshot = folders("/a", "/b");

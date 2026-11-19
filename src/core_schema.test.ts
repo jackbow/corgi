@@ -113,6 +113,7 @@ function fixture() {
     }),
   );
   const actor = server.runtime.conversations.get("codex", "schema-session");
+  actor.pull_requests = [{ repo: "acme/app", number: 12, url: "https://github.com/acme/app/pull/12", mentioned: 1 }];
   actor.workspace = 1;
   actor.model.price = { label: "catalog", input: 1250n, output: 5000n };
   pane.attachment.select(actor);
@@ -170,7 +171,7 @@ test("the runtime wire matches protocol.version", () => {
   // `hello` and `server.reload` stay on 1 so new clients find old daemons; see HACKING.md.
   expect(protocol.management_version).toBe(1);
   expect(createHash("sha256").update(schemas.protocol).digest("hex")).toBe(
-    "59ff94a9b110b92c1d167d8dbb729749f05f7a2b0935d059dd957ec15c73a485",
+    "a4131261bc96439ef0ed0eb3d42df60caa5de13fc811d8b6db429e0b016cb676",
   );
   const { server, client, dispose } = fixture();
   try {

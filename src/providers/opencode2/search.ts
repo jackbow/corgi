@@ -110,6 +110,7 @@ function shell(data: Record<string, any>, row: Row): ToolRecord[] {
   );
 }
 export const conversations: Search = {
+  source: session => `${join(dataDir(), "opencode.db")}#${session}`,
   version: 1,
   home: dataDir,
   async discover(folder, context) {

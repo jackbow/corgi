@@ -12,9 +12,11 @@ import { PromptWatch } from "./detection";
 import type { Snapshot } from "./providers/snapshot";
 import { adapter } from "./providers";
 import * as worktrees from "./worktrees";
+import type { Mention } from "./conversation_prs";
 export const max_actors = 1024;
 export type ActorId = number & { readonly __actorId: unique symbol };
 export class Actor {
+  pull_requests: Mention[] = [];
   static Id = {
     none: 0 as ActorId,
     first: 1 as ActorId,

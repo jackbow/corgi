@@ -128,6 +128,7 @@ test("PR viewer toggle is available in every preset and can be rebound", () => {
   for (const preset of ["corgi", "tmux", "herdr", "cmux"] as const) {
     const defaults = custom.resolve(preset, {});
     expect(bindings.chord(defaults, false, keys.parseChord("super+shift+g")!)).toEqual({ name: "pull-request-toggle" });
+    expect(bindings.chord(defaults, false, keys.parseChord("super+alt+g")!)).toEqual({ name: "conversation-prs" });
     const overridden = custom.resolve(preset, custom.parse({ "pull-request-toggle": "alt+f3" }));
     expect(bindings.chord(overridden, false, keys.parseChord("super+shift+g")!)).toBeNull();
     expect(bindings.chord(overridden, false, keys.parseChord("alt+f3")!)).toEqual({ name: "pull-request-toggle" });

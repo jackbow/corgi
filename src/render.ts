@@ -210,6 +210,7 @@ function drawDocking(w: Writer, state: Docking, panes: Pane[], area: Rect): Rect
 }
 
 export interface Ui {
+  conversation_prs_draw?: (w: Writer) => void;
   docking: Docking | null;
   prefs: Preferences;
   pointer: Pointer | null;
@@ -1146,6 +1147,7 @@ export function frame(
     if (none) side.drawTitleRow(w, create_lit);
   }
   if (u.git_hover !== null) sidebar.drawGitAction(w, side, u.workspaces, u.git_hover);
+  u.conversation_prs_draw?.(w);
   if (u.review_draw) {
     u.review_draw(w);
     if (u.review_fullscreen) cover(new Rect(0, 0, width, height));
