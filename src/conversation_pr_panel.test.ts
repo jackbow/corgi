@@ -108,7 +108,7 @@ test("repo grouping defaults on, keeps distinct owners separate, and can be togg
   p.mouse(0, 5, 3, true);
   expect(p.grouped).toBe(true);
 });
-test("merged PRs collapse at the bottom, expand with mouse or keyboard, and never appear in agent links", async () => {
+test("merged PRs collapse at the bottom and expand with mouse or keyboard", async () => {
   const p = new Panel(async r => ({
     ...details,
     state: r.number === 12 ? "MERGED" : r.number === 9 ? "CLOSED" : "OPEN",
@@ -118,7 +118,6 @@ test("merged PRs collapse at the bottom, expand with mouse or keyboard, and neve
   p.follow("one", refs);
   await Bun.sleep(0);
   expect(p.items.map(p => p.number)).toEqual([9, 5]);
-  expect(p.sidebar(refs).map(p => p.number)).toEqual([9, 5]);
   let out = draw(p);
   expect(out).toContain("▸ Merged (1)");
   expect(screen(out)).not.toContain("#12");
@@ -144,22 +143,22 @@ test("merged PRs collapse at the bottom, expand with mouse or keyboard, and neve
   expect(p.key("enter")).toBeNull();
   expect(p.mergedOpen).toBe(true);
 });
-test("agent links load merged state even with the list closed and PR viewer updates do not change mention order", async () => {
+test("PR viewer updates hide merged PRs without changing mention order", async () => {
   let finish!: (details: Details) => void;
   const p = new Panel(async r =>
     r.number === 12 ? await new Promise<Details>(resolve => (finish = resolve)) : details,
   );
   const refs = [ref(12), ref(9), ref(5)];
+  p.open = true;
   p.follow("one", refs);
-  p.sidebar(refs);
   await Bun.sleep(0);
   p.update(ref(12), { state: "MERGED" });
   p.update(ref(12), { state: "OPEN" });
   finish(details);
   await Bun.sleep(0);
-  expect(p.sidebar(refs).map(p => p.number)).toEqual([9, 5]);
+  expect(p.items.map(p => p.number)).toEqual([9, 5]);
   p.update(ref(5), { state: "OPEN" });
-  expect(p.sidebar(refs).map(p => p.number)).toEqual([9, 5]);
+  expect(p.items.map(p => p.number)).toEqual([9, 5]);
   expect(refs.map(p => p.number)).toEqual([12, 9, 5]);
 });
 test("unavailable metadata preserves links and refresh retries", async () => {

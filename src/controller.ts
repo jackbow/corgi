@@ -84,6 +84,7 @@ import * as linkThumbnail from "./link_thumbnail";
 import * as pullRequest from "./pull_request";
 import * as pullRequestPanel from "./pull_request_panel";
 import * as conversationPRPanel from "./conversation_pr_panel";
+import * as conversationPRSearch from "./conversation_pr_search";
 import * as remoteDiff from "./review/remote";
 import * as reviewState from "./review_state";
 import * as paneImages from "./pane_images";
@@ -164,7 +165,17 @@ export type Effect = { write_terminal: string } | { open_url: string };
 type HoverMenu = "launcher" | "scope";
 /** A paste goes to the text field that owned the keyboard when it began, or
  * to the focused pane when none did. */
-type Paste = { pane: number } | "launcher" | "setup" | "picker" | "name" | "review" | "signin" | "prompt" | "discard";
+type Paste =
+  | { pane: number }
+  | "launcher"
+  | "setup"
+  | "picker"
+  | "pr-search"
+  | "name"
+  | "review"
+  | "signin"
+  | "prompt"
+  | "discard";
 /** Where keys go when no menu or dialog takes them: the focused pane, the
  * sidebar's cursor, or the review panel. */
 type Keyboard = "pane" | "review" | { sidebar: sidebarFocus.State };
@@ -639,7 +650,7 @@ export class Controller {
   private local_review = new panel.Panel();
   private pr_cache = new pullRequest.Cache();
   readonly conversation_prs = new conversationPRPanel.Panel();
-  private sidebar_pr_pressed: { url: string; target: Target } | null = null;
+  pr_search: conversationPRSearch.Popup | null = null;
   private followConversationPRs() {
     const pane = this.runtime.workspaces.items.length ? this.focused() : null;
     this.conversation_prs.follow(this.reviewOwner(), pane?.agent.pull_requests ?? []);
@@ -2072,7 +2083,6 @@ export class Controller {
         const first_agent = entries.length,
           starts: number[] = [];
         for (const { entry, start } of agentRows.rows(runtime, ws, now_ms)) {
-          entry.pull_requests = this.conversation_prs.sidebar(entry.pull_requests);
           const target = entry.target,
             chat = "headless" in target ? runtime.corgi_sessions.find(s => s.id === target.headless) : null,
             pane = "pane" in target ? target.pane : chat?.pane;
@@ -2348,6 +2358,41 @@ export class Controller {
     picker.reconcile(filtered, this.sidebarView(filtered).capacity);
     return filtered.map(entry => ({ ...entry, focused: sidebar.sameTarget(picker.selected, entry.target) }));
   }
+  private refreshPRSearch(): void {
+    if (!this.pr_search) return;
+    const entries: conversationPRSearch.Entry[] = [];
+    for (const machine of this.machines) {
+      if (machine !== this.machine && !machine.presence().online) continue;
+      for (const ws of machine.runtime.workspaces.items) {
+        for (const { entry } of agentRows.rows(machine.runtime, ws, milliTimestamp())) {
+          if (!sidebar.isAgent(entry.target) || !entry.pull_requests.length) continue;
+          const target =
+            "pane" in entry.target
+              ? { pane: this.agentKey(entry.target.pane, machine) }
+              : { headless: this.agentKey(entry.target.headless, machine) };
+          entries.push({
+            key: `${this.machines.indexOf(machine)}:${entry.conversation || JSON.stringify(target)}`,
+            target,
+            workspace: machine === this.machine ? ws.name : `${machine.name} · ${ws.name}`,
+            title: entry.name || (entry.provider ? adapter(entry.provider).name : "Conversation"),
+            refs: entry.pull_requests,
+          });
+        }
+      }
+    }
+    this.pr_search.follow(entries);
+  }
+  private prSearchResult(result: "accept" | "cancel" | null): void {
+    const popup = this.pr_search;
+    if (!popup || result === null) return;
+    if (result === "cancel") return this.closeMenu();
+    const key = popup.results[popup.selected]?.key;
+    this.refreshPRSearch();
+    const match = popup.results.find(entry => entry.key === key);
+    if (!match) return;
+    this.closeMenu();
+    this.selectAgent(match.target);
+  }
   private moveAgentPicker(next: boolean): void {
     const entries = this.pickerEntries();
     this.agent_picker!.move(entries, next, this.sidebarView(entries).capacity);
@@ -2423,6 +2468,7 @@ export class Controller {
       this.tab_menu !== null ||
       this.port_menu !== null ||
       this.agent_picker !== null ||
+      this.pr_search !== null ||
       this.sidebar_focus !== null ||
       this.agent_launcher !== null ||
       this.corgi_setup !== null ||
@@ -2943,6 +2989,7 @@ export class Controller {
     this.help_visible = false;
     this.link_tooltip.cancel();
     this.agent_picker = null;
+    this.pr_search = null;
     this.closeLauncher();
     this.scope_menu = null;
     this.corgi_setup?.close();
@@ -4068,6 +4115,19 @@ export class Controller {
       }
       case "find-agent":
         this.openAgentPicker();
+        break;
+      case "find-pr-conversation":
+        this.closeMenu();
+        if (this.width < 40 || this.height < 13) {
+          this.notice(i18n.t` Agent search needs at least 40 columns and 13 rows`);
+          break;
+        }
+        this.copy_mode = this.search_mode = false;
+        this.selection = null;
+        this.cancelDividers();
+        this.pr_search = new conversationPRSearch.Popup();
+        this.refreshPRSearch();
+        this.dirty = true;
         break;
       case "choose-agent":
         this.chooseIn("agents");
@@ -6904,6 +6964,12 @@ export class Controller {
         return;
       }
     }
+    if (this.pr_search) {
+      this.prSearchResult(this.pr_search.key(byte));
+      this.refreshPRSearch();
+      this.dirty = true;
+      return;
+    }
     if (this.agent_picker) {
       switch (byte) {
         case 27: {
@@ -7184,6 +7250,7 @@ export class Controller {
   }
   /** The keyboard's owner when a paste begins, in `key`'s order. */
   private pasteTarget(): Paste {
+    if (this.pr_search) return "pr-search";
     if (this.archive_dialog) return "discard";
     if (this.signin) return "signin";
     if (this.prompt.open) return "prompt";
@@ -7213,6 +7280,7 @@ export class Controller {
   }
   /** The text box that has the keyboard, which cmd+c and cmd+x copy from. */
   private textField(): textArea.TextArea | null {
+    if (this.pr_search) return this.pr_search.query.area;
     // The prompt takes the keys while it's open, as `input` sends them.
     if (this.prompt.open && !this.prefix) return this.prompt.textField();
     const launch = this.agent_launcher;
@@ -7538,6 +7606,10 @@ export class Controller {
           for (const byte of bytes) if (byte >= 32 && byte < 127) this.agent_picker.query.key(byte);
           this.pickerEntries();
         }
+        break;
+      case "pr-search":
+        for (const byte of bytes) this.pr_search?.query.pasteByte(byte);
+        this.refreshPRSearch();
         break;
       case "name":
         if (this.inline_rename) {
@@ -7916,6 +7988,9 @@ export class Controller {
         } else if (this.sidebar_focus) {
           if (parsed_key === "up" || parsed_key === "down" || parsed_key === "left" || parsed_key === "right")
             await this.steerSidebar(parsed_key);
+        } else if (this.pr_search) {
+          this.pr_search.sequence(text, parsed_key);
+          this.refreshPRSearch();
         } else if (this.agent_picker) {
           if (parsed_key === "up" || parsed_key === "shift_tab") this.moveAgentPicker(false);
           else if (parsed_key === "down") this.moveAgentPicker(true);
@@ -8168,6 +8243,12 @@ export class Controller {
     const x = sat(xs, 1);
     const y = sat(ys, 1);
     const release = seq[seq.length - 1] === "m";
+    if (this.pr_search) {
+      this.refreshPRSearch();
+      this.prSearchResult(this.pr_search.mouse(button, x, y, release));
+      this.dirty = true;
+      return;
+    }
     if (!cl.tab_drag && !this.hasMenu() && !this.name_dialog && !this.signin) {
       const width = this.sidebarView([]).width;
       if (this.conversation_prs.open && x < width - 1 && y > 0) {
@@ -8181,23 +8262,6 @@ export class Controller {
       }
       if (!release && button === 0) this.conversation_prs.focused = false;
       if (release) this.conversation_prs.mouse(button, x, y, true);
-      if (!this.conversation_prs.open && button === 0 && (x < width || this.sidebar_pr_pressed !== null)) {
-        const entries = this.sidebarEntries(),
-          side = this.sidebarView(entries);
-        const url = sidebar.prAt(side, entries, x, y);
-        const target = sidebar.agentAt(side, entries, x, y)?.target;
-        if (!release) this.sidebar_pr_pressed = url && target ? { url, target } : null;
-        else if (this.sidebar_pr_pressed !== null) {
-          const pressed = this.sidebar_pr_pressed;
-          this.sidebar_pr_pressed = null;
-          if (pressed.url === url && target && sidebar.sameTarget(pressed.target, target)) {
-            this.selectAgent(target);
-            await this.perform({ name: "pull-request", value: url! });
-          }
-          return;
-        }
-        if (url) return;
-      }
     }
     if (cl.tab_drag) {
       const drag = cl.tab_drag;
@@ -10400,6 +10464,7 @@ export class Controller {
     return retained.finish(frame, prefix, suffix);
   }
   private renderFrame(retained?: composition.Frame): string {
+    this.refreshPRSearch();
     palette.use(
       this.onboarding ? this.onboarding.theme : (this.corgi_setup?.previewTheme(this.prefs) ?? this.prefs.theme),
       this.terminal_colors,
@@ -10506,6 +10571,7 @@ export class Controller {
       this.width,
       this.height,
       render.ui({
+        pr_search: this.pr_search,
         conversation_prs_draw: this.conversation_prs.open
           ? (w: Writer) => {
               const width = this.sidebarView([]).width;

@@ -114,12 +114,7 @@ test("conversation PRs remain open beside independently selected GitHub PRs", as
     expect(s.conversation_prs.items.map((p: { number: number }) => p.number)).toEqual([9, 12]);
     first.state = "MERGED";
     s.pull_request.changed();
-    expect(
-      s
-        .agentEntries()
-        .find((e: sidebar.Entry) => e.conversation === 17)
-        .pull_requests.map((p: { number: number }) => p.number),
-    ).toEqual([9]);
+    expect(s.conversation_prs.items.map((p: { number: number }) => p.number)).toEqual([9]);
     expect(s.conversation_prs.open).toBe(true);
     await s.perform({ name: "pull-request-close" });
     expect(s.conversation_prs.open).toBe(true);
@@ -134,11 +129,78 @@ test("conversation PRs remain open beside independently selected GitHub PRs", as
   }
 });
 
-test("a sidebar PR link opens in the linked agent's conversation", async () => {
+test("PR search finds conversations across workspaces from typed numbers and pasted links", async () => {
+  const s = controller(),
+    snapshot = folders("/a", "/b"),
+    pr = prSnapshot(7104);
+  snapshot.panes[0].agent = {
+    ...agent(),
+    provider: "codex",
+    conversation: 17,
+    name: "First conversation",
+    pull_requests: [{ ...pr.ref, mentioned: 1 }],
+  } as any;
+  snapshot.panes[1].agent = {
+    ...agent(),
+    provider: "codex",
+    conversation: 18,
+    name: "Second conversation",
+    pull_requests: [{ ...pr.ref, mentioned: 2 }],
+  } as any;
+  s.width = 160;
+  s.height = 40;
+  s.input_state.attached = true;
+  s.receiveSnapshot(snapshot);
+  try {
+    await s.input(bytes("\x1b[107;10u"));
+    expect(s.pr_search).not.toBeNull();
+    expect(s.pasteTarget()).toBe("pr-search");
+    await s.input(bytes("7104"));
+    expect(s.pr_search.results.map((r: { title: string }) => r.title)).toEqual([
+      "Second conversation",
+      "First conversation",
+    ]);
+    const frame = s.frame();
+    expect(frame).toContain("Second conversation");
+    expect(frame).toContain("#7104");
+    expect(frame).toContain(s.runtime.workspaces.items[1].name);
+    await s.input(bytes("\x1b[B"));
+    expect(s.pr_search.selected).toBe(1);
+    await s.input(bytes("\x1b[A"));
+    expect(s.pr_search.selected).toBe(0);
+    await s.input(bytes("\r"));
+    expect(s.pr_search).toBeNull();
+    expect(s.current().id).toBe(2);
+    expect(s.focused().id).toBe(2);
+    expect(s.pull_request.open).toBe(false);
+    s.switchWorkspace(1);
+    await s.perform({ name: "find-pr-conversation" });
+    await s.input(bytes("\x1b[200~" + pr.ref.url + "\x1b[201~"));
+    expect(s.pr_search.query.raw()).toBe(pr.ref.url);
+    expect(s.pr_search.results).toHaveLength(2);
+    await s.input(bytes("\x1b[57353u"));
+    expect(s.pr_search.selected).toBe(1);
+    await s.input(bytes("\x1b[57352u"));
+    expect(s.pr_search.selected).toBe(0);
+    await s.input(bytes("\r"));
+    expect(s.current().id).toBe(2);
+    await s.perform({ name: "find-pr-conversation" });
+    await s.input(bytes("999999"));
+    expect(s.pr_search.results).toHaveLength(0);
+    await s.input(bytes("\r"));
+    expect(s.pr_search).not.toBeNull();
+    await s.key(27);
+    expect(s.pr_search).toBeNull();
+    expect(s.current().id).toBe(2);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("PR search does not open a result whose conversation disappeared", async () => {
   const s = controller(),
     snapshot = folders("/a", "/b"),
     pr = prSnapshot(12);
-  snapshot.panes[0].agent = { ...agent(), provider: "codex", conversation: 17 } as any;
   snapshot.panes[1].agent = {
     ...agent(),
     provider: "codex",
@@ -147,22 +209,18 @@ test("a sidebar PR link opens in the linked agent's conversation", async () => {
   } as any;
   s.width = 160;
   s.height = 40;
-  s.prefs.agents = "all";
   s.input_state.attached = true;
   s.receiveSnapshot(snapshot);
-  s.pull_request.cache.cached = async () => pr;
-  s.pull_request.cache.refresh = async () => pr;
   try {
-    s.frame();
-    const entries = s.sidebarEntries(),
-      side = s.sidebarView(entries);
-    const y = Array.from({ length: s.height }, (_, y) => y).find(y => sidebar.prAt(side, entries, 5, y) === pr.ref.url);
-    expect(y).toBeDefined();
-    await s.input(bytes(`\x1b[<0;6;${y! + 1}M\x1b[<0;6;${y! + 1}m`));
-    expect(s.current().id).toBe(2);
-    expect(s.pull_request.ref.url).toBe(pr.ref.url);
-    s.switchWorkspace(1);
-    expect(s.pull_request.open).toBe(false);
+    await s.perform({ name: "find-pr-conversation" });
+    await s.input(bytes("12"));
+    expect(s.pr_search.results).toHaveLength(1);
+    snapshot.panes[1].agent = { ...agent(), provider: "codex", conversation: 19 } as any;
+    s.receiveSnapshot(snapshot);
+    await s.input(bytes("\r"));
+    expect(s.current().id).toBe(1);
+    expect(s.pr_search).not.toBeNull();
+    expect(s.pr_search.results).toHaveLength(0);
   } finally {
     viewer.close(s);
   }

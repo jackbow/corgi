@@ -58,13 +58,12 @@ import {
   rowDetail,
   activityKind,
   corgiMode,
-  prAt,
 } from "./sidebar";
 import { Dialog } from "./name_dialog";
 import type { RenameTarget } from "./inline_rename";
 
 const selected_bg = palette.bg("selected");
-test("PR links replace idle dogs and add a row below working activity with matching hit targets", () => {
+test("PR mentions leave agent rows at two lines without rendering PR links", () => {
   const url = "https://github.com/acme/app/pull/12";
   for (const state of ["idle", "working"]) {
     const entries = [
@@ -77,16 +76,12 @@ test("PR links replace idle dogs and add a row below working activity with match
       entry({ target: { pane: 2 } }),
     ];
     const view = View.init(120, 40, true, 0, entries.length).withEntries(entries);
-    expect(View.height(entries[0])).toBe(state === "working" ? 3 : 2);
+    expect(View.height(entries[0])).toBe(2);
     const w = new Writer();
     view.draw(w, entries, []);
-    expect(w.buffered()).toContain(`${palette.fg("muted")}\x1b]8;;${url}\x1b\\#12`);
+    expect(w.buffered()).not.toContain(url);
+    expect(w.buffered()).not.toContain("#12");
     const top = view.middle() + 2;
-    const rows = hostText(w.buffered(), 120, 40).split("\n");
-    expect(rows[top + (state === "working" ? 2 : 1)].slice(5, 8)).toBe("#12");
-    expect(prAt(view, entries, 5, top + (state === "working" ? 2 : 1))).toBe(url);
-    expect(prAt(view, entries, 4, top + (state === "working" ? 2 : 1))).toBeNull();
-    expect(prAt(view, entries, 4, top)).toBeNull();
     expect(view.hit(4, top + View.height(entries[0]))).toEqual({ tag: "entry", entry: 1 });
   }
 });

@@ -77,11 +77,6 @@ export class Panel {
   private pressed: string | null = null;
   private reveal = true;
   constructor(private readDetails: Load = load) {}
-  sidebar(refs: Mention[]): Mention[] {
-    for (const ref of refs) this.wanted.set(ref.url, ref);
-    this.fetch();
-    return refs.filter(ref => !this.isMerged(ref));
-  }
   update(ref: pr.Ref, details: Pick<Details, "state">) {
     if (details.state === "MERGED" && !this.mergedURLs.has(ref.url)) {
       this.mergedURLs.add(ref.url);
