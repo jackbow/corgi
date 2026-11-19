@@ -498,3 +498,73 @@ $.breadcrumbs[].kind: string
 $.breadcrumbs[].pane: u32
 $.breadcrumbs[].session: u32
 $.breadcrumbs[].actors[]: u32
+$.tasks: optional
+$.tasks?.next: u64
+$.tasks?.sequence: u64
+$.tasks?.revision: u64
+$.tasks?.tasks[].id: u64
+$.tasks?.tasks[].kind: enum command agent
+$.tasks?.tasks[].workspace: u32
+$.tasks?.tasks[].pane: u32
+$.tasks?.tasks[].name: string
+$.tasks?.tasks[].state: enum starting queued running blocked completed failed interrupted unknown cancelled
+$.tasks?.tasks[].prompt: string
+$.tasks?.tasks[].busy: enum reject queue steer
+$.tasks?.tasks[].created: u64
+$.tasks?.tasks[].updated: u64
+$.tasks?.tasks[].notify: bool
+$.tasks?.tasks[].delivered: bool
+$.tasks?.tasks[].delivery: optional
+$.tasks?.tasks[].delivery?: enum message typed
+$.tasks?.tasks[].joined: bool
+$.tasks?.tasks[].completed: u64
+$.tasks?.tasks[].turn: string
+$.tasks?.tasks[].epoch: u32
+$.tasks?.tasks[].saw_work: bool
+$.tasks?.tasks[].source: enum unknown screen hook transcript protocol
+$.tasks?.tasks[].reason: string
+$.tasks?.tasks[].exit_code: optional
+$.tasks?.tasks[].exit_code?: u32
+$.tasks?.tasks[].signal: optional
+$.tasks?.tasks[].signal?: u32
+$.tasks?.tasks[].output: custom bounded_text.BoundedText(262144)
+$.tasks?.tasks[].output_start: u64
+$.tasks?.tasks[].output_end: u64
+$.tasks?.tasks[].truncated: bool
+$.tasks?.tasks[].parent: optional
+$.tasks?.tasks[].parent?.pane: u32
+$.tasks?.tasks[].parent?.generation: u64
+$.tasks?.tasks[].parent?.provider: provider
+$.tasks?.tasks[].parent?.session: string
+$.tasks?.tasks[].identity: optional
+$.tasks?.tasks[].identity?.pane: u32
+$.tasks?.tasks[].identity?.generation: u64
+$.tasks?.tasks[].identity?.provider: provider
+$.tasks?.tasks[].identity?.session: string
+$.tasks?.helpers[].pane: u32
+$.tasks?.helpers[].workspace: u32
+$.tasks?.helpers[].name: string
+$.tasks?.helpers[].notify: bool
+$.tasks?.helpers[].parent: optional
+$.tasks?.helpers[].parent?.pane: u32
+$.tasks?.helpers[].parent?.generation: u64
+$.tasks?.helpers[].parent?.provider: provider
+$.tasks?.helpers[].parent?.session: string
+$.tasks?.helpers[].identity: optional
+$.tasks?.helpers[].identity?.pane: u32
+$.tasks?.helpers[].identity?.generation: u64
+$.tasks?.helpers[].identity?.provider: provider
+$.tasks?.helpers[].identity?.session: string
+$.tasks?.notes[].seq: u64
+$.tasks?.notes[].task: u64
+$.tasks?.notes[].state: enum starting queued running blocked completed failed interrupted unknown cancelled
+$.tasks?.notes[].seen: bool
+$.tasks?.notes[].delivery: enum pending sending sent unknown suppressed
+$.tasks?.notes[].parent: optional
+$.tasks?.notes[].parent?.pane: u32
+$.tasks?.notes[].parent?.generation: u64
+$.tasks?.notes[].parent?.provider: provider
+$.tasks?.notes[].parent?.session: string
+$.tasks?.tasks[].decoder.escape: enum text escape csi string string_escape
+$.tasks?.tasks[].decoder.pending[]: u8
+$.tasks?.tasks[].receipt: string

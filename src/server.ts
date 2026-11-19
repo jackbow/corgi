@@ -47,6 +47,7 @@ import * as link from "./link";
 import * as socket_server from "./socket_server";
 import * as legacy_socket from "./legacy_socket";
 import * as start_lock from "./start_lock";
+import * as taskService from "./task_service";
 
 const log = getLogger("recovery");
 
@@ -346,6 +347,7 @@ export class Server {
       await integration.startup(handoff);
       this.bindPanes();
       observers.start(this);
+      taskService.bind(this.runtime, this.socket);
       for (const p of this.runtime.panes) if (p.terminal.imported) p.terminal.adopt(p.terminal.fd, p.terminal.pid);
       // Before anyone can connect, so a plugin removed after the daemon answers is seen.
       this.watchInstall();
@@ -615,6 +617,7 @@ export class Server {
     }
   }
   private async collectNow(): Promise<void> {
+    taskService.tick(this.runtime, this.socket);
     if (Date.now() - this.installChecked >= 1000) {
       this.installChecked = Date.now();
       if (this.install === undefined)
@@ -669,6 +672,8 @@ export class Server {
     agentRetry.advance(this.runtime, clock.milliTimestamp(), pane => this.inputAt(pane));
     const observers_started = telemetry.begin();
     await observers.tick(this);
+    taskService.tick(this.runtime, this.socket);
+    taskService.flush(this);
     telemetry.end("daemon.observers", observers_started);
     if (this.clients.some(c => c.headless_start)) {
       const headless = await import("./headless");
@@ -853,6 +858,44 @@ export class Server {
     const request = protocol.decoded(op, v);
     if (!["onboarding.copy", "onboarding.handoff"].includes(op)) importer.admit(this, op);
     switch (request.op) {
+      case "task.start":
+        reply.ok({ task: await taskService.start(this.runtime, this.context(), request.payload) });
+        this.bindPanes();
+        this.dirty = true;
+        await this.saveWorkspaces();
+        return;
+      case "task.message":
+        reply.ok({ task: taskService.message(this.runtime, request.payload) });
+        return;
+      case "task.get":
+        reply.ok({ task: { ...taskService.get(this.runtime, request.payload), prompt: "" } });
+        return;
+      case "task.cancel": {
+        const task = taskService.get(this.runtime, request.payload);
+        this.runtime.tasks.cancel(task);
+        reply.ok({ task: { ...task, prompt: "" } });
+        return;
+      }
+      case "task.list":
+      case "task.subscribe": {
+        const q = request.payload,
+          task = "target" in q && q.target ? taskService.get(this.runtime, { ...q, target: q.target }) : null,
+          ctx = taskService.context(this.runtime, q.caller, q.workspace || task?.workspace || 0),
+          id = task?.id ?? null;
+        if (request.op === "task.subscribe") {
+          if (cl.http) throw Error("SubscriptionRequiresWebSocket");
+          cl.tasks = { workspace: ctx.workspace, task: id, parent: ctx.caller, revision: this.runtime.tasks.revision };
+        }
+        reply.ok({ snapshot: this.runtime.tasks.snapshot(ctx.workspace, id, ctx.caller) });
+        return;
+      }
+      case "task.ack": {
+        const parent = taskService.identity(this.runtime.pane(request.payload.caller));
+        if (!parent) throw Error("NoAgent");
+        this.runtime.tasks.acknowledge(parent, request.payload.through);
+        reply.ok();
+        return;
+      }
       case "hello": {
         const encoding = protocol.encodings.find(encoding => request.payload.accept_encoding.includes(encoding));
         if (encoding && !cl.canCompress) throw Error("InvalidEncodingNegotiation");

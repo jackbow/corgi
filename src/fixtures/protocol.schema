@@ -1146,3 +1146,346 @@ $.snapshot.startup_waits[].started_at: i64
 $.snapshot.startup_waits[].cancelled: bool
 $.requests|viewer.stream: versioned protocol.Request.Sync
 $.requests|viewer.stream.sequence: u32
+$.requests|task.start.workspace: u32
+$.requests|task.start.caller: u32
+$.requests|task.start.parent: optional
+$.requests|task.start.parent?: u32
+$.requests|task.start.no_parent: bool
+$.requests|task.start.notify: bool
+$.requests|task.start.name: string
+$.requests|task.start.cwd: string
+$.requests|task.start.agent: string
+$.requests|task.start.prompt: string
+$.requests|task.start.argv[]: string
+$.requests|task.message.target: string
+$.requests|task.message.text: string
+$.requests|task.message.busy: enum reject queue steer
+$.requests|task.message.caller: u32
+$.requests|task.message.workspace: u32
+$.requests|task.get.target: string
+$.requests|task.get.caller: u32
+$.requests|task.get.workspace: u32
+$.requests|task.cancel.target: string
+$.requests|task.cancel.caller: u32
+$.requests|task.cancel.workspace: u32
+$.requests|task.list.workspace: u32
+$.requests|task.list.caller: u32
+$.requests|task.subscribe.target: string
+$.requests|task.subscribe.workspace: u32
+$.requests|task.subscribe.caller: u32
+$.requests|task.ack.caller: u32
+$.requests|task.ack.through: u64
+$.replies.task.start.task.id: u64
+$.replies.task.start.task.kind: enum command agent
+$.replies.task.start.task.workspace: u32
+$.replies.task.start.task.pane: u32
+$.replies.task.start.task.name: string
+$.replies.task.start.task.state: enum starting queued running blocked completed failed interrupted unknown cancelled
+$.replies.task.start.task.prompt: string
+$.replies.task.start.task.busy: enum reject queue steer
+$.replies.task.start.task.created: u64
+$.replies.task.start.task.updated: u64
+$.replies.task.start.task.notify: bool
+$.replies.task.start.task.delivered: bool
+$.replies.task.start.task.delivery: optional
+$.replies.task.start.task.delivery?: enum message typed
+$.replies.task.start.task.joined: bool
+$.replies.task.start.task.completed: u64
+$.replies.task.start.task.turn: string
+$.replies.task.start.task.epoch: u32
+$.replies.task.start.task.saw_work: bool
+$.replies.task.start.task.source: enum unknown screen hook transcript protocol
+$.replies.task.start.task.reason: string
+$.replies.task.start.task.exit_code: optional
+$.replies.task.start.task.exit_code?: u32
+$.replies.task.start.task.signal: optional
+$.replies.task.start.task.signal?: u32
+$.replies.task.start.task.output: custom bounded_text.BoundedText(262144)
+$.replies.task.start.task.output_start: u64
+$.replies.task.start.task.output_end: u64
+$.replies.task.start.task.truncated: bool
+$.replies.task.start.task.parent: optional
+$.replies.task.start.task.parent?.pane: u32
+$.replies.task.start.task.parent?.generation: u64
+$.replies.task.start.task.parent?.provider: provider
+$.replies.task.start.task.parent?.session: string
+$.replies.task.start.task.identity: optional
+$.replies.task.start.task.identity?.pane: u32
+$.replies.task.start.task.identity?.generation: u64
+$.replies.task.start.task.identity?.provider: provider
+$.replies.task.start.task.identity?.session: string
+$.replies.task.start.task.decoder.escape: enum text escape csi string string_escape
+$.replies.task.start.task.decoder.pending[]: u8
+$.replies.task.start.task.receipt: string
+$.replies.task.message.task.id: u64
+$.replies.task.message.task.kind: enum command agent
+$.replies.task.message.task.workspace: u32
+$.replies.task.message.task.pane: u32
+$.replies.task.message.task.name: string
+$.replies.task.message.task.state: enum starting queued running blocked completed failed interrupted unknown cancelled
+$.replies.task.message.task.prompt: string
+$.replies.task.message.task.busy: enum reject queue steer
+$.replies.task.message.task.created: u64
+$.replies.task.message.task.updated: u64
+$.replies.task.message.task.notify: bool
+$.replies.task.message.task.delivered: bool
+$.replies.task.message.task.delivery: optional
+$.replies.task.message.task.delivery?: enum message typed
+$.replies.task.message.task.joined: bool
+$.replies.task.message.task.completed: u64
+$.replies.task.message.task.turn: string
+$.replies.task.message.task.epoch: u32
+$.replies.task.message.task.saw_work: bool
+$.replies.task.message.task.source: enum unknown screen hook transcript protocol
+$.replies.task.message.task.reason: string
+$.replies.task.message.task.exit_code: optional
+$.replies.task.message.task.exit_code?: u32
+$.replies.task.message.task.signal: optional
+$.replies.task.message.task.signal?: u32
+$.replies.task.message.task.output: custom bounded_text.BoundedText(262144)
+$.replies.task.message.task.output_start: u64
+$.replies.task.message.task.output_end: u64
+$.replies.task.message.task.truncated: bool
+$.replies.task.message.task.parent: optional
+$.replies.task.message.task.parent?.pane: u32
+$.replies.task.message.task.parent?.generation: u64
+$.replies.task.message.task.parent?.provider: provider
+$.replies.task.message.task.parent?.session: string
+$.replies.task.message.task.identity: optional
+$.replies.task.message.task.identity?.pane: u32
+$.replies.task.message.task.identity?.generation: u64
+$.replies.task.message.task.identity?.provider: provider
+$.replies.task.message.task.identity?.session: string
+$.replies.task.message.task.decoder.escape: enum text escape csi string string_escape
+$.replies.task.message.task.decoder.pending[]: u8
+$.replies.task.message.task.receipt: string
+$.replies.task.get.task.id: u64
+$.replies.task.get.task.kind: enum command agent
+$.replies.task.get.task.workspace: u32
+$.replies.task.get.task.pane: u32
+$.replies.task.get.task.name: string
+$.replies.task.get.task.state: enum starting queued running blocked completed failed interrupted unknown cancelled
+$.replies.task.get.task.prompt: string
+$.replies.task.get.task.busy: enum reject queue steer
+$.replies.task.get.task.created: u64
+$.replies.task.get.task.updated: u64
+$.replies.task.get.task.notify: bool
+$.replies.task.get.task.delivered: bool
+$.replies.task.get.task.delivery: optional
+$.replies.task.get.task.delivery?: enum message typed
+$.replies.task.get.task.joined: bool
+$.replies.task.get.task.completed: u64
+$.replies.task.get.task.turn: string
+$.replies.task.get.task.epoch: u32
+$.replies.task.get.task.saw_work: bool
+$.replies.task.get.task.source: enum unknown screen hook transcript protocol
+$.replies.task.get.task.reason: string
+$.replies.task.get.task.exit_code: optional
+$.replies.task.get.task.exit_code?: u32
+$.replies.task.get.task.signal: optional
+$.replies.task.get.task.signal?: u32
+$.replies.task.get.task.output: custom bounded_text.BoundedText(262144)
+$.replies.task.get.task.output_start: u64
+$.replies.task.get.task.output_end: u64
+$.replies.task.get.task.truncated: bool
+$.replies.task.get.task.parent: optional
+$.replies.task.get.task.parent?.pane: u32
+$.replies.task.get.task.parent?.generation: u64
+$.replies.task.get.task.parent?.provider: provider
+$.replies.task.get.task.parent?.session: string
+$.replies.task.get.task.identity: optional
+$.replies.task.get.task.identity?.pane: u32
+$.replies.task.get.task.identity?.generation: u64
+$.replies.task.get.task.identity?.provider: provider
+$.replies.task.get.task.identity?.session: string
+$.replies.task.get.task.decoder.escape: enum text escape csi string string_escape
+$.replies.task.get.task.decoder.pending[]: u8
+$.replies.task.get.task.receipt: string
+$.replies.task.cancel.task.id: u64
+$.replies.task.cancel.task.kind: enum command agent
+$.replies.task.cancel.task.workspace: u32
+$.replies.task.cancel.task.pane: u32
+$.replies.task.cancel.task.name: string
+$.replies.task.cancel.task.state: enum starting queued running blocked completed failed interrupted unknown cancelled
+$.replies.task.cancel.task.prompt: string
+$.replies.task.cancel.task.busy: enum reject queue steer
+$.replies.task.cancel.task.created: u64
+$.replies.task.cancel.task.updated: u64
+$.replies.task.cancel.task.notify: bool
+$.replies.task.cancel.task.delivered: bool
+$.replies.task.cancel.task.delivery: optional
+$.replies.task.cancel.task.delivery?: enum message typed
+$.replies.task.cancel.task.joined: bool
+$.replies.task.cancel.task.completed: u64
+$.replies.task.cancel.task.turn: string
+$.replies.task.cancel.task.epoch: u32
+$.replies.task.cancel.task.saw_work: bool
+$.replies.task.cancel.task.source: enum unknown screen hook transcript protocol
+$.replies.task.cancel.task.reason: string
+$.replies.task.cancel.task.exit_code: optional
+$.replies.task.cancel.task.exit_code?: u32
+$.replies.task.cancel.task.signal: optional
+$.replies.task.cancel.task.signal?: u32
+$.replies.task.cancel.task.output: custom bounded_text.BoundedText(262144)
+$.replies.task.cancel.task.output_start: u64
+$.replies.task.cancel.task.output_end: u64
+$.replies.task.cancel.task.truncated: bool
+$.replies.task.cancel.task.parent: optional
+$.replies.task.cancel.task.parent?.pane: u32
+$.replies.task.cancel.task.parent?.generation: u64
+$.replies.task.cancel.task.parent?.provider: provider
+$.replies.task.cancel.task.parent?.session: string
+$.replies.task.cancel.task.identity: optional
+$.replies.task.cancel.task.identity?.pane: u32
+$.replies.task.cancel.task.identity?.generation: u64
+$.replies.task.cancel.task.identity?.provider: provider
+$.replies.task.cancel.task.identity?.session: string
+$.replies.task.cancel.task.decoder.escape: enum text escape csi string string_escape
+$.replies.task.cancel.task.decoder.pending[]: u8
+$.replies.task.cancel.task.receipt: string
+$.replies.task.list.snapshot.type: enum tasks
+$.replies.task.list.snapshot.revision: u64
+$.replies.task.list.snapshot.tasks[].id: u64
+$.replies.task.list.snapshot.tasks[].kind: enum command agent
+$.replies.task.list.snapshot.tasks[].workspace: u32
+$.replies.task.list.snapshot.tasks[].pane: u32
+$.replies.task.list.snapshot.tasks[].name: string
+$.replies.task.list.snapshot.tasks[].state: enum starting queued running blocked completed failed interrupted unknown cancelled
+$.replies.task.list.snapshot.tasks[].prompt: string
+$.replies.task.list.snapshot.tasks[].busy: enum reject queue steer
+$.replies.task.list.snapshot.tasks[].created: u64
+$.replies.task.list.snapshot.tasks[].updated: u64
+$.replies.task.list.snapshot.tasks[].notify: bool
+$.replies.task.list.snapshot.tasks[].delivered: bool
+$.replies.task.list.snapshot.tasks[].delivery: optional
+$.replies.task.list.snapshot.tasks[].delivery?: enum message typed
+$.replies.task.list.snapshot.tasks[].joined: bool
+$.replies.task.list.snapshot.tasks[].completed: u64
+$.replies.task.list.snapshot.tasks[].turn: string
+$.replies.task.list.snapshot.tasks[].epoch: u32
+$.replies.task.list.snapshot.tasks[].saw_work: bool
+$.replies.task.list.snapshot.tasks[].source: enum unknown screen hook transcript protocol
+$.replies.task.list.snapshot.tasks[].reason: string
+$.replies.task.list.snapshot.tasks[].exit_code: optional
+$.replies.task.list.snapshot.tasks[].exit_code?: u32
+$.replies.task.list.snapshot.tasks[].signal: optional
+$.replies.task.list.snapshot.tasks[].signal?: u32
+$.replies.task.list.snapshot.tasks[].output: custom bounded_text.BoundedText(262144)
+$.replies.task.list.snapshot.tasks[].output_start: u64
+$.replies.task.list.snapshot.tasks[].output_end: u64
+$.replies.task.list.snapshot.tasks[].truncated: bool
+$.replies.task.list.snapshot.tasks[].parent: optional
+$.replies.task.list.snapshot.tasks[].parent?.pane: u32
+$.replies.task.list.snapshot.tasks[].parent?.generation: u64
+$.replies.task.list.snapshot.tasks[].parent?.provider: provider
+$.replies.task.list.snapshot.tasks[].parent?.session: string
+$.replies.task.list.snapshot.tasks[].identity: optional
+$.replies.task.list.snapshot.tasks[].identity?.pane: u32
+$.replies.task.list.snapshot.tasks[].identity?.generation: u64
+$.replies.task.list.snapshot.tasks[].identity?.provider: provider
+$.replies.task.list.snapshot.tasks[].identity?.session: string
+$.replies.task.list.snapshot.tasks[].decoder.escape: enum text escape csi string string_escape
+$.replies.task.list.snapshot.tasks[].decoder.pending[]: u8
+$.replies.task.list.snapshot.tasks[].receipt: string
+$.replies.task.list.snapshot.helpers[].pane: u32
+$.replies.task.list.snapshot.helpers[].workspace: u32
+$.replies.task.list.snapshot.helpers[].name: string
+$.replies.task.list.snapshot.helpers[].notify: bool
+$.replies.task.list.snapshot.helpers[].parent: optional
+$.replies.task.list.snapshot.helpers[].parent?.pane: u32
+$.replies.task.list.snapshot.helpers[].parent?.generation: u64
+$.replies.task.list.snapshot.helpers[].parent?.provider: provider
+$.replies.task.list.snapshot.helpers[].parent?.session: string
+$.replies.task.list.snapshot.helpers[].identity: optional
+$.replies.task.list.snapshot.helpers[].identity?.pane: u32
+$.replies.task.list.snapshot.helpers[].identity?.generation: u64
+$.replies.task.list.snapshot.helpers[].identity?.provider: provider
+$.replies.task.list.snapshot.helpers[].identity?.session: string
+$.replies.task.list.snapshot.notes[].seq: u64
+$.replies.task.list.snapshot.notes[].task: u64
+$.replies.task.list.snapshot.notes[].state: enum starting queued running blocked completed failed interrupted unknown cancelled
+$.replies.task.list.snapshot.notes[].seen: bool
+$.replies.task.list.snapshot.notes[].delivery: enum pending sending sent unknown suppressed
+$.replies.task.list.snapshot.notes[].parent: optional
+$.replies.task.list.snapshot.notes[].parent?.pane: u32
+$.replies.task.list.snapshot.notes[].parent?.generation: u64
+$.replies.task.list.snapshot.notes[].parent?.provider: provider
+$.replies.task.list.snapshot.notes[].parent?.session: string
+$.replies.task.list.snapshot.caller: optional
+$.replies.task.list.snapshot.caller?.pane: u32
+$.replies.task.list.snapshot.caller?.generation: u64
+$.replies.task.list.snapshot.caller?.provider: provider
+$.replies.task.list.snapshot.caller?.session: string
+$.replies.task.subscribe.snapshot.type: enum tasks
+$.replies.task.subscribe.snapshot.revision: u64
+$.replies.task.subscribe.snapshot.tasks[].id: u64
+$.replies.task.subscribe.snapshot.tasks[].kind: enum command agent
+$.replies.task.subscribe.snapshot.tasks[].workspace: u32
+$.replies.task.subscribe.snapshot.tasks[].pane: u32
+$.replies.task.subscribe.snapshot.tasks[].name: string
+$.replies.task.subscribe.snapshot.tasks[].state: enum starting queued running blocked completed failed interrupted unknown cancelled
+$.replies.task.subscribe.snapshot.tasks[].prompt: string
+$.replies.task.subscribe.snapshot.tasks[].busy: enum reject queue steer
+$.replies.task.subscribe.snapshot.tasks[].created: u64
+$.replies.task.subscribe.snapshot.tasks[].updated: u64
+$.replies.task.subscribe.snapshot.tasks[].notify: bool
+$.replies.task.subscribe.snapshot.tasks[].delivered: bool
+$.replies.task.subscribe.snapshot.tasks[].delivery: optional
+$.replies.task.subscribe.snapshot.tasks[].delivery?: enum message typed
+$.replies.task.subscribe.snapshot.tasks[].joined: bool
+$.replies.task.subscribe.snapshot.tasks[].completed: u64
+$.replies.task.subscribe.snapshot.tasks[].turn: string
+$.replies.task.subscribe.snapshot.tasks[].epoch: u32
+$.replies.task.subscribe.snapshot.tasks[].saw_work: bool
+$.replies.task.subscribe.snapshot.tasks[].source: enum unknown screen hook transcript protocol
+$.replies.task.subscribe.snapshot.tasks[].reason: string
+$.replies.task.subscribe.snapshot.tasks[].exit_code: optional
+$.replies.task.subscribe.snapshot.tasks[].exit_code?: u32
+$.replies.task.subscribe.snapshot.tasks[].signal: optional
+$.replies.task.subscribe.snapshot.tasks[].signal?: u32
+$.replies.task.subscribe.snapshot.tasks[].output: custom bounded_text.BoundedText(262144)
+$.replies.task.subscribe.snapshot.tasks[].output_start: u64
+$.replies.task.subscribe.snapshot.tasks[].output_end: u64
+$.replies.task.subscribe.snapshot.tasks[].truncated: bool
+$.replies.task.subscribe.snapshot.tasks[].parent: optional
+$.replies.task.subscribe.snapshot.tasks[].parent?.pane: u32
+$.replies.task.subscribe.snapshot.tasks[].parent?.generation: u64
+$.replies.task.subscribe.snapshot.tasks[].parent?.provider: provider
+$.replies.task.subscribe.snapshot.tasks[].parent?.session: string
+$.replies.task.subscribe.snapshot.tasks[].identity: optional
+$.replies.task.subscribe.snapshot.tasks[].identity?.pane: u32
+$.replies.task.subscribe.snapshot.tasks[].identity?.generation: u64
+$.replies.task.subscribe.snapshot.tasks[].identity?.provider: provider
+$.replies.task.subscribe.snapshot.tasks[].identity?.session: string
+$.replies.task.subscribe.snapshot.tasks[].decoder.escape: enum text escape csi string string_escape
+$.replies.task.subscribe.snapshot.tasks[].decoder.pending[]: u8
+$.replies.task.subscribe.snapshot.tasks[].receipt: string
+$.replies.task.subscribe.snapshot.helpers[].pane: u32
+$.replies.task.subscribe.snapshot.helpers[].workspace: u32
+$.replies.task.subscribe.snapshot.helpers[].name: string
+$.replies.task.subscribe.snapshot.helpers[].notify: bool
+$.replies.task.subscribe.snapshot.helpers[].parent: optional
+$.replies.task.subscribe.snapshot.helpers[].parent?.pane: u32
+$.replies.task.subscribe.snapshot.helpers[].parent?.generation: u64
+$.replies.task.subscribe.snapshot.helpers[].parent?.provider: provider
+$.replies.task.subscribe.snapshot.helpers[].parent?.session: string
+$.replies.task.subscribe.snapshot.helpers[].identity: optional
+$.replies.task.subscribe.snapshot.helpers[].identity?.pane: u32
+$.replies.task.subscribe.snapshot.helpers[].identity?.generation: u64
+$.replies.task.subscribe.snapshot.helpers[].identity?.provider: provider
+$.replies.task.subscribe.snapshot.helpers[].identity?.session: string
+$.replies.task.subscribe.snapshot.notes[].seq: u64
+$.replies.task.subscribe.snapshot.notes[].task: u64
+$.replies.task.subscribe.snapshot.notes[].state: enum starting queued running blocked completed failed interrupted unknown cancelled
+$.replies.task.subscribe.snapshot.notes[].seen: bool
+$.replies.task.subscribe.snapshot.notes[].delivery: enum pending sending sent unknown suppressed
+$.replies.task.subscribe.snapshot.notes[].parent: optional
+$.replies.task.subscribe.snapshot.notes[].parent?.pane: u32
+$.replies.task.subscribe.snapshot.notes[].parent?.generation: u64
+$.replies.task.subscribe.snapshot.notes[].parent?.provider: provider
+$.replies.task.subscribe.snapshot.notes[].parent?.session: string
+$.replies.task.subscribe.snapshot.caller: optional
+$.replies.task.subscribe.snapshot.caller?.pane: u32
+$.replies.task.subscribe.snapshot.caller?.generation: u64
+$.replies.task.subscribe.snapshot.caller?.provider: provider
+$.replies.task.subscribe.snapshot.caller?.session: string

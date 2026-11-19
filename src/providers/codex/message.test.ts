@@ -5,7 +5,8 @@ import { send } from "./message";
 test("a prompt starts a turn, and a failure says whether the server may have taken it", async () => {
   const dir = mkdtempSync(tmpdir() + "/corgi-ts-message-"),
     path = dir + "/control.sock",
-    started: unknown[] = [];
+    started: unknown[] = [],
+    steered: unknown[] = [];
   let answer: "ok" | "error" | "hang up" = "ok";
   await expect(send(path, "s", "hi")).rejects.toThrow("MessageUnavailable");
   const server = Bun.serve({
@@ -17,8 +18,9 @@ test("a prompt starts a turn, and a failure says whether the server may have tak
       message(ws, message) {
         const value = JSON.parse(String(message));
         if (!value.id) return;
-        if (value.method !== "turn/start") return void ws.send(JSON.stringify({ id: value.id, result: {} }));
-        started.push(value.params);
+        if (value.method !== "turn/start" && value.method !== "turn/steer")
+          return void ws.send(JSON.stringify({ id: value.id, result: {} }));
+        (value.method === "turn/steer" ? steered : started).push(value.params);
         if (answer === "hang up") return ws.close();
         ws.send(
           JSON.stringify(
@@ -31,8 +33,13 @@ test("a prompt starts a turn, and a failure says whether the server may have tak
   try {
     await send(path, "s", "review this");
     expect(started).toEqual([{ threadId: "s", input: [{ type: "text", text: "review this" }] }]);
+    await send(path, "s", "steer this", "turn-1");
+    expect(steered).toEqual([
+      { threadId: "s", input: [{ type: "text", text: "steer this" }], expectedTurnId: "turn-1" },
+    ]);
     answer = "error";
     await expect(send(path, "s", "x")).rejects.toThrow("MessageUnavailable");
+    await expect(send(path, "s", "x", "stale-turn")).rejects.toThrow("MessageUnavailable");
     answer = "hang up";
     await expect(send(path, "s", "x")).rejects.toThrow("DeliveryUnknown");
     // Too large to send at all, so typing can still take it.

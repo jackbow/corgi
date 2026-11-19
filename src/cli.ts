@@ -36,9 +36,27 @@ const groups = new Set([
   "resume",
   "memory",
   "--skill",
+  "run",
+  "wait",
+  "task",
 ]);
-const nested = new Set(["tab", "pane", "workspace", "launcher", "memory"]);
-const flags = new Set(["json", "clear", "stdin", "enter", "new-tab", "first", "left", "right", "up", "down"]);
+const nested = new Set(["tab", "pane", "workspace", "launcher", "memory", "task"]);
+const flags = new Set([
+  "json",
+  "clear",
+  "stdin",
+  "enter",
+  "new-tab",
+  "first",
+  "left",
+  "right",
+  "up",
+  "down",
+  "bg",
+  "wait",
+  "no-parent",
+  "no-notify",
+]);
 const options = new Set([
   ...flags,
   "model",
@@ -64,6 +82,12 @@ const options = new Set([
   "right-of",
   "above",
   "below",
+  "agent",
+  "parent",
+  "busy",
+  "timeout",
+  "children",
+  "output",
 ]);
 const actions = new Set([
   "list",
@@ -192,7 +216,7 @@ export function directory(value: string): string {
   if (!statSync(path).isDirectory()) throw Error("NotDir");
   return path;
 }
-class Args {
+export class Args {
   options = new Map<string, string>();
   positional: string[] = [];
   constructor(values: string[]) {
@@ -968,6 +992,10 @@ export async function run(daemon: rpc_http.Daemon, args: string[], agent = false
   if ((nested.has(group) && args.length === 1) || asksHelp(args)) {
     process.stdout.write(helpFor(agent ? help : localizedHelp(), args, agent));
     return;
+  }
+  if (["run", "wait", "task", "message"].includes(group)) {
+    const tasks = await import("./task_cli");
+    if (tasks.handles(args)) return tasks.run(daemon, args);
   }
   if (group === "--skill") {
     if (args.length !== 1) throw Error("Usage");

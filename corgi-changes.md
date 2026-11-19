@@ -2,6 +2,13 @@
 
 Application changes added during development.
 
+## Task orchestration
+
+- `run` launches commands or configured agent helpers in ordinary tabs, with retained task IDs, workspace names, output tails, and exit results.
+- Task-aware `wait` supports completion, fresh command output, child any/all waits, timeout without cancellation, and reconnecting across live reloads.
+- Tracked messages support reject, FIFO queue, and provider-supported steering. Helper links and deferred parent notifications remain separate from native subagents; helpers survive parent closure.
+- Task records and queues survive live handoff; cold recovery never replays assignments. Existing plain messaging and viewer behavior are retained.
+
 ## Portable development helpers
 
 - macOS probe and signing-key transfer scripts require explicit SSH host settings (`CORGI_PROBE_HOST` and `CORGI_RELEASE_HOST`); the probe also requires `CORGI_PROBE_REMOTE` for the remote checkout path.

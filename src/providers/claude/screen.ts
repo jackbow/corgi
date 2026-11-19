@@ -26,6 +26,29 @@ export function composer(text: string): "open" | "covered" | "unknown" {
   if (/esc to cancel|enter to select|enter to confirm|enter to submit/.test(screenTail(text))) return "unknown";
   return "open";
 }
+/** A recognized composer with a draft must not receive an automated submission. */
+export function ready(text: string): boolean {
+  if (
+    sharedPrompt(text) !== null ||
+    /enter to select|enter to confirm|enter to submit|esc to cancel/.test(screenTail(text))
+  )
+    return false;
+  const rows = text.split("\n");
+  let start = -1;
+  for (let i = 0; i < rows.length - 1; i++)
+    if (/^─{10,}$/.test(rows[i].trim()) && rows[i + 1].trimStart().startsWith("❯")) start = i + 1;
+  if (start < 0) return true;
+  if (composer(text) !== "open") return false;
+  const end = rows.findIndex((row, i) => i > start && /^─{10,}$/.test(row.trim()));
+  return (
+    end > start &&
+    !rows
+      .slice(start, end)
+      .join("\n")
+      .replace(/^\s*❯\s*/, "")
+      .trim()
+  );
+}
 /** Whether a turn its hooks call working was interrupted: the screen has
  * stayed idle long enough, or a while after an interrupt key. */
 export function interrupted(reading: Reading | null, memory: PaneMemory, now: number) {

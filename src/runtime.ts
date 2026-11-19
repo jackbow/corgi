@@ -32,7 +32,9 @@ import * as breadcrumbs from "./breadcrumbs";
 import { WantedEffort } from "./agent_effort";
 import * as effort from "./providers/effort";
 import type { HeldStop, Retry } from "./agent_retry";
+import { Registry as Tasks } from "./task_registry";
 export type Create = {
+  observe?: (pane: number, terminal: Terminal) => void;
   workspace: number;
   split?: { pane: number; axis: Axis; before?: boolean } | null;
   cwd: string;
@@ -468,6 +470,7 @@ function clone(m: Model) {
   return next;
 }
 export class Runtime {
+  tasks = new Tasks(() => this.wrote());
   startup_waits: StartupWait[] = [];
   workspaces = new Store();
   panes: Pane[] = [];
@@ -657,6 +660,7 @@ export class Runtime {
       t = await Terminal.create(opts.cols, opts.rows);
     try {
       t.applyTheme(opts.theme);
+      opts.observe?.(id, t);
       if (opts.asleep) t.exited = true;
       else
         await t.spawn(

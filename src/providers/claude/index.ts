@@ -5,7 +5,7 @@ import { lstatSync } from "node:fs";
 import { Hooks, planLabel } from "../common";
 import type { Adapter } from "../adapter";
 import * as hooksFile from "../hooks_file";
-import { Watcher } from "./screen";
+import { Watcher, ready } from "./screen";
 import * as daemon from "./daemon";
 import * as peer from "./peer";
 import { Claude, summaryArgs } from "./headless";
@@ -121,6 +121,7 @@ export const adapter: Adapter = {
     },
   },
   message: {
+    ready: terminal => ready(terminal.liveText()),
     async channel(session, _connected, account) {
       const found = await peer.peerIn(path.join(dir(account), "sessions"), session);
       return found ? text => peer.message(found, session, text) : null;

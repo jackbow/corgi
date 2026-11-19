@@ -2,6 +2,7 @@ import * as telemetry from "../telemetry";
 import { existsSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { dirname } from "node:path";
+import { constants } from "node:os";
 import { n, ptr, call, symbols, ReadyLoop, READ, nativeRoot } from "../native_bridge";
 import * as launch_command from "../launch/command";
 import * as current_release from "../current_release";
@@ -171,7 +172,8 @@ export class Terminal extends EventEmitter {
         if (!this.destroyed) {
           this.drain();
           this.exited = true;
-          this.exit_status = code << 8;
+          const signal = this.child?.signalCode;
+          this.exit_status = signal ? (constants.signals[signal] ?? code << 8) : code << 8;
           this.emit("exit", code);
           this.emit("change");
         }
@@ -211,8 +213,11 @@ export class Terminal extends EventEmitter {
       const output = (this.output ??= Buffer.alloc(65536));
       for (let i = 0; i < 8; i++) {
         const count = n.probe_read(this.fd, ptr(output), output.length);
-        if (count > 0) this.feed(output.subarray(0, count));
-        else if (count === 0 || count === -5) {
+        if (count > 0) {
+          const bytes = output.subarray(0, count);
+          this.emit("output", bytes);
+          this.feed(bytes);
+        } else if (count === 0 || count === -5) {
           this.hung_up = true;
           if (!this.child) this.exited = true;
           this.emit("change");

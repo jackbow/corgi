@@ -5,7 +5,7 @@ import * as errors from "../../errors";
  * server steers that turn with it instead. Throws MessageUnavailable when the
  * server never took the prompt, and DeliveryUnknown when it went unanswered,
  * as it may still have started the turn. */
-export async function send(path: string, id: string, text: string) {
+export async function send(path: string, id: string, text: string, turn?: string) {
   let client: socket.Client;
   try {
     client = await socket.Client.open(path);
@@ -17,7 +17,11 @@ export async function send(path: string, id: string, text: string) {
   try {
     // A socket that closed after `initialize` never gets the request.
     if (client.socket.readyState !== WebSocket.OPEN) throw Error("MessageUnavailable");
-    await client.call("turn/start", { threadId: id, input: [{ type: "text", text }] }, 3000);
+    await client.call(
+      turn ? "turn/steer" : "turn/start",
+      { threadId: id, input: [{ type: "text", text }], ...(turn ? { expectedTurnId: turn } : {}) },
+      3000,
+    );
   } catch (error) {
     if (errors.is(error, "RpcError") || errors.is(error, "TooLarge")) throw Error("MessageUnavailable");
     if (unanswered(error)) throw Error("DeliveryUnknown");

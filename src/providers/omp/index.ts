@@ -152,7 +152,7 @@ export const adapter: Adapter = {
       }),
   },
   rename: { channel: socket.channel },
-  message: { channel: socket.message },
+  message: { channel: socket.message, steer: socket.steer },
   headless: { start: at => Omp.start(at), restore: (saved, live) => Omp.restore(saved, live) },
   inference: {
     model: "openai-codex/gpt-6-luna",

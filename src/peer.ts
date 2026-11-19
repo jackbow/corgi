@@ -30,6 +30,12 @@ export class Reply {
   }
 }
 export class Client {
+  tasks: {
+    workspace: number;
+    task: bigint | null;
+    parent: import("./task_registry").Identity | null;
+    revision: bigint;
+  } | null = null;
   viewer_id = 0;
   viewer_pid = 0;
   active_seq = 0;

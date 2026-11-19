@@ -124,6 +124,13 @@ export const operations = [
   "account.remove",
   "session.snapshot",
   "session.subscribe",
+  "task.start",
+  "task.message",
+  "task.get",
+  "task.list",
+  "task.cancel",
+  "task.subscribe",
+  "task.ack",
   "viewer.watch",
   "agent.subscribe",
   "viewer.open",
@@ -235,6 +242,9 @@ export function versions(op: string): { protocol?: number; runtime_protocol?: nu
  * and report a lost result rather than replaying before completion. */
 export function once(op: Op): boolean {
   switch (op) {
+    case "task.start":
+    case "task.message":
+    case "task.cancel":
     case "account.restore":
     case "account.remove":
     case "session.command":
@@ -288,7 +298,7 @@ export function id(value: any, field: string): number {
   return n;
 }
 export function exclusion(op: string): "none" | "layout" | "import" | "push" | "reload" | "shutdown" {
-  if (op === "session.command") return "layout";
+  if (op === "session.command" || op === "task.start" || op === "task.message") return "layout";
   if (op === "onboarding.handoff" || op === "onboarding.copy") return "import";
   if (op === "git.push") return "push";
   if (op === "server.reload") return "reload";
@@ -703,6 +713,30 @@ const stream = {
   heartbeat_ms: ["u32", 250],
 } as const satisfies Fields;
 const requests = {
+  "task.start": {
+    workspace: ["u32", 0],
+    caller: ["u32", 0],
+    parent: ["?u32", null],
+    no_parent: ["bool", false],
+    notify: ["bool", true],
+    name: ["string", ""],
+    cwd: ["string", ""],
+    agent: ["string", ""],
+    prompt: ["string", ""],
+    argv: ["[]string", []],
+  },
+  "task.message": {
+    target: "string",
+    text: "string",
+    busy: ["reject|queue|steer", "reject"],
+    caller: ["u32", 0],
+    workspace: ["u32", 0],
+  },
+  "task.get": { target: "string", caller: ["u32", 0], workspace: ["u32", 0] },
+  "task.cancel": { target: "string", caller: ["u32", 0], workspace: ["u32", 0] },
+  "task.list": { workspace: ["u32", 0], caller: ["u32", 0] },
+  "task.subscribe": { target: ["string", ""], workspace: ["u32", 0], caller: ["u32", 0] },
+  "task.ack": { caller: "u32", through: "u64" },
   hello: { accept_encoding: ["[]string", []] },
   /** `output: false` leaves out pushes for terminal output alone, as a status display wants. */
   "session.subscribe": { output: ["bool", true] },
@@ -891,6 +925,13 @@ type ViewerSnapshot = ReturnType<typeof import("./session").viewerSnapshot>;
 type Ok = { ok: true };
 type ViewerInfo = { id: number; pid: number; active: number; workspace: number; pane: number | null; watched: boolean };
 export interface ReplyPayloads {
+  "task.start": Ok & { task: import("./task_registry").Task };
+  "task.message": Ok & { task: import("./task_registry").Task };
+  "task.get": Ok & { task: import("./task_registry").Task };
+  "task.cancel": Ok & { task: import("./task_registry").Task };
+  "task.list": Ok & { snapshot: import("./task_registry").Snapshot };
+  "task.subscribe": Ok & { snapshot: import("./task_registry").Snapshot };
+  "task.ack": Ok;
   hello: {
     type: "hello";
     protocol: number;
@@ -1011,6 +1052,7 @@ export type PickUnit = Request<"viewer.pick">["unit"];
 export type PickResult = Omit<Reply<"viewer.pick">, "ok">;
 /** Unsolicited updates share a connection with correlated replies. */
 export type Event =
+  | Wire<import("./task_registry").Snapshot>
   | Reply<"viewer.stream">
   | { type: "viewer.frame"; sequence: number; frame?: Wire<bigint>; view: Reply<"viewer.sync"> }
   | { type: "viewer.controls"; controls: Wire<Control[]> }
@@ -1022,6 +1064,7 @@ export type Event =
   | { type: "agent.history"; update: Wire<import("./launch/history").Update> };
 /** What arrives without a request id; anything else untagged fails the connection. */
 export const event_types = [
+  "tasks",
   "viewer.stream",
   "viewer.frame",
   "viewer.controls",
@@ -1040,6 +1083,7 @@ export function event(message: { type?: unknown }): Event | null {
  * tell them from the answer it waits for. */
 export function pushed(type: unknown): boolean {
   switch (type) {
+    case "tasks":
     case "viewer.frame":
     case "viewer.controls":
     case "viewer.wake":

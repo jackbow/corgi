@@ -62,6 +62,56 @@ export function validateCheckpoint(value: any): void {
     requireFields(closed.tab, ["id", "root"]);
   }
   for (const actor of value.conversations ?? []) requireFields(actor, ["id", "agent"]);
+  if (value.tasks !== undefined) {
+    requireFields(value.tasks, ["next", "sequence", "revision", "tasks", "helpers", "notes"]);
+    for (const field of ["tasks", "helpers", "notes"]) if (!Array.isArray(value.tasks[field])) fail();
+    if (value.tasks.tasks.length > 2304 || value.tasks.helpers.length > 1024 || value.tasks.notes.length > 1024)
+      fail("Overflow");
+    const ids = new Set<bigint>();
+    for (const task of value.tasks.tasks) {
+      requireFields(task, [
+        "id",
+        "kind",
+        "workspace",
+        "pane",
+        "name",
+        "parent",
+        "notify",
+        "identity",
+        "state",
+        "prompt",
+        "busy",
+        "created",
+        "updated",
+        "delivered",
+        "delivery",
+        "joined",
+        "completed",
+        "turn",
+        "epoch",
+        "saw_work",
+        "source",
+        "reason",
+        "exit_code",
+        "signal",
+        "output",
+        "output_start",
+        "output_end",
+        "truncated",
+        "decoder",
+      ]);
+      requireFields(task.decoder, ["escape", "pending"]);
+      if (typeof task.receipt !== "string") fail();
+      if (!Array.isArray(task.decoder.pending) || task.decoder.pending.length > 3) fail("Overflow");
+      const id = BigInt(task.id);
+      if (id <= 0n || id >= BigInt(value.tasks.next) || ids.has(id)) fail();
+      ids.add(id);
+      if (BigInt(task.output_end) - BigInt(task.output_start) !== BigInt(Buffer.byteLength(task.output))) fail();
+    }
+    for (const helper of value.tasks.helpers)
+      requireFields(helper, ["pane", "workspace", "name", "parent", "notify", "identity"]);
+    for (const note of value.tasks.notes) requireFields(note, ["seq", "parent", "task", "state", "seen", "delivery"]);
+  }
   for (const session of value.sessions)
     requireFields(session, [
       "binding",

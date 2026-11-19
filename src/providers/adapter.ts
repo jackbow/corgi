@@ -188,6 +188,10 @@ export interface Rename {
 }
 /** How a provider takes a prompt Corgi sends it. */
 export interface Message {
+  /** Additional composer checks for automated orchestration deliveries. */
+  ready?: (terminal: Terminal) => boolean;
+  /** Steers exactly this active turn; unsupported providers leave it absent. */
+  steer?: (session: string, turn: string, text: string, account: string) => Promise<void>;
   /** Sends a prompt to `session`, in `account`, through the provider's own
    * channel, if one reaches it now; `connected` as for `Rename.channel`.
    * Sending throws MessageUnavailable when nothing reached the session, so

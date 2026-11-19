@@ -38,8 +38,9 @@ function live(r: Runtime, target: { pane: number }): Pane {
 /** Sends `text` to the agent `target` names as a prompt. Typing refuses an
  * agent that is answering a prompt, or whose composer holds a draft. This
  * may run beside other daemon work: it waits on provider channels. */
-export async function send(r: Runtime, target: Target, text: string): Promise<Sent> {
+export async function send(r: Runtime, target: Target, text: string, guard?: () => void): Promise<Sent> {
   if (!text.trim()) throw Error("InvalidMessage");
+  guard?.();
   if ("headless" in target) {
     // The Corgi prompt's own sessions are the user's chats, not agents to prompt.
     const session = r.sessions.find(s => s.id === target.headless && !s.corgi);
@@ -61,6 +62,7 @@ export async function send(r: Runtime, target: Target, text: string): Promise<Se
         : null;
   if (channel)
     try {
+      guard?.();
       await channel(text);
       return { delivery: "message", queued };
     } catch (error) {
@@ -68,6 +70,7 @@ export async function send(r: Runtime, target: Target, text: string): Promise<Se
     }
   // The pane may have closed, slept or lost its agent meanwhile.
   pane = live(r, target);
+  guard?.();
   if (pane.agent().state === "blocked") throw Error("AgentBlocked");
   const t = pane.terminal,
     id = pane.id;

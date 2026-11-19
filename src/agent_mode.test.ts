@@ -26,3 +26,13 @@ test("agent flags are taken out before --, the last one winning", () => {
     args: ["pane", "send", "3", "--", "--agent"],
   });
 });
+test("run owns its launcher flag, while a preceding agent-mode flag remains global", () => {
+  expect(agent_mode.flags(["run", "--agent", "codex", "review"])).toEqual({
+    flag: null,
+    args: ["run", "--agent", "codex", "review"],
+  });
+  expect(agent_mode.flags(["--agent", "run", "--agent", "claude", "review"])).toEqual({
+    flag: true,
+    args: ["run", "--agent", "claude", "review"],
+  });
+});

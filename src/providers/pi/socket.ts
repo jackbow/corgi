@@ -54,9 +54,10 @@ async function request(path: string, session: string, name?: string, only_unname
 }
 /** Sends `text` as a prompt through the extension at `path`, which said it
  * takes prompts; `prompted` in its reply says it did. */
-async function prompt(path: string, session: string, text: string) {
-  const result = await exchange(path, { session, prompt: text });
+async function prompt(path: string, session: string, text: string, turn?: string) {
+  const result = await exchange(path, { session, prompt: text, ...(turn ? { steer: turn } : {}) });
   if (result === "unanswered") throw Error("DeliveryUnknown");
+  if (turn && result !== "refused" && result.reply.prompted !== true) throw Error("SteeringUnsupported");
   if (result === "refused" || result.reply.prompted !== true) throw Error("MessageUnavailable");
 }
 /** Renames and prompts through the socket each session of the `id`
@@ -82,11 +83,20 @@ export function sockets(id: string, directory: (account: string) => string) {
       }
       const result = await exchange(path, { session, only_unnamed: automatic });
       if (status(result, automatic) === "named")
-        return { path, prompts: typeof result !== "string" && result.reply.prompts === true };
+        return {
+          path,
+          prompts: typeof result !== "string" && result.reply.prompts === true,
+          steering: typeof result !== "string" && result.reply.steering === true,
+        };
     }
     return null;
   }
   return {
+    async steer(session: string, turn: string, text: string, account = "") {
+      const found = await locate(session, account);
+      if (!found?.steering) throw Error("SteeringUnsupported");
+      await prompt(found.path, session, text, turn);
+    },
     async channel(session: string, _connected = false, account = "") {
       const found = await locate(session, account);
       return found
