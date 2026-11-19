@@ -205,6 +205,7 @@ test("preferences round trip, each field in its file, and fall back to defaults"
     p.sidebar_width = 44;
     p.sidebar_split = 9;
     p.review_tree_rows = 14;
+    p.conversation_prs_width = 54;
     p.agent_scroll = { workspace: 2, offset: 7 };
     p.workspace_order = [JSON.stringify(["work", 2]), JSON.stringify(["local", 1])];
     write(p, where);
@@ -215,11 +216,14 @@ test("preferences round trip, each field in its file, and fall back to defaults"
       sidebar_width: 44,
       sidebar_split: 9,
       review_tree_rows: 14,
+      conversation_prs_width: 54,
       agent_scroll: { workspace: 2, offset: 7 },
       workspace_order: p.workspace_order,
     });
     expect(await json(where.config)).toMatchObject({ language: "ja", preset: "corgi" });
     expect(await json(where.config)).not.toHaveProperty("sidebar_width");
+    expect(await json(where.config)).not.toHaveProperty("conversation_prs_width");
+    expect(await json(where.viewer)).toMatchObject({ conversation_prs_width: 54 });
     expect(await json(where.viewer)).toMatchObject({ agents: "all", sidebar_width: 44, format: current });
     await put(where.config, '{"resources":{"enabled":false,"io":false,"alerts":true}}');
     expect(read(where).resources).toEqual({ enabled: false });

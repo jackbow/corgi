@@ -553,7 +553,7 @@ export class Controller {
   hide_connection_signals = false;
   resource_aim: resourceTooltip.Aim | null = null;
   ui_mouse_down = false;
-  sidebar_drag: "width" | "split" | null = null;
+  sidebar_drag: "width" | "split" | "prs" | null = null;
   agent_drag: AgentDrag | null = null;
   private dock_history = new Map<number, { revision: bigint; undo: number; redo: number }>();
   workspace_drag: WorkspaceDrag | null = null;
@@ -613,6 +613,7 @@ export class Controller {
       r = this.review,
       previous = this.review_state.get(owner);
     this.review_state.put(owner, {
+      prs_open: this.conversation_prs.open,
       active: p.open ? "pr" : r.open ? (r.remote ? "remote" : "diff") : null,
       pr: p.ref
         ? {
@@ -634,6 +635,7 @@ export class Controller {
     this.restored_reviews.add(owner);
     const saved = this.review_state.get(owner);
     if (!saved) return;
+    this.conversation_prs.open = saved.prs_open === true;
     const p = this.pull_request;
     if (p.ref) return;
     if (saved.pr) {
@@ -658,7 +660,20 @@ export class Controller {
   }
   private local_review = new panel.Panel();
   private pr_cache = new pullRequest.Cache();
-  readonly conversation_prs = new conversationPRPanel.Panel();
+  private conversation_pr_panel = new conversationPRPanel.Panel();
+  private conversation_pr_owner = "";
+  private conversation_pr_visibility = new Map<string, boolean>();
+  get conversation_prs(): conversationPRPanel.Panel {
+    const owner = this.savedReviewOwner() ?? this.reviewOwner();
+    if (owner !== this.conversation_pr_owner) {
+      this.conversation_pr_visibility.set(this.conversation_pr_owner, this.conversation_pr_panel.open);
+      this.conversation_pr_owner = owner;
+      this.conversation_pr_panel.open = this.conversation_pr_visibility.get(owner) ?? false;
+      this.conversation_pr_panel.focused = false;
+      if (this.sidebar_drag === "prs") this.sidebar_drag = null;
+    }
+    return this.conversation_pr_panel;
+  }
   pr_search: conversationPRSearch.Popup | null = null;
   private followConversationPRs() {
     const pane = this.runtime.workspaces.items.length ? this.focused() : null;
@@ -3867,6 +3882,7 @@ export class Controller {
         break;
       case "conversation-prs": {
         this.closeMenu();
+        this.followConversationPRs();
         this.conversation_prs.open = !this.conversation_prs.open;
         this.conversation_prs.focused = false;
         if (this.conversation_prs.open) {
@@ -8449,6 +8465,11 @@ export class Controller {
       const rect = this.conversationPRRect();
       if (rect?.contains(x, y)) {
         this.pointer = { x, y };
+        if (!release && button === 0 && x === rect.x + rect.w - 1) {
+          this.sidebar_drag = "prs";
+          this.dirty = true;
+          return;
+        }
         if (!release && button === 0) this.giveKeyboard("pane");
         this.followConversationPRs();
         const command = this.conversation_prs.mouse(button, x, y, release);
@@ -8853,6 +8874,7 @@ export class Controller {
         this.sidebar_drag = null;
         try {
           if (drag === "width") preferences.update({ sidebar_width: this.host.prefs.sidebar_width });
+          else if (drag === "prs") preferences.update({ conversation_prs_width: this.prefs.conversation_prs_width });
           else preferences.update({ sidebar_split: this.host.prefs.sidebar_split });
         } catch (error) {
           this.notice((error as Error).message);
@@ -8860,7 +8882,12 @@ export class Controller {
       } else if (button === 32) {
         if (drag === "width")
           this.host.prefs.sidebar_width = Math.min(Math.max(x + 1, 20), Math.max(20, sat(this.width, 20)));
-        else this.host.prefs.sidebar_split = sidebar.View.splitFor(this.height, y + 1);
+        else if (drag === "prs") {
+          const side = this.sidebarView([]),
+            start = side.area().x - side.left_panel;
+          this.prefs.conversation_prs_width = Math.max(24, x - start + 1);
+          this.prefs.conversation_prs_width = this.conversationPRWidth(side.width);
+        } else this.host.prefs.sidebar_split = sidebar.View.splitFor(this.height, y + 1);
         this.dirty = true;
       }
       this.dirty = true;
@@ -10857,7 +10884,7 @@ export class Controller {
             ? new sidebar.Preview(this.agent_drag.source, this.agent_drag.preview)
             : null,
         resizing: this.sidebar_drag
-          ? this.sidebar_drag === "width"
+          ? this.sidebar_drag !== "split"
             ? "horizontal"
             : "vertical"
           : this.review.resizing
@@ -10949,7 +10976,9 @@ export class Controller {
   }
   private conversationPRWidth(sidebar_width: number): number {
     if (!this.conversation_prs.open || this.reviewFullscreen()) return 0;
-    const width = Math.min(40, this.width - sidebar_width - 30);
+    let room = this.width - sidebar_width - 30;
+    if ((this.review.open || this.pull_request.open) && room >= 24 + panel.min_width) room -= panel.min_width;
+    const width = Math.min(Math.max(24, this.prefs.conversation_prs_width), room);
     return width >= 24 ? width : 0;
   }
   private conversationPRRect(): Rect | null {

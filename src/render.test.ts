@@ -290,10 +290,19 @@ test("dividers and the sidebar edge show resize pointers", () => {
   m.split(left, "horizontal");
   m.split(left, "vertical");
   selection.reconcile(m);
-  const cases: { x: number; y: number; shape: string; resizing?: Axis; menu?: boolean; iterm2?: boolean }[] = [
+  const cases: {
+    x: number;
+    y: number;
+    shape: string;
+    resizing?: Axis;
+    menu?: boolean;
+    iterm2?: boolean;
+    prs?: number;
+  }[] = [
     { x: 63, y: 5, shape: "ew-resize" },
     { x: 40, y: 15, shape: "ns-resize" },
     { x: 27, y: 12, shape: "ew-resize" },
+    { x: 67, y: 12, prs: 40, shape: "ew-resize" },
     { x: 50, y: 5, shape: "default" },
     // A frame edge is not a divider.
     { x: 99, y: 5, shape: "default" },
@@ -312,6 +321,7 @@ test("dividers and the sidebar edge show resize pointers", () => {
         pointer: { x: c.x, y: c.y },
         iterm2_pointer: c.iterm2 === true,
         resizing: c.resizing ?? null,
+        conversation_prs_width: c.prs,
         tab_menu: c.menu ? new TabMenu({ tab: m.tabs[0].id, anchor_x: 0 }) : null,
         message: "",
         copy_mode: false,

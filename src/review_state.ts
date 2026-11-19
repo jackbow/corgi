@@ -16,6 +16,7 @@ export interface PullRequest {
   foldedThreads: string[];
 }
 export interface State {
+  prs_open?: boolean;
   active: "pr" | "diff" | "remote" | null;
   pr: PullRequest | null;
   diff: Diff | null;

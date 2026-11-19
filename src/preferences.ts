@@ -81,6 +81,8 @@ export class Preferences {
   worktree_folder = worktreeFolder.default_template;
   /** The review panel's width, as last dragged. */
   review_width = 80;
+  /** Width of the conversation's PR list, shared across conversations. */
+  conversation_prs_width = 40;
   /** Rows the review panel's file list takes at most, as last dragged. */
   review_tree_rows = 9;
   /** The Corgi prompt's last pick; "auto", like unset, follows the strong
@@ -502,6 +504,7 @@ function readState(d: Record<string, any>, v: Preferences): void {
   if (whole(d.sidebar_width, 0)) v.sidebar_width = Math.max(d.sidebar_width, 20);
   if (whole(d.sidebar_split, 0)) v.sidebar_split = d.sidebar_split;
   if (whole(d.review_width, 0)) v.review_width = d.review_width;
+  if (whole(d.conversation_prs_width, 24)) v.conversation_prs_width = d.conversation_prs_width;
   if (whole(d.review_tree_rows, 1)) v.review_tree_rows = d.review_tree_rows;
   // A pick this build can't read, such as a provider it doesn't know, falls back.
   if ("prompt_model" in d) v.prompt_model = promptModel(d.prompt_model) ?? undefined;

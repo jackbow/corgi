@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store, type State } from "./review_state";
 const state = (): State => ({
+  prs_open: true,
   active: "pr",
   diff: null,
   pr: {

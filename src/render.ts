@@ -1001,6 +1001,7 @@ export function frame(
         hovered_uri = sidebar.portLink(side, u.workspaces, pointer.x, pointer.y);
         // The sidebar's last column drags its width, ahead of any control there.
         if (side.width > 0 && pointer.x === side.width - 1) resize_hover = "horizontal";
+        else if (side.left_panel > 0 && pointer.x === side.area().x - 1) resize_hover = "horizontal";
         else if (u.review_width > 0 && pointer.x === width - u.review_width) resize_hover = "horizontal";
         else if (u.review_width > 0 && pointer.x > width - u.review_width && pointer.y === u.review_split)
           resize_hover = "vertical";

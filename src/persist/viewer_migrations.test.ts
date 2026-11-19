@@ -9,7 +9,7 @@ const history = state_formats.viewer,
 test.each([copied, "d495e64414cb", "67a3f5d4cd43"])(
   "viewer migration restores settings only when downgrading to %s",
   target => {
-    const state = { onboarding_complete: true, sidebar_width: 40, future_state: 1 },
+    const state = { onboarding_complete: true, sidebar_width: 40, conversation_prs_width: 54, future_state: 1 },
       settings = {
         preset: "tmux",
         prefix: "ctrl_a",

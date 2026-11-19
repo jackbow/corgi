@@ -185,7 +185,8 @@ test("the conversation PR column preserves workspace navigation and fits narrow 
     expect(row).toBeDefined();
     await s.input(bytes(`\x1b[<0;5;${row + 1}M\x1b[<0;5;${row + 1}m`));
     expect(s.current().id).toBe(2);
-    expect(s.conversation_prs.open).toBe(true);
+    expect(s.conversation_prs.open).toBe(false);
+    await s.perform({ name: "conversation-prs" });
     await s.input(bytes(`\x1b[<0;${side.width};10M\x1b[<32;34;10M\x1b[<0;34;10m`));
     expect(s.sidebarView([]).width).toBe(34);
     expect(s.area().x).toBe(74);
@@ -199,6 +200,58 @@ test("the conversation PR column preserves workspace navigation and fits narrow 
     await s.perform({ name: "conversation-prs" });
     expect(s.sidebarView([]).left_panel).toBe(0);
   } finally {
+    viewer.close(s);
+  }
+});
+
+test("the PR list divider resizes smoothly, persists on release, and keeps visibility per conversation", async () => {
+  const s = controller(),
+    update = spyOn(preferences, "update").mockImplementation(() => {}),
+    world = folders("/a", "/b");
+  world.panes[0].agent = { ...agent(), provider: "codex", conversation: 17 } as any;
+  world.panes[1].agent = { ...agent(), provider: "codex", conversation: 18 } as any;
+  s.width = 200;
+  s.height = 40;
+  s.input_state.attached = true;
+  s.receiveSnapshot(world);
+  try {
+    await s.perform({ name: "conversation-prs" });
+    s.frame();
+    const start = s.area().x;
+    await s.input(bytes(`\x1b[<0;${start};10M\x1b[<32;88;10M`));
+    expect(s.sidebarView([]).left_panel).toBe(60);
+    expect(s.area().x).toBe(88);
+    expect(s.keyboard).toBe("pane");
+    expect(s.conversation_prs.focused).toBe(false);
+    expect(update).not.toHaveBeenCalled();
+    await s.input(bytes("\x1b[<32;5;10M"));
+    expect(s.sidebarView([]).left_panel).toBe(24);
+    await s.input(bytes("\x1b[<32;300;10M"));
+    expect(s.area().w).toBe(30);
+    await s.input(bytes("\x1b[<32;82;10M\x1b[<0;82;10m"));
+    expect(s.sidebarView([]).left_panel).toBe(54);
+    expect(update).toHaveBeenCalledWith({ conversation_prs_width: 54 });
+    expect(s.sidebar_drag).toBeNull();
+    s.switchWorkspace(2);
+    expect(s.conversation_prs.open).toBe(false);
+    await s.perform({ name: "conversation-prs" });
+    expect(s.sidebarView([]).left_panel).toBe(54);
+    s.switchWorkspace(1);
+    expect(s.conversation_prs.open).toBe(true);
+    await s.perform({ name: "conversation-prs" });
+    s.switchWorkspace(2);
+    expect(s.conversation_prs.open).toBe(true);
+    s.switchWorkspace(1);
+    expect(s.conversation_prs.open).toBe(false);
+    await s.perform({ name: "conversation-prs" });
+    world.panes[0].agent = { ...agent(), provider: "codex", conversation: 19 } as any;
+    s.receiveSnapshot(world);
+    expect(s.conversation_prs.open).toBe(false);
+    world.panes[0].agent = { ...agent(), provider: "codex", conversation: 17 } as any;
+    s.receiveSnapshot(world);
+    expect(s.conversation_prs.open).toBe(true);
+  } finally {
+    update.mockRestore();
     viewer.close(s);
   }
 });
@@ -7760,6 +7813,7 @@ test("PR viewer state restores by provider session identity across new controlle
     first.pull_request.top = 11;
     first.pull_request.unresolvedOnly = true;
     first.pull_request.openThreads.add("resolved-thread");
+    await first.perform({ name: "conversation-prs" });
     viewer.close(first);
     first = null;
     second = open(202);
@@ -7770,6 +7824,7 @@ test("PR viewer state restores by provider session identity across new controlle
     expect(second.pull_request.top).toBe(11);
     expect(second.pull_request.unresolvedOnly).toBe(true);
     expect(second.pull_request.openThreads.has("resolved-thread")).toBe(true);
+    expect(second.conversation_prs.open).toBe(true);
   } finally {
     if (first) viewer.close(first);
     if (second) viewer.close(second);
