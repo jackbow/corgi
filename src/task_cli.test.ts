@@ -1,8 +1,15 @@
 import { test, expect } from "bun:test";
-import { parse, handles, Waiter } from "./task_cli";
+import { parse, handles, Waiter, list } from "./task_cli";
 import { Registry, type Identity } from "./task_registry";
 
 const parent: Identity = { pane: 1, generation: 1n, provider: "claude", session: "p" };
+test("task listings identify each workspace and make an empty result explicit", () => {
+  const r = new Registry(),
+    a = r.add({ kind: "command", workspace: 1, name: "tests" }),
+    b = r.add({ kind: "command", workspace: 2, name: "tests" });
+  expect(list([])).toBe("no tasks\n");
+  expect(list([a, b])).toBe("task:1 tests starting workspace:1\ntask:2 tests starting workspace:2\n");
+});
 test("run preserves program argv and parses launcher prompts without guessing executable names", async () => {
   expect(
     await parse(["run", "--bg", "--name", "tests", "--workspace", "2", "--", "bun", "test", "--timeout", "9000"]),

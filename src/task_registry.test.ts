@@ -3,6 +3,20 @@ import { Registry, Output, output_bytes, retained, type Identity } from "./task_
 import * as json from "./json";
 
 const parent: Identity = { pane: 1, generation: 3n, provider: "codex", session: "parent" };
+test("daemon-wide listings include every workspace while explicit scopes filter and redact output", () => {
+  const r = new Registry(),
+    a = r.add({ kind: "agent", workspace: 1, name: "review", prompt: "private prompt" }),
+    b = r.add({ kind: "command", workspace: 2, name: "tests" });
+  r.append(b, "retained output");
+  r.helpers.push({ pane: 5, workspace: 1, name: "review", parent, notify: true, identity: null });
+  r.helpers.push({ pane: 6, workspace: 2, name: "other", parent: null, notify: false, identity: null });
+  const all = r.snapshot(null, null, null);
+  expect(all.tasks.map(t => t.id)).toEqual([a.id, b.id]);
+  expect(all.tasks.every(t => t.prompt === "" && t.output === "")).toBe(true);
+  expect(all.helpers.map(h => h.workspace)).toEqual([1, 2]);
+  expect(r.snapshot(1, null, null).tasks.map(t => t.id)).toEqual([a.id]);
+  expect(r.snapshot(2, null, null).helpers.map(h => h.pane)).toEqual([6]);
+});
 test("task IDs and names survive collection independently of panes and display labels", () => {
   const r = new Registry(),
     first = r.add({ kind: "command", workspace: 1, name: "tests" });

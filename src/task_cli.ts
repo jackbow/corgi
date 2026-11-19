@@ -266,6 +266,11 @@ async function wait(
 function label(task: tasks.Task): string {
   return `task:${task.id} ${task.name || `pane:${task.pane}`} ${task.state}${task.exit_code !== null ? ` exit=${task.exit_code}` : ""}${task.reason ? ` ${task.reason}` : ""}${task.truncated ? " output_truncated" : ""}`;
 }
+export function list(items: tasks.Task[]): string {
+  return items.length
+    ? items.map(task => `${label(task)} workspace:${task.workspace}`).join("\n") + "\n"
+    : "no tasks\n";
+}
 export async function run(daemon: Daemon, words: string[]): Promise<void> {
   const inv = await parse(words, Number(process.env.CORGI_PANE) || 0),
     query = { caller: inv.caller, workspace: inv.workspace };
@@ -277,9 +282,7 @@ export async function run(daemon: Daemon, words: string[]): Promise<void> {
   }
   if (inv.op === "list") {
     const reply = await daemon.call("task.list", query);
-    process.stdout.write(
-      inv.json ? json.stringify(reply) + "\n" : tasks.decode(reply.snapshot).tasks.map(label).join("\n") + "\n",
-    );
+    process.stdout.write(inv.json ? json.stringify(reply) + "\n" : list(tasks.decode(reply.snapshot).tasks));
     return;
   }
   let target = inv.op === "wait" ? inv.target : "",

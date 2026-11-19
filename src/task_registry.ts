@@ -275,15 +275,15 @@ export class Registry {
     for (const note of this.notes) if (same(note.parent, parent) && note.seq <= through) note.seen = true;
     this.changed();
   }
-  snapshot(workspace: number, task: bigint | null, parent: Identity | null): Snapshot {
+  snapshot(workspace: number | null, task: bigint | null, parent: Identity | null): Snapshot {
     return {
       type: "tasks",
       revision: this.revision,
       caller: parent,
       tasks: this.tasks
-        .filter(t => (task !== null ? t.id === task : t.workspace === workspace))
+        .filter(t => (task !== null ? t.id === task : workspace === null || t.workspace === workspace))
         .map(t => ({ ...t, prompt: "", output: task !== null ? t.output : "" })),
-      helpers: this.helpers.filter(h => h.workspace === workspace),
+      helpers: this.helpers.filter(h => workspace === null || h.workspace === workspace),
       notes: this.notes.filter(n => same(n.parent, parent)),
     };
   }

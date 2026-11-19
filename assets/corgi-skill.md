@@ -26,6 +26,8 @@ including its saved model/account/options. Command argv follows `--`; use
 `-- sh -c '...'` for shell expressions. Names are workspace-scoped aliases;
 `task:N` IDs always identify one assignment. Existing numeric/pane targets also
 support tracked messages when `--busy` or `--wait` is supplied.
+`corgi task list` lists all tracked tasks on the daemon, including from an outside
+shell. Use `--workspace ID` to filter; an empty list prints `no tasks`.
 
 Use `--bg` to launch several helpers, then wait. Foreground runs and waits check
 in after 180 seconds by default (`--timeout SECONDS`); timeout and Ctrl+C leave

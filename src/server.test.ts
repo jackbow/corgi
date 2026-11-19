@@ -28,6 +28,32 @@ function fixture() {
     },
   };
 }
+test("task discovery needs no caller or workspace and keeps explicit workspace validation", async () => {
+  const { server, dispose } = fixture(),
+    client = server.addClient(null, false),
+    replies = spyOn(client, "queue").mockImplementation(() => {});
+  try {
+    server.runtime.workspaces.items.push(new Workspace(1, "/tmp"), new Workspace(2, "/tmp"));
+    const a = server.runtime.tasks.add({ kind: "command", workspace: 1 }),
+      b = server.runtime.tasks.add({ kind: "command", workspace: 2 });
+    for (const caller of [0, 999]) {
+      await server.request(client, protocol.envelope("task.list", { caller }));
+      expect(replies.mock.calls.at(-1)?.[0]).toMatchObject({
+        ok: true,
+        snapshot: { tasks: [{ id: a.id }, { id: b.id }] },
+      });
+    }
+    await server.request(client, protocol.envelope("task.list", { workspace: 2 }));
+    expect(replies.mock.calls.at(-1)?.[0]).toMatchObject({ ok: true, snapshot: { tasks: [{ id: b.id }] } });
+    await expect(server.request(client, protocol.envelope("task.list", { workspace: 999 }))).rejects.toThrow(
+      "NoWorkspace",
+    );
+    await expect(server.request(client, protocol.envelope("task.subscribe"))).rejects.toThrow("MissingWorkspace");
+  } finally {
+    replies.mockRestore();
+    dispose();
+  }
+});
 test("background recovery leaves the command queue free and only marks its captured revision saved", async () => {
   const { server, dispose } = fixture(),
     first = Promise.withResolvers<void>(),
