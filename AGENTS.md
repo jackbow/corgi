@@ -2,6 +2,16 @@
 
 See [HACKING.md](HACKING.md) for development workflows and architecture.
 
+## Local workflow
+
+This is a solo project; we are not collaborating with anyone else.
+
+- Work directly on `jb/main` exclusively. Do not create or use feature branches.
+- Do not create pull requests.
+- Do not create or use git worktrees unless explicitly instructed.
+
+These rules take precedence over generic branch, PR, and collaboration workflows.
+
 ## Local functionality changes
 
 For every functional change relative to `main`, update
