@@ -71,8 +71,10 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
       `  corgi launcher show AGENT... [--workspace ID]  仅影响指定工作区`,
     '["  corgi licenses                Corgi\'s license and the software it includes"]': () =>
       `  corgi licenses                查看 Corgi 及其所含软件的许可证`,
-    '["  corgi list [--json]                 layout, panes, agents, viewers"]': () =>
-      `  corgi list [--json]                 布局、窗格、智能体和客户端`,
+    '["  corgi list --tree [--workspace ID] [--json]  layout, panes, agents, viewers"]': () =>
+      `  corgi list --tree [--workspace ID] [--json]  布局、窗格、智能体和客户端`,
+    '["  corgi list [--workspace ID] [--all] [--json]  live sessions; --all includes inactive"]': () =>
+      `  corgi list [--workspace ID] [--all] [--json]  活动会话；--all 包含非活动会话`,
     '["  corgi memory get [FILE[:FROM[-TO]]]  its files, or a file\'s lines"]': () =>
       `  corgi memory get [FILE[:FROM[-TO]]]  列出记忆文件或读取文件中的行`,
     '["  corgi memory search WORDS... [--limit N]  the Corgi prompt\'s memory lines"]': () =>
@@ -1570,8 +1572,10 @@ ${v1} 使用该账号。
       `  corgi launcher show AGENT... [--workspace ID]  指定ワークスペースのみに適用`,
     '["  corgi licenses                Corgi\'s license and the software it includes"]': () =>
       `  corgi licenses                Corgiと同梱ソフトウェアのライセンス`,
-    '["  corgi list [--json]                 layout, panes, agents, viewers"]': () =>
-      `  corgi list [--json]                 レイアウト、ペイン、エージェント、ビューアーを表示`,
+    '["  corgi list --tree [--workspace ID] [--json]  layout, panes, agents, viewers"]': () =>
+      `  corgi list --tree [--workspace ID] [--json]  レイアウト、ペイン、エージェント、ビューアーを表示`,
+    '["  corgi list [--workspace ID] [--all] [--json]  live sessions; --all includes inactive"]': () =>
+      `  corgi list [--workspace ID] [--all] [--json]  実行中のセッション；--all で非アクティブも表示`,
     '["  corgi memory get [FILE[:FROM[-TO]]]  its files, or a file\'s lines"]': () =>
       `  corgi memory get [FILE[:FROM[-TO]]]  記憶ファイルの一覧または指定行を表示`,
     '["  corgi memory search WORDS... [--limit N]  the Corgi prompt\'s memory lines"]': () =>
@@ -3109,8 +3113,10 @@ Corgiに登録された全アカウントが対象になります。--accountで
       `  corgi launcher show AGENT... [--workspace ID]  지정한 작업 공간에만 적용`,
     '["  corgi licenses                Corgi\'s license and the software it includes"]': () =>
       `  corgi licenses                Corgi와 포함된 소프트웨어의 라이선스`,
-    '["  corgi list [--json]                 layout, panes, agents, viewers"]': () =>
-      `  corgi list [--json]                 레이아웃, 패널, 에이전트, 클라이언트`,
+    '["  corgi list --tree [--workspace ID] [--json]  layout, panes, agents, viewers"]': () =>
+      `  corgi list --tree [--workspace ID] [--json]  레이아웃, 패널, 에이전트, 클라이언트`,
+    '["  corgi list [--workspace ID] [--all] [--json]  live sessions; --all includes inactive"]': () =>
+      `  corgi list [--workspace ID] [--all] [--json]  활성 세션; --all은 비활성 세션도 포함`,
     '["  corgi memory get [FILE[:FROM[-TO]]]  its files, or a file\'s lines"]': () =>
       `  corgi memory get [FILE[:FROM[-TO]]]  기억 파일 목록 또는 파일의 행 표시`,
     '["  corgi memory search WORDS... [--limit N]  the Corgi prompt\'s memory lines"]': () =>
@@ -4647,8 +4653,10 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
       `  corgi launcher show AGENT... [--workspace ID]  только в одном пространстве`,
     '["  corgi licenses                Corgi\'s license and the software it includes"]': () =>
       `  corgi licenses                лицензия Corgi и входящего в него ПО`,
-    '["  corgi list [--json]                 layout, panes, agents, viewers"]': () =>
-      `  corgi list [--json]                 расположение, панели, агенты, клиенты`,
+    '["  corgi list --tree [--workspace ID] [--json]  layout, panes, agents, viewers"]': () =>
+      `  corgi list --tree [--workspace ID] [--json]  расположение, панели, агенты, клиенты`,
+    '["  corgi list [--workspace ID] [--all] [--json]  live sessions; --all includes inactive"]': () =>
+      `  corgi list [--workspace ID] [--all] [--json]  активные сеансы; --all включает неактивные`,
     '["  corgi memory get [FILE[:FROM[-TO]]]  its files, or a file\'s lines"]': () =>
       `  corgi memory get [FILE[:FROM[-TO]]]  список файлов памяти или строки файла`,
     '["  corgi memory search WORDS... [--limit N]  the Corgi prompt\'s memory lines"]': () =>

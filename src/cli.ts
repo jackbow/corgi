@@ -15,6 +15,7 @@ import { Memory, type Change } from "./prompt_memory";
 import helpText from "../assets/cli-help.txt" with { type: "text" };
 import * as i18n from "./i18n";
 import * as cli_help from "./cli_help";
+import * as cli_list from "./cli_list";
 import * as agentOrder from "./agent_order";
 import skill from "../assets/corgi-skill.md" with { type: "text" };
 export const help = helpText;
@@ -29,6 +30,7 @@ const groups = new Set([
   "claim",
   "current",
   "list",
+  "ls",
   "focus",
   "message",
   "grep",
@@ -43,6 +45,8 @@ const groups = new Set([
 const nested = new Set(["tab", "pane", "workspace", "launcher", "memory", "task"]);
 const flags = new Set([
   "json",
+  "all",
+  "tree",
   "clear",
   "stdin",
   "enter",
@@ -161,6 +165,7 @@ export function asksHelp(args: string[]): boolean {
 /** The lines of a help text that show the command a line names, matched by
  * its longest run of leading words: `pane split 3` finds `corgi pane split`. */
 export function usage(text: string, args: string[]): string[] {
+  if (args[0] === "ls") args = ["list", ...args.slice(1)];
   const end = args.findIndex((arg, i) => i > 0 && arg.startsWith("-")),
     words = end === -1 ? args : args.slice(0, end);
   for (let n = words.length; n > 0; n--) {
@@ -282,7 +287,7 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
   if (!groups.has(group)) throw Error("Usage");
   let start = nested.has(group) ? 2 : 1;
   const raw = nested.has(group) ? `${group}.${words[1]}` : group;
-  const action = raw === "workspace.list" ? "list" : raw;
+  const action = raw === "workspace.list" || raw === "ls" ? "list" : raw;
   if (!actions.has(action)) throw Error("Usage");
   let current = false,
     target = 0,
@@ -313,6 +318,7 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
           : null
         : null;
   let command: Record<string, any> | null = null,
+    listing: cli_list.Options | null = null,
     idle: { workspace: number; cwd: string; first: boolean } | null = null,
     launcher: {
       workspace: number;
@@ -333,6 +339,12 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
   };
   switch (action) {
     case "list":
+      listing = {
+        all: args.flag("all"),
+        tree: args.flag("tree"),
+        workspace: args.options.has("workspace") ? id(args.required("workspace")) : 0,
+      };
+      break;
     case "current":
     case "focus":
     case "workspace.switch":
@@ -534,6 +546,7 @@ export async function parse(words: string[], caller = 0, input?: () => Promise<s
     json,
     viewer,
     command,
+    ...(listing ? { listing } : {}),
     idle,
     launcher,
     ...(claim ? { claim } : {}),
@@ -593,8 +606,8 @@ export async function openConversation(conn: Call, q: Open, default_viewer: numb
     viewer = q.viewer ?? default_viewer ?? (viewers.length === 1 ? viewers[0].id : null),
     shown = viewers.find(v => v.id === viewer)?.workspace ?? null,
     owner = (pane: number) =>
-      workspaces.find(w => (w.model?.tabs ?? []).some((t: any) => panes(w.model.nodes, t.root).includes(pane)))?.id ??
-      null;
+      workspaces.find(w => (w.model?.tabs ?? []).some((t: any) => cli_list.panes(w.model.nodes, t.root).includes(pane)))
+        ?.id ?? null;
   const open = (snapshot.result?.panes ?? []).find(
     (p: any) => p.agent?.provider === q.provider && p.agent?.session === q.session,
   );
@@ -642,24 +655,19 @@ export function layout(nodes: any[], index: number, nested = false): string {
   const text = `${first} ${node.split.axis === "horizontal" ? "left of" : "above"} ${second}`;
   return nested ? `(${text})` : text;
 }
-/** The pane IDs of a tab's split tree, left to right and top to bottom. */
-function panes(nodes: any[], index: number): number[] {
-  const node = nodes[index];
-  if (!node) return [];
-  if ("pane" in node) return [node.pane];
-  return [...panes(nodes, node.split.first), ...panes(nodes, node.split.second)];
-}
 const quote = (name: string) => (name ? " " + JSON.stringify(name) : "");
-/** `corgi list` as an outline: workspaces, their tabs and panes and headless
+/** `corgi list --tree` as an outline: workspaces, their tabs and panes and headless
  * agents other than the Corgi prompt's, then viewers. A pane shows its cwd
  * only where it differs from its workspace's. */
-export function list(reply: any): string {
+export function list(reply: any, options: cli_list.Options = {}): string {
+  reply = cli_list.select(reply, options.workspace);
+  if (!options.tree) return cli_list.compact(reply, options);
   const out: string[] = [],
     byId = new Map<number, any>((reply.result?.panes ?? []).map((p: any) => [p.id, p]));
   for (const w of reply.result?.workspaces ?? []) {
     out.push(`workspace ${w.id}${quote(w.name)} ${w.cwd}${w.archived ? " archived" : ""}`);
     for (const t of w.model?.tabs ?? []) {
-      const ids = panes(w.model.nodes, t.root);
+      const ids = cli_list.panes(w.model.nodes, t.root);
       out.push(`  tab ${t.id}${quote(t.title)}${ids.length > 1 ? ": " + layout(w.model.nodes, t.root) : ""}`);
       for (const id of ids) {
         const p = byId.get(id);
@@ -1055,6 +1063,15 @@ export async function run(daemon: rpc_http.Daemon, args: string[], agent = false
     process.stdout.write(inv.json ? stringify({ ok: true, workspaces }) + "\n" : launcherText(workspaces));
     return;
   }
+  if (inv.action === "list") {
+    const reply = await daemon.call("session.list");
+    process.stdout.write(
+      inv.json
+        ? stringify(cli_list.select(reply, inv.listing.workspace)) + "\n"
+        : list(reply, { ...inv.listing, width: process.stdout.columns || 100 }),
+    );
+    return;
+  }
   if ((inv.current && group === "tab") || (inv.action === "tab.new" && caller)) {
     const { result } = await daemon.call("session.locate", { pane: caller });
     const [op, q] = Object.entries(inv.command)[0] as [string, any];
@@ -1065,27 +1082,23 @@ export async function run(daemon: rpc_http.Daemon, args: string[], agent = false
   }
   const reply = inv.command
     ? await daemon.call("session.command", { command: inv.command })
-    : inv.action === "list"
-      ? await daemon.call("session.list")
-      : inv.action === "current"
-        ? await daemon.call("session.locate", { pane: caller })
-        : inv.action === "pane.idle"
-          ? await daemon.call("pane.idle", inv.idle)
-          : inv.action === "workspace.switch"
-            ? await daemon.call("workspace.switch", { workspace: inv.target, viewer: inv.viewer })
-            : await daemon.call("focus", { pane: inv.target, viewer: inv.viewer });
+    : inv.action === "current"
+      ? await daemon.call("session.locate", { pane: caller })
+      : inv.action === "pane.idle"
+        ? await daemon.call("pane.idle", inv.idle)
+        : inv.action === "workspace.switch"
+          ? await daemon.call("workspace.switch", { workspace: inv.target, viewer: inv.viewer })
+          : await daemon.call("focus", { pane: inv.target, viewer: inv.viewer });
   if (inv.json) process.stdout.write(stringify(reply) + "\n");
   else if (reading && "result" in reply && "text" in reply.result && typeof reply.result.text === "string")
     process.stdout.write(read(reply.result.text, lines, agent));
   else
     process.stdout.write(
-      inv.action === "list"
-        ? list(reply)
-        : inv.action === "pane.idle"
-          ? idle(reply)
-          : inv.action === "message"
-            ? messaged(reply, inv.command["agent.message"].target)
-            : words(reply),
+      inv.action === "pane.idle"
+        ? idle(reply)
+        : inv.action === "message"
+          ? messaged(reply, inv.command["agent.message"].target)
+          : words(reply),
     );
 }
 /** Writes a failed command line's error, as JSON when it asked for `--json`;

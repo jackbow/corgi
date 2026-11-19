@@ -40,6 +40,40 @@ class AgentCli extends Runtime {
   async topology() {
     return (await this.snapshot()).workspaces.map((w: any) => [w.id, w.model.tabs]);
   }
+  async test_compact_list_alias_filters_and_full_tree() {
+    const one = await this.new("Build"),
+      other = (await this.command("workspace.create", { name: "other", cwd: this.temp.name })).workspace,
+      two = await this.new("Review", other);
+    const compact = await this.run_cli("list");
+    this.assertIn("WORKSPACE / SESSION", compact);
+    this.assertIn("/ Build", compact);
+    this.assertIn("/ Review", compact);
+    this.assertEqual(await this.run_cli("ls"), compact);
+    this.assertEqual(await this.run_cli("workspace", "list"), compact);
+    const machines = JSON.parse(await this.run_cli("ls", "--all-machines"));
+    this.assertEqual(machines.machines[0].machine, "local");
+    this.assertTrue(machines.machines[0].ok);
+    const filtered = await this.run_cli("ls", "--workspace", String(other));
+    this.assertIn("/ Review", filtered);
+    this.assertNotIn("/ Build", filtered);
+    const json = await this.cli(["ls", "--workspace", other]);
+    this.assertEqual(
+      json.result.workspaces.map((w: any) => w.id),
+      [other],
+    );
+    this.assertTrue(json.result.panes.some((p: any) => p.id === two.pane));
+    this.assertTrue(json.result.panes.every((p: any) => p.workspace === other));
+    await this.cli(["ls", "--workspace", 9999], { error: "NoWorkspace" });
+    const tree = await this.run_cli("ls", "--tree");
+    this.assertIn(`tab ${one.tab} "Build"`, tree);
+    this.assertIn(`pane ${one.pane}`, tree);
+    await this.cli(["pane", "hibernate", one.pane]);
+    this.assertNotIn("/ Build", await this.run_cli("ls"));
+    this.assertIn("1 inactive hidden (--all)", await this.run_cli("ls"));
+    this.assertIn("hibernated", await this.run_cli("list", "--all"));
+    this.assertIn("hibernated", await this.run_cli("ls", "--tree"));
+    this.assertTrue((await this.cli(["list"])).result.panes.find((p: any) => p.id === one.pane).dormant);
+  }
   async test_memory_lines_reach_the_prompt_session_they_ran_for() {
     const ident = (
       await this.rpc({ op: "headless.start", prompt: "test/init", provider: "codex", cwd: this.temp.name, corgi: true })
@@ -162,7 +196,7 @@ class AgentCli extends Runtime {
     });
     await this.until(async () => (await this.cli(["pane", "read", one.pane])).result.text.includes("cli_marker_123"));
     this.assertIn("cli_marker_123", await this.run_cli("pane", "read", String(one.pane)));
-    this.assertIn(`    pane ${one.pane}`, await this.run_cli("list"));
+    this.assertIn(`    pane ${one.pane}`, await this.run_cli("list", "--tree"));
     // A shell would run a message as a command.
     await this.cli(["message", `pane:${one.pane}`, "printf 'message_marker_456\\n'"], { error: "NoAgent" });
     await this.cli(["message", "headless:999", "hello"], { error: "NoHeadlessSession" });

@@ -2,6 +2,11 @@
 
 Application changes added during development.
 
+## Compact CLI discovery
+
+- `list` and its new `ls` alias show one row per live pane or headless agent, with actionable IDs, provider, workspace/name and status. Inactive sessions are counted; `--all` includes them.
+- `list --tree` preserves the full workspace/tab/pane outline, split positions, activity, directories and viewer IDs. `--workspace ID` filters text and JSON; default JSON keeps the full snapshot.
+
 ## Task orchestration
 
 - `task list` works without caller or workspace context, lists all daemon tasks by default, and supports an explicit workspace filter. Text rows identify their workspace; empty results print `no tasks`.

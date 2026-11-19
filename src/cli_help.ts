@@ -31,7 +31,7 @@ export function overview(
     [
       i18n.t`Layout`,
       [
-        ["list", "[--json]", i18n.t`Workspaces, tabs, panes and agents`],
+        ["list|ls", "[--all|--tree]", i18n.t`Workspaces, tabs, panes and agents`],
         ["workspace", "new api [--cwd DIR]", "new, edit, switch, archive, close"],
         ["tab", "new [--name logs]", "new, rename, move, merge, close"],
         ["pane", "split 3 --right", "split, move, resize, read, send, keys, close"],
@@ -96,7 +96,9 @@ export function overview(
 export function commands(): string {
   return [
     i18n.t`Agent controls (--json prints the daemon's reply as JSON):`,
-    i18n.t`  corgi list [--json]                 layout, panes, agents, viewers`,
+    i18n.t`  corgi list [--workspace ID] [--all] [--json]  live sessions; --all includes inactive`,
+    "  corgi ls [--workspace ID] [--all] [--tree] [--json]",
+    i18n.t`  corgi list --tree [--workspace ID] [--json]  layout, panes, agents, viewers`,
     "  corgi run [--bg] [--name NAME] [--cwd DIR] [--workspace ID] -- COMMAND [ARG...]",
     "  corgi run [--bg] --agent AGENT [--name NAME] PROMPT|--stdin",
     "    [--parent PANE|--no-parent] [--no-notify] [--timeout SECONDS] [--json]",
@@ -106,7 +108,7 @@ export function commands(): string {
     "  corgi task list [--workspace ID] [--json]",
     "  corgi task get TASK|NAME|pane:ID [--workspace ID] [--json]",
     "  corgi task cancel TASK|NAME|pane:ID [--workspace ID] [--json]",
-    "  corgi workspace list",
+    "  corgi workspace list [--workspace ID] [--all] [--tree] [--json]",
     "  corgi workspace new NAME [--cwd DIR]",
     "  corgi workspace edit ID [--name NAME] [--cwd DIR]",
     i18n.t`  corgi workspace close ID          requires an empty workspace`,
