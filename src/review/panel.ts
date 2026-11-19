@@ -605,6 +605,7 @@ export class Panel {
   private loads = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private selecting: { from: number; path: string | null } | null = null;
+  private minimap_drag: ((y: number) => void) | null = null;
   /** Rows the file list takes at most, as last dragged or set with < and >. */
   tree_rows = 9;
   /** Called with `tree_rows` after the user changes it. */
@@ -846,6 +847,7 @@ export class Panel {
     this.pinned = false;
     this.splitting = false;
     this.tree_drag = false;
+    this.minimap_drag = null;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     if (!keepRemote) {
@@ -1435,6 +1437,7 @@ export class Panel {
 
   /** A key while the panel has the keyboard. */
   key(k: Key): Effect {
+    this.minimap_drag = null;
     if (this.remote && !this.typing && "text" in k && k.text === "r") return { kind: "refresh" };
     if (this.remote && !this.typing && "text" in k && ["r", "g", "G", "u"].includes(k.text)) return { kind: "none" };
     const t = this.target;
@@ -2165,6 +2168,7 @@ export class Panel {
   mouse(kind: "press" | "drag" | "move" | "release" | "wheel_up" | "wheel_down", x: number, y: number): void {
     if (kind === "release") {
       this.selecting = null;
+      this.minimap_drag = null;
       this.placing = false;
       this.tree_drag = false;
       if (this.splitting) {
@@ -2173,6 +2177,11 @@ export class Panel {
       }
       return;
     }
+    if (kind === "drag" && this.minimap_drag) {
+      this.minimap_drag(y);
+      return;
+    }
+    if (kind === "press") this.minimap_drag = null;
     if (this.tree_drag && this.target && this.tree_divider) {
       if (kind === "drag")
         this.review(this.target.pane).tree_width = Math.min(
@@ -3268,6 +3277,20 @@ export class Panel {
       const start = Math.floor((top * dh) / total),
         end = Math.max(start + 1, Math.ceil(((top + dh) * dh) / total)),
         x = minimap.w - 3;
+      const seek = (at: number) => {
+        r.top = Math.max(0, Math.min(Math.max(0, total - dh), Math.round(at)));
+        r.free = true;
+        r.landmark = null;
+        r.anchor = null;
+        r.part = "diff";
+        if (r.tree_find) r.tree_find.editing = false;
+        const index = items.findIndex((item, i) => item.kind === "unit" && ys[i] + item.h > r.top + dh / 2),
+          item = items[index];
+        if (item?.kind === "unit") {
+          r.path = item.s.change.path;
+          r.cur = item.at;
+        }
+      };
       marks.forEach((mark, row) => {
         const visible = row >= start && row < end,
           bg = visible ? colors.selected : colors.surface;
@@ -3276,18 +3299,10 @@ export class Panel {
         minimap.put(x + 2, dy + row, visible ? "▐" : "│", visible ? colors.strong : colors.line, bg);
         minimap.hit(x, dy + row, 3, 1, {
           act: () => {
-            r.top = Math.max(0, Math.min(total - dh, Math.round(((row + 0.5) * total) / dh - dh / 2)));
-            r.free = true;
-            r.landmark = null;
-            r.anchor = null;
-            r.part = "diff";
-            if (r.tree_find) r.tree_find.editing = false;
-            const index = items.findIndex((item, i) => item.kind === "unit" && ys[i] + item.h > r.top + dh / 2),
-              item = items[index];
-            if (item?.kind === "unit") {
-              r.path = item.s.change.path;
-              r.cur = item.at;
-            }
+            // Grabbing the viewport keeps its position under the pointer.
+            const offset = visible ? row - (top * dh) / total : (dh * dh) / total / 2 - 0.5;
+            this.minimap_drag = y => seek(((y - minimap.y - dy - offset) * total) / dh);
+            this.minimap_drag(minimap.y + dy + row);
           },
         });
       });

@@ -299,6 +299,28 @@ test("the full-file minimap marks both change types and clicks jump in unified a
       p.mouse("press", first.row.indexOf("−+"), first.y);
       expect(screen(p, 100, 25).join("\n")).toContain("new10");
       expect(r.top).toBeLessThan(25);
+      rows = screen(p, 100, 25);
+      const viewport = rows.map((row, y) => ({ row, y })).filter(({ row }) => /▐\s*$/.test(row)),
+        grab = viewport[Math.floor(viewport.length / 2)],
+        x = grab.row.lastIndexOf("▐"),
+        before = r.top;
+      p.mouse("press", x, grab.y);
+      expect(r.top).toBe(before);
+      p.mouse("drag", x - 20, grab.y + 2);
+      expect(r.top).toBeGreaterThan(before);
+      const moved = r.top;
+      screen(p, 100, 25);
+      p.mouse("drag", x, grab.y + 3);
+      expect(r.top).toBeGreaterThan(moved);
+      expect(r.anchor).toBeNull();
+      p.mouse("drag", x, -100);
+      expect(r.top).toBe(0);
+      p.mouse("drag", x, 999);
+      expect(r.top).toBeGreaterThan(150);
+      const bottom = r.top;
+      p.mouse("release", x, 999);
+      p.mouse("drag", x, 0);
+      expect(r.top).toBe(bottom);
     }
     key(p, "z");
     p.toggleFullscreen();
