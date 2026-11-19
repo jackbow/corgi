@@ -644,7 +644,10 @@ export class Controller {
     else if (saved.diff) {
       this.local_review.follow(this.reviewTarget());
       this.local_review.restoreView(saved.diff);
-      if (saved.active === "diff") this.local_review.show();
+      if (saved.active === "diff") {
+        this.local_review.show();
+        if (!this.local_review.fullscreen) this.local_review.toggleFullscreen();
+      }
     }
   }
   private local_review = new panel.Panel();
@@ -4559,9 +4562,8 @@ export class Controller {
           review.restoreView(saved);
           this.deferred_pr_diffs.delete(owner);
         }
-        const fullscreen = p.fullscreen;
         p.open = false;
-        if (fullscreen) this.review.toggleFullscreen();
+        this.review.toggleFullscreen();
         this.giveKeyboard("review");
       })
       .catch(error => {
@@ -10881,11 +10883,7 @@ export class Controller {
     if (!this.reviewable) return this.notice(i18n.t` Review changes on the remote machine`);
     this.review.follow(this.reviewTarget());
     this.review.show();
-    if (!this.reviewFullscreen() && this.sidebarView([]).panel === 0) {
-      this.review.hide();
-      this.notice(i18n.t` Review needs a wider window`);
-      return;
-    }
+    if (!this.review.fullscreen) this.review.toggleFullscreen();
     this.giveKeyboard("review");
     this.selection = null;
     this.cancelDividers();

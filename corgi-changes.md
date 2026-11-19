@@ -2,6 +2,13 @@
 
 Application changes added during development.
 
+## Diff viewer defaults
+
+- Local and PR diffs open fullscreen. Cmd+Shift+Enter toggles between fullscreen and a pane beside the agent.
+- Fullscreen diffs show a full-height file tree on the left; pane mode keeps the resizable tree above the diff. Narrow fullscreen windows also stack the tree to leave room for code.
+- Test files are hidden by default; `t` shows or hides them. Saved per-conversation choices are retained.
+- The bottom hint ribbon shows the clickable `Z` shortcut for switching between hunks and full-file context, including PR diffs.
+
 ## Compact CLI discovery
 
 - `list` and its new `ls` alias show one row per live pane or headless agent, with pane/tab/workspace IDs, provider, separate workspace/session names and status. Piped text keeps full names. Inactive sessions are counted; `--all` includes them.

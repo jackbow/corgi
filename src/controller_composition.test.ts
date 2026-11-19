@@ -543,7 +543,7 @@ test("fullscreen review hides retained pane contents and restores them on escape
     f.update("LOCAL_PANE_CONTENT");
     const layout = f.view.current().model.toJSON();
     await f.view.perform({ name: "review" });
-    await f.view.perform({ name: "zoom" });
+    expect(f.view.review.fullscreen).toBe(true);
     const fullscreen = f.compose();
     f.present(fullscreen);
     screen.feed(typeof fullscreen === "string" ? fullscreen : fullscreen.text());

@@ -421,6 +421,10 @@ test("test filtering matches only test filenames and test folders and stays with
     p.show();
     await settle(p);
     const body = () => screen(p, 120, 130).join("\n");
+    expect(p.review(110).hide_tests).toBe(true);
+    expect(body()).toContain("t show tests");
+    key(p, "t");
+    await settle(p);
     for (const file of hidden) expect(body()).toContain(file.split("/").pop()!);
     key(p, "t");
     await settle(p);
@@ -439,7 +443,10 @@ test("test filtering matches only test filenames and test folders and stays with
     p.follow({ pane: 111, conversation: 1011, cwd: dir, name: "Other" });
     p.show();
     await settle(p);
-    expect(p.review(111).hide_tests).toBe(false);
+    expect(p.review(111).hide_tests).toBe(true);
+    expect(body()).not.toContain("unit.test.ts");
+    key(p, "t");
+    await settle(p);
     expect(body()).toContain("unit.test.ts");
     p.follow({ pane: 110, conversation: 1010, cwd: dir, name: "Agent" });
     p.show();
@@ -464,6 +471,8 @@ test("filtering a selected test keeps its notes and note navigation reveals it",
     p.show();
     await settle(p);
     const r = p.review(112);
+    key(p, "t");
+    await settle(p);
     r.all = false;
     r.path = file;
     r.tree_sel = "f:" + file;
@@ -623,7 +632,7 @@ test("opens on all: commits and working copy together", async () => {
   // How to close it stays at the bottom right when the other keys run out of room.
   expect(rows.at(-2)).toContain("S split");
   expect(rows.at(-2)).toMatch(/q close $/);
-  expect(screen(p, 90).at(-2)).toMatch(/\? keys +q close $/);
+  expect(screen(p, 110).at(-2)).toMatch(/\? keys +q close $/);
   expect(narrow.at(-2)).toMatch(/q close $/);
   expect(narrow.at(-2)).not.toContain("? keys");
   const tree = rows.slice(3, 7).join("\n");
@@ -1043,7 +1052,7 @@ test("pinned, the review stays put and its notes go to the focused pane", async 
   key(p, "c");
   for (const ch of "why?") key(p, ch);
   key(p, "enter");
-  expect(screen(p).at(-2)).toContain("send 1 to Reviewer");
+  expect(screen(p, 100).at(-2)).toContain("send 1 to Reviewer");
   const sent = key(p, "s");
   expect(sent).toMatchObject({ kind: "send", pane: 12, from: 11 });
   // A failed send puts the notes back on the review they came from.
@@ -1241,6 +1250,8 @@ test("test diffs fold at the ratio for the current scope, and explicit choices s
     p.follow({ pane: 30, cwd: root, name: "Fix app" });
     p.show();
     await settle(p);
+    key(p, "t");
+    await settle(p);
     // The branch has six non-test edits, excluding the generated lockfile.
     expect(body()).toContain("▾ A app.test.ts");
     testLines(24);
@@ -1257,6 +1268,7 @@ test("test diffs fold at the ratio for the current scope, and explicit choices s
     expect(body()).toContain("▸ A app.test.ts");
 
     key(p, "tab");
+    key(p, "home");
     expect(screen(p).at(-2)).toContain("enter unfold");
     key(p, "enter");
     await settle(p);
@@ -1285,6 +1297,8 @@ test("single-file view, find and note navigation reveal automatically folded tes
   try {
     p.follow({ pane: 31, cwd: root, name: "Fix app" });
     p.show();
+    await settle(p);
+    key(p, "t");
     await settle(p);
     expect(body()).toContain("▸ A app.test.ts");
     const row = screen(p).findIndex(row => row.includes("app.test.ts"));
@@ -1566,6 +1580,73 @@ test("pasting a path in the diff editor replaces its current value and opens tha
     await p.refresh();
     await Bun.sleep(100);
     expect(p.saved()?.folder).toBe(root);
+  } finally {
+    p.hide();
+  }
+});
+
+test("fullscreen places a full-height file tree beside the diff and pane mode stacks it above", () => {
+  const p = new panel.Panel();
+  const patch = Array.from(
+    { length: 24 },
+    (_, i) =>
+      `diff --git a/file${String(i).padStart(2, "0")}.ts b/file${String(i).padStart(2, "0")}.ts\n--- a/file${String(i).padStart(2, "0")}.ts\n+++ b/file${String(i).padStart(2, "0")}.ts\n@@ -1 +1 @@\n-old${i}\n+new${i}\n`,
+  ).join("");
+  p.showRemote(
+    "https://github.com/acme/app/pull/12",
+    "acme/app #12",
+    "b".repeat(40),
+    "a".repeat(40),
+    remote.files(patch),
+    null,
+  );
+  p.toggleFullscreen();
+  try {
+    const rows = screen(p, 120, 22);
+    expect(p.splitRow).toBeNull();
+    expect(rows.at(-2)).toContain("Z full file");
+    expect(rows.at(-2)).toContain("P PR");
+    const treeY = rows.findIndex(row => row.includes("file00.ts"));
+    const codeY = rows.findIndex(row => row.includes("old0"));
+    expect(rows[treeY].indexOf("file00.ts")).toBeLessThan(32);
+    expect(rows[codeY].indexOf("old0")).toBeGreaterThan(32);
+    expect(rows.join("\n")).toContain("file15.ts");
+    const r = p.review(-3),
+      top = r.top;
+    p.mouse("wheel_down", 4, 7);
+    screen(p, 120, 22);
+    expect(r.tree_top).toBe(3);
+    expect(r.top).toBe(top);
+    p.mouse("press", 8, treeY + 1);
+    expect(r.all).toBe(false);
+    expect(r.path).toBe("file04.ts");
+    p.toggleFullscreen();
+    const pane = screen(p, 70, 22);
+    expect(p.splitRow).not.toBeNull();
+    expect(pane.findIndex(row => row.includes("old4"))).toBeGreaterThan(p.splitRow!);
+    expect(pane.find(row => row.includes("old4"))!.indexOf("old4")).toBeLessThan(20);
+    const ribbon = pane.at(-2)!;
+    p.mouse("press", ribbon.indexOf("Z full file") + 1, pane.length - 2);
+    expect(r.full_context).toBe(true);
+    expect(screen(p, 70, 22).at(-2)).toContain("Z hunks");
+  } finally {
+    p.hide();
+  }
+});
+test("remote snapshots hide tests until t shows them", () => {
+  const p = new panel.Panel();
+  const patch = ["app.test.ts", "app.ts", "tests/helper.ts"]
+    .map(path => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-old\n+new\n`)
+    .join("");
+  p.showRemote("https://github.com/acme/app/pull/12", "PR", "b".repeat(40), "a".repeat(40), remote.files(patch), null);
+  try {
+    expect(p.review(-3).hide_tests).toBe(true);
+    expect(p.review(-3).path).toBe("app.ts");
+    expect(screen(p, 100, 50).join("\n")).not.toContain("app.test.ts");
+    key(p, "t");
+    expect(screen(p, 100, 50).join("\n")).toContain("app.test.ts");
+    key(p, "t");
+    expect(screen(p, 100, 50).join("\n")).not.toContain("app.test.ts");
   } finally {
     p.hide();
   }

@@ -218,7 +218,7 @@ class Review {
   visible = false;
   fullscreen = false;
   full_context = false;
-  hide_tests = false;
+  hide_tests = true;
   folder: string | null = null;
   folder_input: folders.Input | null = null;
   folder_error: string | null = null;
@@ -397,6 +397,13 @@ class Canvas {
       Array.from({ length: w }, () => ({ ch: " ", fg: palette.colors.text, bg: null, bold: false })),
     );
   }
+  /** A viewport sharing cells and mouse targets with its parent. */
+  view(x: number, y: number, width: number, height: number): Canvas {
+    const child = new Canvas(this.x + x, this.y + y, width, height);
+    child.cells = this.cells.slice(y, y + height).map(row => row.slice(x, x + width));
+    child.hits = this.hits;
+    return child;
+  }
   fill(row: number, bg: palette.Rgb | null, from = 0, to = this.w): void {
     if (row < 0 || row >= this.h) return;
     for (let i = Math.max(0, from); i < Math.min(this.w, to); i++)
@@ -535,8 +542,7 @@ export class Panel {
     }
     this.checkouts.set(url, co);
     const r = this.review(-3);
-    r.path = files[0]?.change.path ?? null;
-    r.status = { text: i18n.t`PR snapshot · P returns to PR`, warm: false };
+    r.path = this.listing(co, r)?.changes[0]?.path ?? null;
     this.open = true;
     r.visible = true;
     this.changed();
@@ -2506,6 +2512,7 @@ export class Panel {
       }
     }
     let ty = head + 2;
+    const full = c;
     const changes = listed?.changes ?? [];
     const paths = changes.map(ch => ch.path);
     this.split = null;
@@ -2526,6 +2533,13 @@ export class Panel {
         colors.muted,
       );
       ty += 1;
+    } else if (!r.tree_hidden && r.fullscreen && c.w >= 50 && c.h - ty > 2) {
+      const width = Math.min(38, Math.max(18, Math.floor(c.w * 0.28))),
+        height = c.h - ty - 1;
+      const sidebar = c.view(0, ty, width, height);
+      this.drawTree(sidebar, r, changes, paths, listed.edited, 0, height, focused, height);
+      for (let row = ty; row < c.h - 1; row++) c.put(width, row, "│", colors.line);
+      c = c.view(width + 1, 0, c.w - width - 1, c.h);
     } else if (!r.tree_hidden) {
       // The rule under the list drags its height, keeping some of the diff in view.
       const room = Math.max(2, c.h - ty - 2 - min_diff_rows),
@@ -2553,7 +2567,7 @@ export class Panel {
     this.page = dh;
     if (now && dh > 0) this.drawDiff(c, r, now, dy, dh, focused);
     if (r.list) this.drawList(c, r, dy, dh, now?.source ?? null);
-    this.drawFooter(c, r, now, focused);
+    this.drawFooter(full, r, now, focused);
   }
   /** Where a file's change is: the commit reviewed, untracked, or for the
    * branch in its commits, the working copy, or both. */
@@ -2597,11 +2611,12 @@ export class Panel {
     ty: number,
     room: number,
     focused: boolean,
+    limit = this.tree_rows,
   ): number {
     const colors = palette.colors,
       rows = this.listRows(r, paths, edited),
       now = Date.now(),
-      height = Math.max(1, Math.min(this.tree_rows, rows.length, room));
+      height = Math.max(1, Math.min(limit, rows.length, room));
     let sel = rows.findIndex(row => row.id === r.tree_sel);
     if (sel < 0) sel = rows.findIndex(row => row.id === (r.all ? "all" : "f:" + r.path));
     if (sel >= 0 && !r.tree_free) {
@@ -3431,18 +3446,24 @@ export class Panel {
           : i18n.t`send`,
       () => (this.pending = this.send(r, false)),
     ];
-    const close: [string, string] = ["q", i18n.t`close`];
+    const close: [string, string] = this.remote ? ["P", "PR"] : ["q", i18n.t`close`];
     const view: [string, string, () => void] = [
       "S",
       r.split ? i18n.t`unified` : i18n.t`split`,
       () => this.toggleSplit(r),
     ];
+    const context: [string, string, () => void] = [
+      "Z",
+      r.full_context ? i18n.t`hunks` : i18n.t`full file`,
+      () => this.key({ text: "Z" }),
+    ];
     if (r.part === "tree" && !r.tree_hidden)
       return hints(
         [
+          view,
+          context,
           ["j/k", i18n.t`file`],
           ["enter", i18n.t`open`],
-          view,
           [
             "C",
             "file note",
@@ -3459,22 +3480,23 @@ export class Panel {
     const d = now?.file?.loaded.kind === "diff" ? now.file.loaded.diff : null;
     const units = d && r.path ? this.units(r, d, r.path) : [];
     if (now && r.path && this.isCollapsed(r, now, r.path))
-      return hints([view, ["enter", i18n.t`unfold`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]], close);
+      return hints([view, context, ["enter", i18n.t`unfold`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]], close);
     if (now?.change?.generated && !r.loaded.has(now.change.path))
       return hints(
-        [view, ["enter", i18n.t`load the diff`], ["f", i18n.t`next file`], send, ["?", i18n.t`keys`]],
+        [view, context, ["enter", i18n.t`load the diff`], ["f", i18n.t`next file`], send, ["?", i18n.t`keys`]],
         close,
       );
     if (units[r.cur]?.kind === "fold")
-      return hints([view, ["→", i18n.t`expand`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]], close);
+      return hints([view, context, ["→", i18n.t`expand`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]], close);
     if (d && now && this.noteAt(r, d, units, now))
       return hints(
-        [view, ["e", i18n.t`edit`], ["d", i18n.t`delete`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]],
+        [view, context, ["e", i18n.t`edit`], ["d", i18n.t`delete`], ["]/[", i18n.t`hunk`], send, ["?", i18n.t`keys`]],
         close,
       );
     hints(
       [
         view,
+        context,
         ["v", i18n.t`select`],
         ["c", i18n.t`comment`],
         ["]/[", i18n.t`hunk`],

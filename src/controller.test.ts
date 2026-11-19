@@ -2179,8 +2179,12 @@ test("Command shortcuts open review and zoom it without changing pane layout", a
     await s.input(bytes("\x1b[98;10u"));
     expect(s.review.open).toBe(true);
     expect(s.keyboard).toBe("review");
+    expect(s.review.fullscreen).toBe(true);
     const area = s.area();
     const pane_zoom = s.nav().tab().zoom;
+    await s.input(bytes("\x1b[13;10u"));
+    expect(s.review.fullscreen).toBe(false);
+    expect(s.coversPanes()).toBe(false);
     await s.input(bytes("\x1b[13;10u"));
     expect(s.review.fullscreen).toBe(true);
     expect(s.coversPanes()).toBe(true);
@@ -2257,7 +2261,7 @@ test("sending notes from fullscreen review reveals the receiving pane", async ()
   try {
     s.focusPane(1);
     await s.perform({ name: "review" });
-    await s.perform({ name: "zoom" });
+    expect(s.review.fullscreen).toBe(true);
     await s.reviewEffect({ kind: "send", pane: 1, from: 1, notes: [], text: "app.ts (file)\nPlease simplify" });
     expect(s.keyboard).toBe("pane");
     expect(s.review.open).toBe(true);
@@ -2281,8 +2285,10 @@ test("PR diff notes keep shortcut letters while typing and paste into the agent 
   try {
     await s.perform({ name: "pull-request", value: snapshot.ref.url });
     await Promise.resolve();
+    s.pull_request.fullscreen = false;
     await s.perform({ name: "pull-request-diff" });
     await Promise.resolve();
+    expect(s.review.fullscreen).toBe(true);
     await s.reviewKey({ text: "C" });
     for (const text of body) await s.reviewKey({ text });
     expect(s.pull_request.open).toBe(false);
@@ -2307,6 +2313,7 @@ test("review visibility follows the LLM conversation without taking keyboard foc
     s.focusPane(1);
     await s.input(bytes("\x02e"));
     expect(s.review.open).toBe(true);
+    s.review.unzoom();
     s.review.review(1).folder = "/chosen/repo";
     s.focusPane(2);
     expect(s.review.open).toBe(false);
