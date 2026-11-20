@@ -133,9 +133,9 @@ test("setup keeps its options while aiming diagonally across list rows and gaps"
   expect(await menu.poll(no_setup_rpc, 100, 30, 2000)).toBe(false);
   expect(menu.item).toBe("clever_corgi");
   // Up and to the right, toward Keymap's options, crosses Shell.
-  hover(25, 10, 2100);
+  hover(25, 11, 2100);
   expect(menu.item).toBe("keyboard");
-  hover(30, 9, 2200);
+  hover(30, 10, 2200);
   expect(menu.item).toBe("keyboard");
   hover(36, 7, 2300);
   expect(menu.item).toBe("keyboard");
@@ -265,8 +265,8 @@ test("setup aims only at the options a click acts on", () => {
   }
   // Terminal capabilities has nothing to click, so nothing guards it.
   const menu = Menu.open();
-  menu.hover(100, 30, 15, 15, s, prefs, 0);
-  menu.hover(100, 30, 22, 11, s, prefs, 100);
+  menu.hover(100, 30, 15, 16, s, prefs, 0);
+  menu.hover(100, 30, 22, 12, s, prefs, 100);
   expect(menu.item).toBe("source_control");
 });
 
@@ -1764,4 +1764,41 @@ test("a setup choice or provider the viewer doesn't know reads as auto and none"
     "off",
     "codex",
   ]);
+});
+
+test("code colors preview palettes and backgrounds, cancel restores saved settings, enter saves", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status();
+  menu.item = "code_colors";
+  menu.openOptions(s, prefs);
+  menu.move(true, s, prefs);
+  expect(menu.previewCode(prefs)).toEqual({ code_palette: "light-plus", code_background: true });
+  expect(prefs.code_palette).toBe("dark-plus");
+  menu.cursor = 3;
+  expect(menu.enter(s, prefs)).toBeNull();
+  expect(menu.previewCode(prefs).code_background).toBe(false);
+  menu.back();
+  expect(menu.previewCode(prefs)).toMatchObject({ code_palette: "dark-plus", code_background: true });
+  menu.openOptions(s, prefs);
+  menu.cursor = 2;
+  expect(menu.previewCode(prefs).code_palette).toBe("terminal");
+  menu.cursor = 3;
+  menu.enter(s, prefs);
+  menu.cursor = 4;
+  expect(menu.enter(s, prefs)).toEqual({ kind: "code_colors", code_palette: "terminal", code_background: false });
+  expect(menu.focus).toBe("list");
+});
+
+test("code preview compares the same diff and chat under both backgrounds", () => {
+  const menu = Menu.open(),
+    prefs = new Preferences(),
+    s = status();
+  menu.item = "code_colors";
+  menu.openOptions(s, prefs);
+  const shown = draw(menu, 140, 45, 0, s, prefs).join("\n");
+  expect(shown).toContain("Palette background");
+  expect(shown).toContain("Corgi background");
+  expect(shown.match(/function greet/g)).toHaveLength(4);
+  expect(shown.match(/Chat:/g)).toHaveLength(2);
 });

@@ -58,6 +58,8 @@ export type Ranges = [number, number][];
 export class FileDiff {
   old: string[] = [];
   new: string[] = [];
+  old_resets: number[] = [];
+  new_resets: number[] = [];
   rows: Row[] = [];
   units: Unit[] = [];
   adds = 0;
@@ -139,6 +141,8 @@ export function parse(patch: string): FileDiff | "binary" {
     }
     const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
     if (hunk) {
+      if (Number(hunk[1]) - 1 !== old_no) diff.old_resets.push(diff.old.length);
+      if (Number(hunk[2]) - 1 !== new_no) diff.new_resets.push(diff.new.length);
       old_no = Number(hunk[1]) - 1;
       new_no = Number(hunk[2]) - 1;
       continue;

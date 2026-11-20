@@ -52,8 +52,10 @@ const mix = (a, b, t) => "#" + rgb(a).map((x, i) => Math.round(x + (rgb(b)[i] - 
 // ---------------------------------------------------------------- styles
 const STYLES = DATA.styles;
 const styleIndex = new Map(STYLES.map((s, i) => [JSON.stringify(s), i]));
-function style(fg, bg = null, bold = false, ul = 0, ulc = null) {
-  const s = [fg, bg, bold, ul, ulc], key = JSON.stringify(s);
+function style(fg, bg = null, bold = false, ul = 0, ulc = null, italic = false) {
+  const s = [fg, bg, bold, ul, ulc];
+  if (italic) s.push(true);
+  const key = JSON.stringify(s);
   if (!styleIndex.has(key)) { styleIndex.set(key, STYLES.length); STYLES.push(s); }
   return styleIndex.get(key);
 }
@@ -61,9 +63,9 @@ const PLAIN = style(null);
 const looks = [];
 function look(id) {
   if (looks[id]) return looks[id];
-  const [fg, bg, bold, ul, ulc] = STYLES[id];
+  const [fg, bg, bold, ul, ulc, italic] = STYLES[id];
   const token = (c) => c && !c.startsWith("#");
-  const cls = [token(fg) && "f-" + fg, token(bg) && "k-" + bg, bold && "b", ul && "u", ul === 4 && "ud"].filter(Boolean).join(" ");
+  const cls = [token(fg) && "f-" + fg, token(bg) && "k-" + bg, bold && "b", italic && "i", ul && "u", ul === 4 && "ud"].filter(Boolean).join(" ");
   return (looks[id] = { cls, color: fg && !token(fg) ? fg : "", bg: bg && !token(bg) ? bg : "", ulc: ulc ? (token(ulc) ? `var(--${ulc})` : ulc) : "" });
 }
 

@@ -171,6 +171,7 @@ type Seg = markdown.Seg;
 type Row = {
   segs: Seg[];
   fill?: string;
+  fill_from?: number;
   right?: Seg[];
   ask?: string;
   chips?: Inline;
@@ -2670,8 +2671,10 @@ export class Prompt {
         return;
       }
       if (row.fill) {
-        w.write(at(l.box.x + 1, y) + row.fill);
-        w.splat(" ", l.box.w - 2);
+        const from = row.fill_from === undefined ? l.box.x + 1 : left + row.fill_from;
+        const end = row.fill_from === undefined ? l.box.x + l.box.w - 1 : right;
+        w.write(at(from, y) + row.fill);
+        w.splat(" ", Math.max(0, end - from));
       }
       let seg_x = left;
       for (const seg of row.segs) {

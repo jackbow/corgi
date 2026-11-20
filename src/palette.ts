@@ -179,6 +179,7 @@ const syntax_slots: Record<keyof typeof corgi_syntax, number[]> = {
   type: [6, 14],
   property: [12, 4],
 };
+export let code_function: Rgb;
 export const syntax = {} as Record<Syntax, Rgb>;
 function readableOnBg(rgb: Rgb): Rgb {
   let out = rgb;
@@ -193,6 +194,7 @@ derived(() => {
     syntax[name] = readableOnBg(own ?? corgi_syntax[name]);
   }
   syntax.function = colors.strong;
+  code_function = readableOnBg(terminal?.ansi[3] ?? colors.gold);
   syntax.comment = colors.faint;
   syntax.punctuation = colors.muted;
 });

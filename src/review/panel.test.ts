@@ -10,6 +10,9 @@ import { text } from "../fixtures/screen";
 import * as i18n from "../i18n";
 import * as remote from "./remote";
 import * as palette from "../palette";
+import * as codePalette from "../code_palette";
+import * as syntax from "./syntax";
+import type { Request as SyntaxRequest, Response as SyntaxResponse } from "./syntax_types";
 
 let root = "";
 const run = (...args: string[]) => runGit(root, ...args);
@@ -1861,5 +1864,76 @@ test("remote snapshots hide tests until t shows them", () => {
     expect(screen(p, 100, 50).join("\n")).not.toContain("app.test.ts");
   } finally {
     p.hide();
+  }
+});
+
+test("syntax styles reset between runs and focused word highlights yield to selections and search", () => {
+  const previous = syntax.service;
+  let worker!: syntax.Port;
+  const jobs: SyntaxRequest[] = [];
+  const service = new syntax.Service(
+    () => {},
+    () =>
+      (worker = {
+        onmessage: null,
+        onerror: null,
+        terminate() {},
+        postMessage(value) {
+          if ("id" in value) jobs.push(value);
+        },
+      }),
+  );
+  syntax.use(service);
+  codePalette.use(codePalette.defaults);
+  const p = new panel.Panel();
+  p.showRemote(
+    "https://github.com/acme/app/pull/99",
+    "syntax",
+    "b",
+    "a",
+    remote.files(
+      'diff --git a/greet.ts b/greet.ts\n@@ -1 +1 @@\n-function greet() { return "old"; }\n+function greet() { return "new"; }\n',
+    ),
+    null,
+  );
+  const frame = () => {
+    const w = new Writer();
+    p.draw(w, 0, 0, 110, 30, true);
+    return w.buffered();
+  };
+  try {
+    frame();
+    for (const job of jobs)
+      worker.onmessage?.({
+        data: {
+          id: job.id,
+          spans: job.lines.map(line => [
+            [0, 8, [86, 156, 214], 7],
+            [8, line.length, [220, 220, 170], 0],
+          ]),
+        },
+      } as MessageEvent<SyntaxResponse>);
+    let out = frame();
+    expect(out).toContain("\x1b[0m\x1b[1m\x1b[3m\x1b[4m");
+    expect(out).toContain("\x1b[0m" + palette.fgRgb([220, 220, 170]));
+    expect(out).toContain(palette.bgRgb(palette.mix(codePalette.background(), palette.colors.hot, 30)));
+    key(p, "tab");
+    key(p, "v");
+    out = frame();
+    expect(out).toContain(palette.fgRgb(palette.colors.strong) + palette.bgRgb(palette.colors.selected));
+    key(p, "escape");
+    key(p, "/");
+    for (const ch of "greet") key(p, ch);
+    key(p, "enter");
+    out = frame();
+    expect(out).toContain(
+      palette.fgRgb(palette.colors.strong) + palette.bgRgb(palette.mix(palette.colors.bg, palette.colors.warm, 40)),
+    );
+    key(p, "S");
+    expect(text(frame(), 110, 30)).toContain("greet");
+  } finally {
+    p.dispose();
+    service.close();
+    syntax.use(previous);
   }
 });

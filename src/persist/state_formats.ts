@@ -29,6 +29,7 @@ import * as r_3bc5f3ca7f53 from "./revisions/20261119_022523_3bc5f3ca7f53_move_s
 import * as r_50cd70f93bfd from "./revisions/20261119_142619_50cd70f93bfd_keep_settings_only_in_config_json";
 import * as r_430a324f1048 from "./revisions/20261119_214008_430a324f1048_retain_local_orchestration_and_notification_meta";
 import * as r_ec1764d3653f from "./revisions/20261119_215256_ec1764d3653f_remember_the_conversation_pr_list_width";
+import * as r_2de8732b5be8 from "./revisions/20261120_214857_2de8732b5be8_save_code_palette_and_background_preferences";
 
 export const revisions = [
   r_1dfaa1773956.revision,
@@ -60,13 +61,14 @@ export const revisions = [
   r_50cd70f93bfd.revision,
   r_430a324f1048.revision,
   r_ec1764d3653f.revision,
+  r_2de8732b5be8.revision,
 ];
 export const heads = {
   state: r_430a324f1048.revision.id,
   checkpoint: r_1dfaa1773956.revision.id,
   handoff: r_3a005bd21b0d.revision.id,
   workspaces: r_f4c12b1642bd.revision.id,
-  viewer: r_ec1764d3653f.revision.id,
+  viewer: r_2de8732b5be8.revision.id,
 };
 export const current = heads.state;
 const histories = formats.histories(heads, revisions);

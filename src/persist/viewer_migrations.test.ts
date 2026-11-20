@@ -62,3 +62,15 @@ test.each([copied, "d495e64414cb", "67a3f5d4cd43"])(
     expect(files.viewer.format).toBe(history.current);
   },
 );
+
+test("code palette config survives viewer downgrade and upgrade without changing older defaults", () => {
+  const parent = "ec1764d3653f",
+    files = {
+      viewer: { sidebar_width: 42 },
+      config: { code_palette: "light-plus", code_background: false, future: true },
+    };
+  const down = history.down(files, parent) as ViewerFiles;
+  expect(down).toEqual(files);
+  expect(history.up(down, parent)).toEqual(files);
+  expect(history.up({ viewer: {}, config: null }, parent)).toEqual({ viewer: {}, config: null });
+});

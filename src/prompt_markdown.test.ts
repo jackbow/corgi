@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import * as palette from "./palette";
 import * as markdown from "./prompt_markdown";
+import * as syntax from "./review/syntax";
+import * as codePalette from "./code_palette";
 
 const shown = (lines: markdown.Line[]) =>
   lines.map(line => ("segs" in line ? line.segs.map(seg => seg.text).join("") : `[${line.conversations}]`));
@@ -128,11 +130,25 @@ test("a table fits the room, aligns its columns and wraps its cells", () => {
   expect(narrow.some(row => row.includes("┌"))).toBe(false);
 });
 
-test("code is indented and colored as the review panel colors it", () => {
-  const lines = markdown.layout("```ts\nconst x = 1;\n```\n\n```\nplain\n```", 40);
-  expect(shown(lines)).toEqual(["  const x = 1;", "", "  plain"]);
-  expect(styleOf(lines, "const")).toBe(look({ fg: "text" }) + palette.fgRgb(palette.syntax.keyword));
-  expect(styleOf(lines, "plain")).toBe(look({ fg: "muted" }));
+test("code is indented and colored as the review panel colors it", async () => {
+  codePalette.use(codePalette.defaults);
+  let ready!: () => void;
+  const done = new Promise<void>(resolve => (ready = resolve));
+  const previous = syntax.service,
+    service = new syntax.Service(() => ready());
+  syntax.use(service);
+  try {
+    const pending = markdown.layout("```ts\nconst x = 1;\n```", 40);
+    expect(shown(pending)).toEqual(["  const x = 1;"]);
+    await done;
+    const lines = markdown.layout("```ts\nconst x = 1;\n```\n\n```\nplain\n```", 40);
+    expect(shown(lines)).toEqual(["  const x = 1;", "", "  plain"]);
+    expect(styleOf(lines, "const")).toContain(palette.fgRgb([86, 156, 214]));
+    expect(styleOf(lines, "plain")).toContain(palette.bgRgb(codePalette.background()));
+  } finally {
+    service.close();
+    syntax.use(previous);
+  }
 });
 
 test("as in Pi: two tildes strike, math shows as Unicode, prices stay text", () => {
@@ -191,4 +207,16 @@ test("a reply's lines are kept until its text or the room changes", () => {
   expect(markdown.lines(reply, 30)).not.toBe(first);
   reply.text = "**b**";
   expect(shown(markdown.lines(reply, 30))).toEqual(["b"]);
+});
+
+test("code backgrounds fill blank and wrapped rows without adding copied text", () => {
+  const lines = markdown.layout("```ts\ngreet(longArgument);\n\n```", 16);
+  expect(lines.every(line => "segs" in line && !!line.fill && line.fill_from === 2)).toBe(true);
+  expect(shown(lines).join("")).toContain("greet(");
+  expect(shown(lines).at(-1)).toBe("  ");
+});
+
+test("ordinary review references keep the surrounding prose background", () => {
+  const lines = markdown.layout("Review abc1234 before proceeding.", 60);
+  expect(styleOf(lines, "abc1234")).toBe(look({ fg: "text" }));
 });

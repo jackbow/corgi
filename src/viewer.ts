@@ -91,6 +91,8 @@ export function close(view: Controller): void {
   view.closePreferences?.();
   view.closePreferences = null;
   view.model_cache.close();
+  view.review.dispose();
+  view.syntax.close();
   view.closeMoonlander();
   view.launch_previews.disconnect();
   if (view.onboarding) view.onboarding.close();

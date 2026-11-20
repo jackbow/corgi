@@ -17,6 +17,8 @@ import * as onboarding from "./onboarding";
 import * as shortcutHelp from "./keybinding_help";
 import * as keybindingFile from "./keybinding_file";
 import * as palette from "./palette";
+import * as codePalette from "./code_palette";
+import * as syntax from "./review/syntax";
 import * as corgiAnimation from "./corgi_animation";
 import type { Colors as TerminalColors } from "./terminal_palette";
 import type { Snapshot as TerminalSnapshot } from "./terminal_info";
@@ -386,6 +388,10 @@ export class Controller {
   executable = "";
   width = 100;
   height = 30;
+  readonly syntax = new syntax.Service(() => {
+    this.dirty = true;
+    this.wake();
+  });
   dirty = true;
   prefix = false;
   /** Until when a repeatable prefixed key, pressed again, runs without the prefix. */
@@ -1656,7 +1662,12 @@ export class Controller {
       }
       this.dirty = true;
     }
-    if (saved) this.reportPreferences(reading.problems);
+    if (saved) {
+      this.prefs.code_palette = saved.code_palette;
+      this.prefs.code_background = saved.code_background;
+      this.dirty = true;
+      this.reportPreferences(reading.problems);
+    }
     this.wake?.();
   }
   /** Names the first problem with the preference files once each time the
@@ -6654,6 +6665,15 @@ export class Controller {
           this.notice((error as Error).message);
         }
         return;
+      case "code_colors":
+        this.host.prefs.code_palette = apply.code_palette;
+        this.host.prefs.code_background = apply.code_background;
+        try {
+          preferences.update({ code_palette: apply.code_palette, code_background: apply.code_background });
+        } catch (error) {
+          this.notice((error as Error).message);
+        }
+        return;
       case "theme":
         this.host.prefs.theme = apply.theme;
         try {
@@ -10703,6 +10723,8 @@ export class Controller {
       this.onboarding ? this.onboarding.theme : (this.corgi_setup?.previewTheme(this.prefs) ?? this.prefs.theme),
       this.terminal_colors,
     );
+    codePalette.use(this.corgi_setup?.previewCode(this.prefs) ?? this.prefs);
+    syntax.use(this.syntax);
     if (this.moonlander) {
       const frame = this.moonlander.frame(this.width, this.height, this.cell_pixels, this.supports_kitty_graphics);
       for (const write of this.moonlander.takeWrites()) this.queueEffect({ write_terminal: write });

@@ -23,6 +23,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { supportedPreset, type Preset, type Prefix } from "./keymap";
 import * as palette from "./palette";
+import * as codePalette from "./code_palette";
 import { Provider } from "./providers";
 import * as effort from "./providers/effort";
 import type { Scope, Sort } from "./sidebar";
@@ -78,6 +79,8 @@ export class Preferences {
    * (`palette.chosen`), and the file leaves it out. */
   theme: palette.Theme | undefined = undefined;
   /** Where the launcher puts a new worktree, as `worktree_folder.ts` reads it. */
+  code_palette: codePalette.Palette = codePalette.defaults.code_palette;
+  code_background = codePalette.defaults.code_background;
   worktree_folder = worktreeFolder.default_template;
   /** The review panel's width, as last dragged. */
   review_width = 80;
@@ -125,6 +128,8 @@ const settings: readonly string[] = [
   "keys",
   "language",
   "theme",
+  "code_palette",
+  "code_background",
   "corgi_intensity",
   "resources",
   "worktree_folder",
@@ -552,6 +557,8 @@ function readSettings(d: Record<string, any>, v: Preferences): Skipped[] {
     if (Number.isInteger(intensity) && intensity >= min && intensity <= max) v.corgi_intensity = intensity;
     else skip("corgi_intensity", i18n.t`use a whole number from ${min} to ${max}`);
   }
+  v.code_palette = codePalette.parse(d.code_palette);
+  v.code_background = typeof d.code_background === "boolean" ? d.code_background : codePalette.defaults.code_background;
   if ("theme" in d) {
     // A theme from a newer build falls back quietly.
     if (typeof d.theme !== "string") unexpected("theme");

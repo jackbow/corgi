@@ -859,3 +859,24 @@ test.each([false, true])(
     }
   },
 );
+
+test("code settings persist only in config and tolerate missing or future values", async () => {
+  const { root, where } = await scratch("code-colors");
+  try {
+    expect(read(where)).toMatchObject({ code_palette: "dark-plus", code_background: true });
+    for (const code_palette of ["dark-plus", "light-plus", "terminal"] as const) {
+      update({ code_palette, code_background: false }, where);
+      expect(read(where)).toMatchObject({ code_palette, code_background: false });
+      expect({ code_palette: "dark-plus", ...(await json(where.config)) }).toMatchObject({
+        code_palette,
+        code_background: false,
+      });
+      expect(await json(where.viewer)).not.toHaveProperty("code_palette");
+      expect(await json(where.viewer)).not.toHaveProperty("code_background");
+    }
+    await put(where.config, { code_palette: "future", code_background: "unknown" });
+    expect(read(where)).toMatchObject({ code_palette: "dark-plus", code_background: true });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

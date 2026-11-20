@@ -41,3 +41,12 @@ test("live edits and clipped panels preserve terminal column positions", () => {
   expect(cells.visible(wide, 0, 1)).toEqual([" ", 7]);
   expect(cells.visible(wide.slice(1), 0)).toEqual([" ", 7]);
 });
+
+test("syntax font styles reset between terminal runs", () => {
+  const screen = new terminal.Screen(6, 1);
+  screen.feed("\x1b[1;3;4ma\x1b[22;23;24mb\x1b[3mc\x1b[0md");
+  expect(screen.grid[0][0].slice(3)).toEqual([true, 1, null, true]);
+  expect(screen.grid[0][1].slice(3)).toEqual([false, 0, null]);
+  expect(screen.grid[0][2][6]).toBe(true);
+  expect(screen.grid[0][3][6]).toBeUndefined();
+});

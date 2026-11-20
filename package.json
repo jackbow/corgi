@@ -17,6 +17,7 @@
     "landingpage:publish": "bun site/publish.ts"
   },
   "browser": {
+    "./src/review/syntax_worker_port.ts": "./site/browser/syntax_worker_port.ts",
     "./src/telemetry.ts": "./site/browser/telemetry.ts",
     "./src/review/git.ts": "./site/browser/git.ts",
     "./src/launch/command.ts": "./site/browser/command.ts",
@@ -30,8 +31,12 @@
   },
   "dependencies": {
     "@earendil-works/pi-tui": "1.0.4",
-    "qr": "0.6.0",
-    "marked": "18.0.11"
+    "@shikijs/core": "4.6.0",
+    "@shikijs/engine-javascript": "4.6.0",
+    "@shikijs/langs": "4.6.0",
+    "@shikijs/themes": "4.6.0",
+    "marked": "18.0.11",
+    "qr": "0.6.0"
   },
   "devDependencies": {
     "happy-dom": "21.0.4",

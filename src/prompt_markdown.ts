@@ -6,6 +6,7 @@
 import { renderLatex } from "@earendil-works/pi-tui/dist/latex.js";
 import { Marked, type MarkedToken, type Token, type TokenizerExtension, type Tokens } from "marked";
 import * as palette from "./palette";
+import * as codePalette from "./code_palette";
 import { fence } from "./prompt_conversations";
 import * as syntax from "./review/syntax";
 import { TextArea } from "./text_area";
@@ -17,7 +18,7 @@ export type Seg = { text: string; style: string; review?: reference.Reference };
  * copied, what joins them and how many of its columns are only indent. A
  * `conversations` block comes out whole, for the prompt to draw as a list. */
 export type Line = Text | { conversations: string[] };
-type Text = { segs: Seg[]; cont?: { join: string; skip: number } };
+type Text = { segs: Seg[]; fill?: string; fill_from?: number; cont?: { join: string; skip: number } };
 
 /** Math that pi-tui's tokenizers found; `pending` while it's unclosed. */
 type Latex = { type: "latex" | "latexBlock"; raw: string; text: string; pending?: boolean };
@@ -221,13 +222,33 @@ palette.derived(() => {
   styles = new Map();
   generation++;
 });
-/** A look's escape, or with `kind` its code color over it. */
-function sgr(look: Look, kind?: syntax.Kind): string {
-  const key = [look.fg, look.bg, look.bold, look.italic, look.underline, look.strike, kind].join(" ");
+codePalette.changed(() => {
+  styles.clear();
+});
+/** A look with the optional code token color and font styles. */
+function sgr(look: Look, span?: syntax.Span, code = false): string {
+  const key = [
+    look.fg,
+    look.bg,
+    look.bold,
+    look.italic,
+    look.underline,
+    look.strike,
+    span?.[2].join(","),
+    span?.[3],
+    code,
+    codePalette.generation,
+  ].join(" ");
   let out = styles.get(key);
   if (out === undefined) {
     out = new palette.Style({ ...look, bg: look.bg ?? "bg" }).sgr();
-    if (kind) out += palette.fgRgb(palette.syntax[kind]);
+    if (code) out += palette.fgRgb(codePalette.foreground()) + palette.bgRgb(codePalette.background());
+    if (span)
+      out +=
+        palette.fgRgb(codePalette.color(span[2])) +
+        (span[3] & 1 ? "\x1b[3m" : "") +
+        (span[3] & 2 ? "\x1b[1m" : "") +
+        (span[3] & 4 ? "\x1b[4m" : "");
     styles.set(key, out);
   }
   return out;
@@ -490,20 +511,26 @@ function code(c: Ctx, t: Tokens.Code): void {
   }
   const lang = language(info),
     lines = t.text.replace(/\t/g, "    ").split("\n"),
-    lit = new syntax.Highlighter(lang, lines),
+    lit = syntax.service.code(lang, lines),
     look: Look = { fg: lang ? "text" : "muted" },
     pad = [{ text: "  ", style: sgr(c.base) }],
     inner = within(c, pad, pad);
   lines.forEach((line, i) => {
     const segs: Seg[] = [];
     let at = 0;
-    for (const [start, end, kind] of lit.spans(i)) {
-      if (start > at) segs.push({ text: line.slice(at, start), style: sgr(look) });
-      segs.push({ text: line.slice(Math.max(start, at), end), style: sgr(look, kind) });
+    for (const span of lit.spans(i)) {
+      const [start, end] = span;
+      if (start > at) segs.push({ text: line.slice(at, start), style: sgr(look, undefined, true) });
+      segs.push({ text: line.slice(Math.max(start, at), end), style: sgr(look, span, true) });
       at = end;
     }
-    if (at < line.length) segs.push({ text: line.slice(at), style: sgr(look) });
-    for (const piece of wrap(segs, room(inner))) put(inner, piece.segs, piece.join);
+    if (at < line.length) segs.push({ text: line.slice(at), style: sgr(look, undefined, true) });
+    for (const piece of wrap(segs, room(inner))) {
+      put(inner, piece.segs, piece.join);
+      const row = inner.out.at(-1)! as Text;
+      row.fill = sgr(look, undefined, true);
+      row.fill_from = width(inner.pen.rest);
+    }
   });
   c.pen.used = true;
 }
@@ -595,18 +622,14 @@ export function layout(text: string, room: number, partial = false): Line[] {
   blocks(c, tokens);
   return c.out.length ? c.out : [{ segs: [] }];
 }
-const laid = new WeakMap<object, { text: string; room: number; partial: boolean; generation: number; lines: Line[] }>();
+const laid = new WeakMap<object, { text: string; room: number; partial: boolean; generation: string; lines: Line[] }>();
 /** A reply's lines, kept while its text, the room and the palette stay the same. */
 export function lines(reply: { text: string; partial: boolean }, room: number): Line[] {
+  const stamp = `${generation}:${codePalette.generation}:${syntax.service.generation}`;
   const kept = laid.get(reply);
-  if (
-    kept?.text === reply.text &&
-    kept.room === room &&
-    kept.partial === reply.partial &&
-    kept.generation === generation
-  )
+  if (kept?.text === reply.text && kept.room === room && kept.partial === reply.partial && kept.generation === stamp)
     return kept.lines;
   const out = layout(reply.text, room, reply.partial);
-  laid.set(reply, { text: reply.text, room, partial: reply.partial, generation, lines: out });
+  laid.set(reply, { text: reply.text, room, partial: reply.partial, generation: stamp, lines: out });
   return out;
 }

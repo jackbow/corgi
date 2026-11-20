@@ -9,6 +9,7 @@ import { basename, join, relative, resolve } from "node:path";
 import * as dropdown from "../dropdown";
 import { Rect, type Direction } from "../layout";
 import * as palette from "../palette";
+import * as codePalette from "../code_palette";
 import { codepointWidth, compactCount, displayWidth, wrap, Writer } from "../text";
 import * as diff from "./diff";
 import * as folding from "./folding";
@@ -299,6 +300,17 @@ class Checkout {
   /** Whether git has answered for it once. */
   read = false;
   constructor(readonly root: string) {}
+  set(key: string, file: Loaded): void {
+    this.files.get(key)?.old.dispose();
+    this.files.get(key)?.new.dispose();
+    this.files.set(key, file);
+  }
+  release(): void {
+    for (const file of this.files.values()) {
+      file.old.dispose();
+      file.new.dispose();
+    }
+  }
 }
 /** The followed pane's review as it stands: its listing, and the selected
  * file or the one the cursor is in. */
@@ -335,6 +347,8 @@ interface Cell {
   fg: palette.Rgb;
   bg: palette.Rgb | null;
   bold: boolean;
+  italic?: boolean;
+  underline?: boolean;
 }
 type Hit = {
   x: number;
@@ -411,7 +425,7 @@ class Canvas {
   fill(row: number, bg: palette.Rgb | null, from = 0, to = this.w): void {
     if (row < 0 || row >= this.h) return;
     for (let i = Math.max(0, from); i < Math.min(this.w, to); i++)
-      Object.assign(this.cells[row][i], { ch: " ", bg, bold: false });
+      Object.assign(this.cells[row][i], { ch: " ", bg, bold: false, italic: false, underline: false });
   }
   /** Writes `text` from column `col`, at most `room` columns, ending in
    * "…" when cut. Returns the column after it. */
@@ -441,13 +455,15 @@ class Canvas {
     if (cut) this.put(col + used++, row, "…", fg, bg, bold);
     return col + used;
   }
-  put(col: number, row: number, ch: string, fg: palette.Rgb, bg?: palette.Rgb | null, bold = false): void {
+  put(col: number, row: number, ch: string, fg: palette.Rgb, bg?: palette.Rgb | null, bold = false, style = 0): void {
     if (row < 0 || row >= this.h || col < 0 || col >= this.w) return;
     const cell = this.cells[row][col];
     cell.ch = ch;
     cell.fg = fg;
     if (bg !== undefined) cell.bg = bg;
-    cell.bold = bold;
+    cell.bold = bold || !!(style & 2);
+    cell.italic = !!(style & 1);
+    cell.underline = !!(style & 4);
   }
   /** Every cell halfway to black, or to white on a light background, as panes dim behind a dialog. */
   fade(): void {
@@ -464,7 +480,7 @@ class Canvas {
       let style = "";
       for (const cell of row) {
         if (cell.ch === "") continue;
-        const next = `\x1b[0m${cell.bold ? "\x1b[1m" : ""}${palette.fgRgb(cell.fg)}${cell.bg ? palette.bgRgb(cell.bg) : plain}`;
+        const next = `\x1b[0m${cell.bold ? "\x1b[1m" : ""}${cell.italic ? "\x1b[3m" : ""}${cell.underline ? "\x1b[4m" : ""}${palette.fgRgb(cell.fg)}${cell.bg ? palette.bgRgb(cell.bg) : plain}`;
         if (next !== style) {
           w.write(next);
           style = next;
@@ -509,6 +525,10 @@ function plural(count: number, word: "note" | "file" | "commit" | "unmodified li
 }
 
 export class Panel {
+  dispose(): void {
+    for (const checkout of this.checkouts.values()) checkout.release();
+    this.checkouts.clear();
+  }
   /** A PR snapshot is independent of the focused pane's working tree. */
   remote: string | null = null;
   remote_stale = false;
@@ -543,13 +563,22 @@ export class Panel {
     co.listings.set(sourceKey(source), { changes: files.map(f => f.change), auto_collapsed: new Set(), edited: null });
     for (const file of files) {
       const lang = syntax.language(file.change.path);
-      co.files.set(`${sourceKey(source)}\0${file.change.path}`, {
+      co.set(`${sourceKey(source)}\0${file.change.path}`, {
         sig: "remote",
         loaded: file.loaded,
-        old: new syntax.Highlighter(lang, file.loaded.kind === "diff" ? file.loaded.diff.old : []),
-        new: new syntax.Highlighter(lang, file.loaded.kind === "diff" ? file.loaded.diff.new : []),
+        old: new syntax.Highlighter(
+          lang,
+          file.loaded.kind === "diff" ? file.loaded.diff.old : [],
+          file.loaded.kind === "diff" ? file.loaded.diff.old_resets : [],
+        ),
+        new: new syntax.Highlighter(
+          lang,
+          file.loaded.kind === "diff" ? file.loaded.diff.new : [],
+          file.loaded.kind === "diff" ? file.loaded.diff.new_resets : [],
+        ),
       });
     }
+    this.checkouts.get(url)?.release();
     this.checkouts.set(url, co);
     const r = this.review(-3);
     const paths = this.listing(co, r)?.changes.map(ch => ch.path) ?? [];
@@ -1152,11 +1181,19 @@ export class Panel {
     const loaded = await git.fileDiff(co.root, source, change);
     if (this.reading.get(read_key) !== ticket && co.files.has(key)) return;
     const lang = syntax.language(change.path);
-    co.files.set(key, {
+    co.set(key, {
       sig,
       loaded,
-      old: new syntax.Highlighter(lang, loaded.kind === "diff" ? loaded.diff.old : []),
-      new: new syntax.Highlighter(lang, loaded.kind === "diff" ? loaded.diff.new : []),
+      old: new syntax.Highlighter(
+        lang,
+        loaded.kind === "diff" ? loaded.diff.old : [],
+        loaded.kind === "diff" ? loaded.diff.old_resets : [],
+      ),
+      new: new syntax.Highlighter(
+        lang,
+        loaded.kind === "diff" ? loaded.diff.new : [],
+        loaded.kind === "diff" ? loaded.diff.new_resets : [],
+      ),
     });
     this.loads++;
     if (loaded.kind === "diff" && r.path === change.path && r.cur === 0)
@@ -1187,11 +1224,11 @@ export class Panel {
       const unit = this.units(r, file.loaded.diff, change.path)[r.cur],
         row = unit?.kind === "row" ? file.loaded.diff.rows[unit.row] : undefined;
       const lang = syntax.language(change.path);
-      co.files.set(key, {
+      co.set(key, {
         sig: "remote-full",
         loaded,
-        old: new syntax.Highlighter(lang, loaded.diff.old),
-        new: new syntax.Highlighter(lang, loaded.diff.new),
+        old: new syntax.Highlighter(lang, loaded.diff.old, loaded.diff.old_resets),
+        new: new syntax.Highlighter(lang, loaded.diff.new, loaded.diff.new_resets),
       });
       if (r.path === change.path && row) {
         r.cur = Math.max(
@@ -3430,10 +3467,19 @@ export class Panel {
       add = row.kind === "insertion",
       del = row.kind === "deletion",
       side = column ?? (del ? "old" : "new"),
-      bg = cursor ? tint.cursor : selected ? tint.selected : add ? tint.add : del ? tint.del : null,
+      base = codePalette.background(),
+      bg = cursor
+        ? palette.mix(base, tint.cursor, 50)
+        : selected
+          ? tint.selected
+          : add
+            ? palette.mix(base, colors.accent, 10)
+            : del
+              ? palette.mix(base, colors.hot, 10)
+              : base,
       spans = side === "old" ? hl.old.spans(row.old_at) : hl.new.spans(row.new_at),
-      em = cursor || selected ? null : d.emphasis(index),
-      em_bg = add ? tint.add_em : tint.del_em,
+      em = selected ? null : d.emphasis(index),
+      em_bg = palette.mix(base, add ? colors.accent : colors.hot, 30),
       found = r.find?.by_row.get(`${path}\0${index}`) ?? null,
       lines = sourceLines(text, code_w, r.wrap ? wrap_cap : 1, r.wrap ? 0 : sourceOffset(text, r.shift)),
       number = column === "old" ? row.old_no : diff.FileDiff.number(row),
@@ -3480,17 +3526,25 @@ export class Panel {
           at += raw.length;
           continue;
         }
-        let fg = colors.text;
+        let fg = codePalette.foreground(),
+          style = 0;
         while (si < spans.length && spans[si][1] <= at) si++;
-        if (si < spans.length && spans[si][0] <= at) fg = palette.syntax[spans[si][2]];
+        if (si < spans.length && spans[si][0] <= at) {
+          fg = codePalette.color(spans[si][2]);
+          style = spans[si][3];
+        }
+        if (selected) {
+          fg = colors.strong;
+          style = 0;
+        }
         let cell_bg = bg;
         if (em && inside(em, at)) cell_bg = em_bg;
         if (found && inside(found, at)) {
           cell_bg = tint.match;
           fg = colors.strong;
         }
-        c.put(col, y, ch, fg, cell_bg);
-        if (width === 2) c.put(col + 1, y, "", fg, cell_bg);
+        c.put(col, y, ch, fg, cell_bg, false, style);
+        if (width === 2) c.put(col + 1, y, "", fg, cell_bg, false, style);
         previous = col;
         col += width;
         at += raw.length;

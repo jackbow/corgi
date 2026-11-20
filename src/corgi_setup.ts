@@ -10,6 +10,8 @@ import * as i18n from "./i18n";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import * as palette from "./palette";
+import * as codePalette from "./code_palette";
+import * as syntax from "./review/syntax";
 import { Style, colors, bgRgb, mix, selection, type Token } from "./palette";
 import { Rect } from "./layout";
 import { Provider, byProvider, adapter } from "./providers";
@@ -111,6 +113,7 @@ export type Item =
   | "flourishes"
   | "readings"
   | "clever_corgi"
+  | "code_colors"
   | "theme"
   | "language"
   | "shell"
@@ -137,6 +140,7 @@ const list = (): ListRow[] => [
   "readings",
   null,
   "theme",
+  "code_colors",
   "language",
   "shell",
   "keyboard",
@@ -161,6 +165,7 @@ const labels = (): Record<Item, string> => ({
   readings: i18n.t`Resources`,
   clever_corgi: i18n.t`Clever Corgi`,
   theme: i18n.t`Theme`,
+  code_colors: i18n.t`Code colors`,
   language: i18n.t`Language`,
   shell: i18n.t`Shell`,
   keyboard: i18n.t`Keymap`,
@@ -198,6 +203,7 @@ export type Apply =
   | { kind: "inference_use"; use: Use; on: boolean }
   | { kind: "readings" | "smart_links" | "auto_retry" | "ghostty"; on: boolean }
   | { kind: "corgi_intensity"; value: number }
+  | ({ kind: "code_colors" } & codePalette.Choice)
   | { kind: "theme"; theme: palette.Theme }
   | { kind: "language"; language: i18n.Locale | undefined }
   | { kind: "shell"; entry: shellPicker.Entry }
@@ -260,6 +266,7 @@ interface Option {
   choice?: { text: string; on: boolean };
   /** A text field, in a box, that takes typing while it has the cursor. */
   edit?: boolean;
+  code_control?: "toggle" | "save" | "cancel";
   slider?: number;
   art?: number;
 }
@@ -283,6 +290,7 @@ const paste_found: Record<ClipboardState["support"], Found> = {
   unsupported: "no",
 };
 type Line =
+  | { tag: "code_preview"; row: number; background: boolean }
   | { tag: "title" | "lead" | "note" | "warn"; text: string }
   /** One line under a setting in a group, aligned with its name. */
   | { tag: "brief"; text: string; tone?: "muted" | "warm" }
@@ -634,7 +642,9 @@ export class Menu implements LinkSource {
   static open(): Menu {
     return new Menu();
   }
+  private code_draft: codePalette.Choice | null = null;
   close(): void {
+    this.code_draft = null;
     this.clearAim();
     this.intensity_drag = null;
     this.import_picker.close();
@@ -838,6 +848,8 @@ export class Menu implements LinkSource {
       this.focus = "options";
       return true;
     }
+    if (this.item === "code_colors")
+      this.code_draft = { code_palette: prefs.code_palette, code_background: prefs.code_background };
     const options = this.options(s, prefs);
     if (options.every(o => o.disabled)) return false;
     const used = options.findIndex(o => o.mark === "on" && !o.disabled);
@@ -883,6 +895,7 @@ export class Menu implements LinkSource {
       return true;
     }
     this.leaveImport();
+    this.code_draft = null;
     this.focus = "list";
     return true;
   }
@@ -903,6 +916,21 @@ export class Menu implements LinkSource {
     const models = this.models(s);
     if (models) return this.picked(models.key(13), s);
     if (this.focus === "options") {
+      if (this.item === "code_colors") {
+        const choice = this.previewCode(prefs);
+        const control = this.options(s, prefs)[this.cursor]?.code_control;
+        if (control === "toggle") {
+          this.code_draft = { ...choice, code_background: !choice.code_background };
+          return null;
+        }
+        if (control === "cancel") {
+          this.back();
+          return null;
+        }
+        this.focus = "list";
+        this.code_draft = null;
+        return { kind: "code_colors", ...choice };
+      }
       const option = this.options(s, prefs)[this.cursor];
       if (option?.choice !== undefined) {
         this.openModels(s);
@@ -973,7 +1001,7 @@ export class Menu implements LinkSource {
     if (!option || option.disabled) return null;
     this.focus = "options";
     this.cursor = hit.option;
-    if (option.choice !== undefined) return this.enter(s, prefs);
+    if (this.item === "code_colors" || option.choice !== undefined) return this.enter(s, prefs);
     if (option.edit) {
       if (!this.editing) this.edit(prefs);
       return null;
@@ -1338,6 +1366,8 @@ export class Menu implements LinkSource {
             );
           w.write(at(x0 + 4, y) + text);
           return writeEllipsis(w, line.name, right - x0 - 4);
+        case "code_preview":
+          return this.drawCodePreview(w, x0, y, right - x0, line.row, line.background, prefs);
         case "chart":
           return this.drawChart(w, line.row, x0 + 4, right, y, now_ms);
         case "glimmer": {
@@ -1395,6 +1425,45 @@ export class Menu implements LinkSource {
           return this.import_picker.draw(w, pickerArea(l, i), this.focus === "options");
       }
     });
+  }
+  private drawCodePreview(
+    w: Writer,
+    x: number,
+    y: number,
+    width: number,
+    row: number,
+    background: boolean,
+    prefs: Preferences,
+  ): void {
+    const choice = { ...this.previewCode(prefs), code_background: background };
+    const lines = [
+      'function greet() { return "old"; }',
+      'function greet() { return "new"; }',
+      "const message = greet(); // Chat: greeting",
+    ];
+    const spans = syntax.service.code("typescript", lines).spans(row);
+    const base = codePalette.background(choice),
+      fg = codePalette.foreground(choice);
+    const bg = row < 2 ? palette.mix(base, row === 0 ? colors.hot : colors.accent, 10) : base;
+    const style = "\x1b[0m" + bgRgb(bg);
+    w.write(at(x, y) + style + " ".repeat(Math.max(0, width)) + at(x, y));
+    w.write(palette.fgRgb(fg) + (row === 0 ? "- " : row === 1 ? "+ " : "  "));
+    const line = lines[row].slice(0, Math.max(0, width - 2));
+    let at_char = 0;
+    for (const [start, end, rgb, font] of spans) {
+      if (start >= line.length) break;
+      w.write(style + palette.fgRgb(fg) + line.slice(at_char, start));
+      w.write(
+        style +
+          palette.fgRgb(codePalette.color(rgb, choice)) +
+          (font & 1 ? "\x1b[3m" : "") +
+          (font & 2 ? "\x1b[1m" : "") +
+          (font & 4 ? "\x1b[4m" : "") +
+          line.slice(start, end),
+      );
+      at_char = end;
+    }
+    w.write(style + palette.fgRgb(fg) + line.slice(at_char) + "\x1b[0m");
   }
   /** The worktree folder's row of its box, from `x` to `right`: the template,
    * as saved or as typed, its variables green and bad `$`s amber, scrolled to
@@ -1635,6 +1704,11 @@ export class Menu implements LinkSource {
       );
     }
     if (this.item === "report_bug") return out.slice(0, l.body);
+    if (this.item === "code_colors" && out.length > l.body) {
+      const cursor = out.findIndex(line => line.tag === "option" && line.index === this.cursor);
+      const start = Math.max(0, Math.min(cursor - 1, out.length - l.body));
+      return out.slice(start, start + l.body);
+    }
     if (this.item === "flourishes" && out.length > l.body)
       return out.filter(line => line.tag !== "blank" && line.tag !== "lead").slice(0, l.body);
     // A short frame draws the answer-time chart as one row.
@@ -1816,6 +1890,50 @@ export class Menu implements LinkSource {
             }),
             { tag: "brief", text: c.brief },
             blank,
+          ]),
+        ];
+      }
+      case "code_colors": {
+        const choice = this.previewCode(prefs);
+        return [
+          title(i18n.t`Code colors`),
+          ...codePalette.palettes.map(code_palette =>
+            option({
+              label: codePalette.labels[code_palette],
+              detail: "",
+              mark: code_palette === prefs.code_palette ? "on" : "off",
+              apply: { kind: "code_colors", ...choice, code_palette },
+              action: i18n.t`use`,
+            }),
+          ),
+          option({
+            label: i18n.t`Use palette background`,
+            detail: "",
+            mark: "none",
+            toggle: choice.code_background,
+            code_control: "toggle",
+            apply: null,
+            action: i18n.t`toggle`,
+          }),
+          option({
+            label: i18n.t`Save`,
+            detail: "",
+            mark: "none",
+            code_control: "save",
+            apply: null,
+            action: i18n.t`use`,
+          }),
+          option({
+            label: i18n.t`Cancel`,
+            detail: "",
+            mark: "none",
+            code_control: "cancel",
+            apply: null,
+            action: i18n.t`use`,
+          }),
+          ...[true, false].flatMap(background => [
+            { tag: "note", text: background ? i18n.t`Palette background` : i18n.t`Corgi background` } as Line,
+            ...[0, 1, 2].map(row => ({ tag: "code_preview", row, background }) as Line),
           ]),
         ];
       }
@@ -2112,6 +2230,16 @@ export class Menu implements LinkSource {
       },
     ];
   }
+  previewCode(prefs: Preferences): codePalette.Choice {
+    if (this.item !== "code_colors" || this.focus !== "options") {
+      this.code_draft = null;
+      return prefs;
+    }
+    this.code_draft ??= { code_palette: prefs.code_palette, code_background: prefs.code_background };
+    const hovered = codePalette.palettes[this.cursor];
+    if (hovered) this.code_draft.code_palette = hovered;
+    return { ...this.code_draft };
+  }
   /** The theme under the cursor, or the one in use. */
   previewTheme(prefs: Preferences): palette.Theme | undefined {
     if (this.item !== "theme" || this.focus !== "options") return prefs.theme;
@@ -2136,6 +2264,8 @@ export class Menu implements LinkSource {
         return flag(prefs.resources.enabled);
       case "clever_corgi":
         return { text: "", tone: "faint" };
+      case "code_colors":
+        return { text: codePalette.labels[prefs.code_palette].replace("VS Code ", ""), tone: "muted" };
       case "theme":
         return { text: palette.themes[palette.chosen(prefs.theme)].label, tone: "muted" };
       case "language":

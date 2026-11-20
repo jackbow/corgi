@@ -1,0 +1,9 @@
+{
+  "parent": "ec1764d3653f",
+  "structures": {
+    "checkpoint": "5d6c0a078a4b654708637b0ec282706ee8064c9487e8b18376135960d43e26c8",
+    "handoff": "8a34b124f1754daaac34fbfff6428b87ab19ffe3a1db943e7ade31bae3222a83",
+    "protocol": "1a9a258f93fd9254cc15be71c3998559a2bcf728b383ba3a4fa793791771a635",
+    "viewer": "02c36d674dbf3689cd11283c930e20347b23752afe1406c74ca3763bd529c8d9"
+  }
+}

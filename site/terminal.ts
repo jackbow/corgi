@@ -10,7 +10,7 @@
 import * as palette from "../src/palette";
 import * as text from "../src/text";
 
-export type Cell = [string, string | null, string | null, boolean, number, string | null];
+export type Cell = [string, string | null, string | null, boolean, number, string | null, boolean?];
 const tokens = new Map(Object.entries(palette.colors).map(([token, rgb]) => [rgb.join(","), token]));
 const color = (rgb: number[]) =>
   tokens.get(rgb.join(",")) ?? "#" + rgb.map(n => n.toString(16).padStart(2, "0")).join("");
@@ -26,6 +26,7 @@ export class Screen {
   fg: string | null = null;
   bg: string | null = null;
   bold = false;
+  italic = false;
   inverse = false;
   ul = 0;
   ulc: string | null = null;
@@ -40,7 +41,7 @@ export class Screen {
   }
   reset() {
     this.fg = this.bg = this.ulc = null;
-    this.bold = this.inverse = false;
+    this.bold = this.italic = this.inverse = false;
     this.ul = 0;
   }
   put(ch: string) {
@@ -61,6 +62,7 @@ export class Screen {
       row[this.x] = this.inverse
         ? [ch, this.bg ?? "bg", this.fg ?? "text", this.bold, this.ul, this.ulc]
         : [ch, this.fg, this.bg, this.bold, this.ul, this.ulc];
+      if (this.italic) row[this.x].push(true);
       if (width === 2) row[this.x + 1] = ["", ...row[this.x].slice(1)] as Cell;
     }
     this.x += width;
@@ -87,6 +89,8 @@ export class Screen {
       if (n === 0) this.reset();
       else if (n === 1) this.bold = true;
       else if (n === 22) this.bold = false;
+      else if (n === 3) this.italic = true;
+      else if (n === 23) this.italic = false;
       else if (n === 7) this.inverse = true;
       else if (n === 27) this.inverse = false;
       else if (n === 4) this.ul = 1;

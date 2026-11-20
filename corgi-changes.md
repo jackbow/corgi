@@ -2,6 +2,14 @@
 
 Application changes added during development.
 
+## Code colors
+
+- Diffs and chat code blocks share bundled Shiki grammars and VS Code Dark+ (the default), VS Code Light+, and Terminal palettes. Settings previews the same diff and chat sample on palette and Corgi backgrounds; Enter/Save confirms, Cancel/Escape restores the saved choice. `code_palette` and `code_background` live in `config.json`, independently of the application theme.
+- Highlighting runs in one lazy worker per viewer, leaving pending code readable as plain text. Separate diff-side grammar states include folded lines and reset at missing remote context; loading full context rebuilds colors. Existing size and line-length limits remain. Terminal uses yellow functions and readable italic comments.
+- Diff word highlights remain visible on the focused row; selection and search take precedence. Token colors and bold, italic and underline styles survive terminal rendering.
+- Viewer revision `2de8732b5be8` adds the preferences; older readers ignore the config keys and missing or unknown values default to Dark+ with its background enabled.
+- [Verification notes](docs/code-highlighting.md) record latency, scrolling, memory and binary-size measurements, offline checks, and outstanding visual checks.
+
 ## Archived workspace restore
 
 - Restoring an archived pane moves its saved screen into scrollback and opens a clean shell prompt, so the resume command no longer overlaps the old agent UI. Staged commands show a **Press Enter to resume** hint.

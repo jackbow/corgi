@@ -23,6 +23,9 @@ feature list and behavior changes.
   list between workspace navigation and the conversation, with repository
   grouping, sorting, relative timestamps, and folded merged PRs. Visibility
   is saved per conversation. Cmd+Shift+K finds conversations by PR number or link.
+- **Code colors:** diffs and chat code blocks share Shiki highlighting, with
+  VS Code Dark+ (default), VS Code Light+, and Terminal palettes in Settings.
+  Preview both backgrounds, save or cancel, and recolor open views immediately.
 - **Diff viewing:** local and PR diffs open fullscreen, with Cmd+Shift+Enter
   switching to pane mode. Resize, hide, search, expand, or collapse the file
   tree; use the draggable change minimap in full-file views. Tests start hidden

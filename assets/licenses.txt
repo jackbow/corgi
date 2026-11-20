@@ -34,6 +34,25 @@ These are distributed under the MIT License, whose text follows the list.
   pi-tui: https://github.com/earendil-works/pi
     Copyright (c) 2025 Mario Zechner
 
+  Shiki (@shikijs/core, engine-javascript, langs, themes, primitive, types): https://github.com/shikijs/shiki
+    Copyright (c) 2021 Pine Wu
+    Copyright (c) 2023 Anthony Fu <https://github.com/antfu>
+
+  @shikijs/vscode-textmate: https://github.com/shikijs/vscode-textmate
+    Copyright (c) Microsoft Corporation
+
+  oniguruma-to-es: https://github.com/slevithan/oniguruma-to-es
+    Copyright (c) 2024-2026 Steven Levithan
+
+  oniguruma-parser: https://github.com/slevithan/oniguruma-parser
+    Copyright (c) 2025-2026 Steven Levithan
+
+  regex, regex-recursion: https://github.com/slevithan/regex
+    Copyright (c) 2025 Steven Levithan
+
+  regex-utilities: https://github.com/slevithan/regex-utilities
+    Copyright (c) 2024 Steven Levithan
+
   qr, terminal pairing codes: https://github.com/paulmillr/qr
     Copyright (c) 2023 Paul Miller (https://paulmillr.com)
 

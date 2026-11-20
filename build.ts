@@ -170,6 +170,7 @@ const configSource = Object.entries({ ...config, builtAt, sourceHash: sourceSHA2
 const result = await Bun.build({
   entrypoints: [
     `${root}/src/main.ts`,
+    `${root}/src/review/syntax_worker.ts`,
     `${root}/src/providers/codex/files_worker.ts`,
     `${root}/src/trackers/resources_worker.ts`,
   ],
