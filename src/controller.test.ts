@@ -8268,3 +8268,28 @@ test("a late diff response cannot clear a newer PR's loading state", async () =>
     viewer.close(s);
   }
 });
+
+test("the PR list upgrades legacy metadata so cached merged PRs retain their dates", async () => {
+  const s: any = new Controller({ request: transport(async () => ({})).request }),
+    legacy = { ...prSnapshot(), state: "MERGED" as const },
+    dated = { ...legacy, createdAt: "2026-11-01T00:00:00Z", updatedAt: "2026-11-24T00:00:00Z" };
+  s.pr_cache.prefetch = () => {};
+  s.receiveSnapshot(folders("/repo"));
+  s.pr_cache.cached = async () => legacy;
+  let reads = 0;
+  s.pr_cache.refresh = async () => {
+    reads++;
+    return dated;
+  };
+  try {
+    expect(await s.conversation_prs.readDetails(legacy.ref)).toEqual({
+      title: dated.title,
+      state: "MERGED",
+      createdAt: dated.createdAt,
+      updatedAt: dated.updatedAt,
+    });
+    expect(reads).toBe(1);
+  } finally {
+    viewer.close(s);
+  }
+});

@@ -23,7 +23,7 @@ feature list and behavior changes.
 - **Conversation PR lists and search:** collect links from user and agent
   messages, including later mentions by number. Cmd+Ctrl+G toggles a resizable
   list between workspace navigation and the conversation, with repository
-  grouping, sorting, relative timestamps, and folded merged PRs. Visibility
+  grouping, sorting, cached titles and relative timestamps, and folded merged PRs. Visibility
   is saved per conversation. Cmd+Shift+K finds conversations by PR number or link.
 - **Code colors:** diffs and chat code blocks share Shiki highlighting, with
   VS Code Dark+ (default), VS Code Light+, and Terminal palettes in Settings.

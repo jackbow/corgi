@@ -669,7 +669,8 @@ export class Controller {
   private local_review = new panel.Panel();
   private pr_cache = new pullRequest.Cache();
   private conversation_pr_panel = new conversationPRPanel.Panel(async ref => {
-    const snapshot = await this.pr_cache.get(ref);
+    const cached = await this.pr_cache.get(ref),
+      snapshot = cached.createdAt && cached.updatedAt ? cached : await this.pr_cache.refresh(ref);
     return {
       title: snapshot.title,
       state: snapshot.state,
