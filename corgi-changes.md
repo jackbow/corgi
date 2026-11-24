@@ -99,7 +99,7 @@ Application changes added during development.
 
 ## Workspaces and agents
 
-- Sleeping agents show the time since their last user or assistant message beside the dog: green under 5 minutes, amber from 5 to 30 minutes, and coral after 30 minutes. Older chats use hours or days; tool output does not reset the age.
+- Sleeping agents show the time since their last user or assistant message beside the dog. Eight colors fade from green to readable dim gray at 15, 45, 90, 180 and 360 minutes, then 1 and 2 days. Older chats use hours or days; tool output does not reset the age.
 - New workspaces are created with a single press, without a countdown or holding Enter.
 - Right-clicking a tab or agent offers **Move tab to workspace…**, preserving the tab's splits and running processes and following it to the destination.
 - Cmd+Shift+A toggles between the workspace-specific agent list and all agents, remembering the preference across viewer restarts.

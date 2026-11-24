@@ -1161,18 +1161,38 @@ test("commit relative time humanizes elapsed and future timestamps", () => {
 
 test("message ages use minutes, hours and days with age colors and safe unknown times", () => {
   const now = 2_000_000_000_000;
-  for (const [minutes, text, token] of [
-    [0, "0 min", "accent"],
-    [4, "4 min", "accent"],
-    [5, "5 min", "warm"],
-    [29, "29 min", "warm"],
-    [30, "30 min", "hot"],
-    [60, "1 hr", "hot"],
-    [1440, "1 d", "hot"],
+  for (const [minutes, text] of [
+    [0, "0 min"],
+    [14, "14 min"],
+    [15, "15 min"],
+    [45, "45 min"],
+    [60, "1 hr"],
+    [90, "1 hr"],
+    [1440, "1 d"],
+    [2880, "2 d"],
   ] as const)
-    expect(messageAge(now - minutes * 60_000, now)).toEqual({ text, token });
-  expect(messageAge(now + 60_000, now)).toEqual({ text: "0 min", token: "accent" });
+    expect(messageAge(now - minutes * 60_000, now)?.text).toBe(text);
+  expect(messageAge(now + 60_000, now)).toEqual({ text: "0 min", color: colors.accent });
   for (const unknown of [0, -1, NaN, Infinity]) expect(messageAge(unknown, now)).toBeNull();
+});
+
+test("message ages fade from green to dim gray at each agreed boundary", () => {
+  const now = 2_000_000_000_000;
+  const ranges: [number, number, palette.Rgb][] = [
+    [0, 15, colors.accent],
+    [15, 45, mix(colors.accent, colors.muted, 20)],
+    [45, 90, mix(colors.accent, colors.muted, 40)],
+    [90, 180, mix(colors.accent, colors.muted, 60)],
+    [180, 360, mix(colors.accent, colors.muted, 80)],
+    [360, 1440, colors.muted],
+    [1440, 2880, mix(colors.muted, colors.faint, 50)],
+    [2880, 10080, colors.faint],
+  ];
+  expect(new Set(ranges.map(([, , color]) => color.join(","))).size).toBe(8);
+  for (const [start, end, color] of ranges) {
+    expect(messageAge(now - start * 60_000, now)?.color).toEqual(color);
+    expect(messageAge(now - (end * 60_000 - 1), now)?.color).toEqual(color);
+  }
 });
 
 test("sleeping rows keep colored message ages on the dog line, clear of child badges", () => {
@@ -1187,7 +1207,7 @@ test("sleeping rows keep colored message ages on the dog line, clear of child ba
     const view = View.init(100, 30, true, 0, 1).withEntries([e]);
     view.corgi_intensity = intensity;
     const bytes = draw(view, [e], [], now);
-    expect(bytes).toContain(fg("warm") + "6 min");
+    expect(bytes).toContain(fg("accent") + "6 min");
     const host = new Terminal(100, 30);
     try {
       host.feed(bytes);

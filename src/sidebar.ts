@@ -2077,7 +2077,7 @@ export class View {
         );
       } else writeEllipsis(w, detail_text, detail_room);
     }
-    if (show_age) w.write(`${w.cup(y + 2, x + 5 + detail_room - age_width)}${fg(age.token)}${age.text}`);
+    if (show_age) w.write(`${w.cup(y + 2, x + 5 + detail_room - age_width)}${fgRgb(age.color)}${age.text}`);
     // Once the corgi has curled up, the compaction's time so far sits at the right.
     const took = herding && e.compacting_since > 0 ? elapsed(now_ms - e.compacting_since / 1000) : "";
     const took_width = displayWidth(took);
@@ -3094,7 +3094,7 @@ export function elapsed(ms: number): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
   return `${Math.floor(seconds / 3600)}h ${Math.floor(seconds / 60) % 60}m`;
 }
-export function messageAge(timestamp: number, now_ms: number): { text: string; token: palette.Token } | null {
+export function messageAge(timestamp: number, now_ms: number): { text: string; color: palette.Rgb } | null {
   if (!Number.isFinite(timestamp) || timestamp <= 0) return null;
   const minutes = Math.floor(Math.max(0, now_ms - timestamp) / 60_000);
   const text =
@@ -3103,7 +3103,20 @@ export function messageAge(timestamp: number, now_ms: number): { text: string; t
       : minutes < 1440
         ? `${Math.floor(minutes / 60)} hr`
         : `${Math.floor(minutes / 1440)} d`;
-  return { text, token: minutes < 5 ? "accent" : minutes < 30 ? "warm" : "hot" };
+  const fade = [
+    [15, 0],
+    [45, 20],
+    [90, 40],
+    [180, 60],
+    [360, 80],
+    [1440, 100],
+  ].find(([limit]) => minutes < limit);
+  const color = fade
+    ? mix(colors.accent, colors.muted, fade[1])
+    : minutes < 2880
+      ? mix(colors.muted, colors.faint, 50)
+      : colors.faint;
+  return { text, color };
 }
 
 export function relativeTime(timestamp: number, now: number): string {
