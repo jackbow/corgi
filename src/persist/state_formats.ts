@@ -30,6 +30,7 @@ import * as r_50cd70f93bfd from "./revisions/20261119_142619_50cd70f93bfd_keep_s
 import * as r_430a324f1048 from "./revisions/20261119_214008_430a324f1048_retain_local_orchestration_and_notification_meta";
 import * as r_ec1764d3653f from "./revisions/20261119_215256_ec1764d3653f_remember_the_conversation_pr_list_width";
 import * as r_2de8732b5be8 from "./revisions/20261120_214857_2de8732b5be8_save_code_palette_and_background_preferences";
+import * as r_2fab55a9485b from "./revisions/20261124_213350_2fab55a9485b_expose_derived_chat_message_timestamps_in_agent_";
 
 export const revisions = [
   r_1dfaa1773956.revision,
@@ -62,9 +63,10 @@ export const revisions = [
   r_430a324f1048.revision,
   r_ec1764d3653f.revision,
   r_2de8732b5be8.revision,
+  r_2fab55a9485b.revision,
 ];
 export const heads = {
-  state: r_430a324f1048.revision.id,
+  state: r_2fab55a9485b.revision.id,
   checkpoint: r_1dfaa1773956.revision.id,
   handoff: r_3a005bd21b0d.revision.id,
   workspaces: r_f4c12b1642bd.revision.id,

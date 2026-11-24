@@ -27,6 +27,13 @@ test("saved structures require an explicit state revision", () => {
   ).toEqual(recorded.structures);
 });
 
+test("the chat timestamp snapshot revision preserves auxiliary metadata in both directions", () => {
+  const revision = state_formats.revisions.find(revision => revision.id === "2fab55a9485b")!;
+  const value = { conversations: [{ id: 1 }], workspaces: [{ id: 2 }], local_task_registry: { next_id: 3 } };
+  expect(revision.up(value)).toEqual(value);
+  expect(revision.down!(value)).toEqual(value);
+});
+
 test("every revision is registered with its original parent and structure fixture", async () => {
   const files = readdirSync(join(root, "src/persist/revisions")).filter(name => name.endsWith(".ts")),
     ids = await Promise.all(files.map(async file => (await import(`./revisions/${file}`)).revision.id));

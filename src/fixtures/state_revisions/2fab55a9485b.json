@@ -1,0 +1,9 @@
+{
+  "parent": "430a324f1048",
+  "structures": {
+    "checkpoint": "5d6c0a078a4b654708637b0ec282706ee8064c9487e8b18376135960d43e26c8",
+    "handoff": "8a34b124f1754daaac34fbfff6428b87ab19ffe3a1db943e7ade31bae3222a83",
+    "protocol": "3547973858815cafcbba633d5c9c49b6b0967ca65c5fc6049a50793fc5f9e7b4",
+    "viewer": "02c36d674dbf3689cd11283c930e20347b23752afe1406c74ca3763bd529c8d9"
+  }
+}
