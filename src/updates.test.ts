@@ -26,8 +26,11 @@ import {
   check,
   save,
   prune,
+  requested,
   pluginOf,
   forget,
+  channelOf,
+  state,
   type Release,
 } from "./updates";
 import { releaseVersion } from "./build_config";
@@ -75,7 +78,7 @@ test("manifests verify against the release's key", () => {
   expect(() => parse(rel(""), bytes)).toThrow("BadUpdateSignature");
   expect(() => parse(r, signedManifest(signer, 2, "https://example.invalid/corgi"))).toThrow("UnknownUpdateSchema");
 });
-test("signed manifests require every typed field, and this platform's target", () => {
+test("signed manifests require every typed field and this platform's target, and pass over unknown platforms", () => {
   const signer = keys(),
     r = rel(key(signer));
   const original = JSON.parse(JSON.parse(signedManifest(signer, 1, "https://example.invalid/corgi")).payload);
@@ -101,9 +104,8 @@ test("signed manifests require every typed field, and this platform's target", (
     if (name === platform) expect(() => parse(r, encode(value))).toThrow("MissingField");
     else expect(parse(r, encode(value)).version).toBe("1.2.4");
   }
-  expect(() => parse(r, encode({ ...original, targets: { ...original.targets, "plan9-mips": {} } }))).toThrow(
-    "UnknownField",
-  );
+  // A platform a later release adds, in whatever shape, is someone else's.
+  expect(parse(r, encode({ ...original, targets: { ...original.targets, "plan9-mips": {} } })).version).toBe("1.2.4");
   expect(() => parse(r, encode({ ...original, extra: true }))).toThrow("UnknownField");
 });
 test("local http targets need test mode", () => {
@@ -134,7 +136,7 @@ test("only an installed release with a feed is managed", () => {
 function installation(versions: string[], pointers: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), "corgi-prune-"));
   for (const v of versions) {
-    mkdirSync(join(root, "releases", v), { recursive: true });
+    mkdirSync(join(root, "releases", v), { recursive: true, mode: 0o700 });
     writeFileSync(join(root, "releases", v, "corgi"), "");
   }
   for (const [name, v] of Object.entries(pointers)) writeFileSync(join(root, name), v);
@@ -180,6 +182,27 @@ test("a finished download removes the update it replaces", () => {
     mkdirSync(join(root, "releases", "notes"));
     prune(root, true);
     expect(releases(root)).toEqual(["1.0.0", "1.0.3", "notes"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("the last three releases viewers asked for stay for two weeks", () => {
+  const root = installation(["1.0.0", "1.0.1", "1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6"], {
+    current: "1.0.6",
+    previous: "1.0.5",
+  });
+  const day = 86_400_000;
+  try {
+    requested(join(root, "releases", "1.0.0"));
+    for (const [v, ago] of [
+      ["1.0.1", 2],
+      ["1.0.2", 3],
+      ["1.0.3", 4],
+      ["1.0.4", 20],
+    ] as const)
+      writeFileSync(join(root, "releases", v, "requested"), String(Date.now() - ago * day));
+    prune(root, true);
+    expect(releases(root)).toEqual(["1.0.0", "1.0.1", "1.0.2", "1.0.5", "1.0.6"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -231,6 +254,19 @@ test("an installation remembers the Omarchy plugin that installed it", () => {
     expect(pluginOf(root)).toBe("/home/u/.config/omarchy/plugins/corgi.computer");
     writeFileSync(join(root, "plugin"), "plugins/corgi.computer\n");
     expect(pluginOf(root)).toBeNull();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+test("an installation follows stable unless it chose a channel this release knows", () => {
+  const root = mkdtempSync(join(tmpdir(), "corgi-channel-"));
+  try {
+    expect(channelOf(root)).toBe("stable");
+    writeFileSync(join(root, "channel"), "test");
+    expect(channelOf(root)).toBe("test");
+    expect(state(root)).toContain("Channel: test");
+    writeFileSync(join(root, "channel"), "nightly");
+    expect(channelOf(root)).toBe("stable");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

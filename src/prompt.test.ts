@@ -1,4 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
+import * as hostImages from "./host_images";
+import type { Thumbnail } from "./link_tooltip";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -646,8 +648,8 @@ test("/incognito starts over keeping nothing, until /new", async () => {
   // An incognito chat moves to a pane too, still incognito: it goes on with the same session.
   type(p, "/pane");
   const moved = p.key(13) as any;
-  expect(moved.argv).toContain("--incognito");
-  expect(readHandoff(parseChatArgs(moved.argv.slice(moved.argv.indexOf("__chat") + 1)).handoff)!.incognito).toBe(true);
+  expect(chatArgs(moved.chat)).toContain("--incognito");
+  expect(readHandoff(moved.chat.handoff)!.incognito).toBe(true);
   expect(p.incognito).toBe(false);
   p.show(context);
   type(p, "/incognito");
@@ -665,8 +667,8 @@ test("/pane hands the conversation to a Corgi pane, which reads it once; /memory
   type(p, "/pane");
   // With nothing asked yet, the pane starts the conversation, following Auto.
   const empty = p.key(13) as any;
-  expect(empty.kind).toBe("pane");
-  const fresh = parseChatArgs(empty.argv.slice(empty.argv.indexOf("__chat") + 1)),
+  expect(empty.kind).toBe("chat");
+  const fresh = parseChatArgs(chatArgs(empty.chat)),
     blank = readHandoff(fresh.handoff)!;
   expect(fresh).toMatchObject({ provider: "claude", session: "", model: "claude-opus-5-5", cwd: "/work/corgi" });
   expect(blank.conversation).toBeNull();
@@ -680,10 +682,9 @@ test("/pane hands the conversation to a Corgi pane, which reads it once; /memory
   await poll(p, 0);
   // ctrl+o is /pane.
   const effect = p.key(15) as any;
-  expect(effect.kind).toBe("pane");
+  expect(effect.kind).toBe("chat");
   expect(p.open).toBe(false);
-  const at = effect.argv.indexOf("__chat"),
-    args = parseChatArgs(effect.argv.slice(at + 1));
+  const args = parseChatArgs(chatArgs(effect.chat));
   expect(args).toMatchObject({
     provider: "claude",
     session: "0193-session",
@@ -741,8 +742,8 @@ test("a pane that doesn't open leaves the chat with the card", async () => {
   await poll(p, 0);
   const effect = p.key(15) as any;
   expect(p.conversation.session).toBe("");
-  p.reclaim(effect.handoff, "TooManyPanes");
-  expect(existsSync(effect.handoff)).toBe(false);
+  p.reclaim(effect.chat.handoff, "TooManyPanes");
+  expect(existsSync(effect.chat.handoff)).toBe(false);
   expect(p.conversation.session).toBe("0193-session");
   expect(p.conversation.items.map(i => (i as any).text)).toEqual([
     "hello",
@@ -1076,16 +1077,18 @@ test("a pasted image is a chip that goes as an image, even with nothing typed", 
   expect(card(draw(p))[1]).toMatch(/^│  › +\* +Fix sidebar f… +Image 1 +Image 2 +│$/);
 });
 
+const thumbnail_image = new hostImages.Image({ png: new Uint8Array() });
 /** Draws `p` with a picture for the image under the pointer, as a host that shows them would. */
 function pictured(
   p: Prompt,
   cols: number,
   rows: number,
-  thumbnail = { width: 180, height: 72, cell: { width: 9, height: 18 } },
+  thumbnail: Thumbnail = { width: 180, height: 72, cell: { width: 9, height: 18 }, image: thumbnail_image },
 ) {
-  const w = new Writer();
-  const boxes = p.draw(w, cols, rows, null, 0, { pictures: true, thumbnail });
-  return { lines: screen(w.s, cols, rows), ansi: w.s, boxes };
+  const w = new Writer(),
+    pictures = new hostImages.FrameImages(thumbnail.cell);
+  const boxes = p.draw(w, cols, rows, null, 0, { pictures, thumbnail });
+  return { lines: screen(w.s, cols, rows), pictures: pictures.commands(), boxes };
 }
 
 test("pointing at a pasted image previews it just over its chip", () => {
@@ -1102,7 +1105,7 @@ test("pointing at a pasted image previews it just over its chip", () => {
   expect(shown.lines[y - 1].slice(x - 2, x)).toBe("╰─");
   expect(shown.lines[y - 7].slice(x - 2, x)).toBe("╭─");
   expect(shown.lines[y - 2]).toContain("Image 1");
-  expect(shown.ansi).toContain("\x1b_Ga=p,i=730140");
+  expect(shown.pictures).toContain(`\x1b_Ga=p,i=${thumbnail_image.id},`);
   // It reports the card and the frame as drawn over, so the corgi badge can stay clear.
   expect(shown.boxes).toHaveLength(2);
   expect(shown.boxes[1]).toMatchObject({ x: x - 2, y: y - 7, h: 7 });
@@ -1124,10 +1127,15 @@ test("a preview with no room over its chip hangs under it, and shrinks when it f
   p.hover(x, y);
   expect(pictured(p, 112, 12).lines[y + 1].slice(x - 2, x)).toBe("╭─");
   // Eight rows of picture fit neither side: it takes five under the chip.
-  const shrunk = pictured(p, 112, 12, { width: 180, height: 144, cell: { width: 9, height: 18 } });
+  const shrunk = pictured(p, 112, 12, {
+    width: 180,
+    height: 144,
+    cell: { width: 9, height: 18 },
+    image: thumbnail_image,
+  });
   expect(shrunk.lines[y + 1].slice(x - 2, x)).toBe("╭─");
   expect(shrunk.lines[y + 8].slice(x - 2, x)).toBe("╰─");
-  expect(shrunk.ansi).toMatch(/a=p,i=730140,[^\x1b]*r=5/);
+  expect(shrunk.pictures).toMatch(new RegExp(`a=p,i=${thumbnail_image.id},[^\\x1b]*r=5`));
 });
 
 test("a message's image chip in the thread previews like the input's", async () => {
@@ -1618,7 +1626,7 @@ test("the pointer hits the menu where it hangs, and no brand mark shows under it
     34,
     (provider, col, row) => {
       placed.push([provider, col, row]);
-      return "<mark>";
+      return true;
     },
     0,
   );
@@ -1983,6 +1991,85 @@ test("commit references stay inline and don't narrow the conversation before ope
   expect(lines.join("\n")).not.toContain("@.");
 });
 
+test("a commit link's home folder is left for the conversation machine's daemon to expand", () => {
+  const { p } = prompt({ mode: "pane" });
+  p.show({ ...context, cwd: "/work/app" });
+  const source = { kind: "commit", hash: "HEAD" } as const;
+  expect(p["resolveReview"]({ folder: "~/repo", source }).cwd).toBe("~/repo");
+  expect(p["resolveReview"]({ folder: "~", source }).cwd).toBe("~");
+  expect(p["resolveReview"]({ folder: "../lib", source }).cwd).toBe("/work/lib");
+});
+
+test("a commit lookup answered after the conversation moved machines stays with its own machine", async () => {
+  const base = daemon(),
+    full = "1234567890123456789012345678901234567890";
+  let machine = "a",
+    release!: () => void;
+  const gate = new Promise<void>(done => (release = done));
+  const d = {
+    call: (op: string, payload: object) => base.call(op, payload),
+    start: (payload: object) => base.start(payload),
+    machine: () => machine,
+    review: async (op: string, payload: any) => {
+      if (op !== "review.recognize") return base.review(op, payload);
+      // The first machine answers late that it has no such commit.
+      if (machine === "a") return gate.then(() => ({ found: [] }));
+      return { found: payload.hashes.map((hash: string) => [hash, full]) };
+    },
+  };
+  const { p } = prompt({ daemon: d });
+  const source = { kind: "commit", hash: "12345678" } as const;
+  p["references"].resolve("/work/app", source, true);
+  // Asked of the first machine, the conversation moves before it answers.
+  await new Promise(resolve => setTimeout(resolve, 0));
+  machine = "b";
+  p["references"].resolve("/work/app", source, true);
+  release();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  expect(p["references"].resolve("/work/app", source)).toEqual({ kind: "commit", hash: full });
+  machine = "a";
+  expect(p["references"].resolve("/work/app", source)).toBeNull();
+});
+
+test("a review opened on one machine closes when the conversation moves, and never reads the next machine", async () => {
+  const repo = folder();
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+  git("init", "-q", "-b", "main");
+  writeFileSync(join(repo, "change.txt"), "before\n");
+  git("add", ".");
+  git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base");
+  const base = daemon(),
+    asked: string[] = [];
+  let machine = "a",
+    release!: () => void;
+  const gate = new Promise<void>(done => (release = done));
+  const d = {
+    call: (op: string, payload: object) => base.call(op, payload),
+    start: (payload: object) => base.start(payload),
+    machine: () => machine,
+    review: async (op: string, payload: any) => {
+      asked.push(`${machine} ${op}`);
+      // The first machine's listing arrives after the conversation moved.
+      if (op === "review.read") await gate;
+      return base.review(op, payload);
+    },
+  };
+  const { p } = prompt({ daemon: d });
+  const a = p["review"];
+  a.openReference(repo, { kind: "commit", hash: "HEAD" }, "Corgi prompt");
+  expect(a.open).toBe(true);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  machine = "b";
+  expect(p["review"]).not.toBe(a);
+  expect(a.open).toBe(false);
+  release();
+  await a.refresh();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  expect(asked.some(call => call.startsWith("a review.read"))).toBe(true);
+  expect(asked.filter(call => call.startsWith("b "))).toEqual([]);
+  a.hide();
+});
+
 test("a long list keeps its height as typing searches it, and scrolls under the wheel", async () => {
   const { p } = await listed(9);
   const before = card(draw(p)),
@@ -2068,7 +2155,7 @@ test("a live search shows its expression, count and branded clickable matches be
     30,
     provider => {
       marks.push(provider);
-      return "";
+      return false;
     },
     0,
   );

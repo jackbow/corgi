@@ -34,6 +34,23 @@ test("the chat timestamp snapshot revision preserves auxiliary metadata in both 
   expect(revision.down!(value)).toEqual(value);
 });
 
+test("the merged history accepts the live fork's state and preserves optional metadata", () => {
+  const previous = "2fab55a9485b";
+  const metadata = { tasks: { next: "3" }, announced_ports: [{ pane: 1, port: 8000, announced: "http" }] };
+  expect(formats.select(state_formats.history, [previous, formats.baseline])).toBe(previous);
+  expect(state_formats.history.up(metadata, previous)).toEqual(metadata);
+  expect(state_formats.history.down(metadata, previous)).toEqual(metadata);
+});
+
+test("the prefix migrates without changing the fork's viewer preferences", () => {
+  const previous = "2de8732b5be8";
+  const config = { prefix: "ctrl_a", code_palette: "vscode-light", code_background: false };
+  const files = { viewer: { conversation_pr_width: 35 }, config };
+  const upgraded = { ...files, config: { ...config, prefix: "ctrl+a" } };
+  expect(state_formats.viewer.up(files, previous)).toEqual(upgraded);
+  expect(state_formats.viewer.down(upgraded, previous)).toEqual(files);
+});
+
 test("every revision is registered with its original parent and structure fixture", async () => {
   const files = readdirSync(join(root, "src/persist/revisions")).filter(name => name.endsWith(".ts")),
     ids = await Promise.all(files.map(async file => (await import(`./revisions/${file}`)).revision.id));

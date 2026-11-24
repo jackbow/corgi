@@ -5,30 +5,31 @@ import * as json from "./json";
 import { testBuild } from "./build_assets";
 import { Notice as MachineNotice } from "./machine_diagnostics";
 import { Menu as ConnectivityMenu } from "./connectivity_menu";
-import { Hover as ConnectionHover } from "./connectivity_card";
+import * as connectivityCard from "./connectivity_card";
 import * as composition from "./composition";
 import { dirname, join } from "node:path";
 import { Endpoint, localEndpoint, quiet_ms } from "./machine_connection";
-import { Parser, type Input } from "./machine_input";
+import * as terminalInput from "./terminal_input";
+import * as keys from "./keys";
+import type * as keyboard from "./keyboard";
+import type { Parser, Input } from "./terminal_input";
 import * as machines from "./machines";
 import * as errors from "./errors";
 import { sshEndpoint } from "./ssh_path";
 import * as sidebar from "./sidebar";
 import { Workspaces } from "./machine_sidebar";
 import * as viewer from "./viewer";
-import * as keyboard from "./keyboard";
 import * as corgiBadge from "./corgi_badge";
-import * as rowGlide from "./row_glide";
-import * as linkThumbnail from "./link_thumbnail";
 import * as hostBackground from "./host_background";
 import * as palette from "./palette";
 import * as framePacing from "./frame_pacing";
 import * as preferences from "./preferences";
 import * as discovery from "./discovery";
-import * as dockingGrip from "./docking_grip";
 import * as corgiAnimation from "./corgi_animation";
 import { attach } from "./host";
 import { Openers } from "./url_opener";
+import * as portForwards from "./port_forwards";
+import { sshViewer } from "./trackers/ports";
 import { Wake } from "./wake";
 import type { Probe } from "./terminal_info";
 import type { Differ } from "./frame_diff";
@@ -62,7 +63,8 @@ export async function run(
   local: string,
   selected: string,
   probe: Probe,
-  initial: number[],
+  parser: Parser,
+  initial: Input[],
   stdin: viewer.Stdin,
   options: Options = {},
 ): Promise<string | null> {
@@ -139,7 +141,7 @@ export async function run(
   side.resources = host.prefs.resources;
   const workspaces = new Workspaces(endpoints, view);
   const connectivity = new ConnectivityMenu(endpoints);
-  const connection_hover = new ConnectionHover();
+  const connection_hover = new connectivityCard.Hover();
   const diagnostic = new MachineNotice();
   view.onConnectivity = () => {
     connectivity.toggle(endpoints.indexOf(active!));
@@ -149,8 +151,8 @@ export async function run(
   const choose = (endpoint: Endpoint, focus: Focus | null) => {
     connection_hover.clear();
     view.connection_card = null;
-    // Keys not yet routed came after the switch; they follow it.
-    const typed = endpoint === active ? new Uint8Array() : active!.takeInput();
+    // Unrouted keys follow the switch only up to a cancelled paste.
+    const typed = endpoint === active ? [] : active!.takeInput();
     active!.deactivate();
     active = endpoint;
     // The notice was the last machine's.
@@ -158,7 +160,7 @@ export async function run(
     view.switchMachine(endpoint.machine);
     if (focus !== null) active.choose(focus, active.instance);
     else active.activate();
-    if (typed.length) active.enqueue(typed, drops());
+    for (const input of typed) active.enqueue(input, input.dropped || drops());
   };
   const notifications = new Map<Endpoint, Notifications>();
   view.notify = (kind, target, machine = view.machine) => {
@@ -191,10 +193,99 @@ export async function run(
   };
   let differ: Differ | null = null;
   let previous: composition.Output = "";
-  const parser = new Parser();
-  // A paste goes, or is dropped, whole, as its start was.
   let paste_owner: { endpoint: Endpoint; epoch: number; dropped: boolean } | null = null;
   const openers = new Openers();
+  /** Opens a link in this computer's browser. One to another machine's own
+   * loopback opens through a forward of its port. */
+  const openLink = (url: string, from: Endpoint | null) => {
+    // Over SSH itself, the viewer has no browser to open.
+    if (sshViewer()) return;
+    const forwards = from?.machine.forwards ?? null;
+    // Another machine's localhost isn't this computer's: with no forward to it, it stays shut.
+    const there = portForwards.target(url);
+    if (from?.remote && !forwards && there) {
+      view.notice(` No browser here to forward ${from.name}:${there.port} to`);
+      return notify();
+    }
+    if (!forwards || !there) {
+      try {
+        openers.open(url);
+      } catch {}
+      return;
+    }
+    void forwards
+      .open(url)
+      .then(
+        opened => {
+          if (!opened) return;
+          try {
+            openers.open(opened);
+          } catch (error) {
+            view.notice(` Couldn't open the link: ${forwardError(error)}`);
+          }
+        },
+        error => view.notice(` Couldn't forward from ${from!.name}: ${forwardError(error)}`),
+      )
+      .finally(notify);
+  };
+  /** The machine card's ports: the forwards of the machine it's for. */
+  const cardPorts = (endpoint: Endpoint | null): connectivityCard.Port[] | null =>
+    endpoint?.machine.forwards?.list.map(forward => ({
+      forward,
+      name: serverName(endpoint.machine.runtime.ports, forward.port),
+    })) ?? null;
+  const closeCard = () => {
+    connection_hover.clear();
+    view.connection_card = null;
+  };
+  /** The held machine card's buttons, by key or click, on its selected port. */
+  const cardAct = (button: connectivityCard.Button) => {
+    const endpoint = endpoints.find(e => e.name === connection_hover.machine),
+      forward = connection_hover.selected;
+    const forwards = endpoint?.machine.forwards;
+    if (!forwards || !forward) return;
+    if (button === "stop") {
+      forwards.stop(forward);
+      connection_hover.notice = `Stopped forwarding ${endpoint!.name}:${forward.port}`;
+      return;
+    }
+    try {
+      openers.open(forward.url);
+      connection_hover.notice = `Opened ${forward.url}`;
+    } catch (error) {
+      connection_hover.notice = forwardError(error);
+    }
+  };
+  /** The key `value`, decoded as `key` with control letters as `cp`, by the names `keys.ts` gives them. */
+  const keyName = (value: string, key: keyboard.Key | null, cp: number | null): string | null => {
+    const legacy = keys.parse(value);
+    if (legacy) return legacy;
+    for (const name of ["up", "down", "delete", "enter", "esc"])
+      if (key?.codepoint === keys.logicalKey(name).codepoint) return name;
+    return cp === 13 ? "enter" : cp === 27 ? "esc" : cp === 16 ? "up" : cp === 14 ? "down" : value === "x" ? "x" : null;
+  };
+  const cardKey = (name: string | null) => {
+    switch (name) {
+      case "esc":
+        return closeCard();
+      case "up":
+      case "down":
+        return connection_hover.step(name === "up" ? -1 : 1);
+      case "enter":
+        return cardAct("open");
+      case "x":
+      case "delete":
+        return cardAct("stop");
+    }
+  };
+  /** Opens the links effects ask for, leaving the terminal writes to the shown machine's turn. */
+  const openLinks = () => {
+    const links = view.effects.filter(
+      (effect): effect is { open_url: string; machine?: number } => "open_url" in effect,
+    );
+    view.effects = view.effects.filter(effect => !("open_url" in effect));
+    for (const link of links) openLink(link.open_url, endpoints.find(e => e.machine.id === link.machine) ?? null);
+  };
   const clipboard: { owner: { endpoint: Endpoint; generation: number; epoch: number } | null } = {
     owner: null,
   };
@@ -221,6 +312,13 @@ export async function run(
   view.wake = notify;
   for (const endpoint of endpoints) {
     endpoint.onChange = notify;
+    const forwards = endpoint.machine.forwards;
+    if (forwards) {
+      forwards.onChange = notify;
+      // A Cmd+click reaches only the forward, by the request it brings.
+      forwards.onRealized = forward =>
+        view.notice(` Forwarded ${endpoint.name}:${forward.port} to localhost:${forward.local}`);
+    }
     endpoint.onEffects = view => {
       for (const effect of view.effects) {
         if ("write_terminal" in effect) {
@@ -232,11 +330,7 @@ export async function run(
             view.dirty = true;
             notify();
           }
-        } else if (!view.remote_links) {
-          try {
-            openers.open(effect.open_url);
-          } catch {}
-        }
+        } else openLink(effect.open_url, endpoints.find(e => e.machine.id === effect.machine) ?? null);
       }
       view.clearEffects();
     };
@@ -272,26 +366,88 @@ export async function run(
   }
   const accept = (input: Input) => {
     const value = Buffer.from(input.bytes).toString();
-    const key = keyboard.decode(value);
+    const key = input.kind === "key" ? input.key : null;
+    const mouse = input.kind === "mouse" ? input.mouse : null;
+    const paste = terminalInput.pasting(input);
     const codepoint = key?.codepoint ?? (input.bytes.length === 1 ? input.bytes[0] : null);
     const cp = key?.mods.ctrl && codepoint !== null && codepoint >= 64 && codepoint < 128 ? codepoint & 31 : codepoint;
-    if (diagnostic.open) {
-      if (!input.paste) {
-        const mouse = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(value);
-        if (mouse) {
-          if (mouse[4] === "M" && (mouse[1] === "64" || mouse[1] === "65"))
-            diagnostic.scroll(mouse[1] === "64" ? -3 : 3);
-          else if (mouse[4] === "M" && mouse[1] === "0") diagnostic.close();
-        } else diagnostic.key(value, cp);
+    if (paste) {
+      if (input.kind === "paste_start")
+        paste_owner =
+          !workspaces.open && !diagnostic.open && !connectivity.open
+            ? { endpoint: active!, epoch: active!.input_epoch, dropped: drops() }
+            : null;
+      if (paste_owner) {
+        if (paste_owner.endpoint === active && paste_owner.epoch === active!.input_epoch)
+          active!.enqueue(input, paste_owner.dropped);
+        else {
+          view.cancelPaste();
+          paste_owner = null;
+        }
       }
+      if (input.kind === "paste_end") paste_owner = null;
       return;
     }
-    const hover_mouse = !input.paste && /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(value);
-    if (hover_mouse && !workspaces.open && !connectivity.open && !view.overlayOpen() && !view.copy_mode) {
-      const x = Number(hover_mouse[2]) - 1,
-        y = Number(hover_mouse[3]) - 1;
+    if (diagnostic.open) {
+      if (mouse) {
+        if (!mouse.release && (mouse.button === 64 || mouse.button === 65))
+          diagnostic.scroll(mouse.button === 64 ? -3 : 3);
+        else if (!mouse.release && mouse.button === 0) diagnostic.close();
+      } else diagnostic.key(value, cp);
+      return;
+    }
+    // The machine card, held open, takes the keyboard and its own presses;
+    // a press elsewhere lets it go, and goes on.
+    const card = connection_hover.card,
+      name = mouse ? null : keyName(value, key, cp);
+    // A focus report is the terminal's, not a key: the view takes it.
+    const focus = name === "focus_in" || name === "focus_out";
+    if (connection_hover.pinned && card && card.shown !== false && !focus) {
+      if (!mouse) {
+        cardKey(name);
+        return;
+      }
+      const { x, y, button } = mouse,
+        pressed = !mouse.release;
+      if (card.rect.contains(x, y)) {
+        const forward = connectivityCard.portAt(card, x, y);
+        if (button === 35 && forward) {
+          if (forward !== connection_hover.selected) connection_hover.notice = "";
+          connection_hover.selected = forward;
+        } else if (pressed && (button === 64 || button === 65)) connection_hover.step(button === 64 ? -1 : 1);
+        else if (pressed && button === 0) {
+          const act = connectivityCard.buttonAt(card, x, y);
+          if (act) cardAct(act);
+          else if (forward) connection_hover.pin(forward);
+          navigation_mouse = true;
+        } else if (!pressed) navigation_mouse = false;
+        view.pointer = { x, y };
+        view.link_tooltip.cancel();
+        return;
+      }
+      if (pressed && (button === 0 || button === 2)) closeCard();
+    } else if (!mouse && card?.shown && card.ports?.list.length) {
+      // An arrow or Enter over the card holds it; with a port hovered, the key acts on it too.
+      if (name === "up" || name === "down" || name === "enter") {
+        const hovered = connection_hover.chosen();
+        connection_hover.pin();
+        if (hovered) cardKey(name);
+        return;
+      }
+    }
+    const hover_mouse = mouse;
+    if (
+      hover_mouse &&
+      !connection_hover.pinned &&
+      !workspaces.open &&
+      !connectivity.open &&
+      !view.overlayOpen() &&
+      !view.copy_mode
+    ) {
+      const x = hover_mouse.x,
+        y = hover_mouse.y;
       const header = sidebar.machineHeaderAt(side, x, y);
-      if (header && hover_mouse[1] === "0" && hover_mouse[4] === "M") {
+      if (header && hover_mouse.button === 0 && !hover_mouse.release) {
         const endpoint = endpoints.find(e => e.name === header.machine);
         if (endpoint) {
           if (sidebar.machineDiagnosticAt(side, view.workspaceRows(), x, y)) diagnostic.show(endpoint);
@@ -302,8 +458,16 @@ export async function run(
           return;
         }
       }
-      const inside = connection_hover.card?.rect.contains(x, y) ?? false;
-      if (hover_mouse[1] === "35" && hover_mouse[4] === "M" && !view.ui_mouse_down) {
+      // A card an overlay hides takes no presses either.
+      const inside = (connection_hover.card?.shown !== false && connection_hover.card?.rect.contains(x, y)) ?? false;
+      if (inside && hover_mouse.button === 0 && !hover_mouse.release) {
+        // A click on a port holds the card open with it selected.
+        const forward = connectivityCard.portAt(connection_hover.card!, x, y);
+        if (forward) connection_hover.pin(forward);
+        navigation_mouse = true;
+        return;
+      }
+      if (hover_mouse.button === 35 && !hover_mouse.release && !view.ui_mouse_down) {
         const header = sidebar.machineHeaderAt(side, x, y);
         connection_hover.move(header, x, y, performance.now());
         if (header || inside) {
@@ -312,49 +476,37 @@ export async function run(
           return;
         }
       } else {
-        connection_hover.clear();
-        view.connection_card = null;
-        if (inside) return;
+        // The release of a press on the card leaves it.
+        if (!inside || !hover_mouse.release) {
+          connection_hover.clear();
+          view.connection_card = null;
+        }
+        if (inside) {
+          if (hover_mouse.release) navigation_mouse = false;
+          return;
+        }
       }
-    } else {
+    } else if (!connection_hover.pinned) {
       connection_hover.clear();
       view.connection_card = null;
     }
     if (connectivity.open) {
-      if (!input.paste) {
-        const mouse = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(value);
-        if (mouse) connectivity.mouse(Number(mouse[2]) - 1, Number(mouse[3]) - 1, Number(mouse[1]), mouse[4] === "M");
-        else connectivity.key(value, cp);
-      }
+      if (mouse) connectivity.mouse(mouse.x, mouse.y, mouse.button, !mouse.release);
+      else connectivity.key(value, cp);
       return;
     }
-    if (!input.paste && cp === 27 && view.cancelWorkspaceDrag()) return;
-    if (input.paste) {
-      if (value === "\x1b[200~")
-        paste_owner = !workspaces.open ? { endpoint: active!, epoch: active!.input_epoch, dropped: drops() } : null;
-      if (
-        paste_owner &&
-        paste_owner.endpoint === active &&
-        paste_owner.epoch === active!.input_epoch &&
-        !workspaces.open
-      )
-        active!.enqueue(input.bytes, paste_owner.dropped);
-      else paste_owner = null;
-      if (value === "\x1b[201~") paste_owner = null;
-      return;
-    }
+    if (cp === 27 && view.cancelWorkspaceDrag()) return;
     // Ahead of the machine's own keys, so a machine that never answered can't hold it.
     if (endpoints.length > 1 && (value === "\x1d" || (key?.codepoint === 93 && key.mods.ctrl))) {
       if (workspaces.open) close();
       else show();
       return;
     }
-    const mouse = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(value);
     if (mouse) {
-      const button = Number(mouse[1]),
-        x = Number(mouse[2]) - 1,
-        y = Number(mouse[3]) - 1;
-      const pressed = mouse[4] === "M";
+      const button = mouse.button,
+        x = mouse.x,
+        y = mouse.y;
+      const pressed = !mouse.release;
       if (navigation_mouse) {
         if (!pressed) navigation_mouse = false;
         return;
@@ -438,14 +590,15 @@ export async function run(
         return;
       }
     }
-    active!.enqueue(input.bytes, drops());
+    active!.enqueue(input, drops());
+  };
+  const route = (input: Input, now = Date.now()) => {
+    const waiting = probe.clipboard.event.phase === "ready";
+    if (!probe.accept(input, now)) accept(input);
+    if (!waiting && probe.clipboard.event.phase === "ready" && drops(now)) probe.clipboard.takeEvent();
   };
   const feed = (bytes: Uint8Array) => {
-    const waiting = probe.clipboard.event.phase === "ready",
-      fed = probe.feed(bytes);
-    // A paste the host announces while input is dropped is dropped with it.
-    if (!waiting && probe.clipboard.event.phase === "ready" && drops()) probe.clipboard.takeEvent();
-    for (const input of parser.feed(fed)) accept(input);
+    for (const input of parser.feed(bytes)) route(input);
     notify();
   };
   probe.clipboard.folder = join(dirname(local), "paste");
@@ -453,7 +606,7 @@ export async function run(
   // The badge's picture is made in the background; it wakes the loop to upload it.
   probe.badge = new corgiBadge.State();
   viewer.writeAll(corgiBadge.query);
-  for (const input of parser.feed(Uint8Array.from(initial))) accept(input);
+  for (const input of initial) accept(input);
   stdin.listen(feed);
   const probed_at = Date.now();
   viewer.writeAll(probe.size.update(size.pty) + probe.measure(size.rows, probed_at));
@@ -492,21 +645,25 @@ export async function run(
           view.pasteDropped();
         }
       }
-      for (const input of parser.feed(probe.expire(now))) accept(input);
-      for (const input of parser.expire(now)) accept(input);
+      probe.tick(now);
+      for (const input of parser.expire()) route(input, now);
       openers.reap();
       if (probe.scheme_changed) {
         probe.scheme_changed = false;
         viewer.writeAll(hostBackground.release() + probe.query());
       }
-      for (const reply of probe.graphics.splice(0)) view.graphicsReply(reply);
+      for (const reply of probe.graphics.splice(0)) {
+        // An error about one of the host's pictures has it sent again.
+        const refused = /^\x1b_G(?:[^;]*,)?i=(\d+)[^;]*;(?!OK)/.exec(reply);
+        if (refused && host.images.refused(Number(refused[1]))) view.dirty = true;
+        else view.graphicsReply(reply);
+      }
       const { cols, rows: height, pty } = viewer.dimensions();
       const query = probe.size.update(pty, resized);
       resized = false;
       if (query) viewer.writeAll(query);
       const cell = probe.size.pixels(pty);
       const graphics = probe.badge.supports_kitty_graphics && cell !== null;
-      if (host.supports_kitty_graphics && !graphics) viewer.writeAll(rowGlide.hide + linkThumbnail.hide);
       if (host.cell_pixels?.width !== cell?.width || host.cell_pixels?.height !== cell?.height) view.dirty = true;
       if (
         active.ready &&
@@ -527,12 +684,14 @@ export async function run(
       workspaces.watchResources();
       const idle = now - active_at >= idle_after_ms;
       for (const endpoint of endpoints) endpoint.pump(endpoint === active, idle);
+      // A machine in the background asked to open a link: it opens now, whatever the shown machine is doing.
+      if (view.effects.some(effect => "open_url" in effect)) openLinks();
       if (endpoints[0].fatal) throw endpoints[0].fatal;
       if (endpoints[0].uninstalled) break;
       // This computer's daemon going away ends the viewer, whichever machine is shown.
       if (active.detached || endpoints[0].detached || !view.input_state.attached) break;
-      // Idle with nothing new, the screen is as it was; it's drawn only now
-      // and then, for what changes with time alone.
+      // Idle with nothing new, the screen is as it was; it's drawn now and
+      // then for its clocks, and when an animation on it takes its next step.
       if (
         changed ||
         !idle ||
@@ -541,6 +700,7 @@ export async function run(
         connectivity.open ||
         held ||
         Date.now() >= next_draw ||
+        Date.now() >= view.nextFrame() ||
         Date.now() >= noticeDue() ||
         performance.now() >= connection_hover.due()
       ) {
@@ -553,6 +713,7 @@ export async function run(
         side = view.sidebarView([]);
         if (workspaces.open || connectivity.open || view.overlayOpen() || view.copy_mode || view.ui_mouse_down)
           connection_hover.clear();
+        if (connection_hover.expire(performance.now())) view.connection_card = null;
         if (connection_hover.machine && view.pointer)
           connection_hover.move(
             sidebar.machineHeaderAt(side, view.pointer.x, view.pointer.y),
@@ -560,11 +721,13 @@ export async function run(
             view.pointer.y,
             performance.now(),
           );
+        const card_endpoint = endpoints.find(endpoint => endpoint.name === connection_hover.machine) ?? null;
         view.connection_card = connection_hover.update(
-          endpoints.find(endpoint => endpoint.name === connection_hover.machine) ?? null,
+          card_endpoint,
           cols,
           height,
           performance.now(),
+          cardPorts(card_endpoint),
         );
         view.sync_notice = syncNotice(Date.now());
         frame = active.render();
@@ -582,23 +745,37 @@ export async function run(
           const backdrop = hostBackground.follow(palette.painted());
           if (backdrop) viewer.writeAll(backdrop);
         }
-        if (!composition.same(frame, previous) && viewer.ready(probe)) {
-          differ = viewer.present(differ, frame, cols, height, probe.pacer);
+        if ((!composition.same(frame, previous) || host.images.changed) && viewer.ready(probe)) {
+          // Images the frame shows go ahead of it, and those it dropped are
+          // freed after; where they sit changes with the frame's text.
+          const pictures = host.images.present();
+          if (pictures.send) viewer.writeAll(pictures.send);
+          differ = viewer.present(differ, frame, cols, height, probe.pacer, pictures);
+          if (pictures.free) viewer.writeAll(pictures.free);
           previous = frame;
         }
         if (!workspaces.open && !connectivity.open && composition.same(frame, previous)) active.presented();
-        held = !composition.same(frame, previous);
+        held = !composition.same(frame, previous) || host.images.changed;
       }
       // Idle, it sleeps until a machine is due; input and replies wake it.
-      const due = Math.min(...endpoints.map(endpoint => endpoint.due())) - performance.now();
+      const due = Math.min(parser.due(), ...endpoints.map(endpoint => endpoint.due())) - performance.now();
       await wake.wait(
         now - active_at < idle_after_ms
-          ? 16
-          : Math.max(1, Math.min(quiet_ms, due, connection_hover.due() - performance.now(), noticeDue() - Date.now())),
+          ? Math.max(1, Math.min(16, due))
+          : Math.max(
+              1,
+              Math.min(
+                quiet_ms,
+                due,
+                connection_hover.due() - performance.now(),
+                noticeDue() - Date.now(),
+                view.nextFrame() - Date.now(),
+              ),
+            ),
       );
     }
     if (endpoints[0].uninstalled) {
-      viewer.writeAll(view.images.clear() + view.tab_icons.clear());
+      viewer.writeAll(host.images.close());
       const { cols, rows } = viewer.dimensions();
       await farewell(cols, rows);
       throw Error("Uninstalled");
@@ -613,11 +790,27 @@ export async function run(
     while (probe.pacer.unanswered() && !stdin.ended && Date.now() < until) await wake.wait(until - Date.now());
     stdin.close();
     await Promise.all(endpoints.map(endpoint => endpoint.close()));
-    viewer.writeAll(view.images.clear() + view.tab_icons.clear() + view.signal_bars.clear());
+    viewer.writeAll(host.images.close());
     viewer.close(view);
     differ?.destroy();
-    if (view.thumbnails.sent !== null) viewer.writeAll(linkThumbnail.remove);
-    if (host.supports_kitty_graphics) viewer.writeAll(dockingGrip.clear);
+  }
+}
+/** What serves `port` on the machine, as its port tracker names it. */
+function serverName(
+  snapshot: { workspaces?: { endpoints?: { port: number; label?: string; name?: string }[] }[] },
+  port: number,
+): string {
+  for (const work of snapshot.workspaces ?? [])
+    for (const endpoint of work.endpoints ?? [])
+      if (endpoint.port === port) return endpoint.label || endpoint.name || "";
+  return "";
+}
+function forwardError(error: unknown): string {
+  switch (errors.name(error)) {
+    case "TooManyOpenRequests":
+      return "too many links opening";
+    default:
+      return (error as Error).message || "error";
   }
 }
 /** Whether `endpoint`'s daemon can't be reached at all, as opposed to being

@@ -11,7 +11,7 @@ import * as keys from "./keys";
 import * as forkHero from "./fork_hero";
 import { identify, shell } from "./launch/command";
 import { adapter } from "./providers";
-import { Writer, writeEllipsis, codepointWidth, displayWidth, clipped } from "./text";
+import { Writer, writeEllipsis, codepointWidth, displayWidth, clipped, byteLength } from "./text";
 import { TextArea, byte_edits, key_edits, type Edit } from "./text_area";
 
 export type Target =
@@ -27,15 +27,33 @@ export type Target =
   /** The shell new panes run, typed from the shell picker. */
   | { shell: null }
   /** The new-workspace dialog's folder field. */
-  | { folder: null };
+  | { folder: null }
+  /** A search box's query, which looks through text written in any language. */
+  | { search: null };
 export const targetKind = (
   t: Target,
-): "pane" | "rename" | "workspace_name" | "agent_command" | "agent_name" | "agent" | "fork" | "shell" | "folder" =>
-  Object.keys(t)[0] as any;
-/** Whether names keep non-ASCII text, which the agents' own names carry. */
+):
+  | "pane"
+  | "rename"
+  | "workspace_name"
+  | "agent_command"
+  | "agent_name"
+  | "agent"
+  | "fork"
+  | "shell"
+  | "folder"
+  | "search" => Object.keys(t)[0] as any;
+/** Whether the text keeps non-ASCII characters, which the agents' own names
+ * carry and a search looks for. */
 function unicodeTarget(t: Target): boolean {
   return (
-    "agent_name" in t || "agent_command" in t || "agent" in t || "fork" in t || "folder" in t || "workspace_name" in t
+    "agent_name" in t ||
+    "agent_command" in t ||
+    "agent" in t ||
+    "fork" in t ||
+    "folder" in t ||
+    "workspace_name" in t ||
+    "search" in t
   );
 }
 export type Result = "none" | "save" | "cancel";
@@ -417,10 +435,16 @@ export class View {
       Math.max(10, Math.max(Math.min(Math.max(0, width - 2), 36), Math.min(Math.floor((width * 3) / 5), 70))),
     );
   }
-  /** The first byte that shows, keeping the cursor inside `columns`. */
+  /** The first byte that shows, keeping the cursor inside `columns`: as
+   * much text before it as fits in the columns left of the caret's. */
   static scroll(d: Dialog, columns: number): number {
-    let offset = Math.max(0, d.cursor - Math.max(0, columns - 1));
-    while (offset < d.cursor && (d.text[offset] & 0xc0) === 0x80) offset += 1;
+    let room = Math.max(0, columns - 1),
+      offset = d.cursor;
+    for (const ch of Array.from(d.bytes(0, d.cursor)).reverse()) {
+      room -= fieldWidth(ch.codePointAt(0)!);
+      if (room < 0) break;
+      offset -= byteLength(ch);
+    }
     return offset;
   }
   /** The fork card: a hero, a title and its subtitle, a labelled field and

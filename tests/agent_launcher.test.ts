@@ -489,10 +489,11 @@ console.log('LAUNCH FIXTURE READY'); await Bun.sleep(120000);
     const cached = (await this.rpc({ op: "agent.preview.cached", workspace: this.ws })).preview;
     this.assertEqual(cached.options.claude.login.workspace, "personal");
     this.assertEqual(cached.accounts[0].option.login.workspace, "team");
-    const empty = (await this.rpc({ op: "agent.preview.cached", workspace: this.ws, cwd: unvisited })).preview;
-    this.assertFalse(empty.pending);
-    this.assertEqual(empty.accounts, []);
-    this.assertEqual(empty.options.claude.login, null);
+    // A folder no viewer shows gets what its accounts last read, and asks nothing.
+    const other = (await this.rpc({ op: "agent.preview.cached", workspace: this.ws, cwd: unvisited })).preview;
+    this.assertFalse(other.pending);
+    this.assertEqual(other.options.claude.login.workspace, "personal");
+    this.assertEqual(other.accounts[0].option.login.workspace, "team");
     this.assertEqual([this.metadataRequests(), lines(join(work, "metadata-requests.jsonl"))], before);
   }
   async test_signed_out_agent_is_automatic_only_after_signin_but_can_be_added_explicitly() {
@@ -973,8 +974,11 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
     await this.assertSelected(view, "Claude Code", 100);
     await view.input("\x1b[B");
     await this.assertSelected(view, "New terminal", 100);
-    // Manage is the title's button; with no conversations below, down stops.
+    // Manage is the title's button; down goes on into the conversations,
+    // whose search shows with none to list.
     await view.input("\x1b[B");
+    await this.assertSelected(view, "/  Search every folder", 100);
+    await view.input("\x1b[A");
     await this.assertSelected(view, "New terminal", 100);
     await view.input("\x1b[A");
     await this.assertSelected(view, "Claude Code", 100);
@@ -1240,8 +1244,8 @@ for await (const chunk of Bun.stdin.stream()) writeSync(fd, chunk);
   }
   async test_claude_usage_failure_keeps_account_and_stale_measurement() {
     const first = await this.directoryPreview("first");
-    await this.askUsage();
     writeFileSync(join(this.env.CLAUDE_CONFIG_DIR!, "metadata.json"), JSON.stringify({ mode: "unsupported" }));
+    await this.askUsage();
     const failed = await this.directoryPreview("unsupported");
     this.assertTrue(failed.signed_in);
     this.assertEqual(failed.account, first.account);
@@ -1668,7 +1672,8 @@ class LazyShims extends Launcher {
     const view = await Viewer.create(this, 120, 30);
     await view.input("\x02A");
     const picker = screen_text((await view.poll()).data, 120, 30).join("\n");
-    for (const label of ["Claude Code", "Codex", "Pi", "OpenCode"]) this.assertNotIn(label, picker);
+    for (const label of ["Claude Code", "Codex", "Pi", "OpenCode"])
+      this.assertFalse(picker.split("\n").some(line => new RegExp(`\\b${label}\\b`).test(line)));
     await this.clickText(view, "Manage agents");
     await this.managerStrip(view, "Oh My Pi");
     this.assertIn("Installs on use", (await view.poll()).data);

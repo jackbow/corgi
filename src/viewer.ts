@@ -18,6 +18,7 @@ import * as sound from "./sound";
 import * as notificationTarget from "./notification_target";
 import * as json from "./json";
 import { sshViewer } from "./trackers/ports";
+import * as webLinks from "./web_links";
 import type { Reply, RequestInput } from "./protocol";
 import * as protocol from "./protocol";
 import { n, ptr } from "./native_ffi";
@@ -67,7 +68,7 @@ export async function openMode(
     opened.focus &&
     view.runtime.workspaces.owner(opened.focus)
   )
-    view.focusPane(opened.focus);
+    view.updatePaneFocus(opened.focus);
   view.restoreAgentScroll();
   view.launch_previews.connect(view.connection);
   view.launch_previews.changedEvent = () => {
@@ -196,9 +197,12 @@ export function syncRequest(
     ack: machine.last_control,
     active: visible && view.input_state.active,
     resource_detail: visible ? view.resourceWorkspace() : null,
-    worktree_detail: visible ? view.worktreeDetailWanted() : null,
+    worktree_detail: view.worktreeDetailWanted(machine),
     resources: view.host.prefs.resources.enabled,
     resources_hash: machine.runtime.resources_hash,
+    // A pane's program opens its links its own way, as it would without
+    // Corgi, on this computer, or with no browser here.
+    links: machine.remote && webLinks.opensLinks(),
   };
 }
 /** How often a waiting control asks again whether what it names is there,
@@ -242,6 +246,12 @@ async function checkControl(
   check.state = there ? "there" : "gone";
   view.wake();
 }
+/** The `open-url` controls at the front of `controls`, past any this viewer
+ * took already (`taken` and before): a background machine takes these. */
+export function leadingLinks<C extends protocol.Wire<protocol.Control>>(controls: C[], taken: bigint): C[] {
+  const end = controls.findIndex(c => BigInt(c.seq) > taken && (c.kind !== "action" || c.name !== "open-url"));
+  return end < 0 ? controls : controls.slice(0, end);
+}
 /** Takes a reply from `machine`'s daemon. A machine in the background takes
  * its data; its controls wait, unacknowledged, until it's shown. */
 export async function receive(
@@ -257,12 +267,16 @@ export async function receive(
   if (reply.resources) machine.runtime.receiveResources(reply.resources);
   machine.runtime.resources_hash = reply.resources_hash == null ? null : BigInt(reply.resources_hash);
   machine.viewer_id = reply.viewer ?? 0;
-  const controls = shown ? (reply.controls ?? []) : [];
+  // A machine in the background still opens the links its panes' programs
+  // ask for, when nothing waits ahead of them.
+  const controls = shown ? (reply.controls ?? []) : leadingLinks(reply.controls ?? [], machine.last_control);
   // What still waits is decided afresh from the controls this reply brings.
   if (shown) machine.waiting_controls = [];
+  else if (reply.controls?.length) machine.waiting_controls = reply.controls.slice(controls.length);
   for (const [i, control] of controls.entries()) {
     const seq = BigInt(control.seq);
     if (seq <= machine.last_control) continue;
+    if (control.kind === "focus" || control.kind === "workspace") view.closeWorktreeCard();
     // Controls and session updates can take different connections: one may
     // name a pane before the session that has it. It and those after it wait
     // for that session, unless the daemon says what it names is gone.
@@ -291,7 +305,8 @@ export async function receive(
           view.executable = String(act.value);
           return false;
         }
-        await view.perform(act);
+        if (act.name === "open-url") view.openRequested(String(act.value), machine);
+        else await view.invoke(act, machine);
       }
     } catch (error) {
       view.notice((error as Error).message);
@@ -357,13 +372,15 @@ export async function presented(view: Controller): Promise<void> {
 }
 
 /** Writes what the host needs to show `frame`, diffed against what it shows,
- * and asks the host to answer once it has drawn it. */
+ * and asks the host to answer once it has drawn it. `pictures` change with
+ * it, in the same update. */
 export function present(
   host: Differ | null,
   frame: composition.Output,
   cols: number,
   rows: number,
   pacer: framePacing.Pacer,
+  pictures?: { draw: string; redraw: string },
 ): Differ {
   if (host && (host.cols !== cols || host.rows !== rows)) {
     host.destroy();
@@ -371,7 +388,7 @@ export function present(
   }
   const differ = host ?? Differ.create(cols, rows);
   const started = telemetry.begin();
-  const out = differ.diff(frame);
+  const out = differ.diff(frame, pictures);
   telemetry.end("viewer.present", started);
   if (out.length > 0) writeAll(Buffer.concat([out, Buffer.from(pacer.stamp(Date.now()))]));
   return differ;

@@ -8,7 +8,7 @@ import { signin as codex } from "./providers/codex/signin";
 test.each(["denied", "failed"])("abandoning a staged account completes when process listing is %s", failure => {
   const staged = { provider: "claude" as const, name: "work", dir: "/isolated/account", temp: "/isolated/staged" },
     flow = new Signin(true, false, { changed() {}, done() {} }),
-    identity = spyOn(accounts, "identity").mockReturnValue(null),
+    identity = spyOn(accounts, "identity").mockResolvedValue(null),
     unstage = spyOn(accounts, "unstage").mockImplementation(() => {}),
     listing = spyOn(Bun, "spawnSync").mockImplementation(() => {
       if (failure === "denied") throw Object.assign(Error("Process listing denied"), { code: "EPERM" });

@@ -1,11 +1,13 @@
 import * as workspaceArchive from "./workspace_archive";
+import * as webLinks from "./web_links";
+import type { Input, Mouse } from "./terminal_input";
 import * as archiveSummary from "./archive_summary";
 //! Viewer-owned navigation, dialogs, input and rendering. Shared mutations
 //! are RPC operations. Mirrors controller.zig; methods that call the daemon
 //! are async and run one at a time from the viewer loop.
 import { homedir, hostname } from "node:os";
-import { basename, isAbsolute } from "node:path";
-import { pathToFileURL } from "node:url";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { basename, dirname, isAbsolute } from "node:path";
 import * as keys from "./keys";
 import * as keyboard from "./keyboard";
 import * as textArea from "./text_area";
@@ -59,7 +61,7 @@ import {
   type Workspace,
   type Headless,
 } from "./mirror";
-import { needsPane, type Action } from "./action";
+import { bind as bindAction, needsPane, type Action, type Template } from "./action";
 import * as corgiBadge from "./corgi_badge";
 import * as forkHero from "./fork_hero";
 import * as newWorkspace from "./new_workspace";
@@ -81,6 +83,8 @@ import type { Use } from "./inference/setup";
 import * as shellPicker from "./shell_picker";
 import { installedShells } from "./launch/command";
 import * as linkTooltip from "./link_tooltip";
+import * as hostImages from "./host_images";
+import * as handoffUpload from "./handoff_upload";
 import * as linkThumbnail from "./link_thumbnail";
 import * as pullRequest from "./pull_request";
 import * as pullRequestPanel from "./pull_request_panel";
@@ -88,20 +92,24 @@ import * as conversationPRPanel from "./conversation_pr_panel";
 import * as conversationPRSearch from "./conversation_pr_search";
 import * as remoteDiff from "./review/remote";
 import * as reviewState from "./review_state";
+import * as fileAccess from "./file_access";
+import * as fileRef from "./file_ref";
+import * as filePane from "./file_pane";
+import * as filePeek from "./file_peek";
 import * as paneImages from "./pane_images";
-import * as tabIcons from "./tab_icons";
 import * as startupCard from "./startup_card";
 import * as resourceTooltip from "./resource_tooltip";
 import type { Card as ConnectionCard } from "./connectivity_card";
 import type { State as SyncNotice } from "./sync_notice";
-import * as signalBars from "./signal_bars";
 import * as gitTooltip from "./git_tooltip";
 import type { Signal } from "./trackers/resources";
 import * as worktreeTooltip from "./worktree_tooltip";
+import * as viewerRef from "./viewer_ref";
 import * as worktreeAgents from "./worktree_agents";
 import * as agentSections from "./agent_sections";
+import * as agentOrder from "./agent_order";
 import * as agentRows from "./agent_rows";
-import { key as agentKey, section, type Section, type Target as OrderTarget } from "./agent_order";
+import { section, type Section, type Target as OrderTarget } from "./agent_order";
 import * as worktrees from "./worktrees";
 import * as worktreeRemoval from "./worktree_removal";
 import * as rpc from "./rpc";
@@ -122,6 +130,7 @@ import * as framePacing from "./frame_pacing";
 import * as pasteCard from "./paste_card";
 import * as pasteProgress from "./paste_progress";
 import * as panel from "./review/panel";
+import * as reviewReader from "./review/reader";
 import * as summaries from "./review/summaries";
 import * as subagentTooltip from "./subagent_tooltip";
 import * as viewerNative from "./viewer_native";
@@ -144,7 +153,10 @@ import {
 import * as errors from "./errors";
 import * as moonlanderTerminal from "./moonlander/terminal";
 import {
+  chatArgs,
+  corgiCommand,
   Prompt,
+  type ChatArgs,
   type Context as PromptContext,
   type Effect as PromptEffect,
   type Mention as PromptMention,
@@ -162,7 +174,9 @@ import * as tasks from "./tasks";
 import { Opening } from "./opening";
 import { Machine, type Focus, type Stopped } from "./machine";
 
-export type Effect = { write_terminal: string } | { open_url: string };
+/** `machine` names the SSH machine whose pane had the link, which may point
+ * at that machine's own loopback; a link from this computer has none. */
+export type Effect = { write_terminal: string } | { open_url: string; machine?: number };
 type HoverMenu = "launcher" | "scope";
 /** A paste goes to the text field that owned the keyboard when it began, or
  * to the focused pane when none did. */
@@ -228,13 +242,30 @@ function tabWheel(button: number): boolean | null {
       return null;
   }
 }
+/** A file a link names, which a click opens in `corgi __view`. */
+interface OpenFile {
+  path: string;
+  line: number | null;
+  column: number | null;
+}
+/** The file a link in a pane names on its machine, where it was found. */
+interface LinkedFile {
+  path: string;
+  ref: fileRef.Ref;
+  /** It's an image, which the link's card shows. */
+  image: boolean;
+}
 /** A pressed link or port row, tracked until release confirms it wasn't a drag. */
 interface PortClick {
   x: number;
   y: number;
   url: string;
-  menu: number | null;
+  /** Set when the link is a file's name. */
+  file: OpenFile | null;
+  menu: viewerRef.Workspace | null;
   pane: number | null;
+  /** The machine a sidebar link opens on; a pane's link opens on the one shown. */
+  machine: Machine | null;
   px: number;
   py: number;
   drag_selects: boolean;
@@ -245,8 +276,10 @@ interface PortClick {
 }
 const portClick = (fields: Partial<PortClick> & { x: number; y: number }): PortClick => ({
   url: "",
+  file: null,
   menu: null,
   pane: null,
+  machine: null,
   px: 0,
   py: 0,
   drag_selects: false,
@@ -276,10 +309,8 @@ function continuesSeries(
     series !== null && (button & 0xfb) === 0 && series.x === x && series.y === y && now - series.at <= double_click_ms
   );
 }
-/** Links a click opens; native `linkIn` (pane/terminal.zig) picks the same ones. */
-export function openableLink(uri: string): boolean {
-  return (uri.startsWith("http://") || uri.startsWith("https://")) && byteLength(uri) <= 4096;
-}
+/** How often a pointer at rest is checked for a link coming or going under it. */
+const link_recheck_ms = 250;
 /** Primary presses on one pane cell, each within `double_click_ms` of the
  * last. `top` is the pane's view row and `w`, `h` its size at the press. */
 interface ClickSeries {
@@ -319,6 +350,8 @@ interface Picked {
  * start a double-click. */
 interface PendingOpen {
   url: string;
+  machine: Machine;
+  file: OpenFile | null;
   pane: number;
   due: number;
 }
@@ -342,9 +375,11 @@ class InputState {
   paste: Paste | null = null;
   tab_drag: TabDrag | null = null;
   divider: { hit: Divider; area: Rect; cancelled: boolean } | null = null;
-  keybuf: number[] = [];
-  escape_at = 0;
 }
+/** The key the Resume list's searches of conversations' text go under, so each ends the last. */
+const mentions_key = "resume";
+/** How long typing pauses before the Resume list searches conversations' text. */
+const mentions_pause_ms = 100;
 const sameRect = (a: Rect, b: Rect) => a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 /** `list` with `item` in it, or without it. */
@@ -485,6 +520,7 @@ export class Controller {
   onConnectivity: (() => void) | null = null;
   paste_target: Paste | null = null;
   paste_progress: pasteProgress.State | null = null;
+  private next_frame = Infinity;
   /** Why a paste brought no image, over the pane it was meant for. */
   paste_card: PasteCard | null = null;
   tab_menu: TabMenu | null = null;
@@ -511,6 +547,8 @@ export class Controller {
   /** Whether this viewer has asked the daemon to find agents yet, or can't. */
   private find_agents: "not_yet" | "asked" = "not_yet";
   private finding_agents: Promise<void> | null = null;
+  /** The Resume list's search of conversations' text, and where it went, until it's answered. */
+  private mentions_out: { connections: Transport[]; view: launcherResume.View } | null = null;
   private finding_agents_until = 0;
   /** The running search reads the model lists again when it ends. */
   private finding_models = false;
@@ -528,8 +566,44 @@ export class Controller {
   }
   link_tooltip = new linkTooltip.State();
   link_copy_press: linkTooltip.Link | null = null;
+  /** Each machine's files, read here or through its daemon, and whether the
+   * paths its panes show name them. */
+  private file_places = new WeakMap<Machine, { files: fileAccess.Files; refs: fileRef.Resolver }>();
+  private filesOn(machine: Machine): { files: fileAccess.Files; refs: fileRef.Resolver } {
+    let place = this.file_places.get(machine);
+    if (!place) {
+      const files = machine.remote
+        ? fileAccess.remote((op, payload) => call(machine.connection, op, payload as never))
+        : fileAccess.here;
+      const refs = new fileRef.Resolver(() => {
+        this.dirty = true;
+        this.wake();
+      }, files);
+      this.file_places.set(machine, (place = { files, refs }));
+    }
+    return place;
+  }
+  get file_refs(): fileRef.Resolver {
+    return this.filesOn(this.machine).refs;
+  }
+  /** The peek at a file's name. */
+  file_peeks = new filePeek.Peeks(() => {
+    // A peek read while the pointer waits draws when it shows.
+    if (!this.link_tooltip.shown) return;
+    this.dirty = true;
+    this.wake();
+  });
+  /** A press in the file peek: its body row, or null on its frame. */
+  private file_press: { row: number | null } | null = null;
   /** The picture of the prompt's pasted image under the pointer, this frame. */
+  /** The files shown in place of the panes `corgi __view` runs in. */
+  private file_panes = new filePane.Panes(() => {
+    this.dirty = true;
+    this.wake();
+  });
   private prompt_preview: PromptPreview | null = null;
+  /** The frame being drawn's pictures, on a host that shows Kitty images. */
+  private pictures: hostImages.FrameImages | null = null;
   thumbnails = new linkThumbnail.Loader(() => {
     this.dirty = true;
     this.wake();
@@ -538,14 +612,16 @@ export class Controller {
     this.dirty = true;
     this.wake();
   });
-  tab_icons = new tabIcons.Icons();
-  git_hover: number | null = null;
+  git_hover: viewerRef.Workspace | null = null;
   grip_hover: number[] = [];
   git_card = new gitTooltip.State();
   git_aim: gitTooltip.Aim | null = null;
   worktree_card = new worktreeTooltip.State();
   /** The worktree the overview selects once the removed one is gone. */
-  private removal_next: string | null = null;
+  private removals = new Map<
+    worktreeRemoval.Hold,
+    { owner: viewerRef.Workspace; runtime: Machine["runtime"]; next: string | null }
+  >();
   startup_card: startupCard.State | null = null;
   private startup_second = 0;
   resource_card = new resourceTooltip.State();
@@ -557,7 +633,6 @@ export class Controller {
   private dropping_input = false;
   /** The last press came while dropping: its drag and release go with it. */
   private press_dropped = false;
-  signal_bars = new signalBars.Images();
   hide_connection_signals = false;
   resource_aim: resourceTooltip.Aim | null = null;
   ui_mouse_down = false;
@@ -594,6 +669,8 @@ export class Controller {
   gesture: Gesture | null = null;
   picked: Picked | null = null;
   pending_open: PendingOpen | null = null;
+  /** When to look again for a link under a pointer at rest. */
+  private link_recheck_at = 0;
   pending_copy: PendingCopy | null = null;
   search_mode = false;
   search_text: number[] = [];
@@ -666,7 +743,7 @@ export class Controller {
       }
     }
   }
-  private local_review = new panel.Panel();
+  private local_review!: panel.Panel;
   private pr_cache = new pullRequest.Cache();
   closePRs(): void {
     this.conversation_pr_panel.close();
@@ -742,7 +819,11 @@ export class Controller {
   wake: () => void = () => {};
   notify: ((kind: string, target: AttentionTarget | null, machine?: Machine) => void) | null = null;
   /** The agent and worktree menus' diff line for each checkout, read ahead of them. */
-  review_summaries = new summaries.Summaries();
+  review_summaries!: summaries.Summaries;
+  private reviewing = new Map<
+    Machine,
+    { reader: reviewReader.Reader; panel: panel.Panel; summaries: summaries.Summaries }
+  >();
   /** Each pane's turn as last seen, so one starting or ending marks its checkout. */
   private summary_turns = new Map<number, string>();
   /** The directories last read ahead; they're asked for again only when this changes. */
@@ -775,6 +856,7 @@ export class Controller {
 
   /** Every machine this viewer shows, the current one among them. */
   machines: Machine[] = [];
+  private readonly machines_by_id = new Map<number, Machine>();
   /** The machine whose workspaces the sidebar lists, or null for all. */
   machine_filter: Machine | null = null;
   /** Shows another machine, on one of its workspaces or agents when given:
@@ -786,6 +868,7 @@ export class Controller {
   ) {
     this.machine = connection instanceof Machine ? connection : new Machine(connection);
     this.adopt(this.machine);
+    this.useReview(this.machine);
     this.prompt = new Prompt({
       daemon: this.promptDaemon(),
       memory_root: Memory.root(),
@@ -799,33 +882,56 @@ export class Controller {
     });
     // Its replies are read by the next poll, which says whether they show.
     this.prompt.changed = () => this.wake();
-    this.review.changed = () => {
-      this.dirty = true;
-      this.wake();
-    };
-    this.review.summarized = (root, runs) => this.review_summaries.put(root, runs);
-    this.review.resized = rows => {
-      this.prefs.review_tree_rows = rows;
-      try {
-        preferences.update({ review_tree_rows: rows });
-      } catch (error) {
-        this.notice((error as Error).message);
-      }
-    };
-    this.review_summaries.changed = () => {
-      const menu = this.tab_menu,
-        cwd = menu ? this.menuCheckout(menu) : null;
-      if (!menu || cwd === null) return;
-      menu.setDetail("review", this.summary(cwd));
-      this.dirty = true;
-      this.wake();
-    };
+  }
+  /** Shows `machine`'s review panel and menu lines, made the first time. */
+  private useReview(machine: Machine): void {
+    let kept = this.reviewing.get(machine);
+    if (!kept) {
+      const read = reviewReader.daemon((op, payload) => call(machine.connection, op as Op, payload as never)),
+        made = {
+          reader: read,
+          panel: new panel.Panel(read, machine.remote ? newWorkspace.reviewFolders(machine) : undefined),
+          summaries: new summaries.Summaries(summaries.reading(read)),
+        };
+      made.panel.tree_rows = this.prefs.review_tree_rows;
+      made.panel.changed = () => {
+        this.dirty = true;
+        this.wake();
+      };
+      made.panel.summarized = (root, runs) => made.summaries.put(root, runs);
+      made.panel.resized = rows => {
+        this.prefs.review_tree_rows = rows;
+        try {
+          preferences.update({ review_tree_rows: rows });
+        } catch (error) {
+          this.notice((error as Error).message);
+        }
+      };
+      made.summaries.changed = () => {
+        const menu = this.tab_menu,
+          cwd = menu ? this.menuCheckout(menu) : null;
+        if (!menu || cwd === null || machine !== this.machine) return;
+        menu.setHidden("review", this.reviewMissing(cwd));
+        menu.setDetail("review", this.summary(cwd));
+        this.dirty = true;
+        this.wake();
+      };
+      this.reviewing.set(machine, (kept = made));
+    }
+    this.local_review = kept.panel;
+    this.review_summaries = kept.summaries;
+    // The list's height is one preference, perhaps dragged on another machine's panel.
+    this.local_review.tree_rows = this.prefs.review_tree_rows;
+    // Pane IDs and folders name this machine's now: read ahead afresh.
+    this.summary_turns.clear();
+    this.summary_wanted = "";
   }
   /** Takes `machine` among those this viewer shows: its tasks' failures and
    * replies come here. */
   adopt(machine: Machine): void {
     if (this.machines.includes(machine)) return;
     this.machines.push(machine);
+    this.machines_by_id.set(machine.id, machine);
     machine.failed = error => this.taskFailed(error);
     // A finished task wakes the loop for what it changed.
     machine.settled = () => {
@@ -840,10 +946,14 @@ export class Controller {
     this.saveReviews();
     this.closeMachineUi();
     this.cancelInput();
+    if (this.local_review.open) this.local_review.hide();
+    if (this.keyboard === "review") this.giveKeyboard("pane");
+    // Its link under the pointer isn't anymore.
+    this.machine.forwards?.hover(null);
     this.machine = machine;
     this.model_cache.close();
     this.model_cache = this.modelCache();
-    if (!this.reviewable && this.review.open) this.closeReview();
+    this.useReview(machine);
     this.followReview();
     this.selected_pane = null;
     this.wake_pending = this.unarchive_pending = null;
@@ -860,8 +970,7 @@ export class Controller {
     this.dismissName();
     this.closeInlineRename();
     this.clicks.reset();
-    const images = this.images.clear();
-    if (images) this.queueEffect({ write_terminal: images });
+    this.images.clear();
     this.copy_mode = false;
     this.search_mode = false;
     this.selection = null;
@@ -876,32 +985,47 @@ export class Controller {
     this.git_card = new gitTooltip.State();
     this.resource_card = new resourceTooltip.State();
     this.link_tooltip.move();
+    // A click waiting out a double-click names a pane, and a file, there.
+    this.pending_open = null;
+    this.file_peeks.clear();
+    this.file_panes.clear();
     this.headless_notice = null;
     this.review.pinned = false;
     this.sidebar_rows.discard();
     this.launch_previews.disconnect();
+    const changedEvent = this.launch_previews.changedEvent;
+    this.launch_previews = new LaunchPreviewStream();
+    this.launch_previews.changedEvent = changedEvent;
     this.dirty = true;
   }
-  /** A sidebar row's id: a daemon's workspace id, set apart for each machine
-   * so ids from different daemons never meet. The first machine's rows keep
-   * their own ids. */
-  rowKey(id: number, machine = this.machine): number {
-    return Math.max(0, this.machines.indexOf(machine)) * machine_stride + id;
+  workspaceRef(workspace: number, machine = this.machine): viewerRef.Workspace {
+    return viewerRef.workspace(machine.id, workspace);
+  }
+  private resolveWorkspace(ref: viewerRef.Workspace | null): { machine: Machine; workspace: Workspace } | null {
+    if (!ref) return null;
+    const owner = this.rowOf(ref);
+    const workspace = owner?.machine.runtime.workspaces.items.find(ws => ws.id === owner.id);
+    return owner && workspace ? { machine: owner.machine, workspace } : null;
+  }
+  /** Input templates become concrete actions before entering the UI dispatcher. */
+  invoke(template: Template, machine = this.machine): Promise<void> {
+    const selected = this.workspaceRef(machine.navigation.current(machine.runtime.workspaces).id, machine);
+    return this.perform(bindAction(template, selected));
   }
   /** The machine and workspace a sidebar row's id names; 0 for a machine
    * with no workspaces listed yet. */
-  rowOf(key: number): { machine: Machine; id: number } | null {
-    const machine = this.machines[Math.floor(key / machine_stride)];
-    return machine ? { machine, id: key % machine_stride } : null;
+  rowOf(key: viewerRef.Entity): { machine: Machine; id: number } | null {
+    const { machine: machineId, id } = viewerRef.parts(key);
+    const machine = this.machines_by_id.get(machineId);
+    return machine ? { machine, id } : null;
   }
-  /** The shown machine's workspace on a sidebar row, by its own id: the
-   * cards that read it name it so. Null for another machine's row. */
+  /** Limits controls that act on the shown layout to its machine's rows. */
   private shownRow(row: sidebar.WorkspaceEntry | null): sidebar.WorkspaceEntry | null {
     const owner = row && this.rowOf(row.id);
-    return row && owner?.machine === this.machine ? { ...row, id: owner.id } : null;
+    return row && owner?.machine === this.machine ? row : null;
   }
   /** Shows the workspace a sidebar row names, on its own machine. */
-  selectRow(key: number): void {
+  selectRow(key: viewerRef.Workspace): void {
     const row = this.rowOf(key);
     if (!row) return;
     row.machine.collapsed = false;
@@ -915,39 +1039,16 @@ export class Controller {
     this.leaveSidebar();
     this.onMachine(row.machine, row.id ? { workspace: row.id } : null);
   }
-  /** An agent list row's id: the shown machine's own, else set apart for
-   * the machine it's on. Unlike row keys, these follow the shown machine. */
-  private agentKey(id: number, machine: Machine): number {
-    return machine === this.machine ? id : (this.machines.indexOf(machine) + 1) * machine_stride + id;
+  private resolveAgent(ref: viewerRef.Agent): { machine: Machine; target: OrderTarget } | null {
+    const owner = this.rowOf(ref);
+    return (
+      owner && { machine: owner.machine, target: viewerRef.isPane(ref) ? { pane: owner.id } : { headless: owner.id } }
+    );
   }
-  /** The machine and id an agent list row's id names. */
-  private agentOf(key: number): { machine: Machine; id: number } {
-    if (key < machine_stride) return { machine: this.machine, id: key };
-    return { machine: this.machines[Math.floor(key / machine_stride) - 1] ?? this.machine, id: key % machine_stride };
-  }
-  /** An agent list target in its own machine's ids, and that machine. */
-  private agentTarget(target: Target): { machine: Machine; target: Target } {
-    if ("pane" in target) {
-      const { machine, id } = this.agentOf(target.pane);
-      return { machine, target: { pane: id } };
-    }
-    if ("headless" in target) {
-      const { machine, id } = this.agentOf(target.headless);
-      return { machine, target: { headless: id } };
-    }
-    if ("group" in target) {
-      const { machine, id } = this.agentOf(target.group);
-      return { machine, target: { group: id } };
-    }
-    if ("workspace" in target) {
-      const { machine, id } = this.agentOf(target.workspace);
-      return { machine, target: { ...target, workspace: id } };
-    }
-    return { machine: this.machine, target };
-  }
-  /** Whether an agent list row is another machine's. */
+  /** Whether a sidebar target belongs to another machine. */
   private away(target: Target): boolean {
-    return this.agentTarget(target).machine !== this.machine;
+    const owner = sidebar.owner(target);
+    return owner !== null && this.rowOf(owner)?.machine !== this.machine;
   }
   /** Whether `machine`'s rows are only cached ones from a daemon since replaced. */
   private stale(machine: Machine): boolean {
@@ -1118,13 +1219,14 @@ export class Controller {
     command: CommandInput,
     lane?: tasks.Lane | (() => void),
     completed?: () => void,
+    machine = this.machine,
   ): Promise<{ pane: number; workspace: number; text: string | null }> {
     const done = typeof lane === "function" ? lane : undefined;
     lane = typeof lane === "function" ? undefined : lane;
-    const machine = lane ? (this.machines.find(m => m.connection === lane.transport) ?? this.machine) : this.machine;
+    if (lane) machine = this.machines.find(m => m.connection === lane.transport) ?? machine;
     const response = await (lane
       ? lane.call("session.command", { command })
-      : call(this.connection, "session.command", { command }));
+      : call(machine.connection, "session.command", { command }));
     done?.();
     completed?.();
     const result = {
@@ -1136,8 +1238,8 @@ export class Controller {
     this.dirty = true;
     return result;
   }
-  private async edit(command: CommandInput, lane?: tasks.Lane): Promise<void> {
-    await this.execute(command, lane);
+  private async edit(command: CommandInput, lane?: tasks.Lane, machine = this.machine): Promise<void> {
+    await this.execute(command, lane, undefined, machine);
   }
   /** Sends `command` and shows its result once the daemon has it. */
   private command(command: CommandInput): void {
@@ -1243,7 +1345,7 @@ export class Controller {
       else this.closeMenu();
     });
   }
-  private revealWorkspace(index = this.workspaceIds().indexOf(this.rowKey(this.current().id))): void {
+  private revealWorkspace(index = this.workspaceIds().indexOf(this.workspaceRef(this.current().id))): void {
     if (index < 0) return;
     if (this.archived_expanded && this.sidebarView([]).workspaceCapacity() === 0) this.archived_expanded = false;
     this.workspace_offset = this.sidebarView([]).workspaceReveal(index);
@@ -1251,6 +1353,7 @@ export class Controller {
   /** Moves focus one step within the region that has the keyboard, and past
    * its edge on to the region beside it. */
   private async moveFocus(to: Direction): Promise<void> {
+    this.closeWorktreeCard();
     if (this.moveWithin(to)) return;
     const at = regions.indexOf(this.region());
     switch (to === "left" ? regions[at - 1] : to === "right" ? regions[at + 1] : undefined) {
@@ -1273,7 +1376,7 @@ export class Controller {
     if (focus) {
       if (to !== "up" && to !== "down") return false;
       const entries = this.sidebarEntries();
-      if (!focus.cross(this.current().id, entries, to === "up")) return false;
+      if (!focus.cross(this.workspaceRef(this.current().id), entries, to === "up")) return false;
       this.revealCursor(entries);
       return true;
     }
@@ -1294,6 +1397,7 @@ export class Controller {
   /** Hands the keyboard to `to`. A drawer the sidebar had goes away with it. */
   private giveKeyboard(to: Keyboard): void {
     this.conversation_prs.focused = false;
+    if (to !== "pane") this.closeWorktreeCard();
     const from = this.keyboard;
     if (from === to) return;
     if (to !== "review") {
@@ -1320,7 +1424,7 @@ export class Controller {
     this.selection = null;
     this.cancelDividers();
     const entries = this.sidebarEntries(),
-      current = this.rowKey(this.current().id);
+      current = this.workspaceRef(this.current().id);
     const cursor = list === "workspaces" ? { workspace: current } : sidebarFocus.initial(current, entries);
     this.giveKeyboard({ sidebar: new sidebarFocus.State(cursor, folded ? list : null) });
     this.revealCursor(entries);
@@ -1351,7 +1455,7 @@ export class Controller {
     const cursor = this.sidebar_focus!.cursor;
     if ("archived" in cursor) return;
     if ("workspace" in cursor) {
-      const archived = this.archivedWorkspaces().findIndex(ws => ws.id === cursor.workspace);
+      const archived = this.archivedWorkspaces().findIndex(ws => this.workspaceRef(ws.id) === cursor.workspace);
       if (archived >= 0 && this.archived_expanded) {
         const capacity = this.sidebarView([]).archivedCapacity();
         if (archived < this.archived_offset) this.archived_offset = archived;
@@ -1392,8 +1496,9 @@ export class Controller {
   sidebarGhost(): render.Ghost | null {
     const focus = this.sidebar_focus;
     const cursor = focus?.cursor;
-    if (!focus || !cursor || !("entry" in cursor) || !("pane" in cursor.entry)) return null;
-    return this.agentGhost(cursor.entry.pane);
+    if (!focus || !cursor || !("entry" in cursor) || !viewerRef.isPane(cursor.entry)) return null;
+    const owner = this.rowOf(cursor.entry);
+    return owner?.machine === this.machine ? this.agentGhost(owner.id) : null;
   }
   /** The same preview for the sidebar and the archive review, without entering its pane. */
   previewGhost(): render.Ghost | null {
@@ -1424,12 +1529,18 @@ export class Controller {
    * show it, while it isn't the current one. */
   sidebarWorkspaceGhost(): render.WorkspaceGhost | null {
     const cursor = this.sidebar_focus?.cursor;
-    if (!cursor || !("workspace" in cursor) || cursor.workspace === this.current().id) return null;
-    const index = this.runtime.workspaces.index(cursor.workspace);
-    if (index === null) return null;
-    const ws = this.runtime.workspaces.items[index];
-    return { name: ws.name, view: new LayoutView(ws.model, this.navigation.selection(this.runtime.workspaces, ws)) };
+    if (!cursor || !("workspace" in cursor) || cursor.workspace === this.workspaceRef(this.current().id)) return null;
+    const owner = this.resolveWorkspace(cursor.workspace);
+    if (!owner || owner.machine !== this.machine) return null;
+    return {
+      name: owner.workspace.name,
+      view: new LayoutView(
+        owner.workspace.model,
+        owner.machine.navigation.selection(owner.machine.runtime.workspaces, owner.workspace),
+      ),
+    };
   }
+
   /** `/` in the focused agent list searches it; Esc comes back to the list. */
   private searchSidebar(): void {
     const focus = this.sidebar_focus!;
@@ -1445,30 +1556,31 @@ export class Controller {
   /** Runs a prefixed binding. Prefixed commands act on panes, so any but one
    * that moves the keyboard gives it back to them; a repeatable one opens its
    * repeat window. */
-  private async runPrefixed(act: Action, repeats: boolean): Promise<void> {
+  private async runPrefixed(act: Template, repeats: boolean): Promise<void> {
     this.prefix = false;
     if (this.prompt.open && act.name !== "prompt") this.prompt.hide();
     this.repeat_until = repeats ? Date.now() + bindings.repeat_ms : 0;
     if (!["focus", "choose-workspace", "choose-agent", "review"].includes(act.name)) this.giveKeyboard("pane");
-    await this.perform(act);
+    await this.invoke(act);
   }
   /** Whether the prefix, or the key after it, was a sign-in's to take. Only
    * detach runs over a sign-in: other commands act on what it covers and
    * puts back when it closes. The prefix twice types it. */
   private async signinPrefix(byte: number, key_event: keyboard.Key | null): Promise<boolean> {
-    const prefix_byte = keymap.prefixByte(this.prefs.prefix);
+    const matches = keys.same(key_event ?? { codepoint: byte, mods: {} }, keymap.prefixKey(this.prefs.prefix));
     if (!this.prefix) {
-      if (byte !== prefix_byte) return false;
+      if (!matches) return false;
       this.prefix = true;
       return true;
     }
     this.prefix = false;
-    if (byte === prefix_byte) return false;
+    if (matches) return false;
     const act = bindings.lookup(this.prefs.bindings(), true, key_event?.codepoint ?? byte, key_event?.mods ?? {});
     if (act?.name === "detach") await this.perform(act);
     return true;
   }
   private async setupPrefix(key: keyboard.Key): Promise<boolean> {
+    if (!this.corgi_setup?.after_prefix && this.typingPrefix(key)) return false;
     const chord = this.corgi_setup?.prefixKey(key.codepoint, this.prefs, key);
     if (chord == null) return false;
     if (chord === "detach") await this.applySetup({ kind: "detach" });
@@ -1479,13 +1591,25 @@ export class Controller {
    * extends, or else closes. The sidebar and the review panel take plain
    * arrows themselves, but they keep the window open, so focus can leave
    * the sidebar the same way. */
-  private repeats(act: Action | null): act is Action {
+  private repeats(act: Template | null): act is Template {
     if (act === null) return false;
     const again = !this.prefix && Date.now() < this.repeat_until;
     this.repeat_until = again ? Date.now() + bindings.repeat_ms : 0;
     return again && !this.sidebar_focus && !this.reviewKeys();
   }
+  selectPane(ref: viewerRef.Pane): void {
+    const { machine: machineId, id } = viewerRef.parts(ref);
+    const machine = this.machines_by_id.get(machineId);
+    if (!machine?.runtime.pane(id)) return;
+    if (machine !== this.machine) this.onMachine(machine, { pane: id });
+    else this.focusPane(id);
+  }
   focusPane(id: number, remember = true): void {
+    this.closeWorktreeCard();
+    this.updatePaneFocus(id, remember);
+  }
+  /** Focus restored by attachment or scrolling leaves open cards alone. */
+  updatePaneFocus(id: number, remember = true): void {
     this.saveReviews();
     const owner = this.runtime.workspaces.owner(id);
     if (!owner) throw Error("NoPane");
@@ -1548,7 +1672,7 @@ export class Controller {
         rows.map(row => row.collapsed),
       )
       .withEntries(entries)
-      .withRename(this.renameState());
+      .withRename(this.inline_rename);
     view.scope_label = this.scopeLabel();
     view.workspace_scope = this.machineScope();
     view.corgi_badge = this.host.corgi_badge;
@@ -1616,7 +1740,7 @@ export class Controller {
       const where = preferences.paths();
       this.reportPreferences(preferences.inspect(where).problems);
       const settings = keybindingFile.observe(where.config, () =>
-          this.reloadSettings(preferences.inspectConfig(where.config)),
+          this.reloadSettings(preferences.inspectConfig(where)),
         ),
         state = keybindingFile.observe(where.viewer, () => {
           // One being rewritten by hand keeps the order this viewer has.
@@ -1705,7 +1829,7 @@ export class Controller {
     machine.runtime.resources_hash = null;
     if (machine !== this.machine) return;
     this.launch_previews.disconnect();
-    this.pastePane()?.terminal.pasteAbort();
+    this.cancelPaste();
     this.input_state = Object.assign(new InputState(), { attached: this.input_state.attached });
     this.executable = "";
   }
@@ -1716,8 +1840,10 @@ export class Controller {
       this.onboarding = Object.assign(new onboarding.State(), { preset: prefs.preset, prefix: prefs.prefix });
   }
   /** Folds or unfolds a group header, on whichever machine it lists. */
-  private toggleGroup(key: number): void {
-    const { machine, id } = this.agentOf(key);
+  private toggleGroup(key: viewerRef.Workspace): void {
+    const owner = this.rowOf(key);
+    if (!owner) return;
+    const { machine, id } = owner;
     const folded = machine.folded_groups;
     const index = folded.indexOf(id);
     if (index >= 0) {
@@ -1740,8 +1866,10 @@ export class Controller {
     }
     this.dirty = true;
   }
-  private toggleWorktree(selection: worktreeAgents.Selection): void {
-    const { machine, id } = this.agentOf(selection.workspace);
+  private toggleWorktree(selection: worktreeAgents.Selection<viewerRef.Workspace>): void {
+    const owner = this.rowOf(selection.workspace);
+    if (!owner) return;
+    const { machine, id } = owner;
     const key = worktreeAgents.key({ workspace: id, path: selection.path });
     const unfolded = machine.worktree_agents.folded.delete(key);
     if (!unfolded) machine.worktree_agents.folded.add(key);
@@ -1820,12 +1948,11 @@ export class Controller {
     const p = this.focused();
     return this.inheritedCwd(this.current(), p ? p.id : null);
   }
-  private workspaceIds(): number[] {
+  private workspaceIds(): viewerRef.Workspace[] {
     return this.workspaceRows().map(ws => ws.id);
   }
   /** The sidebar's workspace rows for every machine shown, by row id; see `key`. */
   workspaceRows(all = false, expanded = false): WorkspaceEntry[] {
-    if (this.machines.length === 1) return this.workspaceEntries();
     const labels = this.machineLabels();
     const rows = this.machines.flatMap(machine => {
       if (!all && this.machine_filter && this.machine_filter !== machine) return [];
@@ -1836,10 +1963,10 @@ export class Controller {
             : presence.cached,
         unavailable = presence.online ? "" : presence.description,
         shown = machine === this.machine;
-      if (!rows.length)
+      if (!rows.length && this.machines.length > 1)
         return [
           sidebar.workspaceEntry({
-            id: this.rowKey(0, machine),
+            id: this.workspaceRef(0, machine),
             name: machine.name,
             cwd: "",
             active: false,
@@ -1853,13 +1980,13 @@ export class Controller {
         ];
       return rows.map(row => ({
         ...row,
-        id: this.rowKey(row.id, machine),
+        id: this.workspaceRef(row.id, machine),
         // Ports are found by the row's id, so they take it too.
         ports: {
           ...row.ports,
           workspaces: (row.ports?.workspaces ?? [])
             .filter(w => w.id === row.id)
-            .map(w => ({ ...w, id: this.rowKey(w.id, machine) })),
+            .map(w => ({ ...w, id: this.workspaceRef(w.id, machine) })),
         },
         active: shown && row.id === machine.navigation.workspace_id,
         machine: labels ? machine.name : "",
@@ -1870,6 +1997,7 @@ export class Controller {
         connection_status: presence.connection_status,
       }));
     });
+    if (this.machines.length === 1) return rows;
     // Each row's place is looked up once, not on every comparison.
     const order = new Map(this.prefs.workspace_order.map((key, i) => [key, i])),
       place = new Map(rows.map(row => [row.id, order.get(this.workspaceOrderKey(row.id)) ?? Infinity]));
@@ -1898,12 +2026,12 @@ export class Controller {
       })
       .map(row => row.id);
     if (!ids.length) return;
-    const current = ids.indexOf(this.rowKey(this.current().id));
+    const current = ids.indexOf(this.workspaceRef(this.current().id));
     const index =
       current < 0 ? (forward ? 0 : ids.length - 1) : (current + (forward ? 1 : ids.length - 1)) % ids.length;
     this.selectRow(ids[index]);
   }
-  private workspaceOrderKey(key: number): string {
+  private workspaceOrderKey(key: viewerRef.Workspace): string {
     const row = this.rowOf(key)!;
     return JSON.stringify([row.machine.order_scope || row.machine.name, row.id]);
   }
@@ -1955,11 +2083,12 @@ export class Controller {
       const row = rows[hit.workspace];
       // The unread mark jumps to the first unread agent, as any click does.
       if (side.unreadHit(row, x, y)) return false;
-      // Only presses on the name make the double-click that renames.
+      // Only presses on the name line make the double-click that renames.
       const workspace = this.rowOf(row.id)!.id;
-      if (!side.onName({ workspace: row.id }, rows, x, y)) this.clicks.reset();
-      else if (this.clicks.press({ workspace }, milliTimestamp(), x, y)) {
-        this.beginInlineRename({ workspace });
+      this.clicks.pressed();
+      if (!side.onNameLine(row.id, rows, x, y)) this.clicks.reset();
+      else if (this.clicks.press(row.id, milliTimestamp(), y)) {
+        this.beginInlineRename(row.id);
         return true;
       }
       const key = ids[hit.workspace];
@@ -1995,15 +2124,13 @@ export class Controller {
     return true;
   }
   /** The readings a row's machine sampled, its workspace under the row's id. */
-  private rowResources(key: number): resources.Snapshot | null {
+  private rowResources(key: viewerRef.Workspace) {
     const row = this.rowOf(key);
     if (!row || !row.machine.presence().online || this.stale(row.machine)) return null;
     const snapshot = row.machine.runtime.resources,
       work = snapshot.workspaces.find(work => work.id === row.id);
     if (!work) return null;
-    return Object.assign(new resources.Snapshot(), snapshot, {
-      workspaces: [Object.assign(new resources.Work(key), work, { id: key })],
-    });
+    return { ...snapshot, workspaces: [{ ...work, id: key }] };
   }
   private workspaceList(): Workspace[] {
     return this.runtime.workspaces.items.filter(ws => !ws.archived || ws.id === this.current().id);
@@ -2017,7 +2144,7 @@ export class Controller {
   }
   archivedWorkspaceEntries(): sidebar.ArchivedWorkspace[] {
     return this.archivedWorkspaces().map(ws => ({
-      id: this.rowKey(ws.id),
+      id: this.workspaceRef(ws.id),
       name: ws.name,
       active: false,
       summary:
@@ -2029,21 +2156,21 @@ export class Controller {
         ),
     }));
   }
-  private sidebarWorkspaceIds(): number[] {
+  private sidebarWorkspaceIds(): viewerRef.Workspace[] {
     return [
       ...this.workspaceRows()
         .filter(row => {
           return !this.rowOf(row.id)!.machine.presence().stopped;
         })
         .map(row => row.id),
-      ...(this.archived_expanded ? this.archivedWorkspaces().map(ws => this.rowKey(ws.id)) : []),
+      ...(this.archived_expanded ? this.archivedWorkspaces().map(ws => this.workspaceRef(ws.id)) : []),
     ];
   }
   private archivedHeaderIndex(): number | null {
     return this.archivedWorkspaces().length ? this.workspaceIds().length : null;
   }
   /** `machine`'s workspaces as the sidebar lists them, by their own ids. */
-  workspaceEntries(machine = this.machine): WorkspaceEntry[] {
+  workspaceEntries(machine = this.machine): WorkspaceEntry<number>[] {
     const runtime = machine.runtime;
     // Until the daemon first answers, it has none.
     if (runtime.workspaces.items.length === 0) return [];
@@ -2067,6 +2194,7 @@ export class Controller {
         entry.ports = runtime.ports;
         entry.resources = sidebar.resourcesFor(runtime.resources, ws.id);
         entry.remote_links = machine.remote_links;
+        entry.link_forwards = machine.remote ? machine.forwards : null;
         for (const p of runtime.panes) {
           if (p.agent.provider === null || ws.model.tabForPane(p.id) === null) continue;
           sidebar.tally(entry, p.agent.state, p.agent.attention);
@@ -2081,68 +2209,57 @@ export class Controller {
       });
   }
   /** The agent list; `unfolded` keeps the agents of folded sections. */
-  agentEntries(workspace?: number, unfolded = false): Entry[] {
-    let entries: Entry[] = [];
-    const focus = this.model().count > 0 ? this.nav().tab().focus : 0;
-    // Activity sorting sections the sidebar's list; a single workspace's,
-    // for its worktrees, keeps the hand-sorted order.
-    const sectioned = workspace === undefined && this.prefs.agentSort() === "activity";
-    // A hand-sorted "All" groups agents under a header per workspace that has any.
-    const grouped = workspace === undefined && !sectioned && this.prefs.agents === "all";
+  /** One machine's agents, with its own IDs and saved ordering. */
+  private machineAgents(workspace: number, machine = this.machine): agentRows.Row[] {
+    const runtime = machine.runtime,
+      ws = runtime.workspaces.items.find(ws => ws.id === workspace);
+    if (!ws) return [];
+    const shown = machine === this.machine,
+      focus = this.model().count > 0 ? this.nav().tab().focus : 0;
+    const rows = agentRows.rows(runtime, ws, milliTimestamp());
+    for (const { entry } of rows) {
+      const target = entry.target,
+        chat = "headless" in target ? runtime.corgi_sessions.find(s => s.id === target.headless) : null,
+        pane = "pane" in target ? target.pane : chat?.pane;
+      entry.focused =
+        shown &&
+        (pane != null
+          ? this.headless_notice === null && focus === pane
+          : "headless" in target && this.headless_notice === target.headless);
+      const conversation = runtime.conversations.find(c => c.id === entry.conversation);
+      if (conversation) entry.context = contextView(conversation.context);
+      if (shown && "pane" in target) entry.notes = this.review.noteCount(target.pane);
+    }
+    return rows.sort(
+      (a, b) => agentOrder.rank(ws.agent_order, a.entry.target) - agentOrder.rank(ws.agent_order, b.entry.target),
+    );
+  }
+  agentEntries(unfolded = false): Entry[] {
+    const sectioned = this.prefs.agentSort() === "activity",
+      grouped = !sectioned && this.prefs.agents === "all";
     const machines =
-      workspace !== undefined || this.prefs.agents !== "all"
-        ? [this.machine]
-        : this.machine_filter
-          ? [this.machine_filter]
-          : this.machines;
-    const label = (id: number, checkout: string | null, all: boolean) => {
-      const owner = this.agentOf(id);
-      const name = this.checkoutLabel(owner.id, checkout, all, owner.machine);
-      return all && this.machineLabels() ? `${owner.machine.name} · ${name}` : name;
-    };
-    const items: agentSections.Item[] = [],
+      this.prefs.agents !== "all" ? [this.machine] : this.machine_filter ? [this.machine_filter] : this.machines;
+    const entries: Entry[] = [],
+      items: agentSections.Item[] = [],
       held = new Set<string>(),
       now_ms = milliTimestamp();
     for (const machine of machines) {
       if (machine !== this.machine && !machine.presence().online) continue;
-      const runtime = machine.runtime,
-        shown = machine === this.machine;
-      const totals = grouped ? this.workspaceEntries(machine) : [];
-      const keyed = (entry: Entry): Entry => {
-        const target = entry.target;
-        const key = (id: number) => this.agentKey(id, machine);
-        return {
-          ...entry,
-          target:
-            "pane" in target
-              ? { pane: key(target.pane) }
-              : "headless" in target
-                ? { headless: key(target.headless) }
-                : "group" in target
-                  ? { group: key(target.group) }
-                  : "workspace" in target
-                    ? { ...target, workspace: key(target.workspace) }
-                    : target,
-          worktree: entry.worktree ? { ...entry.worktree, workspace: key(entry.worktree.workspace) } : null,
-        };
-      };
-      runtime.workspaces.items.forEach(ws => {
-        if (ws.archived && (!shown || ws.id !== this.current().id)) return;
-        if (workspace !== undefined ? ws.id !== workspace : this.prefs.agents !== "all" && !this.inScope(ws.id)) return;
+      const shown = machine === this.machine,
+        totals = grouped ? this.workspaceEntries(machine) : [];
+      for (const ws of machine.runtime.workspaces.items) {
+        if (ws.archived && (!shown || ws.id !== this.current().id)) continue;
+        if (this.prefs.agents !== "all" && !this.inScope(ws.id)) continue;
+        const workspace = this.workspaceRef(ws.id, machine);
         if (grouped) {
           const total = totals.find(w => w.id === ws.id);
-          if (!total) return;
-          if (total.agents === 0) return;
-          const folded = machine.folded_groups.includes(ws.id);
-          const here = shown && ws.id === this.current().id;
-          // A folded header stands in for the focused agent it hides.
+          if (!total || total.agents === 0) continue;
+          const folded = machine.folded_groups.includes(ws.id),
+            here = shown && ws.id === this.current().id;
           entries.push(
             sidebar.entry({
-              target: { group: this.agentKey(ws.id, machine) },
+              target: { group: workspace },
               name: ws.name,
-              provider: null,
-              state: "idle",
-              attention: "none",
               focused: folded && here && this.focusedAgent() !== null,
               group: {
                 agents: total.agents,
@@ -2154,31 +2271,11 @@ export class Controller {
               },
             }),
           );
-          if (folded) return;
+          if (folded) continue;
         }
-        const first_agent = entries.length,
-          starts: number[] = [];
-        for (const { entry, start } of agentRows.rows(runtime, ws, now_ms)) {
-          const target = entry.target,
-            chat = "headless" in target ? runtime.corgi_sessions.find(s => s.id === target.headless) : null,
-            pane = "pane" in target ? target.pane : chat?.pane;
-          entry.focused =
-            shown &&
-            (pane != null
-              ? this.headless_notice === null && focus === pane
-              : "headless" in target && this.headless_notice === target.headless);
-          entries.push(entry);
-          starts.push(start);
-        }
+        const rows = this.machineAgents(ws.id, machine);
         if (!sectioned) {
-          // std.sort.insertion is stable.
-          const sorted = entries
-            .slice(first_agent)
-            .sort((l, r) =>
-              sidebar.lessThan(ws.agent_order, l, r) ? -1 : sidebar.lessThan(ws.agent_order, r, l) ? 1 : 0,
-            );
-          // Worktrees label the rows that sit together, as in the sections.
-          const placed = sorted.map(entry => {
+          const placed = rows.map(({ entry }) => {
             const checkout = worktreeAgents.listedWorktree(ws.worktrees, entry.target, entry.cwd);
             return {
               entry: {
@@ -2189,59 +2286,49 @@ export class Controller {
               checkout,
             };
           });
-          const decorated =
-            workspace === undefined
-              ? agentSections.labelled(placed, null, false, (id, checkout) =>
-                  this.checkoutLabel(id, checkout, false, machine),
-                )
-              : sorted;
-          entries.splice(first_agent, sorted.length, ...decorated.map(keyed));
-          return;
+          entries.push(
+            ...agentSections
+              .labelled(placed, null, false, (id, checkout) => this.checkoutLabel(id, checkout, false, machine))
+              .map(e => agentRows.qualify(e, machine.id)),
+          );
+          continue;
         }
-        entries.slice(first_agent).forEach((entry, i) => {
-          const target = entry.target as OrderTarget,
-            key = agentKey(keyed(entry).target as OrderTarget),
-            pin = ws.pinned_agents.findIndex(t => sidebar.sameTarget(t, target)),
-            rank = ws.activity_order.findIndex(t => sidebar.sameTarget(t, target));
-          // Opening an unread agent reads it; it stays among the ready until left.
-          const kind = agentSections.section(entry),
+        for (const { entry, start } of rows) {
+          const qualified = agentRows.qualify(entry, machine.id),
+            key = qualified.target as viewerRef.Agent,
+            pin = ws.pinned_agents.findIndex(t => agentOrder.equal(t, entry.target)),
+            rank = ws.activity_order.findIndex(t => agentOrder.equal(t, entry.target)),
+            kind = agentSections.section(entry),
             shown = this.agent_since.shown(key, kind, entry.focused);
           items.push({
             key,
-            entry: keyed(entry),
-            workspace: this.agentKey(ws.id, machine),
-            checkout: worktreeAgents.listedWorktree(ws.worktrees, target, entry.cwd),
+            entry: qualified,
+            workspace,
+            checkout: worktreeAgents.listedWorktree(ws.worktrees, entry.target, entry.cwd),
             section: shown,
-            since: this.agent_since.observe(key, shown, starts[i], now_ms),
+            since: this.agent_since.observe(key, shown, start, now_ms),
             pin: pin < 0 ? null : pin,
             rank: rank < 0 ? ws.activity_order.length : rank,
           });
           if (shown !== kind) held.add(key);
-        });
-      });
+        }
+      }
     }
-    if (sectioned) {
-      this.agent_since.place(items, held);
-      const all = this.prefs.agents === "all";
-      entries = agentSections.arrange(items, {
-        all,
-        folded: unfolded ? new Set() : this.folded_sections,
-        workspaces: machines.flatMap(machine =>
-          machine.runtime.workspaces.items.map(ws => this.agentKey(ws.id, machine)),
-        ),
-        label: (id, checkout) => label(id, checkout, all),
-      });
-    }
-    for (const entry of entries) {
-      if (!sidebar.isAgent(entry.target)) continue;
-      const owner = this.agentTarget(entry.target);
-      const runtime = owner.machine.runtime;
-      const conversation = runtime.conversations.find(c => c.id === entry.conversation);
-      if (conversation) entry.context = contextView(conversation.context);
-      if (owner.machine === this.machine && "pane" in entry.target)
-        entry.notes = this.review.noteCount(entry.target.pane);
-    }
-    return entries;
+    if (!sectioned) return entries;
+    this.agent_since.place(items, held);
+    const all = this.prefs.agents === "all";
+    return agentSections.arrange(items, {
+      all,
+      folded: unfolded ? new Set() : this.folded_sections,
+      workspaces: machines.flatMap(machine =>
+        machine.runtime.workspaces.items.map(ws => this.workspaceRef(ws.id, machine)),
+      ),
+      label: (ref, checkout) => {
+        const owner = this.rowOf(ref)!;
+        const name = this.checkoutLabel(owner.id, checkout, all, owner.machine);
+        return all && this.machineLabels() ? `${owner.machine.name} · ${name}` : name;
+      },
+    });
   }
   /** A subhead's text for checkout `checkout` of workspace `id`: a worktree's
    * branch, or the workspace's own checkout's branch; in `all`, by workspace. */
@@ -2272,19 +2359,19 @@ export class Controller {
     );
     if (index >= 0) this.worktree_agents.appearing = null;
     else {
-      const snapshot = this.runtime.workspaces.items.find(ws => ws.id === selected.workspace)?.worktrees;
+      const snapshot = this.resolveWorkspace(selected.workspace)?.workspace?.worktrees;
       if (snapshot) {
         const asleep = worktreeAgents.conversations(snapshot, selected.path, this.mergedHistory(), this.openSessions());
-        // The overview's footer says what Enter would do with them.
-        this.worktree_card.asleep = { path: selected.path, count: asleep.length };
-        const ghost = worktreeAgents.group(
-          snapshot,
-          selected,
-          this.agentEntries(selected.workspace),
-          asleep,
-          this.worktree_agents,
-          true,
-        );
+        const ghost = worktreeAgents
+          .group(
+            snapshot,
+            { workspace: this.rowOf(selected.workspace)!.id, path: selected.path },
+            this.machineAgents(this.rowOf(selected.workspace)!.id).map(({ entry }) => entry),
+            asleep,
+            this.worktree_agents,
+            true,
+          )
+          .map(e => agentRows.qualify(e, this.machine.id));
         // A worktree with nothing to list has no ghost; one fades in once it has.
         if (!ghost.length) this.worktree_agents.appearing = null;
         const shown = ghost.length ? this.worktree_agents.animate(ghost, selected, milliTimestamp()) : [];
@@ -2299,14 +2386,16 @@ export class Controller {
     }
     return entries;
   }
-  private firstUnreadAgent(workspace_index: number): Target | null {
-    const ws = this.runtime.workspaces.items[workspace_index];
+  private firstUnreadAgent(workspace: number, machine = this.machine): Target | null {
+    const runtime = machine.runtime,
+      ws = runtime.workspaces.items.find(ws => ws.id === workspace);
+    if (!ws) return null;
     for (let tab_index = 0; tab_index < ws.model.count; tab_index++)
-      for (const p of this.runtime.panes)
+      for (const p of runtime.panes)
         if (p.agent.provider !== null && ws.model.tabForPane(p.id) === tab_index && unread(p.agent.observation))
-          return { pane: p.id };
-    for (const session of this.listedSessions())
-      if (session.workspace === ws.id && unread(session.observation)) return { headless: session.id };
+          return viewerRef.pane(machine.id, p.id);
+    for (const session of agentRows.sessions(runtime))
+      if (session.workspace === ws.id && unread(session.observation)) return viewerRef.headless(machine.id, session.id);
     return null;
   }
   /** The headless sessions the sidebar lists: the agents', and the prompt's
@@ -2315,33 +2404,35 @@ export class Controller {
     return agentRows.sessions(this.runtime);
   }
   selectAgent(target: Target): void {
-    const away = this.agentTarget(target);
-    if (away.machine !== this.machine) {
-      if ("group" in target) return this.toggleGroup(target.group);
-      if ("worktree" in target) return this.toggleWorktree({ workspace: target.workspace, path: target.worktree });
-      if (!sidebar.isAgent(away.target)) return;
-      this.closeMenu();
-      return this.onMachine(away.machine, away.target);
-    }
-    if ("worktree" in target) return this.revealWorktree({ workspace: target.workspace, path: target.worktree }, true);
-    // A subhead stands for its worktree; a workspace's own rows have nothing to open.
-    if (sidebar.isSubhead(target)) {
-      if (target.checkout !== null) this.revealWorktree({ workspace: target.workspace, path: target.checkout }, true);
+    if (!sidebar.isAgent(target)) {
+      if ("group" in target) this.toggleGroup(target.group);
+      else if ("worktree" in target) {
+        if (this.away(target)) this.toggleWorktree({ workspace: target.workspace, path: target.worktree });
+        else this.enterWorktreeAt({ owner: target.workspace, path: target.worktree });
+      } else if (sidebar.isSubhead(target)) {
+        if (target.checkout !== null) this.enterWorktreeAt({ owner: target.workspace, path: target.checkout });
+      } else if (sidebar.isSection(target)) this.toggleSection(target.section);
+      this.dirty = true;
       return;
     }
-    if (!sidebar.isAgent(target) && !("group" in target) && !sidebar.isSection(target)) return;
+    const resolved = this.rowOf(target);
+    if (!resolved) return;
+    if (resolved.machine !== this.machine) {
+      this.closeMenu();
+      if (viewerRef.isPane(target)) this.selectPane(target);
+      else this.onMachine(resolved.machine, { headless: resolved.id });
+      return;
+    }
     this.rememberAgent();
     this.copy_mode = false;
     this.search_mode = false;
     this.selection = null;
     this.cancelDividers();
     this.message = "";
-    if ("pane" in target) {
-      this.focusPane(target.pane);
-      this.dirty = true;
-    } else if ("headless" in target) {
-      const session = this.listedSessions().find(s => s.id === target.headless);
-      // The prompt's conversation opens where it is: its Corgi pane, or the card.
+    if (viewerRef.isPane(target)) this.selectPane(target);
+    else {
+      const id = resolved.id,
+        session = this.listedSessions().find(s => s.id === id);
       if (session?.corgi && session.pane !== null && this.pane(session.pane)) this.focusPane(session.pane);
       else if (session?.corgi) {
         if (!this.prompt.open) void this.perform({ name: "prompt" });
@@ -2349,12 +2440,16 @@ export class Controller {
         if (session.workspace !== this.current().id) this.switchWorkspace(session.workspace);
         this.noticeHeadlessSession(session);
       }
-    } else if ("group" in target) this.toggleGroup(target.group);
-    else if (sidebar.isSection(target)) this.toggleSection(target.section);
-    // An agent in a folded section opens it.
-    if (sidebar.isAgent(target) && this.folded_sections.size > 0 && this.prefs.agentSort() === "activity") {
-      const id = this.agentWorkspace(target),
-        e = id === null ? undefined : this.agentEntries(id).find(e => sidebar.sameTarget(e.target, target));
+    }
+    if (this.prefs.agentSort() === "activity" && this.folded_sections.size > 0) {
+      const owner = this.agentWorkspace(target),
+        id = owner && this.rowOf(owner)?.id;
+      const e =
+        id == null
+          ? undefined
+          : this.machineAgents(id)
+              .map(({ entry }) => agentRows.qualify(entry, this.machine.id))
+              .find(e => e.target === target);
       if (e && this.folded_sections.delete(this.shownSection(e))) this.sidebar_rows.reveal = true;
     }
     this.rememberAgent();
@@ -2371,24 +2466,32 @@ export class Controller {
       this.launched = 0;
       return;
     }
-    const index = agentNavigation.indexOf(entries, { pane: this.launched });
+    const index = agentNavigation.indexOf(entries, viewerRef.pane(this.machine.id, this.launched));
     if (index === null) return;
     this.agentOffset().set(this.sidebarView(entries).reveal(index));
     this.launched = 0;
   }
   /** The workspace an agent's pane or session is in. */
-  private agentWorkspace(target: OrderTarget): number | null {
-    if ("pane" in target) return this.runtime.workspaces.owner(target.pane)?.id ?? null;
-    return this.listedSessions().find(s => s.id === target.headless)?.workspace ?? null;
+  private agentWorkspace(ref: viewerRef.Agent): viewerRef.Workspace | null {
+    const resolved = this.resolveAgent(ref);
+    if (!resolved) return null;
+    const { machine, target } = resolved,
+      runtime = machine.runtime;
+    const id =
+      "pane" in target
+        ? runtime.workspaces.owner(target.pane)?.id
+        : agentRows.sessions(runtime).find(s => s.id === target.headless)?.workspace;
+    return id == null ? null : this.workspaceRef(id, machine);
   }
   private focusedAgent(): Target | null {
     if (this.headless_notice !== null) {
       const id = this.headless_notice;
       for (const session of this.runtime.sessions)
-        if (session.id === id && session.workspace === this.current().id) return { headless: id };
+        if (session.id === id && session.workspace === this.current().id)
+          return viewerRef.headless(this.machine.id, id);
     }
     const p = this.focused();
-    if (p && p.agent.provider !== null) return { pane: p.id };
+    if (p && p.agent.provider !== null) return viewerRef.pane(this.machine.id, p.id);
     return null;
   }
   private rememberAgent(): void {
@@ -2399,7 +2502,7 @@ export class Controller {
   private navigateAgent(next: boolean | null): void {
     this.rememberAgent();
     // Stepping follows the list as shown; going back reaches a folded agent too.
-    const entries = this.agentEntries(undefined, next === null);
+    const entries = this.agentEntries(next === null);
     const target =
       next !== null
         ? agentNavigation.relative(entries, this.focusedAgent(), next)
@@ -2428,7 +2531,7 @@ export class Controller {
     this.dirty = true;
   }
   private pickerEntries(): Entry[] {
-    const entries = this.agentEntries(undefined, true);
+    const entries = this.agentEntries(true);
     const picker = this.agent_picker!;
     const filtered = picker.list(entries);
     picker.reconcile(filtered, this.sidebarView(filtered).capacity);
@@ -2441,11 +2544,11 @@ export class Controller {
       if (machine !== this.machine && !machine.presence().online) continue;
       for (const ws of machine.runtime.workspaces.items) {
         for (const { entry } of agentRows.rows(machine.runtime, ws, milliTimestamp())) {
-          if (!sidebar.isAgent(entry.target) || !entry.pull_requests.length) continue;
+          if (!entry.pull_requests.length) continue;
           const target =
             "pane" in entry.target
-              ? { pane: this.agentKey(entry.target.pane, machine) }
-              : { headless: this.agentKey(entry.target.headless, machine) };
+              ? viewerRef.pane(machine.id, entry.target.pane)
+              : viewerRef.headless(machine.id, entry.target.headless);
           entries.push({
             key: `${this.machines.indexOf(machine)}:${entry.conversation || JSON.stringify(target)}`,
             target,
@@ -2513,6 +2616,7 @@ export class Controller {
     this.wake();
   }
   private noticeHeadlessSession(session: Headless): void {
+    this.closeWorktreeCard();
     const name = adapter(session.provider).name,
       id = session.session,
       state = session.state,
@@ -2603,15 +2707,14 @@ export class Controller {
     const opened = new TabMenu({
       tab: id,
       agent: true,
-      starred: this.runtime.workspaces.owner(id)?.pinned_agents.some(t => sidebar.sameTarget(t, { pane: id })) ?? false,
+      starred: this.runtime.workspaces.owner(id)?.pinned_agents.some(t => agentOrder.equal(t, { pane: id })) ?? false,
       anchor_x: x,
       anchor_y: y,
     });
     if (this.runtime.workspaces.items.length < 2) opened.off.add("move");
     // Review changes says what it would show: the line read ahead, checked
     // again now, or placeholder bars until git answers.
-    if (this.reviewable) this.review_summaries.ask(this.agentFolder(p));
-    else opened.off.add("review");
+    this.review_summaries.ask(this.agentFolder(p));
     if (p.agent.observation.completed === 0n || unread(p.agent.observation)) opened.off.add("mark-unread");
     // The menu opens once the daemon answers, unless another click or Esc came first.
     this.menu_pending = opened;
@@ -2629,6 +2732,7 @@ export class Controller {
         }
       if (this.menu_pending !== opened || this.tab_menu !== null || !here()) return;
       this.menu_pending = null;
+      if (this.reviewMissing(this.agentFolder(p))) opened.hidden.add("review");
       opened.setDetail("review", this.summary(this.agentFolder(p)));
       opened.highlightFirst();
       this.tab_menu = opened;
@@ -2647,12 +2751,17 @@ export class Controller {
   private openWorktreeMenu(entry: Entry, x: number, y: number): void {
     // A section's subhead stands for its worktree, but folds nothing.
     const subhead = sidebar.isSubhead(entry.target);
-    if (!("worktree" in entry.target) && !(subhead && entry.worktree)) return;
+    if (
+      sidebar.isAgent(entry.target) ||
+      this.away(entry.target) ||
+      (!("worktree" in entry.target) && !(subhead && entry.worktree))
+    )
+      return;
     this.closeMenu();
     this.search_mode = false;
     this.cancelDividers();
     this.selection = null;
-    const selection = { workspace: entry.worktree!.workspace, path: entry.worktree!.path };
+    const selection = { workspace: this.rowOf(entry.worktree!.workspace)!.id, path: entry.worktree!.path };
     const opened = new TabMenu({
       tab: selection.workspace,
       worktree: selection.path,
@@ -2661,8 +2770,8 @@ export class Controller {
       anchor_x: x,
       anchor_y: y,
     });
-    if (this.reviewable) this.review_summaries.ask(selection.path);
-    else opened.off.add("review");
+    this.review_summaries.ask(selection.path);
+    if (this.reviewMissing(selection.path)) opened.hidden.add("review");
     opened.setDetail("review", this.summary(selection.path));
     const ws = this.runtime.workspaces.items.find(ws => ws.id === selection.workspace);
     const main = ws?.worktrees?.entries.find(e => e.primary)?.path ?? ws?.cwd ?? "";
@@ -2694,7 +2803,7 @@ export class Controller {
   private openCurrentWorkspaceMenu(): void {
     this.revealWorkspace();
     const side = this.sidebarView([]),
-      slot = this.workspaceIds().indexOf(this.rowKey(this.current().id)) - side.workspace_offset;
+      slot = this.workspaceIds().indexOf(this.workspaceRef(this.current().id)) - side.workspace_offset;
     const menu = this.openWorkspaceMenu(
       this.current().id,
       0,
@@ -2706,38 +2815,47 @@ export class Controller {
   /** Follows the daemon's report on a removal under way: its progress, then
    * how it ended. Reports of an earlier removal are not this one's. */
   private followRemoval(): void {
-    const card = this.worktree_card,
-      hold = card.removal,
-      t = hold.target;
-    if (hold.phase !== "removing" || !t || !hold.job) return;
-    const report = this.runtime.workspaces.items.find(w => w.id === t.workspace)?.worktree_removal ?? null;
-    if (report?.id !== hold.job) return;
-    hold.report = report;
-    const now = milliTimestamp();
-    switch (report.phase) {
-      case "done":
-        hold.settle(now, null);
-        if (card.selected === t.path) card.select(this.removal_next);
-        break;
-      case "stopped":
-        hold.stopped(now);
-        break;
-      case "failed": {
-        const reason = removalReason(report.error),
-          name = t.name;
-        hold.settle(now, reason);
-        if (card.workspace !== t.workspace) this.notice(i18n.t` Couldn't remove ${name}: ${reason}`);
-        break;
+    const card = this.worktree_card;
+    for (const [hold, removal] of this.removals) {
+      const t = hold.target;
+      if (
+        hold.phase !== "removing" ||
+        !t ||
+        removal.runtime !== this.resolveWorkspace(removal.owner)?.machine.runtime
+      ) {
+        this.removals.delete(hold);
+        continue;
       }
-      default:
-        break;
+      const report = this.resolveWorkspace(removal.owner)?.workspace.worktree_removal ?? null;
+      if (!hold.job || report?.id !== hold.job) continue;
+      hold.report = report;
+      const now = milliTimestamp(),
+        shown = card.removal === hold && card.workspace === removal.owner;
+      switch (report.phase) {
+        case "done":
+          hold.settle(now, null);
+          if (shown && card.selected === t.path) card.select(removal.next);
+          break;
+        case "stopped":
+          hold.stopped(now);
+          break;
+        case "failed": {
+          const reason = removalReason(report.error),
+            name = t.name;
+          hold.settle(now, reason);
+          if (!shown) this.notice(i18n.t` Couldn't remove ${name}: ${reason}`);
+          break;
+        }
+        default:
+          break;
+      }
     }
   }
   /** The panes of the agents listed under a worktree, folded or not. */
-  private worktreePanes(selection: worktreeAgents.Selection): number[] {
-    const snapshot = this.runtime.workspaces.items.find(ws => ws.id === selection.workspace)?.worktrees;
+  private worktreePanes(selection: worktreeAgents.Selection, machine = this.machine): number[] {
+    const snapshot = machine.runtime.workspaces.items.find(ws => ws.id === selection.workspace)?.worktrees;
     if (!snapshot) return [];
-    return this.agentEntries(selection.workspace).flatMap(e =>
+    return this.machineAgents(selection.workspace, machine).flatMap(({ entry: e }) =>
       "pane" in e.target && worktreeAgents.belongs(snapshot, selection.path, e) ? [e.target.pane] : [],
     );
   }
@@ -2799,7 +2917,7 @@ export class Controller {
       const selection = { workspace: context.tab, path: context.worktree };
       switch (item) {
         case "fold":
-          this.toggleWorktree(selection);
+          this.toggleWorktree({ workspace: this.workspaceRef(selection.workspace), path: selection.path });
           break;
         case "close-all":
           for (const id of this.worktreePanes(selection)) this.close(id);
@@ -2827,7 +2945,7 @@ export class Controller {
           await this.perform({ name: "star-agent", value: pane_id });
           break;
         case "rename":
-          if (this.beginInlineRename({ agent: pane_id })) break;
+          if (this.beginInlineRename(viewerRef.pane(this.machine.id, pane_id))) break;
           this.name_dialog = Dialog.init({ agent: pane_id }, this.renameText(p));
           this.prepareName();
           break;
@@ -2906,13 +3024,14 @@ export class Controller {
         case "split-right":
         case "split-down":
         case "zoom":
+        case "break":
           this.focusPane(pane_id);
           await this.perform(
             item === "split-right"
               ? { name: "split", value: "right" }
               : item === "split-down"
                 ? { name: "split", value: "down" }
-                : { name: "zoom" },
+                : { name: item },
           );
           break;
         default:
@@ -2980,6 +3099,53 @@ export class Controller {
     this.prefix = true;
     this.help = new shortcutHelp.State();
   }
+  /** Take the logical prefix before shortcuts or terminal encoding lose its modifiers. */
+  private async prefixKey(key: keyboard.Key): Promise<boolean> {
+    if (!keys.same(key, keymap.prefixKey(this.prefs.prefix))) return false;
+    if (
+      this.editingName() ||
+      this.typingPrefix(key) ||
+      this.search_mode ||
+      (this.hasMenu() &&
+        !this.prefix &&
+        !this.prompt.open &&
+        !this.sidebar_focus &&
+        !this.tab_menu &&
+        !this.scope_menu &&
+        !this.agent_launcher)
+    )
+      return false;
+    this.repeat_until = 0;
+    this.dirty = true;
+    if (this.agent_launcher?.pinned) {
+      this.agent_launcher.prefix = true;
+    } else if (this.prefix) {
+      this.prefix = false;
+      if (key.codepoint < 32) key = keys.normalize(key);
+      if (this.prompt.open) {
+        const plain = viewerNative.encodeKey(null, key);
+        if (plain.startsWith("\x1b")) await this.promptEffect(this.prompt.sequence(plain));
+        else for (const byte of Buffer.from(plain)) await this.promptEffect(this.prompt.key(byte));
+      } else {
+        const handle = this.openingFocus() ? null : (this.focused()?.terminal.handle ?? null);
+        this.typeFocused(Array.from(Buffer.from(viewerNative.encodeKey(handle, key))));
+      }
+    } else this.beginPrefix();
+    return true;
+  }
+  /** Printable prefixes remain text in form fields, as they do when renaming. */
+  private typingPrefix(key: keyboard.Key): boolean {
+    return (
+      !this.prompt.open &&
+      key.codepoint >= 32 &&
+      key.codepoint !== 127 &&
+      !(key.codepoint >= 57344 && key.codepoint <= 63743) &&
+      !key.mods.ctrl &&
+      !key.mods.alt &&
+      !key.mods.super &&
+      this.textField() !== null
+    );
+  }
   /** Whether a full-screen view hides every pane, so nothing on them was seen. */
   coversPanes(): boolean {
     return (
@@ -3004,13 +3170,19 @@ export class Controller {
       case "action":
         if (this.model().count > 0 || !needsPane(result.action)) {
           this.closeMenu();
-          await this.perform(result.action);
+          await this.invoke(result.action);
         }
         break;
       case "save":
+      case "prefix":
         try {
-          const saved = preferences.updateKeys(this.prefs, result.config);
+          const saved =
+            result.name === "prefix"
+              ? preferences.updatePrefix(this.prefs, result.prefix)
+              : preferences.updateKeys(this.prefs, result.config);
+          this.prefs.prefix = saved.prefix;
           this.prefs.keys = saved.keys;
+          this.help.configure(this.prefs.preset, this.prefs.prefix, this.prefs.keys);
           this.help.accept(saved.keys);
           if (
             !this.remote_links &&
@@ -3091,7 +3263,7 @@ export class Controller {
   /** Names a new workspace in the centered dialog; renames one on its
    * sidebar row, in the dialog only when no sidebar can show the row. */
   private beginWorkspace(id: number | null): void {
-    if (id !== null && this.beginInlineRename({ workspace: id })) return;
+    if (id !== null && this.beginInlineRename(this.workspaceRef(id))) return;
     this.dismissName();
     let initial = "";
     if (id !== null) {
@@ -3099,10 +3271,9 @@ export class Controller {
       if (index === null) return;
       initial = this.runtime.workspaces.items[index].name;
     }
-    this.name_dialog =
-      id === null
-        ? new newWorkspace.Dialog(newWorkspace.Browser.init(this.currentCwd()))
-        : Dialog.init({ workspace_name: id }, initial);
+    // Without a workspace, a remote machine's dialog starts at its home, not the viewer's folder.
+    const start = this.machine.remote && !this.current().id ? "~" : this.currentCwd();
+    this.name_dialog = id === null ? this.folderDialog(start, null) : Dialog.init({ workspace_name: id }, initial);
     this.prepareName();
   }
   /** Opens the folder browser on workspace `id`'s folder, to move it. */
@@ -3110,9 +3281,21 @@ export class Controller {
     const ws = this.runtime.workspaces.items.find(w => w.id === id);
     if (!ws) return;
     this.dismissName();
-    this.name_dialog = new newWorkspace.Dialog(newWorkspace.Browser.init(ws.cwd), { workspace: id, name: ws.name });
+    this.name_dialog = this.folderDialog(ws.cwd, { workspace: id, name: ws.name });
     this.prepareName();
     this.fitNameDialog();
+  }
+  /** The folder browser at `cwd`, on the shown machine's folders. */
+  private folderDialog(cwd: string, moving: newWorkspace.Moving | null): newWorkspace.Dialog {
+    const files = new newWorkspace.Reader(
+        this.machine.remote ? newWorkspace.remote(this.machine) : newWorkspace.here(),
+      ),
+      dialog = new newWorkspace.Dialog(newWorkspace.Browser.init(cwd, files), moving);
+    dialog.changed = () => {
+      this.dirty = true;
+      this.wake();
+    };
+    return dialog;
   }
   /** Adds a workspace, and shows it unless the user has gone elsewhere. */
   private newWorkspace(name: string, cwd: string): void {
@@ -3190,9 +3373,7 @@ export class Controller {
     const target = dialog.target,
       fresh = dialog instanceof newWorkspace.Dialog ? dialog : null,
       name = dialog.name(),
-      cwd = fresh ? fresh.confirm() : this.currentCwd(),
       here = this.here();
-    if (cwd === null) return;
     if ("workspace_name" in target && !name) {
       dialog.failed = true;
       return;
@@ -3213,6 +3394,14 @@ export class Controller {
     this.later(async lane => {
       let pane: number | null = null;
       try {
+        // The folder is checked, and made, on the machine the workspace is on.
+        const cwd = fresh ? await fresh.confirm() : this.currentCwd();
+        // Escape while the folder was checked cancels.
+        if (cwd === null || this.name_dialog !== dialog) {
+          dialog.saving = false;
+          this.dirty = true;
+          return;
+        }
         if ("pane" in target) await this.edit({ "pane.rename": { target: target.pane, name } }, lane);
         else if ("workspace_name" in target) {
           if (target.workspace_name === null) {
@@ -3227,7 +3416,7 @@ export class Controller {
           );
         } else if ("rename" in target) await this.edit({ "tab.rename": { target: target.rename, name } }, lane);
         else if ("agent" in target) {
-          const failure = await this.applyName({ agent: target.agent }, name, lane);
+          const failure = await this.applyName(viewerRef.pane(this.machine.id, target.agent), name, lane);
           if (this.name_dialog !== dialog) return;
           if (failure !== null) {
             this.remembered_names.set(target.agent, name);
@@ -3260,10 +3449,13 @@ export class Controller {
   /** Renames a sidebar row's agent or workspace as the centered dialog does:
    * null once the name took, else what to tell the user. */
   private async applyName(target: RenameTarget, name: string, lane?: tasks.Lane): Promise<string | null> {
-    const agent = "agent" in target ? this.pane(target.agent)?.agent : undefined;
-    if ("workspace" in target) {
+    const owner = this.rowOf(target);
+    if (!owner) return i18n.t`No daemon connection`;
+    const { machine, id } = owner;
+    const agent = viewerRef.isPane(target) ? machine.runtime.pane(id)?.agent : undefined;
+    if (viewerRef.isWorkspace(target)) {
       try {
-        await this.edit({ "workspace.edit": { target: target.workspace, name } }, lane);
+        await this.edit({ "workspace.edit": { target: id, name } }, lane, machine);
         return null;
       } catch (error) {
         if (errors.unreachable(error)) return i18n.t`No daemon connection`;
@@ -3271,51 +3463,47 @@ export class Controller {
       }
     }
     try {
-      await this.edit({ "agent.rename": { target: target.agent, name } }, lane);
+      await this.edit({ "agent.rename": { target: id, name } }, lane, machine);
       return null;
     } catch (error) {
       if (errors.unreachable(error)) return i18n.t`No daemon connection`;
       return agentMessage((error as Error).message, i18n.t` Could not rename this agent`, agent).trim();
     }
   }
-  private renameTarget(target: RenameTarget): RenameTarget {
-    return "workspace" in target ? { workspace: this.rowKey(target.workspace) } : target;
-  }
-  private renameState(): sidebar.RenameState | null {
-    const open = this.inline_rename;
-    return open && { ...open, target: this.renameTarget(open.target) };
-  }
   /** Opens the field on `target`'s row, in place of its name. A folded
    * sidebar shows its workspaces drawer for a workspace, which goes away with
    * the field. False when no sidebar can show the row. */
   private beginInlineRename(target: RenameTarget): boolean {
+    const owner = this.rowOf(target);
+    if (!owner || owner.machine !== this.machine) return false;
+    const id = owner.id;
     this.dismissName();
     this.closeInlineRename();
     this.prepareName();
     let drawer = false;
     let text: string, fallback: string;
-    if ("workspace" in target) {
-      const index = this.runtime.workspaces.index(target.workspace);
+    if (viewerRef.isWorkspace(target)) {
+      const index = this.runtime.workspaces.index(id);
       if (index === null) return false;
       if (!this.sidebar_open) {
         this.enterSidebar("workspaces");
         drawer = this.sidebar_focus?.drawer === "workspaces";
-        if (drawer) this.sidebar_focus!.cursor = { workspace: this.rowKey(target.workspace) };
+        if (drawer) this.sidebar_focus!.cursor = { workspace: target };
       }
-      this.revealWorkspace(this.workspaceIds().indexOf(this.rowKey(target.workspace)));
+      this.revealWorkspace(this.workspaceIds().indexOf(target));
       const ws = this.runtime.workspaces.items[index];
       text = ws.name;
       fallback = basename(ws.cwd) || "/";
     } else {
-      const p = this.pane(target.agent);
+      const p = this.pane(id);
       const entries = this.sidebarEntries();
-      const index = agentNavigation.indexOf(entries, { pane: target.agent });
+      const index = agentNavigation.indexOf(entries, target);
       if (!p || index === null) return false;
       this.agentOffset().set(this.sidebarView(entries).reveal(index));
       text = this.renameText(p);
       fallback = providerName(p.agent);
     }
-    if (this.sidebarView(this.sidebarEntries()).fieldRect(this.renameTarget(target), this.workspaceRows()) === null) {
+    if (this.sidebarView(this.sidebarEntries()).fieldRect(target, this.workspaceRows()) === null) {
       if (drawer) this.leaveSidebar();
       return false;
     }
@@ -3340,7 +3528,7 @@ export class Controller {
     this.dirty = true;
     switch (open.field.key(byte)) {
       case "cancel":
-        if ("agent" in open.target) this.remembered_names.delete(open.target.agent);
+        if (viewerRef.isPane(open.target)) this.remembered_names.delete(viewerRef.parts(open.target).id);
         this.closeInlineRename();
         break;
       case "save":
@@ -3363,7 +3551,7 @@ export class Controller {
   private async saveInlineRename(open: InlineRename, lane?: tasks.Lane): Promise<void> {
     if (open.saving) return;
     const name = open.field.name();
-    if ("agent" in open.target && name.length === 0) return this.closeInlineRename();
+    if (viewerRef.isPane(open.target) && name.length === 0) return this.closeInlineRename();
     // As in the dialog, a workspace keeps a name: an empty one is refused.
     if (name.length === 0) {
       open.message = i18n.t`Enter a workspace name.`;
@@ -3375,13 +3563,13 @@ export class Controller {
     open.saving = false;
     if (this.inline_rename !== open) return;
     if (failure === null) {
-      if ("agent" in open.target) this.remembered_names.delete(open.target.agent);
+      if (viewerRef.isPane(open.target)) this.remembered_names.delete(viewerRef.parts(open.target).id);
       this.closeInlineRename();
       return;
     }
     open.message = failure;
     open.field.overflow = false;
-    if ("agent" in open.target) this.remembered_names.set(open.target.agent, name);
+    if (viewerRef.isPane(open.target)) this.remembered_names.set(viewerRef.parts(open.target).id, name);
     this.dirty = true;
   }
   /** The text an agent's rename starts with: a name whose rename failed,
@@ -3408,7 +3596,8 @@ export class Controller {
       const allowed = await this.renamable(id, lane);
       if (this.rename_pending !== pending || !here()) return;
       this.rename_pending = null;
-      if (allowed && this.pane(id) !== null && this.beginInlineRename({ agent: id })) this.agent_drag = null;
+      if (allowed && this.pane(id) !== null && this.beginInlineRename(viewerRef.pane(this.machine.id, id)))
+        this.agent_drag = null;
     });
   }
   private async create(
@@ -3565,7 +3754,11 @@ export class Controller {
           selected = target && notificationTarget.resolve(target, this.runtime);
         if (selected) {
           this.closeMenu();
-          this.selectAgent(selected);
+          this.selectAgent(
+            "pane" in selected
+              ? viewerRef.pane(this.machine.id, selected.pane)
+              : viewerRef.headless(this.machine.id, selected.headless),
+          );
         }
         break;
       }
@@ -3626,27 +3819,17 @@ export class Controller {
         else this.notice(i18n.t`Add a machine with corgi machine add NAME`);
         break;
       case "worktrees": {
-        const id = Number(act.value) || this.current().id;
-        if (this.runtime.workspaces.index(id) === null) break;
-        this.closeMenu();
-        this.sidebar_open = true;
-        this.worktree_card.workspace = id;
-        this.worktree_card.pinned = true;
-        this.worktree_card.anchor =
-          sidebar.worktreeBadge(this.sidebarView([]), this.workspaceRows(), this.rowKey(id))?.y ?? 3;
-        this.dirty = true;
+        this.openWorktreeCard(act.value, true);
         break;
       }
       case "worktree-close":
-        this.worktree_card.clear();
-        this.worktree_agents.previewed = null;
-        this.link_tooltip.cancel();
-        this.dirty = true;
+        this.closeWorktreeCard();
         break;
       case "resources": {
-        const id = Number(act.value) || this.current().id,
+        const owner = this.resolveWorkspace(act.value);
+        if (!owner) break;
+        const id = act.value,
           card = this.resource_card;
-        if (this.runtime.workspaces.index(id) === null) break;
         if (!this.prefs.resources.enabled) {
           this.notice(i18n.t` Resource readings are off: turn them on in Corgi setup → Resources`);
           break;
@@ -3730,13 +3913,22 @@ export class Controller {
       case "worktree-prev": {
         if (this.worktreeDetail() === null) break;
         this.worktree_card.pinned = true;
-        const ws = this.runtime.workspaces.items.find(w => w.id === this.worktree_card.workspace);
+        const ws = this.resolveWorkspace(this.worktree_card.workspace)?.workspace;
         this.worktree_card.move(ws?.worktrees ?? null, act.name === "worktree-next" ? 1 : -1);
         this.dirty = true;
         break;
       }
+      case "worktree-scroll": {
+        const rect = this.worktreeRect();
+        if (!rect || (act.value !== "up" && act.value !== "down")) break;
+        this.worktree_card.pinned = true;
+        const ws = this.resolveWorkspace(this.worktree_card.workspace)?.workspace;
+        this.worktree_card.scroll(ws?.worktrees ?? null, rect, act.value === "down" ? 1 : -1);
+        this.dirty = true;
+        break;
+      }
       case "worktree-select": {
-        const ws = this.runtime.workspaces.items.find(w => w.id === this.worktree_card.workspace);
+        const ws = this.resolveWorkspace(this.worktree_card.workspace)?.workspace;
         if (worktrees.linked(ws?.worktrees ?? null).some(entry => entry.path === act.value))
           this.worktree_card.select(String(act.value));
         this.dirty = true;
@@ -3744,20 +3936,24 @@ export class Controller {
       }
       case "worktree-enter": {
         const selection = this.browsingWorktree();
-        if (selection) this.enterWorktree(selection);
+        if (selection) this.enterWorktreeAt(selection);
         break;
       }
       case "worktree-review": {
         const selection = this.browsingWorktree();
-        if (selection) this.reviewWorktree(selection);
+        if (selection && this.selectWorktreeOwner(selection.owner))
+          this.reviewWorktree({
+            workspace: this.resolveWorkspace(selection.owner)!.workspace.id,
+            path: selection.path,
+          });
         break;
       }
       case "worktree-refresh": {
-        const id = this.worktreeDetail();
-        if (id === null) break;
-        this.later(async lane => {
+        const owner = this.resolveWorkspace(this.worktreeDetail());
+        if (!owner) break;
+        owner.machine.tasks.start(async lane => {
           try {
-            await lane.call("worktree.brief", { workspace: id });
+            await lane.call("worktree.brief", { workspace: owner.workspace.id });
           } catch (error) {
             if (lost(error)) throw error;
             this.notice(i18n.t` Worktree briefs: the runtime did not accept the refresh`);
@@ -3772,13 +3968,17 @@ export class Controller {
         if (this.worktreeDetail() === null) break;
         const card = this.worktree_card,
           confirming = act.name === "worktree-confirm",
-          ws = this.runtime.workspaces.items.find(w => w.id === card.workspace),
+          owner = card.workspace!,
+          resolved = this.resolveWorkspace(owner),
+          ws = resolved?.workspace,
           entries = card.entries(ws?.worktrees ?? null),
           index = confirming ? entries.findIndex(e => e.path === card.removal.target?.path) : card.index(entries),
           checkout = entries[index];
-        if (!ws || !checkout) break;
+        if (!resolved || !ws || !checkout) break;
+        card.pending_enter = null;
         const selection = { workspace: ws.id, path: checkout.path },
-          panes = this.worktreePanes(selection);
+          machine = resolved.machine,
+          panes = this.worktreePanes(selection, machine);
         card.select(checkout.path);
         this.dirty = true;
         const target = confirming ? card.removal.target! : worktreeRemoval.target(ws.id, checkout, index, panes.length);
@@ -3789,10 +3989,16 @@ export class Controller {
         }
         if (!(confirming ? card.removal.confirm(now) : card.removal.press(now, target, card.removalEffect()))) break;
         const removal = card.removal,
-          held = removal.target;
+          held = removal.target,
+          pending = {
+            owner,
+            runtime: machine.runtime,
+            next: (entries[index + 1] ?? entries[index - 1])?.path ?? null,
+          };
+        this.removals.set(removal, pending);
         // Replies settle this removal only; a later hold has its own target.
         const ours = () => removal.target === held;
-        this.later(async lane => {
+        machine.tasks.start(async lane => {
           try {
             for (const id of panes) await this.edit({ "pane.close": { target: id } }, lane);
           } catch (error) {
@@ -3806,11 +4012,10 @@ export class Controller {
             const reply = await lane.call("worktree.remove", { ...selection, ...confirmed });
             if (!ours()) return;
             removal.job = Number(reply.removal) || 0;
-            this.removal_next = (entries[index + 1] ?? entries[index - 1])?.path ?? null;
             // A daemon that removes before it answers sends no removal to follow.
             if (!removal.job) {
               removal.settle(milliTimestamp(), null);
-              if (card.selected === selection.path) card.select(this.removal_next);
+              if (card.removal === removal && card.selected === selection.path) card.select(pending.next);
             }
           } catch (error) {
             if (lost(error)) throw error;
@@ -3833,8 +4038,9 @@ export class Controller {
         const t = this.worktree_card.removal.target;
         this.worktree_card.removal.cancel(milliTimestamp());
         this.dirty = true;
-        if (this.worktree_card.removal.phase !== "removing" || !t) break;
-        this.later(async lane => {
+        const owner = this.resolveWorkspace(this.worktree_card.workspace);
+        if (this.worktree_card.removal.phase !== "removing" || !t || !owner) break;
+        owner.machine.tasks.start(async lane => {
           try {
             await lane.call("worktree.stop", { workspace: t.workspace });
           } catch (error) {
@@ -3848,18 +4054,18 @@ export class Controller {
         const row = this.sidebarEntries()[Number(act.value)];
         if (!row) break;
         const target = row.target;
-        if ("asleep" in target && row.worktree) {
+        if (!sidebar.isAgent(target) && "asleep" in target && row.worktree) {
           // Entering brings the ghost's agents back asleep; the clicked one wakes.
-          this.enterWorktree({ workspace: row.worktree.workspace, path: row.worktree.path }, () => {
+          this.enterWorktreeAt({ owner: row.worktree.workspace, path: row.worktree.path }, () => {
             const p = this.runtime.panes.find(
               p => p.agent.provider === target.provider && p.agent.session === target.asleep,
             );
-            if (p) this.selectAgent({ pane: p.id });
+            if (p) this.selectAgent(viewerRef.pane(this.machine.id, p.id));
           });
-        } else if ("worktree" in target) {
+        } else if (sidebar.isHeading(target) && "worktree" in target) {
           // A ghost's header keeps its group; one in the list folds it.
           const selection = { workspace: target.workspace, path: target.worktree };
-          if (row.worktree?.ghost) this.enterWorktree(selection);
+          if (row.worktree?.ghost) this.enterWorktreeAt({ owner: selection.workspace, path: selection.path });
           else this.toggleWorktree(selection);
         } else if (sidebar.isAgent(target)) {
           this.closeMenu();
@@ -4132,7 +4338,11 @@ export class Controller {
         if ("pane" in target && !this.pane(target.pane)) return;
         if ("headless" in target && !this.listedSessions().some(s => s.id === target.headless)) return;
         this.archive_dialog = null;
-        this.selectAgent(agent.target);
+        this.selectAgent(
+          "pane" in agent.target
+            ? viewerRef.pane(this.machine.id, agent.target.pane)
+            : viewerRef.headless(this.machine.id, agent.target.headless),
+        );
         this.dirty = true;
         return;
       }
@@ -4171,7 +4381,7 @@ export class Controller {
           !this.archived_expanded &&
           focus &&
           "workspace" in focus.cursor &&
-          archived.some(ws => "workspace" in focus.cursor && ws.id === focus.cursor.workspace)
+          archived.some(ws => "workspace" in focus.cursor && this.workspaceRef(ws.id) === focus.cursor.workspace)
         )
           focus.cursor = { archived: true };
         this.workspace_drag = null;
@@ -4209,6 +4419,9 @@ export class Controller {
       }
       case "open":
         return this.openFolder(String(act.value ?? ""));
+      case "open-url":
+        this.openRequested(String(act.value ?? ""));
+        break;
       case "new-agent":
         this.openLauncher(true);
         break;
@@ -4216,17 +4429,19 @@ export class Controller {
       case "star-session": {
         const id = Number(act.value),
           target = act.name === "star-session" ? { headless: id } : { pane: id },
-          owner = this.agentWorkspace(target),
-          ws = this.runtime.workspaces.items.find(ws => ws.id === owner);
+          ref =
+            act.name === "star-session" ? viewerRef.headless(this.machine.id, id) : viewerRef.pane(this.machine.id, id),
+          owner = this.agentWorkspace(ref),
+          ws = this.resolveWorkspace(owner)?.workspace;
         if (!ws) break;
         if ("pane" in target && !this.pane(id)?.agent.provider) break;
-        const starred = !ws.pinned_agents.some(t => sidebar.sameTarget(t, target));
+        const starred = !ws.pinned_agents.some(t => agentOrder.equal(t, target));
         await this.edit({ "agent.pin": { workspace: ws.id, target, pinned: starred } });
         if (starred && this.prefs.agentSort() === "activity") {
           this.folded_sections.delete("starred");
           this.sidebar_rows.discard();
           const entries = this.sidebarEntries(),
-            index = agentNavigation.indexOf(entries, target);
+            index = agentNavigation.indexOf(entries, ref);
           if (index !== null) this.agentOffset().set(this.sidebarView(entries).reveal(index));
         }
         break;
@@ -4271,6 +4486,8 @@ export class Controller {
         this.cyclePane(false);
         break;
       case "copy-mode":
+        // A file's pane selects with the mouse; its terminal holds nothing to copy.
+        if (this.focused()?.view) break;
         this.copy_mode = true;
         this.flushPendingCopy();
         this.clearPicked();
@@ -4569,6 +4786,16 @@ export class Controller {
   private sendInput(term: Terminal, bytes: string | Uint8Array | number[], typed = true): void {
     // Nothing reads a dormant pane's input.
     if (this.pane(term.id)?.dormant || (typed && this.dropping_input)) return;
+    // A file's pane takes its keys here; its process hears only what it must do.
+    const file = this.filePane(term.id);
+    if (file) {
+      // A paste is no keys.
+      if (term.pasting()) return;
+      const asked = file.hosted.key(bytes, file.rows);
+      if (asked) term.send(asked);
+      this.dirty = true;
+      return;
+    }
     this.marked_unread.delete(term.id);
     if (bytes.length > 0) {
       this.flushPendingCopy();
@@ -4590,11 +4817,35 @@ export class Controller {
     const held = release || isDrag(button);
     if (!release && isButton(button)) this.press_dropped = this.dropping_input;
     if (held ? this.press_dropped : this.dropping_input) return;
+    const file = this.filePane(term.id);
+    if (file) {
+      const copied = file.hosted.mouse(button, x - rect.x, y - rect.y, release, rect.h);
+      if (copied) this.copyText(copied);
+      this.dirty = true;
+      return;
+    }
     const report = viewerNative.encodeMouse(term.handle, button, x - rect.x, y - rect.y, release);
     // Only a hover, with no button held (extra buttons set bit 128), may give
     // way to the next: a drag's every point stays, as do presses and the wheel.
     if (!release && isHover(button) && (button & 128) === 0) term.move(report, button);
     else term.send(report);
+  }
+  /** Reads the files this machine's panes name. A pane's process hears
+   * that this viewer draws its file, and stops drawing it. */
+  private syncFilePanes(): void {
+    this.file_panes.sync(this.runtime.panes, this.filesOn(this.machine).files, id =>
+      this.pane(id)?.terminal.send(filePane.quiet_request),
+    );
+  }
+  /** The file shown in place of `pane`, and how tall the pane shows it. */
+  private filePane(pane: number): { hosted: filePane.Hosted; rows: number } | null {
+    if (!this.pane(pane)?.view) return null;
+    this.syncFilePanes();
+    const hosted = this.file_panes.get(pane),
+      rect = this.layoutView()
+        .placements(this.area())
+        .find(place => place.id === pane)?.rect;
+    return hosted ? { hosted, rows: rect?.h ?? 24 } : null;
   }
   private queueEffect(effect: Effect): void {
     if ("open_url" in effect) {
@@ -4644,7 +4895,7 @@ export class Controller {
       )
         return;
       const files = remoteDiff.files(patch);
-      const review = new panel.Panel();
+      const review = new panel.Panel(this.reviewing.get(this.machine)!.reader);
       review.changed = this.local_review.changed;
       review.summarized = this.local_review.summarized;
       review.resized = this.local_review.resized;
@@ -4758,6 +5009,21 @@ export class Controller {
       this.dirty = true;
       this.wake();
     }
+  }
+  /** A link a pane's program on `machine` asked to open, through its BROWSER. */
+  openRequested(url: string, machine = this.machine): void {
+    if (!webLinks.openable(url)) throw Error("InvalidURL");
+    this.openLink(url, machine);
+  }
+  /** A clicked link: a file's name opens in a pane, anything else in the
+   * browser, through `machine` when it's another computer's. */
+  private openLink(url: string, machine = this.machine, file: OpenFile | null = null): void {
+    if (file) void this.openFile(file.path, file.line, file.column);
+    else this.queueEffect(machine.remote ? { open_url: url, machine: machine.id } : { open_url: url });
+  }
+  /** Whether a pending open's pane still has focus, on the machine shown. */
+  private showsPane(open: PendingOpen): boolean {
+    return this.machine === open.machine && this.focused()?.id === open.pane;
   }
   clearEffects(): void {
     this.effects = [];
@@ -5869,7 +6135,7 @@ export class Controller {
     const launch = this.agent_launcher;
     if (launch) {
       // Down from the last agent row goes into the conversations.
-      if (next && !wrap && !launch.managing && launch.hasResume() && launch.selected === launch.lastRow()) {
+      if (next && !wrap && !launch.managing && launch.hasResume(this.height) && launch.selected === launch.lastRow()) {
         launch.resume_view.focused = true;
         launch.resume_view.home();
       } else launch.move(next, wrap);
@@ -5903,10 +6169,221 @@ export class Controller {
     });
   }
   private pollLauncher(hover: boolean): Promise<void> | void {
+    this.readElsewhere();
+    this.searchMentions();
     this.updateLaunchPreview();
     if (this.launcherModel()) this.readProfiles(false);
     if (!this.launcherModel() && !hover) return;
     return this.pollOpenLauncher(hover);
+  }
+  /** Other machines connected now, whose own lists aren't stale. */
+  private otherMachines(): Machine[] {
+    return this.machines.filter(m => m !== this.machine && m.presence().online && !this.stale(m));
+  }
+  /** Other machines' conversations for the Resume list, and the ones their
+   * panes run, once it shows more than the newest few: its scope decides
+   * which it lists, as it does this machine's. Each machine's list is read
+   * once a launcher, and gone with it. */
+  private readElsewhere(): void {
+    const launch = this.agent_launcher;
+    if (!launch || !(launch.resume_view.expanded || launch.resume_view.searching)) return;
+    const now = milliTimestamp(),
+      others = this.otherMachines(),
+      reads = launch.elsewhere_reads;
+    const show = () => {
+      launch.elsewhere = launcherResume.stableSort(
+        [...reads.values()].flatMap(r => r.entries),
+        (x, y) => x.updated_at > y.updated_at,
+      );
+      this.dirty = true;
+    };
+    // A machine gone offline takes its conversations along.
+    let gone = false;
+    for (const id of reads.keys())
+      if (!others.some(m => m.id === id)) {
+        reads.delete(id);
+        gone = true;
+      }
+    if (gone) show();
+    const open = others.flatMap(machine =>
+      machine.runtime.panes.flatMap(p =>
+        p.agent.provider && p.agent.session
+          ? [{ provider: p.agent.provider, session: p.agent.session, pane: p.id, folder: p.cwd, machine: machine.id }]
+          : [],
+      ),
+    );
+    if (JSON.stringify(open) !== JSON.stringify(launch.open_elsewhere)) {
+      launch.open_elsewhere = open;
+      this.dirty = true;
+    }
+    for (const machine of others) {
+      const read = reads.get(machine.id) ?? { at: 0, wait: 1000, reading: false, pending: true, entries: [] };
+      reads.set(machine.id, read);
+      // A daemon still reading its list the first time is asked again shortly;
+      // one that fails, less and less often.
+      if (read.reading || !read.pending || now - read.at < read.wait) continue;
+      read.reading = true;
+      void call(machine.connection, "agent.history", {})
+        .then(
+          reply => {
+            read.pending = reply.history?.pending === true;
+            read.wait = 1000;
+            const entries = (reply.history?.entries ?? [])
+              .filter((e: unknown) => Provider.parse((e as { provider?: unknown } | null)?.provider))
+              .map(launcherResume.historyEntry);
+            read.entries = launcherResume
+              .merge(entries, this.known(machine))
+              .map(e => ({ ...e, machine: { id: machine.id, name: machine.name } }));
+            if (reads.get(machine.id) === read) show();
+          },
+          () => {
+            read.wait = Math.min(read.wait * 2, 30_000);
+          },
+        )
+        .finally(() => {
+          read.reading = false;
+          read.at = milliTimestamp();
+        });
+    }
+  }
+  /** The machines the Resume list searches conversations' text on: every one
+   * connected, whatever the scope, which only decides what's listed. */
+  private mentionMachines(view: launcherResume.View): Machine[] {
+    return [this.machine, ...this.otherMachines()].filter(machine => !view.mentions.unable.has(machine.id));
+  }
+  /** Looks for the Resume search in what conversations said, once typing
+   * pauses; matches arrive as the daemon finds them. A search no longer
+   * wanted, as the launcher closes or the search empties, ends at once. */
+  private searchMentions(): void {
+    const launch = this.agent_launcher;
+    if (!launch) return this.cancelMentions();
+    const view = launch.resume_view,
+      m = view.mentions,
+      query = view.mentionQuery(),
+      machines = this.mentionMachines(view),
+      now = milliTimestamp();
+    if (query !== m.typed) {
+      m.typed = query;
+      m.typed_at = now;
+    }
+    // A new search ends the last on the daemon; no search, as when the search
+    // is left or too short, needs telling.
+    if (!query) this.cancelMentions();
+    if (m.unsupported !== !machines.length) {
+      m.unsupported = !machines.length;
+      this.dirty = true;
+    }
+    if (!machines.length) return;
+    // The same search goes again only when a failed one's retry is due, or to
+    // a machine that has connected since. One that left is asked nothing more.
+    const same = query === m.query,
+      joined = same && query ? machines.filter(machine => !m.targets.includes(machine.id)) : [],
+      retry = same && !joined.length;
+    if (same) {
+      m.targets = m.targets.filter(id => machines.some(machine => machine.id === id));
+      m.failed = m.failed.filter(id => m.targets.includes(id));
+    }
+    // A machine that failed and is away is waited for: its outage isn't the
+    // search's failure, so its tries start over once it's back.
+    if (retry && query && machines.some(machine => m.failed.includes(machine.id) && !machine.presence().online)) {
+      if (view.deferMentions(now)) this.dirty = true;
+      return;
+    }
+    // A machine that joins waits for the search that's out, whose answers a
+    // newer one would leave behind.
+    const due = joined.length
+      ? !m.searching
+      : retry
+        ? query !== "" && m.retry_at > 0 && now >= m.retry_at
+        : !query || now - m.typed_at >= mentions_pause_ms;
+    if (!due) return;
+    // A retry asks only the machines that failed, and a machine that joins is
+    // asked with them; the rest have answered.
+    const again = same && (joined.length > 0 || m.failed.length > 0),
+      asked = again ? machines.filter(machine => joined.includes(machine) || m.failed.includes(machine.id)) : machines;
+    // A machine back from an outage starts its tries over.
+    const generation = view.searchMentions(query, joined.length > 0);
+    m.targets = machines.map(machine => machine.id);
+    this.dirty = true;
+    if (!query) return;
+    const out = { connections: asked.map(machine => machine.connection), view };
+    // Machines the last search went to and this one doesn't, as when the
+    // scope narrows, are told to stop.
+    for (const connection of this.mentions_out?.connections ?? [])
+      if (!out.connections.includes(connection))
+        void call(connection, "conversation.grep.cancel", { key: mentions_key }).catch(() => {});
+    this.mentions_out = out;
+    const fields = {
+      patterns: [query],
+      fixed: true,
+      case: "insensitive" as const,
+      workspace: "*",
+      max_age: 0,
+      max_count: 1,
+      // As many as the daemon's history lists; the list keeps those it has.
+      limit: 1000,
+      max_line: 160,
+      key: mentions_key,
+    };
+    // Done once every machine answered; the ones that failed are tried again.
+    let left = asked.length,
+      cut = false,
+      slow = true;
+    const failed: number[] = [];
+    const settle = () => {
+      if (--left > 0) return;
+      if (failed.length) view.failMentions(generation, milliTimestamp(), failed, cut, slow);
+      else view.endMentions(generation, cut);
+      if (this.mentions_out === out) this.mentions_out = null;
+      this.dirty = true;
+    };
+    for (const machine of asked) {
+      const connection = machine.connection,
+        elsewhere = machine === this.machine ? undefined : machine.id;
+      const add = (part: unknown) => {
+        view.addMentions(generation, launcherResume.answerOf(part).mentions, elsewhere);
+        this.dirty = true;
+      };
+      void (async () => {
+        try {
+          const reply = connection.streamed
+            ? await connection.streamed("conversation.grep", { ...fields, stream: true }, add)
+            : await connection.request("conversation.grep", fields);
+          if ("err" in reply) throw errors.fromReply(reply);
+          add(reply);
+          cut ||= launcherResume.answerOf(reply).cut;
+        } catch (error) {
+          // XXX: Remove for next protocol bump. Daemons before conversation.grep
+          // don't know it, so their conversations are searched by title alone.
+          if (errors.is(error, "UnknownOperation")) {
+            view.mentions.unable.add(machine.id);
+            // Leaving it out isn't a new search for the rest.
+            if (view.mentions.generation === generation)
+              view.mentions.targets = view.mentions.targets.filter(id => id !== machine.id);
+          }
+          // A cancelled search gave way to a newer one, or to none. Anything
+          // else, a reload, a lost connection or a stopped worker, is tried again.
+          else if (!errors.is(error, "Cancelled")) {
+            failed.push(machine.id);
+            // Out of time, as on a history never indexed, isn't a failure to count.
+            slow &&= errors.is(error, "SearchTimedOut");
+          }
+        }
+        settle();
+      })();
+    }
+  }
+  /** Ends the Resume list's search of conversations' text, if one is out. */
+  private cancelMentions(): void {
+    const out = this.mentions_out;
+    if (!out) return;
+    this.mentions_out = null;
+    // A launcher put aside, as while signing in, searches afresh when it's back.
+    out.view.abandonMentions();
+    this.dirty = true;
+    // XXX: Remove for next protocol bump. A daemon without the op lets the search run out.
+    for (const connection of out.connections)
+      void call(connection, "conversation.grep.cancel", { key: mentions_key }).catch(() => {});
   }
   private async pollOpenLauncher(hover: boolean): Promise<void> {
     await this.previewInlineCommand(false);
@@ -5965,6 +6442,11 @@ export class Controller {
     const cwd = this.launcherModel()?.cwd ?? this.launcherCwd();
     if (!this.launch_previews.poll(this.current().id, cwd)) return;
     this.prompt_stale = true;
+    if (!this.launch_previews.history.pending) {
+      const enter = this.worktree_card.pending_enter;
+      this.worktree_card.pending_enter = null;
+      enter?.();
+    }
     const launch = this.launcherModel();
     if (launch) {
       launch.preview = this.launch_previews.current(launch.cwd, this.runtime.accounts);
@@ -5983,22 +6465,27 @@ export class Controller {
     launch.open = this.running.slice();
   }
   private mergedHistory(): launcherResume.Entry[] {
+    const entries = this.launch_previews.history.entries.filter((e: any) => Provider.parse(e?.provider));
+    const starred = this.historyStars();
+    return launcherResume.merge(entries.map(launcherResume.historyEntry), this.known(this.machine)).map(entry => ({
+      ...entry,
+      starred: starred.has(`${entry.provider}:${entry.session}`),
+    }));
+  }
+  /** The names `machine`'s Corgi showed for the conversations it ran, and when
+   * it last saw or closed them. */
+  private known(machine: Machine): launcherResume.Known[] {
     const known: launcherResume.Known[] = [];
-    for (const c of this.runtime.conversations) {
+    for (const c of machine.runtime.conversations) {
       const provider = c.agent.provider;
       if (!provider) continue;
       if ((c.parent !== null && c.parent !== undefined) || c.agent.session.length === 0) continue;
       const at = Math.trunc(Math.max(Number(c.observed_at ?? 0), c.agent.changed_at) / 1_000_000);
       known.push({ provider, session: c.agent.session, name: c.agent.name, at });
     }
-    for (const stop of this.stopped)
+    for (const stop of machine.stopped)
       known.push({ provider: stop.provider, session: stop.session, name: "", at: stop.at });
-    const entries = this.launch_previews.history.entries.filter((e: any) => Provider.parse(e?.provider));
-    const starred = this.historyStars();
-    return launcherResume.merge(entries.map(launcherResume.historyEntry), known).map(entry => ({
-      ...entry,
-      starred: starred.has(`${entry.provider}:${entry.session}`),
-    }));
+    return known;
   }
   /** The current workspace's stars: a resumed conversation gets its star back only there. */
   private historyStars(): Set<string> {
@@ -6025,7 +6512,7 @@ export class Controller {
   /** Expand the conversations under the agents, searching when asked. */
   private expandResume(searching: boolean): void {
     const launch = this.agent_launcher;
-    if (!launch || !launch.hasResume()) return;
+    if (!launch || !launch.hasResume(this.height)) return;
     launch.pinned = true;
     if (searching) launch.resume_view.startSearch();
     else launch.resume_view.expand();
@@ -6188,11 +6675,55 @@ export class Controller {
     if (!e) return this.expandResume(false);
     return this.resumeEntry(e, this.current().id);
   }
+  /** Another machine's conversation: the pane there that runs it, else resumed
+   * on that machine in the workspace that holds its folder, shown there. */
+  private async resumeElsewhere(e: launcherResume.Entry, id: number): Promise<void> {
+    const machine = this.machines_by_id.get(id),
+      name = e.machine?.name ?? "";
+    if (!machine || !machine.presence().online) return this.notice(i18n.t` ${name} isn't connected`);
+    this.closeMenu();
+    for (const p of machine.runtime.panes)
+      if (p.agent.provider === e.provider && p.agent.session === e.session)
+        return this.selectPane(viewerRef.pane(machine.id, p.id));
+    const from = this.machine,
+      shown = this.current().id;
+    try {
+      const workspaces = machine.runtime.workspaces.items.map(ws => ({
+          id: ws.id,
+          cwd: ws.cwd,
+          archived: ws.archived,
+        })),
+        workspace = workspaceFor(workspaces, e.cwd, workspaces.find(ws => !ws.archived)?.id ?? null);
+      if (workspace === null) throw Error("WorkspaceNotFound");
+      if (byteLength(e.cwd) > 4096 || byteLength(e.session) > 256) throw Error("NameTooLong");
+      const command = {
+        "agent.resume": {
+          workspace,
+          cwd: e.cwd,
+          provider: e.provider,
+          session: e.session,
+          ...(e.account ? { account: e.account } : {}),
+        },
+      };
+      const { pane } = await this.execute(command, undefined, undefined, machine);
+      // It opens there either way; the viewer follows unless it moved on meanwhile.
+      if (this.machine === from && this.current().id === shown) this.onMachine(machine, { pane });
+    } catch (error) {
+      {
+        const why = errors.name(error) ?? i18n.t`unknown error`;
+        this.notice(i18n.t` Couldn't open it: ${why}`);
+      }
+    }
+  }
   private resumeEntry(e: launcherResume.Entry, workspace: number): void {
+    if (e.machine) {
+      void this.resumeElsewhere(e, e.machine.id);
+      return;
+    }
     for (const open of this.running)
       if (open.provider === e.provider && open.session === e.session) {
         this.closeMenu();
-        return this.selectAgent({ pane: open.pane });
+        return this.selectAgent(viewerRef.pane(this.machine.id, open.pane));
       }
     if (byteLength(e.cwd) > 4096 || byteLength(e.session) > 256) throw Error("NameTooLong");
     const command = {
@@ -6239,8 +6770,8 @@ export class Controller {
       workspace_id: ws.id,
       branch: checkout ? worktreeAgents.label(checkout) : "",
       focus: p ? { title: paneName(p), provider: p.agent.provider, activity: p.agent.activity, pane: p.id } : null,
-      herd: this.agentEntries(ws.id)
-        .filter(e => sidebar.isAgent(e.target))
+      herd: this.machineAgents(ws.id)
+        .map(({ entry }) => entry)
         .slice(0, 16)
         .map(e => ({
           name: e.name || (e.provider ? adapter(e.provider).name : "agent"),
@@ -6253,7 +6784,7 @@ export class Controller {
   /** A workspace's panes as `@` offers them: its agents that have a pane, as
    * the agent list names them, then its other panes, such as shells. */
   private promptPanes(ws: Workspace): Extract<PromptMention, { kind: "agent" }>[] {
-    const agents = this.agentEntries(ws.id).flatMap(e =>
+    const agents = this.machineAgents(ws.id).flatMap(({ entry: e }) =>
       "pane" in e.target && e.provider
         ? [
             {
@@ -6350,7 +6881,7 @@ export class Controller {
   private workspaceOverview(id: number): string {
     const ws = this.runtime.workspaces.items.find(w => w.id === id);
     if (!ws) return "(That workspace is gone.)";
-    const agents = this.agentEntries(ws.id).filter(e => sidebar.isAgent(e.target)),
+    const agents = this.machineAgents(ws.id).map(({ entry }) => entry),
       shells = this.runtime.panes.filter(p => ws.model.tabForPane(p.id) !== null && p.agent.provider === null),
       lines = [`Workspace ${clean(ws.name)} (id ${ws.id}), in ${ws.cwd}.`];
     if (agents.length) lines.push("Agents:");
@@ -6395,6 +6926,8 @@ export class Controller {
         this.prompt_sessions.set(`${provider}:${reply.session}`, machine);
         return { provider, session: reply.session };
       },
+      review: (op, payload) => call(this.promptMachine().connection, op as Op, payload as never),
+      machine: () => this.promptMachine().name,
     };
   }
   private async promptEffect(effect: PromptEffect | null): Promise<void> {
@@ -6406,21 +6939,61 @@ export class Controller {
         return this.copyText(effect.text);
       case "open":
         return this.showConversation(effect.entry);
-      case "pane": {
-        let made = false;
+      case "pane":
         try {
-          await this.create(null, effect.cwd || this.currentCwd(), shellWords(effect.argv), "", () => (made = true));
+          await this.create(null, effect.cwd || this.currentCwd(), shellWords(effect.argv), "");
         } catch (error) {
           const name = errors.name(error) ?? i18n.t`unknown error`;
-          // A pane the daemon made goes on with the conversation. The card
-          // takes it back only when the daemon refused: after a lost reply, a
-          // pane may still start and read the handoff.
-          if (made) return;
-          if (effect.handoff && errors.reply(error)) this.prompt.reclaim(effect.handoff, name);
           this.notice(` Couldn't open a pane: ${name}`);
         }
         return;
-      }
+      case "chat":
+        return this.chatPane(effect.chat, effect.cwd);
+    }
+  }
+  /** Moves the prompt's conversation to a `corgi __chat` pane on the machine
+   * whose daemon runs it. Another computer's daemon is sent the handoff to
+   * write there for its pane; one that can't take it leaves the pane to
+   * follow the session from its daemon. The file here stays only for the
+   * card to take the conversation back. */
+  private async chatPane(chat: ChatArgs, cwd: string): Promise<void> {
+    const machine = (chat.session && this.prompt_sessions.get(`${chat.provider}:${chat.session}`)) || this.machine;
+    if (machine !== this.machine) {
+      const name = machine.name,
+        reason = i18n.t`the chat runs on ${name}`;
+      this.prompt.reclaim(chat.handoff, reason);
+      return this.notice(` Couldn't open a pane: ${reason}`);
+    }
+    const handoff = machine.remote ? await this.handoffOn(machine, chat.handoff) : chat.handoff;
+    const argv = [...this.corgiOn(machine), "__chat", ...chatArgs({ ...chat, handoff })];
+    let made = false;
+    try {
+      await this.create(null, cwd || this.currentCwd(), shellWords(argv), "", () => (made = true));
+    } catch (error) {
+      const name = errors.name(error) ?? i18n.t`unknown error`;
+      // A pane the daemon made goes on with the conversation. The card
+      // takes it back only when the daemon refused: after a lost reply, a
+      // pane may still start and read the handoff.
+      if (made) return;
+      if (errors.reply(error)) this.prompt.reclaim(chat.handoff, name);
+      this.notice(` Couldn't open a pane: ${name}`);
+    } finally {
+      if (machine.remote) rmSync(chat.handoff, { force: true });
+    }
+  }
+  /** Where `machine`'s daemon wrote the handoff at `path` for a pane there,
+   * sent in parts the connection's screens can share it with; "" when it
+   * couldn't, as an older daemon can't. */
+  private async handoffOn(machine: Machine, path: string): Promise<string> {
+    try {
+      const reply = await handoffUpload.send(
+        part => call(machine.connection, "headless.handoff", part),
+        readFileSync(path, "utf8"),
+      );
+      const written = (reply as { path?: unknown } | null)?.path;
+      return typeof written === "string" ? written : "";
+    } catch {
+      return "";
     }
   }
   /** The conversations the prompt's lists show, as the launcher has them:
@@ -6455,7 +7028,10 @@ export class Controller {
     try {
       await this.resumeEntry(e, workspaceFor(workspaces, e.cwd, this.current().id)!);
     } catch (error) {
-      this.notice(` Couldn't open it: ${errors.name(error) ?? i18n.t`unknown error`}`);
+      {
+        const why = errors.name(error) ?? i18n.t`unknown error`;
+        this.notice(i18n.t` Couldn't open it: ${why}`);
+      }
     }
   }
   private savePromptModel(choice: modelPicker.Choice | null): void {
@@ -6563,7 +7139,7 @@ export class Controller {
     };
   }
   /** The ports of a sidebar row's workspace, from the row's own machine. */
-  private portWorkspaceEntry(key: number): WorkspaceEntry {
+  private portWorkspaceEntry(key: viewerRef.Workspace): WorkspaceEntry {
     return (
       this.workspaceRows().find(row => row.id === key) ??
       sidebar.workspaceEntry({ id: key, name: "", cwd: "", active: false })
@@ -6676,7 +7252,9 @@ export class Controller {
         }
         return this.saveKeys(apply.preset, this.host.prefs.prefix);
       case "prefix":
-        return this.saveKeys(this.host.prefs.preset, this.host.prefs.prefix === "ctrl_b" ? "ctrl_a" : "ctrl_b");
+        this.openHelp();
+        this.help.editPrefix();
+        return;
       case "readings":
         this.host.prefs.resources.enabled = apply.on;
         try {
@@ -6962,7 +7540,7 @@ export class Controller {
     if (index < 0) index = 0;
     this.focusPane(list[next ? (index + 1) % list.length : (index + list.length - 1) % list.length].id);
   }
-  private async key(byte: number, literal = false): Promise<void> {
+  private async key(byte: number, literal = false, event: keyboard.Key = { codepoint: byte, mods: {} }): Promise<void> {
     if (byte === 27 && this.rename_pending !== null) {
       this.rename_pending = null;
       return;
@@ -6982,7 +7560,7 @@ export class Controller {
     if (await this.helpKey({ codepoint: byte, mods: {} })) return;
     // A sign-in has the keyboard; what its agent is sent passes through it.
     if (this.signin) {
-      if (await this.signinPrefix(byte, null)) return;
+      if (!literal && (await this.signinPrefix(byte, event))) return;
       await this.signin.input(Uint8Array.of(byte));
       this.dirty = true;
       return;
@@ -6992,8 +7570,8 @@ export class Controller {
       this.dirty = true;
       return;
     }
+    if (!literal && (await this.prefixKey(event))) return;
     if (this.prompt.open && !this.prefix) {
-      if (byte === keymap.prefixByte(this.prefs.prefix)) return this.beginPrefix();
       // Ctrl+V pastes the clipboard's image, as it does in the agents.
       if (byte === 22) return this.promptClipboardImage();
       return this.promptEffect(this.prompt.key(byte));
@@ -7057,7 +7635,7 @@ export class Controller {
       const setup = this.corgi_setup,
         s = this.runtime.inference,
         shortcuts = setup.item === "keyboard" && setup.focus === "options";
-      if (await this.setupPrefix({ codepoint: byte, mods: {} })) return;
+      if (!literal && (await this.setupPrefix(event))) return;
       if (setup.managing()) {
         const launch = setup.agents!;
         return this.manageAction(launch.manager.key(byte, launch.manageModel()));
@@ -7108,10 +7686,6 @@ export class Controller {
     }
     if (this.agent_launcher) {
       const launch = this.agent_launcher;
-      if (launch.pinned && byte === keymap.prefixByte(this.prefs.prefix)) {
-        launch.prefix = true;
-        return;
-      }
       const after_prefix = launch.prefix;
       launch.prefix = false;
       if (after_prefix && (byte === 99 || byte === 97 || byte === 65)) return;
@@ -7238,8 +7812,6 @@ export class Controller {
         case 107: // k
           await this.steerSidebar("up");
           break;
-        default:
-          if (byte === keymap.prefixByte(this.prefs.prefix)) this.beginPrefix();
       }
       this.dirty = true;
       return;
@@ -7258,11 +7830,12 @@ export class Controller {
           this.movePortMenu(false);
           break;
         case 13:
-          const ws = this.portWorkspaceEntry(links.workspace);
-          if (!ws.remote_links) {
+          const ws = this.portWorkspaceEntry(links.workspace),
+            machine = this.portMachine(ws);
+          if (machine) {
             const url = sidebar.workspaceUrl(ws, links.selected);
             if (url !== null) {
-              this.queueEffect({ open_url: url });
+              this.openLink(url, machine);
               this.closeMenu();
             }
           }
@@ -7304,7 +7877,6 @@ export class Controller {
         default: {
           const item = context.itemFor(byte);
           if (item) await this.tabMenuAction(item);
-          else if (byte === keymap.prefixByte(this.host.prefs.prefix)) this.beginPrefix();
         }
       }
       return;
@@ -7362,22 +7934,13 @@ export class Controller {
       }
       this.prefix = false;
       this.dirty = true;
-      if (byte === keymap.prefixByte(this.prefs.prefix)) {
-        if (this.prompt.open) return this.promptEffect(this.prompt.key(byte));
-        this.typeFocused([byte]);
-        return;
-      }
       const act = bindings.lookup(this.prefs.bindings(), true, byte, {});
       if (act) await this.runPrefixed(act, false);
       return;
     }
-    if (byte === keymap.prefixByte(this.host.prefs.prefix)) {
-      this.beginPrefix();
-      return;
-    }
     if (!this.copy_mode && !literal) {
       const act = bindings.lookup(this.prefs.bindings(), false, byte, {});
-      if (act) return this.perform(act);
+      if (act) return this.invoke(act);
     }
     if (this.conversation_prs.open && this.conversation_prs.focused) {
       const command = this.conversation_prs.key(panel.byte_keys[byte] ?? String.fromCharCode(byte));
@@ -7867,15 +8430,21 @@ export class Controller {
         break;
     }
   }
+  /** Delivery can end while the host decoder still drains the paste. */
+  cancelPaste(): void {
+    this.pastePane()?.terminal.pasteAbort();
+    if (this.input_state.paste === "prompt") this.prompt.pasteAbort();
+    this.input_state.paste = null;
+  }
   /** Invalidates a suspended input batch as well as keys not yet processed. */
   cancelInput(): void {
     const { attached, watched } = this.input_state;
     // A paste cut off here would otherwise never end.
-    this.pastePane()?.terminal.pasteAbort();
+    this.cancelPaste();
     this.input_state = Object.assign(new InputState(), { attached, watched });
   }
   /** Routes input; `dropped` says it came while its machine dropped input. */
-  async input(data: Uint8Array, current = () => true, dropped = false): Promise<void> {
+  async input(data: readonly Input[], current = () => true, dropped = false): Promise<void> {
     this.dropping_input = dropped;
     try {
       await this.route(data, current);
@@ -7883,464 +8452,417 @@ export class Controller {
       this.dropping_input = false;
     }
   }
-  private async route(data: Uint8Array, current: () => boolean): Promise<void> {
+  private async route(data: readonly Input[], current: () => boolean): Promise<void> {
     if (!current()) return;
     const cl = this.input_state,
       machine = this.machine;
-    if (data.length > 0) cl.active = true;
-    for (const byte of data) cl.keybuf.push(byte);
+    const active = () => cl === this.input_state && machine === this.machine && cl.attached && current();
+    if (data.length) cl.active = true;
+    for (let i = 0; i < data.length; i++) {
+      if (!active()) return;
+      try {
+        await this.inputEvent(data[i], active);
+      } catch (error) {
+        if (cl !== this.input_state) throw error;
+        const pasting = cl.paste !== null;
+        this.cancelPaste();
+        cl.paste = pasting ? "discard" : null;
+        // Failed paste delivery still consumes its end before subsequent typing.
+        const end = pasting ? data.findIndex((input, at) => at >= i && input.kind === "paste_end") : -1;
+        if (end >= 0) {
+          cl.paste = null;
+          await this.route(data.slice(end + 1), current);
+        }
+        throw error;
+      }
+    }
+  }
+  private async textInput(buf: number[], current: () => boolean): Promise<void> {
     let used = 0;
-    try {
-      while (used < cl.keybuf.length) {
-        if (cl !== this.input_state || machine !== this.machine || !current()) return;
-        if (!cl.attached) {
-          cl.keybuf = [];
-          return;
-        }
-        const buf = cl.keybuf,
-          byte = buf[used];
-        if (cl.paste !== null) {
-          const head = latin1(buf.slice(used, used + keys.paste_end.length));
-          if (keys.paste_end.startsWith(head)) {
-            if (head.length < keys.paste_end.length) break;
-          } else {
-            let end = used + 1;
-            while (end < buf.length && buf[end] !== 27) end++;
-            this.closePasteCard();
-            this.link_tooltip.cancel();
-            this.dirty = true;
-            if (cl.paste !== "discard") await this.pasteBytes(cl.paste, buf.slice(used, end));
-            used = end;
-            continue;
-          }
-        }
-        if (byte !== 27) {
-          if (byte >= 128) {
-            const decoded = keyboard.textKey(buf.slice(used, used + 4));
-            if (decoded.length === 0) break;
-            if (decoded.key && (await this.helpKey(decoded.key))) {
-              used += decoded.length;
-              continue;
-            }
-            if (
-              decoded.key &&
-              ((this.signin && (await this.signinPrefix(decoded.key.codepoint, decoded.key))) ||
-                (!this.signin && (await this.setupPrefix(decoded.key))))
-            ) {
-              this.dirty = true;
-              used += decoded.length;
-              continue;
-            }
-            if (
-              decoded.key &&
-              !this.onboarding &&
-              !this.editingName() &&
-              !this.copy_mode &&
-              (this.prefix || !this.hasMenu())
-            ) {
-              const act = bindings.lookup(this.prefs.bindings(), this.prefix, decoded.key.codepoint, decoded.key.mods);
-              if (act) {
-                if (this.prefix) await this.runPrefixed(act, false);
-                else await this.perform(act);
-                used += decoded.length;
-                continue;
-              }
-            }
-            if (this.prefix) this.prefix = false;
-            else for (let i = used; i < used + decoded.length; i++) await this.key(buf[i], true);
-            used += decoded.length;
-            continue;
-          }
-          this.closePasteCard();
-          this.pinWorktreeInput(String.fromCharCode(byte));
-          const opened =
-            this.pinResourceInput(String.fromCharCode(byte)) || this.pinGitInput(String.fromCharCode(byte));
-          this.link_tooltip.cancel();
-          this.dirty = true;
-          if (opened) {
-            used += 1;
-            continue;
-          }
-          await this.key(byte);
-          used += 1;
-          continue;
-        }
-        if (buf.length - used < 2) {
-          this.pinWorktreeInput("\x1b");
-          this.link_tooltip.cancel();
-          this.dirty = true;
-          break;
-        }
-        if (buf[used + 1] === 27) {
-          await this.key(27);
-          used += 1;
+    while (used < buf.length && current()) {
+      const byte = buf[used];
+      if (byte >= 128) {
+        const decoded = keyboard.textKey(buf.slice(used, used + 4));
+        if (decoded.length === 0) decoded.length = 1;
+        if (decoded.key && (await this.helpKey(decoded.key))) {
+          used += decoded.length;
           continue;
         }
         if (
-          cl.paste === null &&
-          buf[used + 1] !== 0x5b &&
-          buf[used + 1] !== 0x4f &&
-          !this.help_visible &&
-          !this.corgi_setup?.after_prefix &&
-          !(this.signin && this.prefix) &&
-          (this.hasMenu() || this.editingName()) &&
-          !this.promptAlt(buf.slice(used, used + 2))
+          decoded.key &&
+          ((this.signin && (await this.signinPrefix(decoded.key.codepoint, decoded.key))) ||
+            (!this.signin && ((await this.setupPrefix(decoded.key)) || (await this.prefixKey(decoded.key)))))
         ) {
-          await this.key(27);
-          used += 1;
+          this.dirty = true;
+          used += decoded.length;
           continue;
         }
-        let len = 2;
-        if (buf[used + 1] === 0x5b || buf[used + 1] === 0x4f) {
-          while (len < buf.length - used && !(buf[used + len] >= 0x40 && buf[used + len] <= 0x7e)) len += 1;
-          if (len === buf.length - used) break;
-          len += 1;
-        }
-        let alt_key: keyboard.Key | null = null;
-        if (buf[used + 1] !== 0x5b && buf[used + 1] !== 0x4f) {
-          const decoded = keyboard.textKey(buf.slice(used + 1, used + 5));
-          if (decoded.length === 0) break;
-          len = 1 + decoded.length;
-          if (decoded.key)
-            alt_key = {
-              ...decoded.key,
-              mods: { alt: true, shift: decoded.key.codepoint >= 65 && decoded.key.codepoint <= 90 },
-            };
-        }
-        let seq: number[] = buf.slice(used, used + len);
-        if (this.paste_card !== null) {
-          const effect = this.cardInput(latin1(seq));
-          if (effect === "close") this.closePasteCard();
-          else if (effect === "dismiss") {
-            this.closePasteCard();
-            used += len;
-            continue;
-          } else if (effect === "capture") {
-            used += len;
+        if (
+          decoded.key &&
+          !this.onboarding &&
+          !this.editingName() &&
+          !this.copy_mode &&
+          (this.prefix || !this.hasMenu())
+        ) {
+          const act = bindings.lookup(this.prefs.bindings(), this.prefix, decoded.key.codepoint, decoded.key.mods);
+          if (act) {
+            if (this.prefix) await this.runPrefixed(act, false);
+            else await this.invoke(act);
+            used += decoded.length;
             continue;
           }
         }
-        if (!latin1(seq).startsWith("\x1b[<")) {
-          this.endSigninExit();
-          this.pinWorktreeInput(latin1(seq));
-          const opened = this.pinResourceInput(latin1(seq)) || this.pinGitInput(latin1(seq));
-          this.link_tooltip.cancel();
-          this.dirty = true;
-          if (opened) {
-            used += len;
-            continue;
-          }
-        }
-        if (cl.paste === null) {
-          const key_event = keyboard.decode(latin1(seq)) ?? alt_key;
-          if (key_event && (await this.helpKey(key_event))) {
-            used += len;
-            continue;
-          }
-          if (key_event && this.signin) {
-            // Its agent gets keys as its terminal asked for them; the frame reads them plain.
-            const s = this.signin,
-              plain = viewerNative.encodeKey(null, key_event);
-            if (await this.signinPrefix(plain.length === 1 ? plain.charCodeAt(0) : key_event.codepoint, key_event)) {
-              this.dirty = true;
-              used += len;
-              continue;
-            }
-            if (s.typing && plain !== "\x03" && plain !== "\x11")
-              s.send(viewerNative.encodeKey(s.child!.handle, key_event));
-            else await s.input(plain);
-            this.dirty = true;
-            used += len;
-            continue;
-          }
-          if (key_event) {
-            if (await this.setupPrefix(key_event)) {
-              used += len;
-              continue;
-            }
-            // Ghostty passes its paste key on only when it had no text
-            // to paste. Over SSH it can't be pasted here: say why.
-            const pressed = hostClipboard.pasteKey(key_event);
-            // Ghostty passes its paste key on when there was no text: an image, perhaps.
-            if (pressed !== null && this.prompt.open && !this.prefix) {
-              await this.promptClipboardImage();
-              used += len;
-              continue;
-            }
-            if (pressed !== null && this.imageHint(pressed)) {
-              used += len;
-              continue;
-            }
-            const repeated = bindings.repeat(this.prefs.bindings(), key_event);
-            if (this.repeats(repeated)) {
-              await this.perform(repeated);
-              used += len;
-              continue;
-            }
-            if (repeated === null) this.repeat_until = 0;
-            // The prompt's own shortcut puts it away, as Prefix Space does.
-            if (
-              this.prompt.open &&
-              !this.prefix &&
-              bindings.chord(this.prefs.bindings(), false, key_event)?.name === "prompt"
-            ) {
-              await this.perform({ name: "prompt" });
-              used += len;
-              continue;
-            }
-            if (
-              this.onboarding === null &&
-              !this.editingName() &&
-              (this.prefix || (!this.hasMenu() && !this.copy_mode && !this.search_mode))
-            ) {
-              const act = bindings.chord(this.prefs.bindings(), this.prefix, key_event);
-              if (act) {
-                if (this.prefix) await this.runPrefixed(act, repeated !== null);
-                else await this.perform(act);
-                used += len;
-                continue;
-              }
-            }
-            // Resolve Corgi shortcuts before encoding for the child. A
-            // Kitty Ctrl-B/Ctrl-T are otherwise invisible to the byte handlers.
-            const owned =
-              this.hasMenu() ||
-              this.editingName() ||
-              this.copy_mode ||
-              this.search_mode ||
-              this.reviewKeys() ||
-              (this.conversation_prs.open && this.conversation_prs.focused);
-            // Corgi's own text boxes read some keys in sequences legacy encoding can't make.
-            const edit = owned ? keyboard.editSequence(key_event) : null;
-            const legacy = Array.from(
-              edit !== null ? Buffer.from(edit, "latin1") : Buffer.from(viewerNative.encodeKey(null, key_event)),
-            );
-            if (
-              owned ||
-              // With no workspace, Enter goes to the button that creates one.
-              !this.current().id ||
-              (legacy.length === 1 &&
-                (legacy[0] === keymap.prefixByte(this.prefs.prefix) ||
-                  bindings.lookup(this.prefs.bindings(), false, legacy[0], {}) !== null))
-            ) {
-              seq = legacy;
-            } else if (this.openingFocus()) {
-              // A pane still opening hasn't asked for any encoding yet.
-              seq = legacy;
-            } else if (legacy.length === 1 && legacy[0] === 27 && this.retryPending()) {
-              // The pane would get Esc in its own encoding, past `key`.
-              await this.perform({ name: "cancel-retry" });
-              used += len;
-              continue;
-            } else {
-              const p = this.focused();
-              if (p) seq = Array.from(Buffer.from(viewerNative.encodeKey(p.terminal.handle, key_event)));
-            }
-            if (seq.length === 0) {
-              used += len;
-              continue;
-            }
-            if (seq.length === 1) {
-              await this.key(seq[0]);
-              used += len;
-              continue;
-            }
-          }
-        }
-        const text = latin1(seq);
-        const parsed_key = keys.parse(text);
-        // Cmd+C and cmd+X copy a text box's selection, as Ghostty passes them on when it has none;
-        // cmd+X's cut and cmd+A's select all then go on to the box as its other edits do.
-        if (cl.paste === null && (parsed_key === "super_c" || parsed_key === "super_x")) {
-          const copied = this.textField()?.selectedText();
-          if (copied) this.copyText(copied);
-        }
-        const again = cl.paste === null ? bindings.repeatSequence(this.prefs.bindings(), text) : null;
-        if (parsed_key === "paste_start" || parsed_key === "paste_end") {
-          if (parsed_key === "paste_start") {
-            cl.paste = this.pasteTarget();
-            if (cl.paste === "review") this.review.beginPathPaste();
-            const target = this.pastePane();
-            if (target && !target.terminal.pasteStart(true)) {
-              cl.paste = "discard";
-              this.pasteRefused();
-            }
-          }
-          if (cl.paste === "prompt") {
-            if (parsed_key === "paste_start") this.prompt.pasteStart();
-            else this.prompt.pasteEnd();
-            this.dirty = true;
-          }
-          // The markers reach only an application that asked for them.
-          const p = this.pastePane();
-          if (cl.paste === "signin") await this.signin?.input(text);
-          else if (p && p.terminal.bracketedPaste()) this.sendInput(p.terminal, seq);
-          if (parsed_key === "paste_end") {
-            if (cl.paste === "review") this.review.endPathPaste();
-            p?.terminal.pasteEnd();
-            cl.paste = null;
-          }
-        } else if (cl.paste !== null) {
-          const p = this.pastePane();
-          if (cl.paste === "signin") await this.signin?.input(text);
-          else if (p) this.sendInput(p.terminal, seq);
-        } else if (parsed_key === "focus_in") {
-          cl.watched = true;
-        } else if (parsed_key === "focus_out") {
-          this.cancelDock();
-          cl.watched = false;
-          this.moonlander?.release();
-          if (this.agent_drag) this.agent_drag.cancelled = true;
-          this.pointer = null;
-          this.dirty = true;
-        } else if (text.startsWith("\x1b[<")) await this.mouse(text);
-        else if (cl.tab_drag) {
-          this.cancelDock();
-        } else if (this.archive_dialog) {
-          const action = this.archive_dialog.key(parsed_key ?? text);
-          if (action) await this.perform(action);
-        } else if (this.moonlander) {
-          if (this.moonlander.sequence(text)) this.closeMoonlander();
-          this.dirty = true;
-        } else if (this.prompt.open && !this.prefix) await this.promptEffect(this.prompt.sequence(text));
-        else if (this.repeats(again)) await this.perform(again);
-        else if (this.worktree_card.pinned) {
-          if (parsed_key === "up") await this.perform({ name: "worktree-prev" });
-          else if (parsed_key === "down") await this.perform({ name: "worktree-next" });
-          else if (parsed_key === "delete") await this.perform({ name: "worktree-remove" });
-        } else if (this.startup_card) {
-          const act = this.startup_card.key(text);
-          if (act) await this.perform(act);
-        } else if (this.resource_card.pinned) {
-          const act = this.resourceKey(text);
-          if (act) await this.perform(act);
-        } else if (this.git_card.pinned) {
-          const act = this.gitKey(text);
-          if (act) await this.perform(act);
-        } else if (this.onboarding) {
-          const wizard = this.onboarding;
-          let done = false;
-          try {
-            done = await wizard.sequence(text, this.rpc());
-          } catch (error) {
-            wizard.fail(error as Error);
-          }
-          if (done) await this.finishOnboarding();
-          this.dirty = true;
-        } else if (this.prefix) {
-          const act = bindings.prefixedSequence(this.prefs.bindings(), text);
-          if (act) await this.runPrefixed(act, again !== null);
-          else if (this.help_visible) await this.helpResult(this.help.sequence(text));
-          this.dirty = true;
-        } else if (this.inline_rename) {
-          const open = this.inline_rename,
-            before = open.field.raw();
-          open.field.sequence(text);
-          this.inlineEdited(open, before);
-        } else if (this.sidebar_focus) {
-          if (parsed_key === "up" || parsed_key === "down" || parsed_key === "left" || parsed_key === "right")
-            await this.steerSidebar(parsed_key);
-        } else if (this.pr_search) {
-          this.pr_search.sequence(text, parsed_key);
-          this.refreshPRSearch();
-        } else if (this.agent_picker) {
-          if (parsed_key === "up" || parsed_key === "shift_tab") this.moveAgentPicker(false);
-          else if (parsed_key === "down") this.moveAgentPicker(true);
-          else this.agent_picker.query.sequence(text);
-        } else if (this.corgi_setup) {
-          const setup = this.corgi_setup,
-            s = this.runtime.inference,
-            intensity = setup.intensityKey(parsed_key, this.prefs);
-          if (setup.managing()) {
-            const launch = setup.agents!;
-            await this.manageAction(launch.manager.sequence(text, launch.manageModel()));
-          } else if (intensity) await this.applySetup(intensity);
-          else if (setup.sequence(text)) {
-            // The worktree folder field took it.
-          } else if (parsed_key === "up" || parsed_key === "shift_tab") setup.move(false, s, this.host.prefs);
-          else if (parsed_key === "down") setup.move(true, s, this.host.prefs);
-          else if (parsed_key === "right") setup.openOptions(s, this.host.prefs);
-          else if (parsed_key === "left") setup.back();
-          this.dirty = true;
-        } else if (this.agent_launcher) {
-          const launch = this.agent_launcher;
-          if (launch.worktree.mode === "open" && !launch.managing) {
-            const c = launch.worktree;
-            if (c.focus === "from" && parsed_key === "shift_tab") c.focus = "branch";
-            else if (c.focus === "from" && (parsed_key === "up" || parsed_key === "down"))
-              c.movePick(parsed_key === "up" ? -1 : 1);
-            else if (c.focus === "from") c.search(from => from.sequence(text));
-            else if (parsed_key === "up" || parsed_key === "down")
-              c.move(launch.worktrees, parsed_key === "up" ? -1 : 1);
-            else if (parsed_key === "shift_tab") {
-              if (c.creating(launch.worktrees)) c.focusFrom();
-              else c.move(launch.worktrees, -1);
-            } else c.edit(field => field.sequence(text));
-            this.dirty = true;
-          } else if (launch.resume_view.focused && !launch.managing) {
-            launch.pinned = true;
-            if (parsed_key === "right" && !launch.resume_view.searching) await this.openManager();
-            else this.resumeSequence(text, parsed_key);
-          } else if (launch.managing) {
-            await this.manageAction(launch.manager.sequence(text, launch.manageModel()));
-          } else if (parsed_key === "right") {
-            await this.openManager();
-          } else if (parsed_key === "up") {
-            this.moveLauncher(false, false);
-          } else if (parsed_key === "down") {
-            this.moveLauncher(true, false);
-          } else if (text === "\x1b[H" || text === "\x1b[1~") {
-            this.selectLauncher(launch.first());
-          } else if (text === "\x1b[F" || text === "\x1b[4~") {
-            this.selectLauncher("terminal");
-          } else if (parsed_key === "shift_tab") {
-            this.moveLauncher(false, true);
-          } else if (!launch.pinned) {
-            this.closeMenu();
-            this.typeFocused(seq);
-          }
-        } else if (this.port_menu) {
-          if (parsed_key === "up") this.movePortMenu(false);
-          else if (parsed_key === "down") this.movePortMenu(true);
-        } else if (this.tab_menu) {
-          if (parsed_key === "up") this.moveTabMenu(false);
-          else if (parsed_key === "down") this.moveTabMenu(true);
-        } else if (this.menu() !== null) {
-          if (parsed_key === "page_up") this.pageMenu(false);
-          else if (parsed_key === "page_down") this.pageMenu(true);
-        } else if (this.name_dialog) {
-          this.fitNameDialog();
-          this.name_dialog.sequence(text);
-          this.dirty = true;
-        } else if (this.reviewKeys() || (this.conversation_prs.open && this.conversation_prs.focused)) {
-          const named = parsed_key === null ? null : reviewNamed(parsed_key);
-          if (named) await this.reviewKey({ named });
-        } else if (this.copy_mode && parsed_key === "page_up") this.scroll(-20);
-        else if (this.copy_mode && parsed_key === "page_down") this.scroll(20);
-        else this.typeFocused(seq);
-        used += len;
+        if (this.prefix) this.prefix = false;
+        else for (let i = used; i < used + decoded.length; i++) await this.key(buf[i], true);
+        used += decoded.length;
+        continue;
       }
-    } catch (error) {
-      if (cl !== this.input_state) throw error;
-      // What failed ends its batch rather than being read again with the
-      // next input. In a paste, the rest of the paste is dropped up to its
-      // end, here or in input still to come, and never read as typing;
-      // what follows its end is read as usual.
-      const pasting = cl.paste !== null,
-        end = pasting ? indexOfBytes(cl.keybuf, keys.paste_end, used) : -1;
-      this.pastePane()?.terminal.pasteAbort();
-      cl.paste = pasting && end < 0 ? "discard" : null;
-      cl.keybuf = end < 0 ? [] : cl.keybuf.slice(end + keys.paste_end.length);
-      if (cl.keybuf.length) await this.input(new Uint8Array(0), current);
-      throw error;
+      this.closePasteCard();
+      this.pinWorktreeInput(String.fromCharCode(byte));
+      const opened = this.pinResourceInput(String.fromCharCode(byte)) || this.pinGitInput(String.fromCharCode(byte));
+      this.link_tooltip.cancel();
+      this.dirty = true;
+      if (opened) {
+        used += 1;
+        continue;
+      }
+      await this.key(byte);
+      used += 1;
     }
-    if (cl !== this.input_state || machine !== this.machine || !current()) return;
-    cl.keybuf = cl.keybuf.slice(used);
-    cl.escape_at = Date.now();
-    if (cl.keybuf.length > 256) {
-      cl.keybuf = [];
-      throw Error("InvalidInput");
+  }
+  private async inputEvent(input: Input, current: () => boolean): Promise<void> {
+    const cl = this.input_state;
+    if (input.kind === "paste") {
+      if (cl.paste !== null && cl.paste !== "discard") {
+        this.closePasteCard();
+        this.link_tooltip.cancel();
+        this.dirty = true;
+        await this.pasteBytes(cl.paste, Array.from(input.bytes));
+      }
+      return;
     }
+    if (input.kind === "paste_start" || input.kind === "paste_end") {
+      if (input.kind === "paste_start") {
+        this.closePasteCard();
+        this.endSigninExit();
+        this.pinWorktreeInput(keys.paste_start);
+        this.link_tooltip.cancel();
+        this.dirty = true;
+        cl.paste = this.pasteTarget();
+        if (cl.paste === "review") this.review.beginPathPaste();
+        const target = this.pastePane();
+        if (target && !target.terminal.pasteStart(true)) {
+          cl.paste = "discard";
+          this.pasteRefused();
+        }
+      }
+      if (cl.paste === "prompt") {
+        if (input.kind === "paste_start") this.prompt.pasteStart();
+        else this.prompt.pasteEnd();
+        this.dirty = true;
+      }
+      const pane = this.pastePane();
+      if (cl.paste === "signin") await this.signin?.input(input.bytes);
+      else if (pane && pane.terminal.bracketedPaste()) this.sendInput(pane.terminal, Array.from(input.bytes));
+      if (input.kind === "paste_end") {
+        if (cl.paste === "review") this.review.endPathPaste();
+        pane?.terminal.pasteEnd();
+        cl.paste = null;
+      }
+      return;
+    }
+    if (input.kind === "text") return this.textInput(Array.from(input.bytes), current);
+    if (input.bytes.length === 1 && input.bytes[0] === 27) {
+      this.pinWorktreeInput("\x1b");
+      this.link_tooltip.cancel();
+      this.dirty = true;
+      await this.key(27);
+      return;
+    }
+    if (
+      input.kind === "key" &&
+      input.key.mods.alt &&
+      input.bytes[1] !== 0x5b &&
+      input.bytes[1] !== 0x4f &&
+      !keys.same(input.key, keymap.prefixKey(this.prefs.prefix)) &&
+      !this.help_visible &&
+      !this.corgi_setup?.after_prefix &&
+      !(this.signin && this.prefix) &&
+      (this.hasMenu() || this.editingName()) &&
+      !this.promptAlt(Array.from(input.bytes))
+    ) {
+      await this.key(27);
+      await this.textInput(Array.from(input.bytes.subarray(1)), current);
+      return;
+    }
+    let seq = Array.from(input.bytes);
+    if (this.paste_card !== null) {
+      const effect = this.cardInput(latin1(seq));
+      if (effect === "close") this.closePasteCard();
+      else if (effect === "dismiss") {
+        this.closePasteCard();
+        return;
+      } else if (effect === "capture") {
+        return;
+      }
+    }
+    if (input.kind !== "mouse") {
+      this.endSigninExit();
+      this.pinWorktreeInput(latin1(seq));
+      const opened = this.pinResourceInput(latin1(seq)) || this.pinGitInput(latin1(seq));
+      this.link_tooltip.cancel();
+      this.dirty = true;
+      if (opened) {
+        return;
+      }
+    }
+    const key_event = input.kind === "key" ? input.key : null;
+    if (key_event && (await this.helpKey(key_event))) {
+      return;
+    }
+    if (key_event && this.signin) {
+      // Its agent gets keys as its terminal asked for them; the frame reads them plain.
+      const s = this.signin,
+        plain = viewerNative.encodeKey(null, key_event);
+      if (await this.signinPrefix(plain.length === 1 ? plain.charCodeAt(0) : key_event.codepoint, key_event)) {
+        this.dirty = true;
+        return;
+      }
+      if (s.typing && plain !== "\x03" && plain !== "\x11") s.send(viewerNative.encodeKey(s.child!.handle, key_event));
+      else await s.input(plain);
+      this.dirty = true;
+      return;
+    }
+    if (key_event) {
+      if ((await this.setupPrefix(key_event)) || (await this.prefixKey(key_event))) {
+        return;
+      }
+      // Ghostty passes its paste key on only when it had no text
+      // to paste. Over SSH it can't be pasted here: say why.
+      const pressed = hostClipboard.pasteKey(key_event);
+      // Ghostty passes its paste key on when there was no text: an image, perhaps.
+      if (pressed !== null && this.prompt.open && !this.prefix) {
+        await this.promptClipboardImage();
+        return;
+      }
+      if (pressed !== null && this.imageHint(pressed)) {
+        return;
+      }
+      const repeated = bindings.repeat(this.prefs.bindings(), key_event);
+      if (this.repeats(repeated)) {
+        await this.invoke(repeated);
+        return;
+      }
+      if (repeated === null) this.repeat_until = 0;
+      // The prompt's own shortcut puts it away, as Prefix Space does.
+      if (
+        this.prompt.open &&
+        !this.prefix &&
+        bindings.chord(this.prefs.bindings(), false, key_event)?.name === "prompt"
+      ) {
+        await this.perform({ name: "prompt" });
+        return;
+      }
+      if (
+        this.onboarding === null &&
+        !this.editingName() &&
+        (this.prefix || (!this.hasMenu() && !this.copy_mode && !this.search_mode))
+      ) {
+        const act =
+          bindings.chord(this.prefs.bindings(), this.prefix, key_event) ??
+          (this.prefix ? bindings.lookup(this.prefs.bindings(), true, key_event.codepoint, key_event.mods) : null);
+        if (act) {
+          if (this.prefix) await this.runPrefixed(act, repeated !== null);
+          else await this.invoke(act);
+          return;
+        }
+        if (this.prefix && !this.help_visible) {
+          this.prefix = false;
+          return;
+        }
+      }
+      // Resolve Corgi shortcuts before encoding for the child. A
+      // Kitty Ctrl-B/Ctrl-T are otherwise invisible to the byte handlers.
+      const owned =
+        this.hasMenu() ||
+        this.editingName() ||
+        this.copy_mode ||
+        this.search_mode ||
+        this.reviewKeys() ||
+        this.conversation_prs.focused;
+      // Corgi's own text boxes read some keys in sequences legacy encoding can't make.
+      const edit = owned ? keyboard.editSequence(key_event) : null;
+      const legacy = Array.from(
+        edit !== null ? Buffer.from(edit, "latin1") : Buffer.from(viewerNative.encodeKey(null, key_event)),
+      );
+      if (
+        owned ||
+        // With no workspace, Enter goes to the button that creates one.
+        !this.current().id ||
+        (legacy.length === 1 && bindings.lookup(this.prefs.bindings(), false, legacy[0], {}) !== null)
+      ) {
+        seq = legacy;
+      } else if (this.openingFocus()) {
+        // A pane still opening hasn't asked for any encoding yet.
+        seq = legacy;
+      } else if (legacy.length === 1 && legacy[0] === 27 && this.retryPending()) {
+        // The pane would get Esc in its own encoding, past `key`.
+        await this.perform({ name: "cancel-retry" });
+        return;
+      } else {
+        const p = this.focused();
+        if (p) seq = Array.from(Buffer.from(viewerNative.encodeKey(p.terminal.handle, key_event)));
+      }
+      if (seq.length === 0) {
+        return;
+      }
+      if (seq.length === 1) {
+        await this.key(seq[0], false, key_event);
+        return;
+      }
+    }
+    const text = latin1(seq);
+    const parsed_key = keys.parse(text);
+    // Cmd+C and cmd+X copy a text box's selection, as Ghostty passes them on when it has none;
+    // cmd+X's cut and cmd+A's select all then go on to the box as its other edits do.
+    if (parsed_key === "super_c" || parsed_key === "super_x") {
+      const copied = this.textField()?.selectedText();
+      if (copied) this.copyText(copied);
+    }
+    const again = bindings.repeatSequence(this.prefs.bindings(), text);
+    if (parsed_key === "focus_in") {
+      cl.watched = true;
+    } else if (parsed_key === "focus_out") {
+      this.cancelDock();
+      cl.watched = false;
+      this.moonlander?.release();
+      if (this.agent_drag) this.agent_drag.cancelled = true;
+      this.pointer = null;
+      this.dirty = true;
+    } else if (input.kind === "mouse") await this.mouse(input.mouse);
+    else if (cl.tab_drag) {
+      this.cancelDock();
+    } else if (this.archive_dialog) {
+      const action = this.archive_dialog.key(parsed_key ?? text);
+      if (action) await this.perform(action);
+    } else if (this.moonlander) {
+      if (this.moonlander.sequence(text)) this.closeMoonlander();
+      this.dirty = true;
+    } else if (this.prompt.open && !this.prefix) await this.promptEffect(this.prompt.sequence(text));
+    else if (this.repeats(again)) await this.invoke(again);
+    else if (this.worktree_card.pinned) {
+      if (parsed_key === "up") await this.perform({ name: "worktree-prev" });
+      else if (parsed_key === "down") await this.perform({ name: "worktree-next" });
+      else if (parsed_key === "delete") await this.perform({ name: "worktree-remove" });
+    } else if (this.startup_card) {
+      const act = this.startup_card.key(text);
+      if (act) await this.perform(act);
+    } else if (this.resource_card.pinned) {
+      const act = this.resourceKey(text);
+      if (act) await this.perform(act);
+    } else if (this.git_card.pinned) {
+      const act = this.gitKey(text);
+      if (act) await this.perform(act);
+    } else if (this.onboarding) {
+      const wizard = this.onboarding;
+      let done = false;
+      try {
+        done = await wizard.sequence(text, this.rpc());
+      } catch (error) {
+        wizard.fail(error as Error);
+      }
+      if (done) await this.finishOnboarding();
+      this.dirty = true;
+    } else if (this.prefix) {
+      const act = bindings.prefixedSequence(this.prefs.bindings(), text);
+      if (act) await this.runPrefixed(act, again !== null);
+      else if (this.help_visible) await this.helpResult(this.help.sequence(text));
+      this.dirty = true;
+    } else if (this.inline_rename) {
+      const open = this.inline_rename,
+        before = open.field.raw();
+      open.field.sequence(text);
+      this.inlineEdited(open, before);
+    } else if (this.sidebar_focus) {
+      if (parsed_key === "up" || parsed_key === "down" || parsed_key === "left" || parsed_key === "right")
+        await this.steerSidebar(parsed_key);
+    } else if (this.pr_search) {
+      this.pr_search.sequence(text, parsed_key);
+      this.refreshPRSearch();
+    } else if (this.agent_picker) {
+      if (parsed_key === "up" || parsed_key === "shift_tab") this.moveAgentPicker(false);
+      else if (parsed_key === "down") this.moveAgentPicker(true);
+      else this.agent_picker.query.sequence(text);
+    } else if (this.corgi_setup) {
+      const setup = this.corgi_setup,
+        s = this.runtime.inference,
+        intensity = setup.intensityKey(parsed_key, this.prefs);
+      if (setup.managing()) {
+        const launch = setup.agents!;
+        await this.manageAction(launch.manager.sequence(text, launch.manageModel()));
+      } else if (intensity) await this.applySetup(intensity);
+      else if (setup.sequence(text)) {
+        // The worktree folder field took it.
+      } else if (parsed_key === "up" || parsed_key === "shift_tab") setup.move(false, s, this.host.prefs);
+      else if (parsed_key === "down") setup.move(true, s, this.host.prefs);
+      else if (parsed_key === "right") setup.openOptions(s, this.host.prefs);
+      else if (parsed_key === "left") setup.back();
+      this.dirty = true;
+    } else if (this.agent_launcher) {
+      const launch = this.agent_launcher;
+      if (launch.worktree.mode === "open" && !launch.managing) {
+        const c = launch.worktree;
+        if (c.focus === "from" && parsed_key === "shift_tab") c.focus = "branch";
+        else if (c.focus === "from" && (parsed_key === "up" || parsed_key === "down"))
+          c.movePick(parsed_key === "up" ? -1 : 1);
+        else if (c.focus === "from") c.search(from => from.sequence(text));
+        else if (parsed_key === "up" || parsed_key === "down") c.move(launch.worktrees, parsed_key === "up" ? -1 : 1);
+        else if (parsed_key === "shift_tab") {
+          if (c.creating(launch.worktrees)) c.focusFrom();
+          else c.move(launch.worktrees, -1);
+        } else c.edit(field => field.sequence(text));
+        this.dirty = true;
+      } else if (launch.resume_view.focused && !launch.managing) {
+        launch.pinned = true;
+        if (parsed_key === "right" && !launch.resume_view.searching) await this.openManager();
+        else this.resumeSequence(text, parsed_key);
+      } else if (launch.managing) {
+        await this.manageAction(launch.manager.sequence(text, launch.manageModel()));
+      } else if (parsed_key === "right") {
+        await this.openManager();
+      } else if (parsed_key === "up") {
+        this.moveLauncher(false, false);
+      } else if (parsed_key === "down") {
+        this.moveLauncher(true, false);
+      } else if (text === "\x1b[H" || text === "\x1b[1~") {
+        this.selectLauncher(launch.first());
+      } else if (text === "\x1b[F" || text === "\x1b[4~") {
+        this.selectLauncher("terminal");
+      } else if (parsed_key === "shift_tab") {
+        this.moveLauncher(false, true);
+      } else if (!launch.pinned) {
+        this.closeMenu();
+        this.typeFocused(seq);
+      }
+    } else if (this.port_menu) {
+      if (parsed_key === "up") this.movePortMenu(false);
+      else if (parsed_key === "down") this.movePortMenu(true);
+    } else if (this.tab_menu) {
+      if (parsed_key === "up") this.moveTabMenu(false);
+      else if (parsed_key === "down") this.moveTabMenu(true);
+    } else if (this.menu() !== null) {
+      if (parsed_key === "page_up") this.pageMenu(false);
+      else if (parsed_key === "page_down") this.pageMenu(true);
+    } else if (this.name_dialog) {
+      this.fitNameDialog();
+      this.name_dialog.sequence(text);
+      this.dirty = true;
+    } else if (this.reviewKeys() || (this.conversation_prs.open && this.conversation_prs.focused)) {
+      const named = parsed_key === null ? null : reviewNamed(parsed_key);
+      if (named) await this.reviewKey({ named });
+    } else if (this.copy_mode && parsed_key === "page_up") this.scroll(-20);
+    else if (this.copy_mode && parsed_key === "page_down") this.scroll(20);
+    else this.typeFocused(seq);
   }
   /** The daemon connection as onboarding calls it. */
   private rpc(): Pick<rpc.Connection, "call"> {
@@ -8531,18 +9053,8 @@ export class Controller {
     }
     return false;
   }
-  private async mouse(seq: string): Promise<void> {
+  private async mouse({ button, x, y, release }: Mouse): Promise<void> {
     const cl = this.input_state;
-    const fields = seq.slice(3, seq.length - 1).split(";");
-    const button = parseU16(fields[0] ?? "");
-    if (button === null) return;
-    const xs = parseU16(fields[1] ?? "");
-    if (xs === null) return;
-    const ys = parseU16(fields[2] ?? "");
-    if (ys === null) return;
-    const x = sat(xs, 1);
-    const y = sat(ys, 1);
-    const release = seq[seq.length - 1] === "m";
     if (this.pr_search) {
       this.refreshPRSearch();
       this.prSearchResult(this.pr_search.mouse(button, x, y, release));
@@ -8625,7 +9137,9 @@ export class Controller {
     if (this.startup_card) {
       const rect = startupCard.geometry(this.width, this.height, this.runtime.startup_waits.length);
       if (!release && button === 0) {
-        const act = rect ? this.startup_card.hit(rect, this.runtime.startup_waits, x, y) : { name: "startup-close" };
+        const act: Action | null = rect
+          ? this.startup_card.hit(rect, this.runtime.startup_waits, x, y)
+          : { name: "startup-close" };
         if (act) await this.perform(act);
       } else if (!release && (button === 64 || button === 65))
         await this.perform({ name: button === 65 ? "startup-next" : "startup-prev" });
@@ -8642,7 +9156,7 @@ export class Controller {
     if (this.archive_dialog) {
       this.pointer = { x, y };
       this.dirty = true;
-      const action =
+      const action: Action | null =
         button === 64 || button === 65
           ? { name: "archive-scroll", value: button === 64 ? "left" : "right" }
           : button === 0
@@ -8668,18 +9182,23 @@ export class Controller {
       // A press on the link itself starts its own click or double-click.
       const open = this.pending_open;
       this.pending_open = null;
-      if (open && !this.pressesLink(open, x, y) && this.focused()?.id === open.pane)
-        this.queueEffect({ open_url: open.url });
+      if (open && !this.pressesLink(open, x, y) && this.showsPane(open))
+        this.openLink(open.url, open.machine, open.file);
     }
     if (!release && (button & 32) === 0) this.endSigninExit();
-    // A double-click needs two left presses on one sidebar cell with the
-    // pointer still between them, held (32) or not (35); a wheel turn or any
-    // other press starts over. The sidebar's own presses reset it for what
-    // isn't a row.
-    if (!release && (button === 32 || button === 35)) this.clicks.motion(x, y);
-    else if (!release && (button & 64) !== 0) this.clicks.reset();
-    else if (!release && (button & 0xe0) === 0 && (button !== 0 || x >= this.sidebarView([]).width))
-      this.clicks.reset();
+    // A double-click needs two left presses in a row on one sidebar row's
+    // name line. Unheld motion (35) may wander along the line; leaving it,
+    // a drag of the row (32), a wheel turn or any other press starts over.
+    if (!release && (button === 32 || button === 35)) {
+      const pending = this.clicks.pending(milliTimestamp());
+      if (pending && !this.sidebarView(this.sidebarEntries()).onNameLine(pending, this.workspaceRows(), x, y))
+        this.clicks.move();
+    } else if (!release && (button & 64) !== 0) this.clicks.reset();
+    else if (!release && button === 0) this.clicks.pressed();
+    else if (!release && (button & 0xe0) === 0) this.clicks.reset();
+    // The rename field's double-click ends the same way, except that unheld
+    // motion never ends it.
+    if (this.inline_rename && !release && button !== 0 && button !== 35) this.inline_rename.interrupt();
     if (this.signin) {
       if (await this.linkMouse(button, x, y, release)) return;
       this.moveHover(button, x, y, release);
@@ -8734,13 +9253,17 @@ export class Controller {
       return;
     }
     if (this.reviewFullscreen() && (await this.reviewMouse(button, x, y, release))) return;
-    // A press in the open rename field changes nothing; anywhere else it
-    // closes the field unsaved and then does what it would have done.
+    // A press in the open rename field puts the caret there, or selects the
+    // name on a double-click; anywhere else it closes the field unsaved and
+    // then does what it would have done.
     if (this.inline_rename && !release && (button & 0xe0) === 0) {
       const open = this.inline_rename,
-        rect = this.sidebarView(this.sidebarEntries()).fieldRect(this.renameTarget(open.target), this.workspaceRows());
+        side = this.sidebarView(this.sidebarEntries()),
+        rect = side.fieldRect(open.target, this.workspaceRows());
       if (rect && y === rect.y && x >= rect.x && x < rect.x + rect.width) {
+        if (button === 0) open.press(x - rect.x, rect.width, milliTimestamp());
         this.ui_mouse_down = true;
+        this.dirty = true;
         return;
       }
       // The drawer the field opened takes the press as it does without one:
@@ -8757,10 +9280,10 @@ export class Controller {
         entries = this.sidebarEntries(),
         found = this.sidebarView(entries).hit(x, y);
       this.dirty = true;
-      if (found.tag === "workspace") focus.cursor = { workspace: this.workspaceList()[found.workspace].id };
+      if (found.tag === "workspace") focus.cursor = { workspace: this.workspaceRows()[found.workspace].id };
       else if (found.tag === "archives") focus.cursor = { archived: true };
       else if (found.tag === "archived_workspace")
-        focus.cursor = { workspace: this.archivedWorkspaces()[found.workspace].id };
+        focus.cursor = { workspace: this.workspaceRef(this.archivedWorkspaces()[found.workspace].id) };
       else if (found.tag === "entry" && sidebarFocus.stops(entries[found.entry]))
         focus.cursor = { entry: entries[found.entry].target };
       else {
@@ -8779,7 +9302,7 @@ export class Controller {
     const worktree_rect = this.worktreeRect();
     if (worktree_rect?.contains(x, y)) {
       this.pointer = { x, y };
-      const ws = this.runtime.workspaces.items.find(w => w.id === this.worktree_card.workspace);
+      const ws = this.resolveWorkspace(this.worktree_card.workspace)?.workspace;
       const path = this.worktree_card.hit(ws?.worktrees ?? null, worktree_rect, x, y);
       if (path && (button === 35 || button === 0)) await this.perform({ name: "worktree-select", value: path });
       if (!release && button === 0) {
@@ -8790,8 +9313,12 @@ export class Controller {
         }
         this.ui_mouse_down = true;
       }
-      if (!release && (button === 64 || button === 65))
-        await this.perform({ name: button === 65 ? "worktree-next" : "worktree-prev" });
+      if (!release && (button === 64 || button === 65)) {
+        await this.perform({ name: "worktree-scroll", value: button === 65 ? "down" : "up" });
+        // The worktree scrolled under the pointer takes the selection, as hovering it would.
+        const under = this.worktree_card.hit(ws?.worktrees ?? null, worktree_rect, x, y);
+        if (under) await this.perform({ name: "worktree-select", value: under });
+      }
       if (release) this.ui_mouse_down = false;
       this.dirty = true;
       return;
@@ -8907,10 +9434,16 @@ export class Controller {
               this.dirty = true;
             } else if (click.drag_selects && click.pane !== null && button === 0) {
               // Waits out the double-click window, which may pick the link instead.
-              this.pending_open = { url: click.url, pane: click.pane, due: click.at + double_click_ms };
+              this.pending_open = {
+                url: click.url,
+                machine: this.machine,
+                file: click.file,
+                pane: click.pane,
+                due: click.at + double_click_ms,
+              };
               this.closeMenu();
             } else {
-              this.queueEffect({ open_url: click.url });
+              this.openLink(click.url, click.machine ?? this.machine, click.file);
               this.closeMenu();
             }
           }
@@ -8926,9 +9459,10 @@ export class Controller {
       if (!release && button === 0) {
         const index = links.hit(ws, this.width, this.height, x, y);
         if (index !== null) {
-          if (!ws.remote_links) {
+          const machine = this.portMachine(ws);
+          if (machine) {
             const url = sidebar.workspaceUrl(ws, index);
-            if (url !== null) cl.port_click = portClick({ x, y, url: byteLength(url) <= 4096 ? url : "" });
+            if (url !== null) cl.port_click = portClick({ x, y, url: byteLength(url) <= 4096 ? url : "", machine });
           }
         } else this.closeMenu();
       }
@@ -9006,7 +9540,11 @@ export class Controller {
         drag.dragging = true;
         this.clicks.move();
       }
-      if (!release && button === 32 && (x !== drag.start_x || y !== drag.start_y)) drag.dragging = true;
+      // A drag breaks the rename double-click, as motion off the line does.
+      if (!release && button === 32 && (x !== drag.start_x || y !== drag.start_y)) {
+        drag.dragging = true;
+        this.clicks.move();
+      }
       if (!release && button === 35) drag.cancelled = true;
       drag.update(side, this.current().id, x, y, milliTimestamp());
       if (release && (button & 3) === 0) {
@@ -9016,13 +9554,14 @@ export class Controller {
           // Pins and section order belong to a workspace; above another's row,
           // the agent goes last in its own.
           const at = drag.before(),
-            other = at === null ? null : sidebar.orderTarget(live[at]),
+            other = at === null ? null : sidebar.agentId(live[at]),
             before = other && this.agentWorkspace(other) === drag.workspace ? other : null,
-            place = { workspace: drag.workspace, target: drag.target, before };
-          const settle =
-            drag.action === "place"
-              ? this.agent_since.move(agentKey(place.target), before ? agentKey(before) : null)
-              : undefined;
+            place = {
+              workspace: viewerRef.parts(drag.workspace).id,
+              target: this.resolveAgent(drag.target)!.target,
+              before: before ? this.resolveAgent(before)!.target : null,
+            };
+          const settle = drag.action === "place" ? this.agent_since.move(drag.target, before) : undefined;
           this.optimistic(
             drag.action === "move"
               ? { "agent.move": place }
@@ -9050,7 +9589,10 @@ export class Controller {
         drag.dragging = true;
         this.clicks.move();
       }
-      if (!release && button === 32 && (x !== drag.start_x || y !== drag.start_y)) drag.dragging = true;
+      if (!release && button === 32 && (x !== drag.start_x || y !== drag.start_y)) {
+        drag.dragging = true;
+        this.clicks.move();
+      }
       drag.update(side, ids, x, y);
       if (release && (button & 3) === 0) {
         this.workspace_drag = null;
@@ -9379,16 +9921,9 @@ export class Controller {
     let entries = this.sidebarEntries();
     const side = this.sidebarView(entries);
     const worktree_hit = sidebar.worktreeAt(side, this.workspaceRows(), x, y);
-    const worktree_row = worktree_hit ? this.rowOf(worktree_hit.id) : null;
-    if (
-      !release &&
-      button === 0 &&
-      worktree_row?.machine === this.machine &&
-      !resource_workspace_press &&
-      !this.copy_mode
-    ) {
+    if (!release && button === 0 && worktree_hit && !resource_workspace_press && !this.copy_mode) {
       this.ui_mouse_down = true;
-      await this.perform({ name: "worktrees", value: worktree_row.id });
+      await this.perform({ name: "worktrees", value: worktree_hit.id });
       return;
     }
     if (!release && button === 0 && side.width > 0 && x === side.width - 1) {
@@ -9429,9 +9964,9 @@ export class Controller {
     if (!release && button === 0 && !resource_workspace_press) {
       const ws = sidebar.portWorkspace(side, this.workspaceRows(), x, y);
       if (ws) {
-        const click = portClick({ x, y });
+        const click = portClick({ x, y, machine: this.portMachine(ws) });
         if (sidebar.urlCount(ws) > 1) click.menu = ws.id;
-        else if (!ws.remote_links) {
+        else if (click.machine) {
           const url = sidebar.workspaceUrl(ws, 0);
           if (url === null) return;
           click.url = url;
@@ -9457,12 +9992,8 @@ export class Controller {
         this.dirty = true;
       } else if (!release && (button === 0 || button === 2)) {
         this.ui_mouse_down = true;
-        if (corgiBadge.hit(this.host.corgi_badge, side.width, x, y)) {
-          this.clicks.reset();
-          return this.openSetup();
-        }
+        if (corgiBadge.hit(this.host.corgi_badge, side.width, x, y)) return this.openSetup();
         const found = side.hit(x, y);
-        if (found.tag !== "entry" && found.tag !== "workspace") this.clicks.reset();
         switch (found.tag) {
           case "archives":
             await this.perform({ name: "toggle-archived-workspaces" });
@@ -9479,37 +10010,39 @@ export class Controller {
             break;
           case "entry": {
             const index = found.entry;
-            if (entries[index].exit !== null) {
-              this.clicks.reset();
-              break;
-            }
+            if (entries[index].exit !== null) break;
             const target = entries[index].target;
             // Another machine's rows have no menus or drags here: they switch to it, or fold.
             if (button === 2 && sidebar.isSubhead(target)) {
-              this.clicks.reset();
               this.openWorktreeMenu(entries[index], x, y);
               break;
             }
             if (!sidebar.isAgent(target) && !("group" in target) && !("section" in target)) {
-              this.clicks.reset();
               if (button === 2 && "worktree" in target && !entries[index].worktree?.ghost)
                 this.openWorktreeMenu(entries[index], x, y);
               else await this.perform({ name: "worktree-agent", value: index });
               break;
             }
-            // A second left press on the same pane agent's name renames it; the
-            // first already selected it, so this one neither selects nor drags.
-            // An agent that takes no rename gets a plain press instead.
-            const name = "pane" in target && !this.away(target) ? { agent: target.pane } : null;
-            if (button === 0 && name && side.onName(name, this.workspaceRows(), x, y)) {
-              if (this.clicks.press(name, milliTimestamp(), x, y)) this.doubleClickAgent(name.agent);
-            } else this.clicks.reset();
+            // A second left press anywhere on the same pane agent's name line
+            // renames it; the first already selected it, so this one neither
+            // selects nor drags. An agent that takes no rename gets a plain
+            // press instead.
+            const name = viewerRef.isPane(target) && !this.away(target) ? target : null;
+            if (
+              button === 0 &&
+              name &&
+              side.onNameLine(name, this.workspaceRows(), x, y) &&
+              this.clicks.press(name, milliTimestamp(), y) &&
+              (await this.doubleClickAgent(viewerRef.parts(name).id))
+            )
+              break;
             this.selectAgent(target);
-            if (button === 2 && "pane" in target) await this.openAgentMenu(target.pane, x, y);
-            else if (button === 2 && "headless" in target) {
+            if (button === 2 && viewerRef.isPane(target) && !this.away(target))
+              this.openAgentMenu(viewerRef.parts(target).id, x, y);
+            else if (button === 2 && viewerRef.isHeadless(target) && !this.away(target)) {
               this.closeMenu();
               this.tab_menu = new TabMenu({
-                tab: target.headless,
+                tab: viewerRef.parts(target).id,
                 headless: true,
                 starred: entries[index].starred,
                 anchor_x: x,
@@ -9553,23 +10086,33 @@ export class Controller {
             const index = found.workspace;
             const row = this.workspaceRows()[index];
             if (row.external) {
-              this.selectRow(row.id);
+              // Its unread label opens the first unread agent on that machine.
+              const owner = this.rowOf(row.id)!;
+              const target =
+                button !== 2 && !resource_workspace_press && side.unreadHit(row, x, y)
+                  ? this.firstUnreadAgent(owner.id, owner.machine)
+                  : null;
+              if (target) this.selectAgent(target);
+              else this.selectRow(row.id);
               break;
             }
             const workspace = this.rowOf(row.id)!.id;
             if (button === 2) {
-              this.clicks.reset();
               this.openWorkspaceMenu(workspace, x, y);
             } else {
-              // Only presses on the name itself make the double-click that renames.
-              if (!side.onName({ workspace: row.id }, this.workspaceRows(), x, y)) this.clicks.reset();
-              else if (this.clicks.press({ workspace }, milliTimestamp(), x, y)) {
-                this.beginInlineRename({ workspace });
+              // Only presses on the name line make the double-click that
+              // renames; the message line below, with its unread mark, only
+              // switches. Screen positions take the displayed rows; the
+              // rename and the switch take the row's own workspace.
+              if (
+                side.onNameLine(row.id, this.workspaceRows(), x, y) &&
+                this.clicks.press(row.id, milliTimestamp(), y)
+              ) {
+                this.beginInlineRename(row.id);
                 break;
               }
               const jump = !resource_workspace_press && side.unreadHit(row, x, y);
-              const local_index = this.runtime.workspaces.index(workspace);
-              const target = jump && local_index !== null ? this.firstUnreadAgent(local_index) : null;
+              const target = jump ? this.firstUnreadAgent(workspace) : null;
               this.switchWorkspace(workspace);
               if (jump) {
                 if (target) {
@@ -9643,7 +10186,10 @@ export class Controller {
       const term = pane.terminal;
       // Once the app asks for mouse input it gets every event except
       // Shift, copy mode and the rest of a selection drag.
-      const app_mouse = term.mouseEvents() && !this.copy_mode && (button & 4) === 0 && this.selection === null;
+      // A file's pane is this viewer's own, and selects with or without Shift.
+      const app_mouse = pane.view
+        ? this.filePane(p.id) !== null
+        : term.mouseEvents() && !this.copy_mode && (button & 4) === 0 && this.selection === null;
       // Hover never moves focus. The encoder drops it unless the app
       // tracks all motion.
       if (hover) {
@@ -9663,12 +10209,14 @@ export class Controller {
           anchor_x: x,
           anchor_y: y,
         });
+        this.offerBreak(this.tab_menu);
         this.ui_mouse_down = true;
         this.dirty = true;
         return;
       }
       // The wheel scrolls the pane under it but leaves the keyboard with a pane still opening.
-      if ((button & 64) === 0 || !this.openingFocus()) this.focusPane(p.id);
+      if ((button & 64) === 0) this.focusPane(p.id);
+      else if (!this.openingFocus()) this.updatePaneFocus(p.id);
       this.dirty = true;
       // A double-click picks the word, even on a link, and a triple-click
       // or later press the line, unless the app takes the clicks; with
@@ -9686,12 +10234,17 @@ export class Controller {
       if (!release && (button === 8 || button === 16 || plain_link) && !this.copy_mode) {
         for (const link of term.hyperlinks()) {
           if (link.row !== y - p.rect.y || x - p.rect.x < link.start || x - p.rect.x >= link.end) continue;
-          if (!openableLink(link.uri)) continue;
+          // A file's name opens it in a pane of its own; an image shows in its card.
+          const web = webLinks.openable(link.uri),
+            named = web ? null : this.linkFile(link.uri, link.path === true, this.pane(p.id)),
+            found = named?.image ? null : named;
+          if (!web && !found) continue;
           if (button === 8 && !pullRequest.parse(link.uri)) continue;
           cl.port_click = portClick({
             x,
             y,
             url: link.uri,
+            file: found && { path: found.path, line: found.ref.line, column: found.ref.column },
             pane: p.id,
             px: x - p.rect.x,
             py: y - p.rect.y,
@@ -9797,11 +10350,11 @@ export class Controller {
     const live = new Set<string>();
     for (const p of this.runtime.panes) {
       if (p.agent.provider === null) continue;
-      const key = agentKey({ pane: p.id });
+      const key = viewerRef.pane(this.machine.id, p.id);
       live.add(key);
     }
     for (const session of this.runtime.sessions) {
-      const key = agentKey({ headless: session.id });
+      const key = viewerRef.headless(this.machine.id, session.id);
       live.add(key);
     }
     this.agent_since.keep(live);
@@ -9833,6 +10386,13 @@ export class Controller {
       ...machine.runtime.corgi_sessions.flatMap(session => session.agent?.pull_requests ?? []),
     ]);
   }
+  /** Crosses out a pane menu's Move to new tab while the pane is alone in its tab. */
+  private offerBreak(menu: TabMenu): void {
+    const model = this.model(),
+      tab = model.tabForPane(menu.tab);
+    if (tab === null || model.paneCount(model.tabs[tab].root) === 1) menu.off.add("break");
+    else menu.off.delete("break");
+  }
   reconcile(): void {
     if (this.agent_picker && this.agent_picker.workspace !== this.current().id) this.agent_picker = null;
     if (this.agent_launcher) this.agent_launcher.worktrees = this.current().worktrees ?? null;
@@ -9847,6 +10407,7 @@ export class Controller {
     if (this.tab_menu) {
       const menu = this.tab_menu;
       if (menu.workspace) menu.archived = this.runtime.workspaces.items.find(w => w.id === menu.tab)!.archived;
+      if (menu.pane) this.offerBreak(menu);
     }
     if (this.selection && this.pane(this.selection.pane) === null) this.selection = null;
     if (this.archive_dialog) {
@@ -9870,10 +10431,9 @@ export class Controller {
     }
     const open = this.inline_rename;
     if (open) {
-      const gone =
-        "agent" in open.target
-          ? this.pane(open.target.agent) === null
-          : this.runtime.workspaces.index(open.target.workspace) === null;
+      const gone = viewerRef.isPane(open.target)
+        ? this.pane(viewerRef.parts(open.target).id) === null
+        : this.runtime.workspaces.index(viewerRef.parts(open.target).id) === null;
       if (gone) this.closeInlineRename();
     }
     for (const id of this.remembered_names.keys()) if (this.pane(id) === null) this.remembered_names.delete(id);
@@ -9973,11 +10533,16 @@ export class Controller {
       this.dirty = true;
     }
     if (this.pending_copy && milliTimestamp() >= this.pending_copy.due) this.flushPendingCopy();
+    // A link that comes or goes under a pointer at rest.
+    if (this.pointer && this.machines.some(m => m.forwards) && milliTimestamp() >= this.link_recheck_at) {
+      this.link_recheck_at = milliTimestamp() + link_recheck_ms;
+      this.reserveLink(this.pointer.x, this.pointer.y, false);
+    }
     const open = this.pending_open;
     if (open && milliTimestamp() >= open.due) {
       this.pending_open = null;
       // Dropped once its pane closed or lost focus.
-      if (this.focused()?.id === open.pane) this.queueEffect({ open_url: open.url });
+      if (this.showsPane(open)) this.openLink(open.url, open.machine, open.file);
     }
     if (this.signin_exit) {
       if (this.signin_exit.tick(milliTimestamp())) this.dirty = true;
@@ -9993,8 +10558,8 @@ export class Controller {
     if (this.account_removals.size > 0) await this.finishAccountRemovals();
     if (!valid()) return;
     const removal = this.worktree_card.removal;
+    this.followRemoval();
     if (removal.phase !== "idle") {
-      this.followRemoval();
       removal.advance(milliTimestamp());
       if (removal.animating(milliTimestamp())) this.dirty = true;
     }
@@ -10025,45 +10590,77 @@ export class Controller {
       [...(this.worktree_card.briefs?.values() ?? [])].some(b => b.phase === "writing")
     )
       this.dirty = true;
-    const cl = this.input_state;
-    if (
-      cl.attached &&
-      cl.keybuf.length > 0 &&
-      // A paste terminator can straddle slow reads; it isn't a lone Escape key.
-      !(cl.paste !== null && keys.paste_end.startsWith(latin1(cl.keybuf))) &&
-      Date.now() - cl.escape_at > (cl.paste !== null || cl.keybuf.length === 1 ? 40 : 1000)
-    ) {
-      if (cl.paste !== null) {
-        const p = this.pastePane();
-        if (p) this.sendInput(p.terminal, cl.keybuf);
-      } else if (cl.keybuf.length === 1 && cl.keybuf[0] === 27) await this.key(27);
-      else if (!this.hasMenu() && !this.editingName()) this.typeFocused(cl.keybuf);
-      cl.keybuf = [];
-    }
   }
+
   /** The workspace whose worktrees' uncommitted files to scan: the overview's, or
    * the current one while the launcher lists its checkouts. */
-  worktreeDetailWanted(): number | null {
-    return this.worktreeDetail() ?? (this.agent_launcher?.worktree.mode === "open" ? this.current().id : null);
+  worktreeDetailWanted(machine = this.machine): number | null {
+    const owner = this.worktreeDetail();
+    const resolved = this.resolveWorkspace(owner);
+    if (resolved?.machine === machine) return resolved.workspace.id;
+    return machine === this.machine && this.agent_launcher?.worktree.mode === "open" ? this.current().id : null;
   }
-  worktreeDetail(): number | null {
-    const id = this.worktree_card.workspace;
-    if (id === null || (!this.worktree_card.pinned && !this.hoverIdle()) || this.runtime.workspaces.index(id) === null)
+  worktreeDetail(): viewerRef.Workspace | null {
+    const owner = this.worktree_card.workspace,
+      resolved = this.resolveWorkspace(owner);
+    if (!owner || (!this.worktree_card.pinned && !this.hoverIdle()) || !resolved || this.stale(resolved.machine))
       return null;
-    return this.worktree_card.pinned || (this.link_tooltip.shown && this.link_tooltip.target?.worktree === id)
-      ? id
+    return this.worktree_card.pinned || (this.link_tooltip.shown && this.link_tooltip.target?.worktree === owner)
+      ? owner
       : null;
   }
-  /** The open overview, with its worktrees' agents counted and briefs
-   * looked up for this frame. */
+  closeWorktreeCard(): void {
+    this.worktree_card.clear();
+    this.worktree_agents.previewed = null;
+    this.link_tooltip.cancel();
+    this.dirty = true;
+  }
+  private openWorktreeCard(owner: viewerRef.Workspace, pinned: boolean): void {
+    const resolved = this.resolveWorkspace(owner);
+    if (!resolved || this.stale(resolved.machine)) return;
+    this.closeMenu();
+    this.sidebar_open = true;
+    this.setWorktreeOwner(owner);
+    this.worktree_card.pinned = pinned;
+    this.worktree_card.anchor = sidebar.worktreeBadge(this.sidebarView([]), this.workspaceRows(), owner)?.y ?? 3;
+    this.dirty = true;
+  }
+  private setWorktreeOwner(owner: viewerRef.Workspace): void {
+    const card = this.worktree_card;
+    if (card.workspace === owner) return;
+    card.clear();
+    card.removal =
+      [...this.removals].find(
+        ([, removal]) => removal.runtime === this.resolveWorkspace(owner)?.machine.runtime && removal.owner === owner,
+      )?.[0] ?? new worktreeRemoval.Hold();
+    card.workspace = owner;
+  }
+  /** The open overview reads only its owning machine's snapshot. */
   private worktreeCard(): worktreeTooltip.State | null {
-    const id = this.worktreeDetail();
-    if (id === null) return null;
-    const ws = this.runtime.workspaces.items.find(ws => ws.id === id),
-      snapshot = ws?.worktrees;
-    this.worktree_card.agents = snapshot ? worktreeAgents.counts(snapshot, this.agentEntries(id)) : null;
-    this.worktree_card.briefs =
-      ws && this.runtime.inference.uses.worktrees ? new Map(ws.worktree_briefs.map(b => [b.path, b])) : null;
+    const owner = this.resolveWorkspace(this.worktreeDetail());
+    if (!owner) return null;
+    const ws = owner.workspace,
+      snapshot = ws.worktrees;
+    this.worktree_card.agents = snapshot
+      ? worktreeAgents.counts(
+          snapshot,
+          this.machineAgents(ws.id, owner.machine).map(({ entry }) => entry),
+        )
+      : null;
+    this.worktree_card.briefs = owner.machine.runtime.inference.uses.worktrees
+      ? new Map(ws.worktree_briefs.map(b => [b.path, b]))
+      : null;
+    const card = this.worktree_card,
+      entries = card.entries(snapshot),
+      selected = entries[card.index(entries)];
+    card.asleep =
+      snapshot && selected && owner.machine === this.machine && !this.launch_previews.history.pending
+        ? {
+            path: selected.path,
+            count: worktreeAgents.conversations(snapshot, selected.path, this.mergedHistory(), this.openSessions())
+              .length,
+          }
+        : null;
     return this.worktree_card;
   }
   /** A press on the resource card: a bar button, a row to select, or a heading to sort by. */
@@ -10225,19 +10822,23 @@ export class Controller {
       if (!session.exited && session.agent?.session) open.add(`${session.provider}:${session.agent.session}`);
     return open;
   }
-  private browsingWorktree(): worktreeAgents.Selection | null {
+  private browsingWorktree(): viewerRef.Worktree | null {
     const id = this.worktreeDetail();
     if (id === null || !this.worktreeRect()) return null;
-    const snapshot = this.runtime.workspaces.items.find(ws => ws.id === id)?.worktrees,
+    const snapshot = this.resolveWorkspace(id)?.workspace.worktrees,
       entries = this.worktree_card.entries(snapshot ?? null),
       checkout = entries[this.worktree_card.index(entries)];
     if (!checkout) return null;
-    return { workspace: id, path: checkout.path };
+    return { owner: id, path: checkout.path };
   }
   /** The checkout the agent list lights: the worktree browsed in the
    * overview, else where the launcher starts agents. */
   private spotlight(): sidebar.Spotlight | null {
-    return this.browsingWorktree() ?? this.agent_launcher?.spotlight() ?? null;
+    const selected = this.browsingWorktree();
+    const owner = selected && this.resolveWorkspace(selected.owner);
+    if (selected && owner?.machine === this.machine) return { workspace: selected.owner, path: selected.path };
+    const spot = this.agent_launcher?.spotlight();
+    return spot ? { ...spot, workspace: this.workspaceRef(spot.workspace) } : null;
   }
   private worktreeAgentContains(x: number, y: number): boolean {
     const side = this.sidebarView([]);
@@ -10246,15 +10847,44 @@ export class Controller {
   /** Keeps a browsed worktree in the agent list. One with no agents gets its
    * newest conversations back as hibernated agents, or, with none, the agent
    * picker there; otherwise its first agent takes focus. */
+  private selectWorktreeOwner(owner: viewerRef.Workspace): boolean {
+    const resolved = this.resolveWorkspace(owner);
+    if (!resolved || this.stale(resolved.machine)) return false;
+    if (resolved.machine !== this.machine) this.onMachine(resolved.machine, { workspace: resolved.workspace.id });
+    return resolved.machine === this.machine;
+  }
+  private enterWorktreeAt(selection: viewerRef.Worktree, then: () => void = () => {}): void {
+    if (this.selectWorktreeOwner(selection.owner))
+      this.enterWorktree(
+        { workspace: this.resolveWorkspace(selection.owner)!.workspace.id, path: selection.path },
+        then,
+      );
+  }
   /** Shows a worktree's agents, bringing back asleep the ones it had, then
    * runs `then`, unless the user has gone elsewhere meanwhile. */
   private enterWorktree(selection: worktreeAgents.Selection, then: () => void = () => {}): void {
+    this.worktree_card.pending_enter = null;
     const snapshot = this.runtime.workspaces.items.find(ws => ws.id === selection.workspace)?.worktrees;
     if (!snapshot || !worktrees.linked(snapshot).some(e => e.path === selection.path)) return;
-    const live = this.agentEntries(selection.workspace).some(e => worktreeAgents.belongs(snapshot, selection.path, e)),
-      asleep = live
-        ? []
-        : worktreeAgents.conversations(snapshot, selection.path, this.mergedHistory(), this.openSessions());
+    this.switchWorkspace(selection.workspace);
+    const live = this.machineAgents(selection.workspace).some(({ entry: e }) =>
+      worktreeAgents.belongs(snapshot, selection.path, e),
+    );
+    if (!live && this.launch_previews.history.pending) {
+      const owner = this.workspaceRef(selection.workspace);
+      if (this.worktreeDetail() !== owner) this.openWorktreeCard(owner, true);
+      this.worktree_card.pinned = true;
+      this.worktreeCard();
+      this.worktree_card.select(selection.path);
+      const here = this.here();
+      this.worktree_card.pending_enter = () => {
+        if (here()) this.enterWorktree(selection, then);
+      };
+      return;
+    }
+    const asleep = live
+      ? []
+      : worktreeAgents.conversations(snapshot, selection.path, this.mergedHistory(), this.openSessions());
     if (!live && asleep.length === 0) {
       if (this.current().id !== selection.workspace) this.switchWorkspace(selection.workspace);
       this.sidebar_open = true;
@@ -10343,17 +10973,19 @@ export class Controller {
     this.folded_groups = this.folded_groups.filter(id => id !== selection.workspace);
     if (this.current().id !== selection.workspace) this.switchWorkspace(selection.workspace);
     this.closeMenu();
-    // Its agents may all be in folded sections; those open.
-    const ws = this.runtime.workspaces.items.find(ws => ws.id === selection.workspace);
-    for (const e of this.agentEntries(selection.workspace))
-      if (worktreeAgents.listedWorktree(ws?.worktrees ?? null, e.target as OrderTarget, e.cwd) === selection.path)
-        this.folded_sections.delete(this.shownSection(e));
+    if (this.prefs.agentSort() === "activity") {
+      // Its agents may all be in folded sections; those open.
+      const ws = this.runtime.workspaces.items.find(ws => ws.id === selection.workspace);
+      for (const { entry } of this.machineAgents(selection.workspace))
+        if (worktreeAgents.listedWorktree(ws?.worktrees ?? null, entry.target, entry.cwd) === selection.path)
+          this.folded_sections.delete(this.shownSection(agentRows.qualify(entry, this.machine.id)));
+    }
     this.sidebar_rows.discard();
     const entries = this.sidebarEntries();
     const index = entries.findIndex(
       e =>
         sidebar.isAgent(e.target) &&
-        e.worktree?.workspace === selection.workspace &&
+        e.worktree?.workspace === this.workspaceRef(selection.workspace) &&
         e.worktree.path === selection.path,
     );
     if (focus && index >= 0) this.selectAgent(entries[index].target);
@@ -10362,15 +10994,17 @@ export class Controller {
   }
   /** The section an agent's row shows in, from its entry in a workspace's list. */
   private shownSection(e: Entry): Section {
-    return e.starred
-      ? "starred"
-      : this.agent_since.shown(agentKey(e.target as OrderTarget), agentSections.section(e), e.focused);
+    return e.starred ? "starred" : this.agent_since.shown(sidebar.agentId(e)!, agentSections.section(e), e.focused);
   }
   private worktreeRect(): Rect | null {
-    const id = this.worktreeDetail();
-    if (id === null) return null;
-    const ws = this.runtime.workspaces.items.find(w => w.id === id);
-    const badge = sidebar.worktreeBadge(this.sidebarView([]), this.workspaceRows(), this.rowKey(id)),
+    const owner = this.resolveWorkspace(this.worktreeDetail());
+    if (!owner) return null;
+    const ws = owner.workspace;
+    const badge = sidebar.worktreeBadge(
+        this.sidebarView([]),
+        this.workspaceRows(),
+        this.workspaceRef(ws.id, owner.machine),
+      ),
       shown = worktreeTooltip.listing(ws?.worktrees ?? null, this.worktree_card);
     return worktreeTooltip.geometry(
       this.width,
@@ -10384,12 +11018,13 @@ export class Controller {
   }
   private worktreeHoverContains(x: number, y: number): boolean {
     const rect = this.worktreeRect();
-    if (!rect) return false;
+    const owner = this.resolveWorkspace(this.worktree_card.workspace);
+    if (!rect || !owner) return false;
     if (rect.contains(x, y)) return true;
     const badge = sidebar.worktreeBadge(
       this.sidebarView([]),
       this.workspaceRows(),
-      this.rowKey(this.worktree_card.workspace!),
+      this.workspaceRef(owner.workspace.id, owner.machine),
     );
     return badge !== null && worktreeTooltip.between(rect, badge, x, y);
   }
@@ -10399,7 +11034,7 @@ export class Controller {
       row = detail === null ? null : this.rowOf(detail);
     return row && row.machine === machine && !this.stale(machine) ? row.id : null;
   }
-  resourceDetail(): number | null {
+  resourceDetail(): viewerRef.Workspace | null {
     const pinned = this.resource_card.pinned ? this.resource_card.workspace : null;
     if (this.prefs.resources.enabled && pinned !== null && this.rowResources(pinned) !== null) return pinned;
     if (!this.prefs.resources.enabled || !this.link_tooltip.shown || this.link_tooltip.target === null) return null;
@@ -10467,7 +11102,7 @@ export class Controller {
     const card = this.git_card,
       id = card.pinned ? card.workspace : this.link_tooltip.shown ? (this.link_tooltip.target?.git ?? null) : null;
     if (id === null || id !== card.workspace) return null;
-    const ws = this.workspaceEntries().find(w => w.id === id);
+    const ws = this.workspaceRows().find(w => w.id === id);
     return ws && ws.git_push.phase !== "failed" ? ws : null;
   }
   private gitRect(ws: sidebar.WorkspaceEntry): Rect | null {
@@ -10572,7 +11207,7 @@ export class Controller {
   private checkoutPane(ws: sidebar.WorkspaceEntry): Pane | null {
     const linked = new Set(worktrees.linked(ws.worktrees).map(c => c.path));
     const panes = this.runtime.panes.filter(p => {
-      if (this.runtime.workspaces.owner(p.id)?.id !== ws.id) return false;
+      if (this.workspaceRef(this.runtime.workspaces.owner(p.id)?.id ?? 0) !== ws.id) return false;
       const cwd = this.agentFolder(p);
       return (cwd === ws.cwd || cwd.startsWith(ws.cwd + i18n.t`/`)) && !linked.has(cwd);
     });
@@ -10619,23 +11254,94 @@ export class Controller {
     if (this.corgi_setup) return !this.corgi_setup.draggingIntensity();
     return this.hoverIdle();
   }
+  /** The file a link in `pane` names on its machine, once checked: a path
+   * from the folder its agent or shell works in, or a file:// link. An
+   * image shows its picture in the link's card rather than a peek. */
+  private linkFile(uri: string, path: boolean, pane: Pane | null): LinkedFile | null {
+    if (pane === null) return null;
+    const ref = fileRef.parse(uri, path, this.machine.remote ? null : undefined);
+    if (!ref) return null;
+    const status = this.file_refs.get(ref, pane.agent.cwd || pane.cwd);
+    return status.kind === "file" ? { path: status.path, ref, image: linkThumbnail.isImage(status.path) } : null;
+  }
+  private hoveredFile(link: linkTooltip.Link): LinkedFile | null {
+    return this.linkFile(
+      link.uri,
+      link.path === true,
+      this.runtime.panes.find(p => p.terminal === link.source) ?? null,
+    );
+  }
+  /** The peek open over a file's name, and where it is. */
+  private fileCard(): { peek: filePeek.Peek; rect: Rect } | null {
+    const target = this.link_tooltip.target,
+      link = target?.link;
+    if (!target?.file || !link || !this.link_tooltip.shown || !this.linkHoverIdle() || this.paste_card) return null;
+    if (this.ui_mouse_down && this.file_press === null) return null;
+    if (!linkTooltip.sameLink(this.linkAt(link.x, link.y), link)) return null;
+    const peek = this.file_peeks.current,
+      rect = filePeek.geometry(this.width, this.height, link);
+    return peek && rect ? { peek, rect } : null;
+  }
+  /** Whether the pointer is still on the file name whose peek waits to open. */
+  private waitsOnFile(x: number, y: number): boolean {
+    const target = this.link_tooltip.target;
+    return target?.file === true && !this.link_tooltip.shown && linkTooltip.sameLink(this.linkAt(x, y), target.link);
+  }
+  /** Opens the peek's file in a pane: at the body row clicked, else at the line its text named. */
+  private openPeek(peek: filePeek.Peek, row: number | null): void {
+    // The row that asks whether to scan for a far line starts the scan; the peek stays.
+    if (row !== null && peek.hit(row)?.kind === "find") {
+      peek.find();
+      this.dirty = true;
+      return;
+    }
+    const line = row !== null ? peek.lineAt(row) : peek.ref.line;
+    this.link_tooltip.cancel();
+    this.file_peeks.clear();
+    void this.openFile(peek.path, line ?? peek.ref.line, line === peek.ref.line ? peek.ref.column : null);
+  }
+  /** How a pane on `machine` runs Corgi: as this viewer runs, or on another
+   * computer as its daemon does, which also puts itself first on a pane's PATH. */
+  private corgiOn(machine: Machine): string[] {
+    return machine.remote ? [machine.executable || "corgi"] : corgiCommand();
+  }
+  /** Opens `path` in `corgi __view`, split beside the focused pane. */
+  private async openFile(path: string, line: number | null, column: number | null): Promise<void> {
+    const argv = [...this.corgiOn(this.machine), "__view", path];
+    if (line !== null) argv.push("--line", String(line));
+    if (column !== null) argv.push("--column", String(column));
+    try {
+      await this.create("horizontal", dirname(path), "exec " + shellWords(argv), basename(path));
+    } catch (error) {
+      const name = basename(path),
+        reason = errors.name(error) ?? i18n.t`unknown error`;
+      this.notice(i18n.t` Couldn't open ${name}: ${reason}`);
+    }
+  }
   private linkCard(): linkTooltip.Card | null {
     const link = this.link_tooltip.target?.link;
+    if (this.link_tooltip.target?.file) return null;
     if (!link || !this.link_tooltip.shown || !this.linkHoverIdle() || this.paste_card || this.ui_mouse_down)
       return null;
     const source = this.linkAt(link.x, link.y);
     if (!linkTooltip.sameLink(source, link)) return null;
-    let thumbnail = this.linkThumbnail(link.uri);
+    let thumbnail = this.linkThumbnail(link);
     if (thumbnail) thumbnail = linkTooltip.fit(this.width, this.height, link, thumbnail);
     return { link, copied: this.link_tooltip.copied_until > milliTimestamp(), thumbnail };
   }
-  /** The thumbnail of the image `uri` links to, where the host shows Kitty
-   * images and reports its cell size; it starts loading on first ask. */
-  private linkThumbnail(uri: string): linkTooltip.Thumbnail | null {
+  /** The thumbnail of the image `link` names on its pane's machine, where
+   * the host shows Kitty images and reports its cell size; it starts
+   * loading on first ask. */
+  private linkThumbnail(link: linkTooltip.Link): linkTooltip.Thumbnail | null {
     const cell = this.cell_pixels;
-    return this.supports_kitty_graphics && cell ? this.thumbnails.get(uri, cell) : null;
+    if (!this.supports_kitty_graphics || !cell) return null;
+    const file = this.hoveredFile(link);
+    return file?.image ? this.thumbnails.get(file.path, this.filesOn(this.machine).files, cell) : null;
   }
   private linkHoverContains(x: number, y: number): boolean {
+    const file = this.fileCard();
+    if (file)
+      return file.rect.contains(x, y) || linkTooltip.sameLink(this.linkAt(x, y), this.link_tooltip.target?.link);
     const card = this.linkCard();
     if (!card) return false;
     const rect = linkTooltip.geometry(this.width, this.height, card.link, card.thumbnail);
@@ -10645,6 +11351,39 @@ export class Controller {
   }
   /** The same copy-button capture for every terminal showing a link card. */
   private async linkMouse(button: number, x: number, y: number, release: boolean): Promise<boolean> {
+    // The file peek scrolls under the wheel and opens its file on a click.
+    const file = this.fileCard();
+    if (this.file_press !== null) {
+      this.pointer = { x, y };
+      this.dirty = true;
+      if (release) {
+        const press = this.file_press;
+        this.file_press = null;
+        if (button === 0 && file?.rect.contains(x, y) && filePeek.bodyRow(file.rect, x, y) === press.row)
+          this.openPeek(file.peek, press.row);
+      }
+      return true;
+    }
+    // The wheel scrolls it from its name too, where the pointer rests as it
+    // opens. A sideways scroll does nothing rather than close it.
+    if (
+      file &&
+      !release &&
+      (button & 0xe0) === 64 &&
+      (file.rect.contains(x, y) || linkTooltip.sameLink(this.linkAt(x, y), this.link_tooltip.target?.link))
+    ) {
+      if ((button & 2) === 0) filePeek.wheel(file.peek, (button & 1) === 0);
+      this.pointer = { x, y };
+      this.dirty = true;
+      return true;
+    }
+    if (file?.rect.contains(x, y) && !release) {
+      if (button === 0) this.file_press = { row: filePeek.bodyRow(file.rect, x, y) };
+      else if (button !== 35) return false;
+      this.pointer = { x, y };
+      this.dirty = true;
+      return true;
+    }
     const card = this.linkCard(),
       rect = card ? linkTooltip.geometry(this.width, this.height, card.link, card.thumbnail) : null;
     if (this.link_copy_press !== null) {
@@ -10669,10 +11408,13 @@ export class Controller {
   /** Movement arms hover; clicks, drags and scrolling dismiss it. */
   private moveHover(button: number, x: number, y: number, release: boolean): void {
     const moved = this.pointer === null || this.pointer.x !== x || this.pointer.y !== y;
+    if (moved && !release && isHover(button)) this.reserveLink(x, y);
     if (!release && isHover(button)) {
       if (
         moved &&
         !this.linkHoverContains(x, y) &&
+        // Moving along a file's name keeps its peek's wait.
+        !this.waitsOnFile(x, y) &&
         (this.signin ||
           (!this.resourceHoverContains(x, y) && !this.worktreeHoverContains(x, y) && !this.gitHoverContains(x, y)))
       ) {
@@ -10689,6 +11431,35 @@ export class Controller {
       this.pointer = { x, y };
       this.dirty = true;
     }
+  }
+  /** A link to another machine's loopback, under the pointer, reserves its
+   * port here, so the host terminal's Cmd+click opens it forwarded. */
+  private reserveLink(x: number, y: number, moved = true): void {
+    if (!this.machines.some(m => m.forwards)) return;
+    // The machine card hides the links beneath it.
+    const covered = this.corgi_setup !== null || !!this.connection_card?.rect.contains(x, y),
+      port = covered ? null : this.portLinkAt(x, y),
+      machine = port?.machine ?? this.machine,
+      url = port?.url ?? (covered ? null : (this.linkAt(x, y)?.uri ?? null));
+    for (const m of this.machines) m.forwards?.hover(m === machine ? url : null, moved);
+  }
+  /** The sidebar link under the pointer, on a row or in its open menu, with the row's machine. */
+  private portLinkAt(x: number, y: number): { machine: Machine; url: string } | null {
+    const rows = this.workspaceRows(),
+      menu = this.port_menu;
+    const ws = menu
+      ? rows.find(row => row.id === menu.workspace)
+      : sidebar.portWorkspace(this.sidebarView([]), rows, x, y);
+    if (!ws) return null;
+    const index = menu ? menu.hit(ws, this.width, this.height, x, y) : sidebar.urlCount(ws) === 1 ? 0 : null,
+      url = index === null ? null : sidebar.workspaceUrl(ws, index),
+      machine = this.rowOf(ws.id)?.machine;
+    return url !== null && machine ? { machine, url } : null;
+  }
+  /** The machine a sidebar row's links open on, when this viewer can open
+   * them: this computer's, or a remote one's it forwards from. */
+  private portMachine(ws: WorkspaceEntry): Machine | null {
+    return ws.remote_links && !ws.link_forwards ? null : (this.rowOf(ws.id)?.machine ?? null);
   }
   private linkTooltipReady(): boolean {
     let target: linkTooltip.Target | null = null;
@@ -10718,9 +11489,7 @@ export class Controller {
             this.git_card.anchor = { x: pointer.x, y: pointer.y };
           }
         }
-        const worktree = this.shownRow(
-          sidebar.worktreeAt(this.sidebarView([]), this.workspaceRows(), pointer.x, pointer.y),
-        );
+        const worktree = sidebar.worktreeAt(this.sidebarView([]), this.workspaceRows(), pointer.x, pointer.y);
         if (
           worktree &&
           worktreeTooltip.geometry(
@@ -10731,42 +11500,56 @@ export class Controller {
             worktrees.linked(worktree.worktrees).length,
           )
         ) {
-          target = { worktree: worktree.id };
-          this.worktree_card.workspace = worktree.id;
+          const owner = worktree.id;
+          target = { worktree: owner };
+          this.setWorktreeOwner(owner);
           this.worktree_card.anchor = pointer.y;
         }
         const entries = this.sidebarEntries();
         // The host may leave its last mouse report at the window edge.
         if (pointer.x > 0) {
           const entry = sidebar.agentAt(this.sidebarView(entries), entries, pointer.x, pointer.y);
-          if (entry && !this.away(entry.target)) target = { conversation: entry.conversation, agent: entry.target };
+          if (entry && sidebar.isAgent(entry.target) && !this.away(entry.target))
+            target = { conversation: entry.conversation, agent: entry.target };
         }
       }
       const link = !this.paste_card ? this.linkAt(pointer.x, pointer.y) : null;
-      if (link && linkTooltip.geometry(this.width, this.height, link)) {
+      const file = link ? this.hoveredFile(link) : null;
+      if (link && file && !file.image && filePeek.geometry(this.width, this.height, link)) {
+        target = { link, file: true };
+        // Read while the peek waits to open.
+        this.file_peeks.get(file.path, file.ref, this.filesOn(this.machine).files);
+      } else if (link && (!link.path || file?.image) && linkTooltip.geometry(this.width, this.height, link)) {
         target = { link };
         // Loads while the card waits to open.
-        this.linkThumbnail(link.uri);
+        this.linkThumbnail(link);
       }
     }
+    if (!target?.file) this.file_peeks.clear();
     return this.link_tooltip.ready(target, milliTimestamp());
   }
   frame(): string {
     const frame = this.compose(false);
     return typeof frame === "string" ? frame : frame.text();
   }
+  /** When the last frame composed changes with time alone, in `Date.now()`
+   * time; Infinity when it holds still. */
+  nextFrame(): number {
+    return this.next_frame;
+  }
   compose(retain = true): composition.Output {
+    this.next_frame = Infinity;
     if (this.paste_progress && Date.now() >= this.paste_progress.until) this.paste_progress = null;
-    const hide = this.images.begin() + this.tab_icons.begin() + this.signal_bars.begin();
+    // Each frame lists its pictures anew; presenting it shows the host the change.
+    const pictures = this.host.images.frame(this.cell_pixels ?? { width: 1, height: 1 });
+    this.pictures = this.supports_kitty_graphics && this.cell_pixels ? pictures : null;
+    this.images.begin();
     const retained = retain ? new composition.Frame() : undefined;
     const frame = this.renderFrame(retained);
     this.saveReviews();
-    const writes = this.images.end() + this.tab_icons.end() + this.signal_bars.end();
-    if (writes) this.queueEffect({ write_terminal: writes });
-    const prefix = hide ? "\x1b[?2026h" + hide : "",
-      suffix = hide ? "\x1b[?2026l" : "";
-    if (!retained?.panes.length) return prefix + frame + suffix;
-    return retained.finish(frame, prefix, suffix);
+    this.images.end();
+    if (!retained?.panes.length) return frame;
+    return retained.finish(frame);
   }
   private renderFrame(retained?: composition.Frame): string {
     this.refreshPRSearch();
@@ -10824,25 +11607,21 @@ export class Controller {
     if (this.inline_rename) {
       const open = this.inline_rename,
         covered = this.name_dialog !== null || (this.hasMenu() && this.sidebar_focus === null);
-      if (covered || this.sidebarView(entries).fieldRect(this.renameTarget(open.target), this.workspaceRows()) === null)
+      if (covered || this.sidebarView(entries).fieldRect(open.target, this.workspaceRows()) === null)
         this.closeInlineRename();
     }
     const tooltip_ready = this.linkTooltipReady();
     const link_card = tooltip_ready ? this.linkCard() : null;
+    const file_card = tooltip_ready ? this.fileCard() : null;
     // The prompt's pasted image under the pointer shares the link card's picture.
     const previewed = this.prompt.previewed(),
-      pictures = this.supports_kitty_graphics && this.cell_pixels !== null;
+      pictures = this.cell_pixels !== null ? this.pictures : null;
     this.prompt_preview = previewed
-      ? { pictures, thumbnail: pictures ? this.thumbnails.get(pathToFileURL(previewed).href, this.cell_pixels!) : null }
+      ? { pictures, thumbnail: pictures ? this.thumbnails.get(previewed, fileAccess.here, this.cell_pixels!) : null }
       : null;
-    const thumbnail = this.thumbnails.sync(link_card?.thumbnail ?? this.prompt_preview?.thumbnail ?? null);
-    if (thumbnail) this.queueEffect({ write_terminal: thumbnail });
     const detail = this.resourceDetail();
     // Another machine's row reads from that machine.
-    const readings =
-      this.machines.length > 1 && detail !== null
-        ? (this.rowResources(detail) ?? this.runtime.resources)
-        : this.runtime.resources;
+    const readings = detail !== null ? (this.rowResources(detail) ?? this.runtime.resources) : this.runtime.resources;
     if (detail !== null) {
       const rect = this.resourceRect();
       const freeze =
@@ -10872,6 +11651,7 @@ export class Controller {
     const review_width = this.reviewFullscreen() ? this.width : this.sidebarView([]).panel,
       review_focused = this.keyboard === "review" && review_width > 0,
       ghost_width = this.review.ghosted ? review_width || this.ghostWidth(git_ws) : 0;
+    this.syncFilePanes();
     return render.frame(
       this.layoutView(),
       this.runtime.panes,
@@ -10894,21 +11674,33 @@ export class Controller {
         iterm2_pointer: this.host.iterm2_pointer,
         link_tooltip: tooltip_ready,
         link_card,
+        file_peek: file_card
+          ? { rect: file_card.rect, draw: w => filePeek.draw(w, file_card.rect, file_card.peek, this.pointer) }
+          : null,
+        file_pane: (pane, rect, w, dim) => {
+          const hosted = this.file_panes.get(pane),
+            at = this.pointer,
+            hover = at && rect.contains(at.x, at.y) ? at.y - rect.y : null;
+          hosted?.draw(w, rect.x, rect.y, rect.w, rect.h, hover, dim);
+          return hosted !== null;
+        },
+        file_link: (pane, link) => this.linkFile(link.uri, link.path === true, this.pane(pane)) !== null,
         startup_waits: this.runtime.startup_waits,
         startup_card: this.startup_card,
         resources: readings,
         resource_hover: this.link_tooltip.target?.resource ?? null,
         resource_card: (tooltip_ready || this.resource_card.pinned) && detail !== null ? this.resource_card : null,
         connection_card: this.connection_card,
+        link_forwards: this.machine.forwards,
         sync_notice: this.sync_notice,
         pane_opening: this.openingFocus() !== null,
-        signal_bars: this.supports_kitty_graphics ? this.signal_bars : null,
         signal_bars_hidden: this.hide_connection_signals,
+        animate: at_ms => void (this.next_frame = Math.min(this.next_frame, at_ms)),
         git_hover: this.hoverIdle() ? this.git_hover : null,
         grip_hover: this.grip_hover,
         git_card: (tooltip_ready || this.git_card.pinned) && git_ws ? this.git_card : null,
         worktree_card: this.worktreeCard(),
-        row_key: id => this.rowKey(id),
+
         worktree_spotlight: this.spotlight(),
         message:
           this.agent_picker && (this.width < 40 || this.height < 13)
@@ -10940,13 +11732,13 @@ export class Controller {
         docking: this.dockingPreview(),
         dialog: this.name_dialog,
         archive_dialog: this.archive_dialog,
-        inline_rename: this.renameState(),
+        inline_rename: this.inline_rename,
         sidebar_open: this.sidebar_open,
         sidebar_drawer: this.sidebar_focus?.drawer ?? null,
         corgi_badge: this.corgi_badge,
         supports_kitty_graphics: this.supports_kitty_graphics,
         images: this.images,
-        tab_icons: this.supports_kitty_graphics ? this.tab_icons : null,
+        pictures: this.pictures,
         cell_pixels: this.cell_pixels,
         dragged_workspace:
           this.workspace_drag && this.workspace_drag.preview !== null
@@ -11077,7 +11869,6 @@ export class Controller {
    * the pointer for a moment.
    * A turn starting or ending marks its checkout to be read again. */
   private readAhead(entries: sidebar.Entry[]): void {
-    if (!this.reviewable) return;
     const now = Date.now();
     let turned = false;
     for (const p of this.runtime.panes) {
@@ -11093,11 +11884,11 @@ export class Controller {
       for (const id of this.summary_turns.keys()) if (!this.pane(id)) this.summary_turns.delete(id);
     const panes = new Set<number>();
     const focused = this.focused();
-    const at = focused ? entries.findIndex(e => "pane" in e.target && e.target.pane === focused.id) : -1;
+    const at = focused ? entries.findIndex(e => e.target === viewerRef.pane(this.machine.id, focused.id)) : -1;
     if (at >= 0)
       for (const i of [at, at - 1, at + 1]) {
         const target = entries[i]?.target;
-        if (target && "pane" in target) panes.add(target.pane);
+        if (viewerRef.isPane(target) && !this.away(target)) panes.add(viewerRef.parts(target).id);
       }
     const pointer = this.pointer;
     const hover = pointer && pointer.x > 0 ? this.checkoutAt(entries, pointer.x, pointer.y) : null;
@@ -11120,8 +11911,9 @@ export class Controller {
     const found = this.sidebarView(entries).hit(x, y),
       e = found.tag === "entry" ? entries[found.entry] : undefined;
     if (!e || e.exit !== null) return null;
-    if ("worktree" in e.target) return e.worktree?.ghost ? null : e.target.worktree;
-    const p = "pane" in e.target ? this.pane(e.target.pane) : null;
+    if (sidebar.isHeading(e.target) && "worktree" in e.target)
+      return e.worktree?.ghost || this.away(e.target) ? null : e.target.worktree;
+    const p = viewerRef.isPane(e.target) && !this.away(e.target) ? this.pane(viewerRef.parts(e.target).id) : null;
     return p ? this.agentFolder(p) : null;
   }
   /** Where a pane's agent works, as its review reads and the launcher's
@@ -11131,17 +11923,17 @@ export class Controller {
     const cwd = p.agent.cwd.length > 0 ? p.agent.cwd : p.cwd;
     return worktreeAgents.folder(this.runtime.workspaces.owner(p.id)?.worktrees ?? null, { pane: p.id }, cwd);
   }
-  /** This computer's git reads the review panel's and the menus' checkouts,
-   * so a remote machine's, which are on another computer, aren't read. */
-  private get reviewable(): boolean {
-    return !this.machine.remote;
+  /** Whether a menu's Review changes has nothing to read in `cwd`: it is
+   * known to be outside git. */
+  private reviewMissing(cwd: string): boolean {
+    return this.review_summaries.inCheckout(cwd) === false;
   }
   /** The menus' line for `cwd`'s changes, read ahead. */
   private summary(cwd: string): ReturnType<typeof this.review_summaries.get> {
-    return this.reviewable ? this.review_summaries.get(cwd) : null;
+    return this.review_summaries.get(cwd);
   }
   private reviewTarget(p = this.focused()): panel.Target | null {
-    if (!p || !this.reviewable) return null;
+    if (!p) return null;
     const agent = p.agent;
     return {
       pane: p.id,
@@ -11159,13 +11951,13 @@ export class Controller {
   }
   /** Opens the panel, gives it the keyboard, and then closes it. */
   private toggleReview(): void {
+    this.closeWorktreeCard();
     this.followReview();
     if (!this.review.open) return this.openReview();
     if (this.keyboard !== "review" && !this.review.remote) return this.giveKeyboard("review");
     this.closeReview();
   }
   private openReview(): void {
-    if (!this.reviewable) return this.notice(i18n.t` Review changes on the remote machine`);
     this.review.follow(this.reviewTarget());
     this.review.show();
     if (!this.review.remote && !this.review.fullscreen) this.review.toggleFullscreen();
@@ -11376,11 +12168,6 @@ function removalReason(err: string | null): string {
   }
 }
 const preview_changed = i18n.t`The commits to push changed. Review them and push again.`;
-/** Input held for a task, at most; the same bound pane input has. */
-/** Where `marker`, an ASCII sequence, first appears in `bytes` from `from`, or -1. */
-function indexOfBytes(bytes: number[], marker: string, from: number): number {
-  return Buffer.from(bytes).indexOf(marker, from, "latin1");
-}
 /** Shows `row`'s YOLO as `enabled` in `launch`. */
 function showYolo(launch: LauncherMenu, row: LauncherRow, enabled: boolean): void {
   const id = Row.profile(row);
@@ -11411,7 +12198,7 @@ function onFocusedPane(name: string): boolean {
   }
 }
 /** Room for each machine's workspace ids in a sidebar row's id. */
-const machine_stride = 2 ** 32;
+
 /** The connection went before the reply came, so the request may have run. */
 function lost(error: unknown): boolean {
   switch (errors.name(error)) {
@@ -11440,7 +12227,7 @@ function paneName(p: Pane): string {
   return p.label || p.agent.name || (p.agent.provider ? providerName(p.agent) : p.command || "shell");
 }
 /** An agent's state as the prompt tells its model. */
-function herdState(e: Entry): string {
+function herdState(e: sidebar.Data): string {
   if (e.attention === "needs_input") return "needs input";
   if (e.paused) return "paused";
   if (e.unread) return "finished, unread";

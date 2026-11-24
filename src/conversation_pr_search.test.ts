@@ -3,6 +3,7 @@ import { Popup, matches, type Entry } from "./conversation_pr_search";
 import { Terminal } from "./pane/terminal";
 import { Writer } from "./text";
 import { Dialog } from "./name_dialog";
+import * as viewerRef from "./viewer_ref";
 const ref = (number: number, repo = "acme/app", mentioned = 1) => ({
   number,
   repo,
@@ -11,7 +12,7 @@ const ref = (number: number, repo = "acme/app", mentioned = 1) => ({
 });
 const entry = (key: string, number: number, repo = "acme/app"): Entry => ({
   key,
-  target: { pane: Number(key) || 1 },
+  target: viewerRef.pane(1, Number(key) || 1),
   title: `Agent ${key}`,
   workspace: `Workspace ${key}`,
   refs: [ref(number, repo)],
@@ -48,11 +49,11 @@ test("numbers match incrementally, exact numbers rank first, and full links disa
 });
 test("a conversation appears once when several PRs match or multiple panes show it", () => {
   const one = { ...entry("1", 123), refs: [ref(1234), ref(123)] },
-    second = { ...one, target: { pane: 2 } };
+    second = { ...one, target: viewerRef.pane(1, 2) };
   expect(matches([one, second], "123")).toHaveLength(1);
   expect(matches([one, second], "123")[0].ref.number).toBe(123);
-  const headless = { ...entry("3", 123), target: { headless: 7 } };
-  expect(matches([one, headless], "123").map(e => e.target)).toEqual([{ pane: 1 }, { headless: 7 }]);
+  const headless = { ...entry("3", 123), target: viewerRef.headless(1, 7) };
+  expect(matches([one, headless], "123").map(e => e.target)).toEqual([viewerRef.pane(1, 1), viewerRef.headless(1, 7)]);
 });
 test("query changes reset selection, snapshot updates preserve it, and disappearing results stay in bounds", () => {
   const p = new Popup(),

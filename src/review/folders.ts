@@ -5,6 +5,11 @@ import { TextArea, type Line } from "../text_area";
 import { codepointWidth, displayWidth } from "../text";
 
 export type Lister = (path: string) => Promise<string[]>;
+export type Access = { list: Lister; home(): string };
+export function path(base: string, typed: string, home: string): string {
+  if (typed === "~" || typed.startsWith("~/")) return home ? resolve(home, "." + typed.slice(1)) : typed;
+  return resolve(base, typed);
+}
 async function directories(path: string): Promise<string[]> {
   const entries = await readdir(path, { withFileTypes: true });
   const folders = await Promise.all(
@@ -44,7 +49,7 @@ export class Input extends TextArea {
     readonly base: string,
     private changed: () => void = () => {},
     private list: Lister = directories,
-    private home = process.env.HOME ?? "",
+    private home: string | (() => string) = process.env.HOME ?? "",
   ) {
     super(!base || base.endsWith("/") ? base : base + "/", false);
   }
@@ -54,8 +59,7 @@ export class Input extends TextArea {
       prefix = this.text.slice(0, cut + 1),
       query = this.text.slice(cut + 1),
       typed = prefix || (this.text === "~" ? "~" : "."),
-      expanded = typed === "~" || typed.startsWith("~/") ? this.home + typed.slice(1) : typed,
-      parent = resolve(this.base, expanded);
+      parent = path(this.base, typed, typeof this.home === "string" ? this.home : this.home());
     this.selected = null;
     this.matches = [];
     this.problem = null;

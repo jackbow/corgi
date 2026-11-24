@@ -148,8 +148,11 @@ export const operations = [
   "pane.paste",
   "pane.idle",
   "pane.agent",
+  "pane.view",
   "conversation.list",
   "conversation.acknowledge",
+  "conversation.grep",
+  "conversation.grep.cancel",
   "pane.surface",
   "server.reload",
   "recovery.save",
@@ -165,6 +168,20 @@ export const operations = [
   "process.signal",
   "worktree.add",
   "git.branches",
+  "review.read",
+  "review.diffs",
+  "review.summary",
+  "review.recognize",
+  "file.stat",
+  "file.read",
+  "file.count",
+  "file.scan",
+  "file.thumbnail",
+  "job.poll",
+  "job.cancel",
+  "folder.list",
+  "folder.find",
+  "folder.open",
   "onboarding.status",
   "onboarding.handoff",
   "onboarding.copy",
@@ -183,6 +200,7 @@ export const operations = [
   "headless.stop",
   "headless.send",
   "headless.events",
+  "headless.handoff",
   "headless.search",
   "headless.memory",
   "theme",
@@ -708,6 +726,8 @@ const stream = {
   worktree_detail: ["?u32", null],
   resources: ["bool", true],
   resources_hash: ["?u64", null],
+  /** The viewer opens links in a browser, for the `open-url` action. */
+  links: ["bool", false],
   /** How often a stream with nothing new still sends a frame, to show it's
    * alive. A viewer slow to call a link stalled, as over SSH, asks for fewer. */
   heartbeat_ms: ["u32", 250],
@@ -767,7 +787,7 @@ const requests = {
   "launcher.models": { row: "string", workspace: ["u32", 0], cwd: ["string", ""] },
   "link.resume": { link: "string" },
   "session.locate": { pane: "u32" },
-  "session.snapshot": { resources: ["?bool", null] },
+  "session.snapshot": { resources: ["?bool", null], worktree_detail: ["?u32", null] },
   "viewer.watch": { viewer: "u32" },
   "agent.subscribe": launch,
   "agent.preview": launch,
@@ -789,6 +809,7 @@ const requests = {
     worktree_detail: ["?u32", null],
     resources: ["bool", true],
     resources_hash: ["?u64", null],
+    links: ["bool", false],
   },
   "viewer.surfaces": {},
   "viewer.stream": stream,
@@ -809,6 +830,9 @@ const requests = {
   "pane.paste": { pane: "u32", text: ["?string", null], image: ["?image", null] },
   "pane.idle": { workspace: ["u32", 0], cwd: ["string", ""], first: ["bool", false] },
   "pane.agent": { pane: "u32", provider: ["?provider", null], owner: "i32" },
+  // `corgi __view` names the file its pane's viewers show in its place, or
+  // with no path takes the pane back; see file_pane.ts.
+  "pane.view": { pane: "u32", path: ["?string", null], line: ["?u32", null], column: ["?u32", null] },
   "pane.acknowledge": {
     pane: "u32",
     session: ["string", ""],
@@ -824,6 +848,35 @@ const requests = {
     conversation: ["?u32", null],
   },
   "conversation.acknowledge": { conversation: "u32", through: "u64", attention_at: ["?i64", null] },
+  /** `corgi grep`'s options; null takes its default. `workspace` is a workspace
+   * ID, an absolute path or '*'; `max_age` is in seconds, 0 for any age. A new
+   * search with this connection's `key` ends its last; `stream` sends matches
+   * as `{more: true}` messages before the reply. */
+  "conversation.grep": {
+    patterns: "[]string",
+    workspace: "string",
+    case: ["sensitive|insensitive|smart", "sensitive"],
+    fixed: ["bool", false],
+    word: ["bool", false],
+    line: ["bool", false],
+    max_age: ["?u32", null],
+    session: ["string", ""],
+    provider: ["?provider", null],
+    limit: ["?u32", null],
+    max_count: ["?u32", null],
+    context: ["?u32", null],
+    before: ["?u32", null],
+    after: ["?u32", null],
+    tools: ["bool", false],
+    only_matching: ["bool", false],
+    list: ["bool", false],
+    count: ["bool", false],
+    max_line: ["?u32", null],
+    key: ["string", ""],
+    stream: ["bool", false],
+  },
+  /** Ends this connection's search under `key`, whether or not one runs. */
+  "conversation.grep.cancel": { key: "string" },
   "pane.surface": { pane: "u32" },
   "server.reload": { executable: ["string", ""] },
   "inference.configure": {
@@ -845,6 +898,33 @@ const requests = {
   "worktree.brief": { workspace: "u32" },
   "worktree.add": { workspace: "u32", path: "string", branch: "string", base: "string" },
   "git.branches": { workspace: "u32" },
+  // The review panel's reads; review/service.ts decodes the JSON fields.
+  "review.read": {
+    cwd: "string",
+    scope: "all|uncommitted|commits",
+    pick: ["?string", null],
+    reference: ["?json", null],
+    known: ["string", ""],
+  },
+  "review.diffs": { root: "string", source: "json", files: "json" },
+  "review.summary": { cwd: "string" },
+  "review.recognize": { cwd: "string", hashes: "[]string" },
+  // The file peek's and a link's picture's reads on another computer; see
+  // file_access.ts. `id` is the file's as `file.stat` found it: a path that
+  // names another refuses.
+  "file.stat": { path: "string", cwd: ["string", ""] },
+  "file.read": { path: "string", id: "string", at: "u64", length: "u32" },
+  "file.count": { path: "string", id: "string", from: "u64", to: "u64" },
+  // Starts the job that finds a line, scanning `budget` bytes at most
+  // before it answers that the line is far; see jobs.ts for `wait`.
+  "file.scan": { path: "string", id: "string", line: "u64", budget: "u64", wait: ["u32", 0] },
+  "file.thumbnail": { path: "string", width: "u32", height: "u32", pixels: "u32" },
+  // A job's news, waiting up to `wait` ms for some, and its end; see jobs.ts.
+  "job.poll": { job: "u32", wait: ["u32", 0] },
+  "job.cancel": { job: "u32" },
+  "folder.list": { path: "string" },
+  "folder.find": { path: "string" },
+  "folder.open": { path: "string" },
   "onboarding.status": { operation: "u64" },
   "onboarding.handoff": { operation: "u64", viewer_pgid: "i32", socket: ["string", ""] },
   "onboarding.copy": {
@@ -878,6 +958,9 @@ const requests = {
   "headless.send": { provider: "provider", session: "string", input: "json" },
   // A reader in a pane passes its pane, which claims the session: closing the pane stops it.
   "headless.events": { provider: "provider", session: "string", after: ["u64", 0], pane: ["?u32", null] },
+  // Part of a prompt card's conversation, written on this computer once the
+  // last part comes, for a `corgi __chat` pane here to go on with; see handoff_upload.ts.
+  "headless.handoff": { upload: "string", part: "string", last: "bool" },
   "headless.search": { id: "u32", search: "json" },
   "headless.memory": {
     id: "u32",
@@ -919,6 +1002,23 @@ type WireFields<T> = unknown extends T
         ? { [K in keyof T as T[K] extends (...args: never[]) => unknown ? never : K]: Wire<T[K]> }
         : T;
 
+/** What `corgi grep --json` prints, a line at a time. */
+export type GrepLine = import("./conversation_grep_output").Line;
+/** Matches a streamed `conversation.grep` sends before its reply. */
+export type GrepMore = { more: true; matches: GrepLine[] };
+export type GrepSummary = {
+  /** Conversations in scope. */
+  candidates: number;
+  /** Conversations sent. */
+  returned: number;
+  /** The byte budget ran out before every match was sent. */
+  truncated: boolean;
+  /** `limit` conversations matched, so more may. */
+  limit_reached: boolean;
+  /** Conversations that may hold more than `max_count` matches. */
+  capped_sessions: number;
+  warnings: string[];
+};
 // RPC success payloads; opaque provider messages remain unknown.
 type SessionSnapshot = ReturnType<typeof import("./session").snapshot>;
 type ViewerSnapshot = ReturnType<typeof import("./session").viewerSnapshot>;
@@ -940,12 +1040,16 @@ export interface ReplyPayloads {
     build_id: string;
     executable: string;
     release_version: string;
+    release_commit?: string;
+    source_hash?: string;
     update_abi: string;
     handoff?: number;
     transports?: { http: number; websocket: string };
     viewer_protocol?: number;
     instance?: string;
     content_encoding?: Encoding;
+    /** The computer whose viewer moved this machine to this build. */
+    moved_by?: string;
   };
   ping: Ok & { pid: number };
   /** From the daemon that took over, once it listens. */
@@ -994,6 +1098,7 @@ export interface ReplyPayloads {
   "viewer.list": Ok & { viewers: ViewerInfo[] };
   "viewer.image": Ok & { data: string | null };
   "pane.agent": Ok;
+  "pane.view": Ok;
   "pane.paste": Ok & { pasted: boolean };
   "pane.idle": Ok & { panes: { pane: number; tab: number; workspace: number; cwd: string }[] };
   "pane.surface": {
@@ -1004,6 +1109,9 @@ export interface ReplyPayloads {
     surface: SurfaceView["surface"];
   };
   "conversation.list": Ok & { conversations: SessionSnapshot["conversations"] };
+  /** With `stream`, `matches` holds only what no `GrepMore` carried. */
+  "conversation.grep": Ok & { matches: GrepLine[]; summary: GrepSummary };
+  "conversation.grep.cancel": Ok;
   "recovery.save": Ok & { path: string };
   "inference.configure": Ok & { saved: boolean; inference: import("./corgi_setup").Status };
   "shell.configure": Ok & { shell: import("./launch/command").ShellStatus };
@@ -1012,6 +1120,26 @@ export interface ReplyPayloads {
   "retry.cancel": Ok;
   "worktree.remove": Ok & { removal: number };
   "git.branches": Ok & { branches: Awaited<ReturnType<typeof import("./worktree_add").branches>> };
+  "review.read": Ok & import("./review/service").Read;
+  "review.diffs": Ok & import("./review/service").Diffs;
+  "review.summary": Ok & import("./review/service").Summary;
+  "review.recognize": Ok & { found: [string, string][] };
+  "file.stat": Ok & import("./file_access").Info;
+  "file.read": Ok & { data: string };
+  "file.count": Ok & { lines: number };
+  "file.scan": Ok & { job: number } & import("./jobs").Poll;
+  // Its PNGs in base64.
+  "file.thumbnail": Ok &
+    Omit<import("./picture").Picture, "png" | "frames"> & {
+      png: string;
+      frames: (Omit<import("./picture").Frame, "png"> & { png: string })[];
+    };
+  "job.poll": Ok & import("./jobs").Poll;
+  "job.cancel": Ok;
+  /** The folders in `path`, null when it can't be read, and the daemon's home folder. */
+  "folder.list": Ok & { folders: string[] | null; home: string };
+  "folder.find": Ok & { deepest: import("./folders").Deepest | null };
+  "folder.open": Ok & { opened: import("./folders").Opened };
   "onboarding.status": Ok & {
     progress: import("./import/onboarding").Progress | ReturnType<import("./import/herdr").Manager["status"]>;
   };
@@ -1036,6 +1164,8 @@ export interface ReplyPayloads {
   "workspace.switch": Ok & { viewer: number; queued: true };
   "headless.start": Ok & { session: string; provider: Provider };
   "headless.list": Ok & { sessions: unknown[] };
+  // Where the handoff was written, once its last part came; "" before.
+  "headless.handoff": Ok & { path: string };
   "headless.events": Ok & {
     events: unknown[];
     transcript: string;

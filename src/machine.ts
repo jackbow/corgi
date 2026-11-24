@@ -13,6 +13,7 @@ import { Tasks } from "./tasks";
 import type * as protocol from "./protocol";
 import type { WorkspaceEntry } from "./sidebar";
 import * as worktreeAgents from "./worktree_agents";
+import type { Forwards } from "./port_forwards";
 
 /** A conversation a pane stopped running, and when, in seconds. */
 export interface Stopped {
@@ -40,7 +41,7 @@ export interface Presence {
   /** Why it isn't online. */
   description: string;
   /** Its rows from the last time it answered, until it does this session. */
-  cached: WorkspaceEntry[];
+  cached: WorkspaceEntry<number>[];
   /** It has answered at some point, so rows name their machine. */
   seen: boolean;
   /** Its cached rows came from a daemon since replaced; their ids name
@@ -69,7 +70,10 @@ export class Profiles {
     return !this.reading && now >= this.retry_at && (again || !this.read);
   }
 }
+let next_machine_id = 1;
 export class Machine {
+  /** Identity within this viewer process, kept across reconnects and never reused. */
+  readonly id = next_machine_id++;
   order_scope = "";
   collapsed = false;
   runtime = new Runtime();
@@ -87,8 +91,13 @@ export class Machine {
    * what it names is there. */
   waiting_controls: protocol.Wire<protocol.Control[]> = [];
   control_check: ControlCheck | null = null;
-  /** Links point at the daemon's machine, so they're shown, not opened here. */
+  /** Links point at the daemon's machine: its sidebar's port links are shown,
+   * not opened here. A pane's link opens here, forwarded if it's to localhost. */
   remote_links = false;
+  /** Its loopback ports forwarded here, for its links to localhost; none for this computer. */
+  forwards: Forwards | null = null;
+  /** The Corgi the daemon runs, as its hello said: what its panes run Corgi as. */
+  executable = "";
   /** Workspace ids whose group is folded in the grouped "All" list. */
   folded_groups: number[] = [];
   /** Its worktree groups' folds, and the worktree being browsed. */
@@ -102,6 +111,8 @@ export class Machine {
   running: launcherResume.Open[] = [];
   stopped: Stopped[] = [];
   profiles = new Profiles();
+  /** A remote machine's home folder, as its daemon last said; "" until then. */
+  home = "";
   presence: () => Presence = () => ({
     online: true,
     link_quality: null,

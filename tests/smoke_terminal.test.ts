@@ -36,6 +36,25 @@ const read = (pw: string, types: string) =>
   `\x1b]5522;type=read:id=corgi:pw=${b64(pw)}:name=${b64("Corgi")};${b64(types)}\x1b\\`;
 
 class SmokeTerminal extends Runtime {
+  async test_streaming_paste_keeps_its_destination_when_an_overlay_opens() {
+    const received = join(this.temp.name, "streaming-input");
+    await this.open_pane({ command: `stty raw -echo; printf STREAM_READY; exec cat > ${quote(received)}` });
+    const existing = new Set((await this.rpc({ op: "viewer.list" })).viewers.map((viewer: any) => viewer.id));
+    const pty = await Pty.spawn([EXE, "attach"], { env: this.env, cwd: this.temp.name, cols: 100, rows: 30 });
+    this.pty = pty;
+    await pty.waitFor("STREAM_READY");
+    pty.write("\x1b[200~first");
+    await this.until(() => existsSync(received) && file(received) === "first");
+    const viewer = (await this.rpc({ op: "viewer.list" })).viewers.find((viewer: any) => !existing.has(viewer.id));
+    await this.rpc({ op: "action", name: "connectivity", viewer: viewer.id });
+    await pty.waitFor("Esc close");
+    const tail = "second\x1b[0n\x1b";
+    pty.write(tail + "\x1b[201~");
+    await this.until(() => file(received) === "first" + tail);
+    pty.write("\x1b[27uafter");
+    await this.until(() => file(received) === "first" + tail + "after");
+  }
+
   async test_child_kitty_image_reaches_viewer_and_is_removed() {
     await this.childImage("\x1b_Ga=T,f=24,s=1,v=1,i=730140,c=4,r=2,C=1,q=2;/wAA\x1b\\", 32);
   }
@@ -63,17 +82,21 @@ process.stdin.on("data", () => process.stdout.write("\\x1b_Ga=d,d=I,i=730140,q=2
     await this.open_pane({ command: shellJoin([process.execPath, program]) });
     await this.client.request({ op: "badge", visible: true });
     await this.client.request({ op: "size", cols: 100, rows: 30, cell: { width: 8, height: 16 } });
-    const upload = `\x1b_Ga=t,t=d,f=32,s=32,v=${height},i=268435456`;
-    await this.until(() => this.client.events.some((event: any) => event.data?.includes(upload)));
-    await this.until(() => this.client.state.data.includes("\x1b_Ga=p,i=268435456"));
+    // Corgi sends the picture under an id of its own.
+    const sent_as = new RegExp(`\\x1b_Ga=t,t=d,f=32,s=32,v=${height},i=(\\d+)`);
+    const found = () => this.client.events.map((event: any) => sent_as.exec(event.data ?? "")).find(Boolean);
+    await this.until(() => found() !== undefined);
+    const id = found()![1],
+      upload = `\x1b_Ga=t,t=d,f=32,s=32,v=${height},i=${id}`;
+    await this.until(() => this.client.state.data.includes(`\x1b_Ga=p,i=${id}`));
     // A child's id must not overwrite Corgi's hover thumbnail id.
     this.assertNotIn("\x1b_Ga=p,i=730140", this.client.state.data);
     const sent = this.client.events.filter((event: any) => event.data?.includes(upload)).length;
     await this.client.poll();
     this.assertEqual(this.client.events.filter((event: any) => event.data?.includes(upload)).length, sent);
     await this.client.input("x");
-    await this.until(() => this.client.events.some((event: any) => event.data?.includes("\x1b_Ga=d,d=I,i=268435456")));
-    this.assertNotIn("\x1b_Ga=p,i=268435456", this.client.state.data);
+    await this.until(() => this.client.events.some((event: any) => event.data?.includes(`\x1b_Ga=d,d=I,i=${id}`)));
+    this.assertNotIn(`\x1b_Ga=p,i=${id}`, this.client.state.data);
   }
 
   async test_text_mark_paints_before_probe_without_uploading_a_badge() {

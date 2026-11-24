@@ -218,17 +218,21 @@ test("omp API credentials establish sign-in without a quota request", async () =
 });
 
 test.each(["pi", "omp"] as const)("closing %s cancels its native availability read", async provider => {
-  const client = provider === "pi" ? new Pi(root) : new Client(root),
+  let reading = () => {};
+  const read = new Promise<void>(resolve => (reading = resolve)),
+    client = provider === "pi" ? new Pi(root) : new Client(root),
     available = mockModels(provider, []).mockImplementation(
       (_account, quit) =>
         new Promise<never>((_resolve, reject) => {
+          reading();
           quit.abortSignal.addEventListener("abort", () => reject(Error("Cancelled")), { once: true });
         }),
     ),
     quit = new Quit();
   try {
     const pending = client.preview(quit);
-    expect(available).toHaveBeenCalled();
+    // It reads the folder's files first, however long the disk takes.
+    await read;
     client.close();
     expect((await pending).signed_in).toBeNull();
     expect(quit.aborted).toBe(false);

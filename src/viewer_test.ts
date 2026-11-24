@@ -7,19 +7,22 @@ import { Controller } from "./controller";
 import { attach } from "./host";
 import * as preferences from "./preferences";
 import { parse as parseAction } from "./action";
-import { advance } from "./clock";
+import { advance, milliTimestamp } from "./clock";
+import { Parser } from "./terminal_input";
 import type { Transport } from "./mirror";
 
 export async function runTest(connection: Transport, cwd = process.cwd()): Promise<void> {
   const view = new Controller(connection, attach(preferences.load(), null));
   const lines = new Lines();
+  const parser = new Parser();
   try {
     view.loadPreferences();
     const bell = { seq: await viewer.open(view, cwd, {}) };
     for (let line = await lines.next(); line !== null; line = await lines.next()) {
       const value = parse(line);
       const op = typeof value.op === "string" ? value.op : "";
-      if (op === "input") await view.input(Buffer.from(typeof value.data === "string" ? value.data : ""));
+      if (op === "input")
+        await view.input(parser.feed(Buffer.from(typeof value.data === "string" ? value.data : ""), milliTimestamp()));
       // Viewer-local delays (hover cards, command preview debounce).
       if (op === "advance") advance(Number(value.ms));
       if (op === "action") {
@@ -29,7 +32,7 @@ export async function runTest(connection: Transport, cwd = process.cwd()): Promi
         );
         // viewer.sync execs the new binary before perform; the driver cannot.
         if (act.name === "relaunch") throw Error("UnknownAction");
-        await view.perform(act);
+        await view.invoke(act);
       }
       if (op === "focus") view.focusPane(typedId(value, "pane"));
       if (op === "workspace") view.switchWorkspace(typedId(value, "workspace"));
@@ -44,6 +47,7 @@ export async function runTest(connection: Transport, cwd = process.cwd()): Promi
         if (value.cell) view.cell_pixels = { width: Number(value.cell.width), height: Number(value.cell.height) };
         view.input_state.active = true;
       }
+      await view.input(parser.expire(milliTimestamp()));
       await view.expireInput();
       // Each reply shows what the request led to, daemon work included.
       await view.settle();
@@ -55,6 +59,8 @@ export async function runTest(connection: Transport, cwd = process.cwd()): Promi
       // second exchange captures the newly reconciled selection immediately.
       if (active) active = await viewer.sync(view, bell, false);
       const frame = view.frame();
+      // As on a screen drawn from nothing: the images sent, every picture placed.
+      const pictures = view.host.images.present();
       await viewer.presented(view);
       const model = view.current().model;
       process.stdout.write(
@@ -62,7 +68,7 @@ export async function runTest(connection: Transport, cwd = process.cwd()): Promi
           bell_seq: bell.seq,
           bell_kind: view.last_bell_kind,
           rang: BigInt(bell.seq) !== BigInt(previous_bell),
-          data: frame,
+          data: frame + pictures.redraw,
           workspace: view.current().id,
           tab: model.count > 0 ? model.tabs[view.layoutView().selection.active].id : 0,
           pane: view.focused()?.id ?? 0,
@@ -71,7 +77,10 @@ export async function runTest(connection: Transport, cwd = process.cwd()): Promi
           renaming: view.inline_rename !== null,
           drawer: view.sidebar_focus?.drawer ?? null,
           detached: !active,
-          effects: view.effects,
+          effects: [
+            ...view.effects,
+            ...[pictures.send, pictures.free].filter(Boolean).map(write_terminal => ({ write_terminal })),
+          ],
         }) + "\n",
       );
       view.clearEffects();

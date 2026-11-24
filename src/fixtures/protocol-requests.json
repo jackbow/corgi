@@ -103,11 +103,28 @@
     "provider": "claude",
     "owner": 123
   },
+  "pane.view": {
+    "pane": 1,
+    "path": "/tmp/app.ts",
+    "line": 42,
+    "column": 7
+  },
   "conversation.list": {},
   "conversation.acknowledge": {
     "conversation": 1,
     "through": 2,
     "attention_at": 3
+  },
+  "conversation.grep": {
+    "patterns": ["needle"],
+    "workspace": "*",
+    "fixed": true,
+    "case": "insensitive",
+    "max_count": 1,
+    "stream": true
+  },
+  "conversation.grep.cancel": {
+    "key": "resume"
   },
   "pane.surface": {
     "pane": 1
@@ -161,6 +178,67 @@
   },
   "git.branches": {
     "workspace": 1
+  },
+  "review.read": {
+    "cwd": "/work/corgi",
+    "scope": "all"
+  },
+  "review.diffs": {
+    "root": "/work/corgi",
+    "source": { "kind": "worktree", "against": "4b825dc642cb6eb9a060e54bf8d69288fbee4904" },
+    "files": [{ "path": "src/a.ts", "from": null, "kind": "modified" }]
+  },
+  "review.summary": {
+    "cwd": "/work/corgi"
+  },
+  "review.recognize": {
+    "cwd": "/work/corgi",
+    "hashes": ["4b825dc"]
+  },
+  "file.stat": {
+    "path": "src/app.ts",
+    "cwd": "/work/corgi"
+  },
+  "file.read": {
+    "path": "/work/corgi/server.log",
+    "id": "2049:1835011",
+    "at": 0,
+    "length": 65536
+  },
+  "file.scan": {
+    "path": "/work/corgi/server.log",
+    "id": "2049:1835011",
+    "line": 1200000,
+    "budget": 33554432,
+    "wait": 250
+  },
+  "file.count": {
+    "path": "/work/corgi/server.log",
+    "id": "2049:1835011",
+    "from": 262144,
+    "to": 524288
+  },
+  "file.thumbnail": {
+    "path": "/tmp/paste/shot.png",
+    "width": 640,
+    "height": 480,
+    "pixels": 4000000
+  },
+  "job.poll": {
+    "job": 7,
+    "wait": 250
+  },
+  "job.cancel": {
+    "job": 7
+  },
+  "folder.list": {
+    "path": "/home/me"
+  },
+  "folder.find": {
+    "path": "/home/me/new"
+  },
+  "folder.open": {
+    "path": "/home/me/new"
   },
   "onboarding.status": {
     "operation": 1
@@ -253,6 +331,11 @@
     "after": 4,
     "provider": "codex",
     "pane": 3
+  },
+  "headless.handoff": {
+    "upload": "5f0c2a9e41b37d68",
+    "part": "{\"conversation\":null,\"incognito\":false,\"choice\":null,",
+    "last": false
   },
   "theme": {
     "theme": {

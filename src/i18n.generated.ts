@@ -104,6 +104,8 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
       `  corgi start                   在后台启动运行服务`,
     '["  corgi update                  download and safely apply an update"]': () =>
       `  corgi update                  下载并安全应用更新`,
+    '["  corgi update --channel stable|test  follow stable or test releases"]': () =>
+      `  corgi update --channel stable|test  跟随稳定版或测试版发布`,
     '["  corgi update auto on|off      control automatic updates"]': () =>
       `  corgi update auto on|off      开启或关闭自动更新`,
     '["  corgi update rollback         return to the previous release"]': () =>
@@ -129,6 +131,7 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '[" ",": on (not saved for next start)"]': v0 => ` ${v0}：已开启（下次启动不保留）`,
     '[" "," / resources "]': v0 => ` ${v0} / 资源 `,
     '[" "," is busy: rename it once its input box is empty"]': v0 => ` ${v0} 正忙：输入框为空后才能重命名`,
+    '[" "," isn\'t connected"]': v0 => ` ${v0} 未连接`,
     '[" "," session ",": ",". Inspect: corgi headless events "," ",""]': (v0, v1, v2, v3, v4) =>
       ` ${v0} 会话 ${v1}：${v2}。查看详情：corgi headless events ${v3} ${v1}`,
     '[" ",": waiting for a session ID"]': v0 => ` ${v0}：等待会话 ID`,
@@ -152,6 +155,7 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '[" Couldn\'t add ",": ",""]': (v0, v1) => ` 无法添加 ${v0}：${v1}`,
     '[" Couldn\'t mark as unread"]': () => ` 无法标为未读`,
     '[" Couldn\'t open ",": ",""]': (v0, v1) => ` 无法打开 ${v0}：${v1}`,
+    '[" Couldn\'t open it: ",""]': v0 => ` 无法打开：${v0}`,
     '[" Couldn\'t remove ",": ",""]': (v0, v1) => ` 无法移除 ${v0}：${v1}`,
     '[" Deleted "," and its folder"]': v0 => ` 已删除 ${v0} 及其文件夹`,
     '[" Dings enabled"]': () => ` 提示音已开启`,
@@ -194,7 +198,6 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '[" Resource readings are off: turn them on in Corgi setup → Resources"]': () =>
       ` 资源监测已关闭：可在 Corgi 设置 → 资源中开启`,
     '[" Retry !"]': () => ` 重试 !`,
-    '[" Review changes on the remote machine"]': () => ` 请在远程机器上审查更改`,
     '[" Save · Ctrl+S "]': () => ` 保存 · Ctrl+S `,
     '[" Search "," agent"]': v0 => ` 搜索 ${v0} 个智能体`,
     '[" Search "," agents"]': v0 => ` 搜索 ${v0} 个智能体`,
@@ -228,6 +231,9 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '[" any key closes "]': () => ` 按任意键关闭 `,
     '[" back "]': () => ` 返回 `,
     '[" c Clone "]': () => ` c 克隆 `,
+    '[" click to open · scroll "]': () => ` 点击打开 · 滚动 `,
+    '[" click to open · scroll to the end to follow "]': () => ` 点击打开 · 滚到底部继续跟随 `,
+    '[" click to open · scroll up to pause "]': () => ` 点击打开 · 向上滚动暂停 `,
     '[" close "]': () => ` 关闭 `,
     '[" cpu "]': () => ` CPU `,
     '[" disk I/O "]': () => ` 磁盘 I/O `,
@@ -242,12 +248,14 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '[" sort: "]': () => ` 排序：`,
     '[" vs "]': () => ` 对比 `,
     '[" z: files "]': () => ` z：文件 `,
+    '[" · "," new"]': v0 => ` · 新增 ${v0} 行`,
     '[" · "," here"]': v0 => ` · 此处 ${v0} 个`,
     '[" · none here"]': () => ` · 此处没有`,
     '[" · over SSH"]': () => ` · 通过 SSH`,
     '[" · release to cancel"]': () => ` · 松开取消`,
     '[" … "," more characters"]': v0 => ` … 另有 ${v0} 个字符`,
     '[" ⇧⌘-click opens · click copies "]': () => ` ⇧⌘-点击打开 · 点击复制 `,
+    '[" ⋯ "," lines "]': v0 => ` ⋯ ${v0} 行 `,
     '[" ✓  Copied"]': () => ` ✓  已复制`,
     '[" ⧉  Copy link"]': () => ` ⧉  复制链接`,
     '[" ⧉  Copy path"]': () => ` ⧉  复制路径`,
@@ -271,6 +279,7 @@ export const messages: Record<TranslatedLocale, Record<string, Message>> = {
     '[""," in ",""]': (v0, v1) => `${v1} 中有 ${v0} 个`,
     '[""," leading process "," ago"]': (v0, v1) => `前 ${v0} 个进程 · ${v1}前`,
     '[""," leading processes "," ago"]': (v0, v1) => `前 ${v0} 个进程 · ${v1}前`,
+    '[""," lines · ",""]': (v0, v1) => `${v0} 行 · ${v1}`,
     '[""," more outside "," · tab widens"]': (v0, v1) => `${v1} 之外另有 ${v0} 个 · Tab 扩大范围`,
     '[""," note"]': v0 => `${v0} 条批注`,
     '[""," notes"]': v0 => `${v0} 条批注`,
@@ -446,6 +455,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Cached"]': () => `已缓存`,
     '["Can\'t read "," (","); repair it before saving preferences."]': (v0, v1) =>
       `无法读取 ${v0}（${v1}）；请先修复它再保存偏好设置。`,
+    '["Can\'t read it: ",""]': v0 => `无法读取：${v0}`,
     '["Can\'t read this folder"]': () => `无法读取此文件夹`,
     '["Can\'t save "," (",")"]': (v0, v1) => `无法保存 ${v0}（${v1}）`,
     '["Cancel"]': () => `取消`,
@@ -554,6 +564,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Couldn\'t read the workspace list. R refreshes."]': () => `无法读取工作区列表。按 R 刷新。`,
     '["Couldn\'t read this source. R retries."]': () => `无法读取此来源。按 R 重试。`,
     '["Couldn\'t save the pasted image"]': () => `无法保存粘贴的图片`,
+    '["Couldn\'t search conversations"]': () => `无法搜索会话`,
     '["Create "]': () => `创建 `,
     '["Create a merge commit"]': () => `创建合并提交`,
     '["Create workspace"]': () => `创建工作区`,
@@ -596,6 +607,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Edit workspace"]': () => `编辑工作区`,
     '["Edit ›"]': () => `编辑 ›`,
     '["Edit, delete"]': () => `编辑、删除`,
+    '["Empty file"]': () => `空文件`,
     '["Enable auto-merge for ","?"]': v0 => `为 ${v0} 启用自动合并？`,
     '["Ended"]': () => `已结束`,
     '["Enlarge panel to view PR"]': () => `扩大面板以查看 PR`,
@@ -621,6 +633,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Find agents"]': () => `查找智能体`,
     '["Find it in the sidebar"]': () => `在侧栏中找到它`,
     '["Finding ","…"]': v0 => `正在查找 ${v0}…`,
+    '["Finding line ","… "," of "," · "," lines"]': (v0, v1, v2, v3) => `正在查找第 ${v0} 行… ${v1} / ${v2} · ${v3} 行`,
     '["Finished"]': () => `已完成`,
     '["Focus"]': () => `聚焦`,
     '["Focus a pane to review its checkout."]': () => `聚焦窗格以审查其代码目录。`,
@@ -747,6 +760,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Mark ready"]': () => `标记为就绪`,
     '["Mem"]': () => `内存`,
     '["Memory"]': () => `内存`,
+    '["Mentioned in "," more"]': v0 => `另有 ${v0} 个会话提到`,
     '["Merge"]': () => `合并`,
     '["Merge ","?"]': v0 => `合并 ${v0}？`,
     '["Merge now if requirements are met, otherwise enable auto-merge."]': () =>
@@ -850,6 +864,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Nothing is waiting"]': () => `没有等待中的任务`,
     '["Observed tokens"]': () => `已观测的 Token`,
     '["Off"]': () => `关闭`,
+    '["Older mentions not shown · type more to narrow"]': () => `较早的提及未显示 · 多输入几个字以缩小范围`,
     '["On"]': () => `开启`,
     '["Onboarding"]': () => `入门设置`,
     '["Open"]': () => `打开`,
@@ -859,6 +874,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Open an Issue on GitHub"]': () => `在 GitHub 上提交问题`,
     '["Open folder"]': () => `打开文件夹`,
     '["Open folder as workspace"]': () => `将文件夹作为工作区打开`,
+    '["Open link in browser"]': () => `在浏览器中打开链接`,
     '["Open the agent picker"]': () => `打开智能体选择器`,
     '["Open · jumps to its tab"]': () => `已打开 · 跳转到对应标签页`,
     '["Operations never auto-start a server."]': () => `操作不会自动启动服务端。`,
@@ -900,6 +916,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Prefix + classic splits"]': () => `前缀键 + 经典分屏`,
     '["Prefix + home row"]': () => `前缀键 + 基准键位`,
     '["Prefix [ "," ]  P change"]': v0 => `前缀键 [ ${v0} ]  P 更改`,
+    '["Prefix key"]': () => `前缀键`,
     '["Preparing your workspaces"]': () => `正在准备工作区`,
     '["Press P for portable Herdr prefix keys, or Esc to choose again."]': () =>
       `按 P 使用通用 Herdr 前缀键，或按 Esc 重新选择。`,
@@ -1001,6 +1018,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Search conversation text"]': () => `搜索对话文本`,
     '["Search models"]': () => `搜索模型`,
     '["Search models, agents and accounts"]': () => `搜索模型、代理和账户`,
+    '["Searching conversations…"]': () => `正在搜索会话…`,
     '["Select"]': () => `选择`,
     '["Select tab"]': () => `选择标签页`,
     '["Select workspace"]': () => `选择工作区`,
@@ -1106,12 +1124,15 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["This account is already being removed."]': () => `此账号正在移除中。`,
     '["This agent"]': () => `此智能体`,
     '["This commit changed nothing."]': () => `此提交没有更改。`,
+    '["This file is ",". Finding line "," may take a while."]': (v0, v1) =>
+      `此文件大小为 ${v0}。查找第 ${v1} 行可能需要一些时间。`,
     '["This folder has no commit to branch from"]': () => `此文件夹中没有可用于创建分支的提交`,
     '["This terminal"]': () => `此终端`,
     '["This terminal sends no paste events."]': () => `此终端不会发送粘贴事件。`,
     '["This viewer has no terminal to paste from."]': () => `此客户端没有可用于粘贴的终端。`,
     '["This viewer has no terminal."]': () => `此客户端没有终端。`,
     '["This workspace"]': () => `此工作区`,
+    '["Tip: tap twice to send it to the pane."]': () => `提示：按两次即可将此键发送到窗格。`,
     '["Title"]': () => `标题`,
     '["Today"]': () => `今天`,
     '["Toggle PR viewer"]': () => `切换 PR 查看器`,
@@ -1338,6 +1359,7 @@ ${v1} 使用该账号。
     '["file"]': () => `文件`,
     '["files"]': () => `文件`,
     '["find"]': () => `查找`,
+    '["first "," of ",""]': (v0, v1) => `前 ${v0} 个，共 ${v1} 个`,
     '["focus"]': () => `聚焦`,
     '["focus agents"]': () => `聚焦智能体`,
     '["fork"]': () => `派生`,
@@ -1409,6 +1431,9 @@ ${v1} 使用该账号。
     '["pick"]': () => `选择`,
     '["pin"]': () => `固定`,
     '["play"]': () => `游玩`,
+    '["q close  e edit  F follow  space page  g/G top/end"]': () => `q 关闭  e 编辑  F 跟随  space 翻页  g/G 顶部/底部`,
+    '["q close  e edit  z fold  Z fold all  space page  g/G top/end"]': () =>
+      `q 关闭  e 编辑  z 折叠  Z 全部折叠  space 翻页  g/G 顶部/底部`,
     '["rate limited"]': () => `已达速率限制`,
     '["ready"]': () => `就绪`,
     '["reconnecting"]': () => `重新连接中`,
@@ -1428,6 +1453,7 @@ ${v1} 使用该账号。
     '["search"]': () => `搜索`,
     '["search or create"]': () => `搜索或创建`,
     '["search titles, branches and messages"]': () => `搜索标题、分支和消息`,
+    '["searching…"]': () => `搜索中…`,
     '["select"]': () => `选择`,
     '["send"]': () => `发送`,
     '["send ",""]': v0 => `发送 ${v0} 条`,
@@ -1444,11 +1470,11 @@ ${v1} 使用该账号。
     '["stale"]': () => `数据已过期`,
     '["stalled"]': () => `无响应`,
     '["starred"]': () => `已收藏`,
-    '["switch to ",""]': v0 => `切换为 ${v0}`,
     '["tab"]': () => `标签页`,
     '["tab ",""]': v0 => `标签页 ${v0}`,
     '["term"]': () => `终端`,
     '["terminal graphics"]': () => `终端图形`,
+    '["the chat runs on ",""]': v0 => `该对话在 ${v0} 上运行`,
     '["the wonderful pi-tui"]': () => `出色的 pi-tui`,
     '["then"]': () => `然后`,
     '["then key"]': () => `再按键`,
@@ -1472,6 +1498,8 @@ ${v1} 使用该账号。
     '["untracked"]': () => `未跟踪`,
     '["unwrap"]': () => `取消换行`,
     '["use"]': () => `使用`,
+    '["use a single key chord, such as f9 or ctrl+space; Escape is reserved"]': () =>
+      `请使用单个组合键，例如 f9 或 ctrl+space；Escape 为保留键`,
     '["use a whole number from "," to ",""]': (v0, v1) => `请使用 ${v0} 到 ${v1} 之间的整数`,
     '["use one of ",""]': v0 => `请使用以下之一：${v0}`,
     '["wait"]': () => `等待`,
@@ -1484,6 +1512,7 @@ ${v1} 使用该账号。
     '["your account"]': () => `你的账号`,
     '["your terminal\'s"]': () => `终端配色`,
     '["— tokens"]': () => `— Token`,
+    '["‖ paused"]': () => `‖ 已暂停`,
     '["… "," done"]': v0 => `…已完成 ${v0} 项`,
     '["…"," more"]': v0 => `…另有 ${v0} 个`,
     '["‹ "," · Effort"]': v0 => `‹ ${v0} · 推理强度`,
@@ -1519,12 +1548,15 @@ ${v1} 使用该账号。
     '["↻ Resume available"]': () => `↻ 可恢复`,
     '["↻ resets in"]': () => `↻ 距离重置`,
     '["▶ Corgi (Activity summarizer)"]': () => `▶ Corgi（活动摘要）`,
+    '["▸ Find line ",""]': v0 => `▸ 查找第 ${v0} 行`,
     '["◇ Prefix = ",""]': v0 => `◇ 前缀键 = ${v0}`,
     '["○ Approval pending"]': () => `○ 等待批准`,
     '["○ Corgi (Activity summarizer)"]': () => `○ Corgi（活动摘要）`,
     '["● Changes requested"]': () => `● 已请求更改`,
     '["● Jump to who needs you"]': () => `● 跳转到需要你的智能体`,
     '["● Unresolved"]': () => `● 未解决`,
+    '["● following"]': () => `● 跟随中`,
+    '["● live"]': () => `● 实时`,
     '["✓ All checks passed"]': () => `✓ 所有检查均已通过`,
     '["✓ Already merged"]': () => `✓ 已合并`,
     '["✓ Approved"]': () => `✓ 已批准`,
@@ -1635,6 +1667,8 @@ ${v1} 使用该账号。
       `  corgi start                   バックグラウンドでランタイムを起動`,
     '["  corgi update                  download and safely apply an update"]': () =>
       `  corgi update                  更新をダウンロードして安全に適用`,
+    '["  corgi update --channel stable|test  follow stable or test releases"]': () =>
+      `  corgi update --channel stable|test  安定版かテスト版のリリースを追う`,
     '["  corgi update auto on|off      control automatic updates"]': () =>
       `  corgi update auto on|off      自動更新を切り替え`,
     '["  corgi update rollback         return to the previous release"]': () =>
@@ -1661,6 +1695,7 @@ ${v1} 使用该账号。
     '[" "," / resources "]': v0 => ` ${v0} / リソース `,
     '[" "," is busy: rename it once its input box is empty"]': v0 =>
       ` ${v0}は操作中です。入力欄を空にしてから名前を変更してください`,
+    '[" "," isn\'t connected"]': v0 => ` ${v0} は接続されていません`,
     '[" "," session ",": ",". Inspect: corgi headless events "," ",""]': (v0, v1, v2, v3, v4) =>
       ` ${v0}のセッション${v1}：${v2}。詳細：corgi headless events ${v3} ${v1}`,
     '[" ",": waiting for a session ID"]': v0 => ` ${v0}：セッションIDを待機中`,
@@ -1686,6 +1721,7 @@ ${v1} 使用该账号。
     '[" Couldn\'t add ",": ",""]': (v0, v1) => ` ${v0}を追加できませんでした：${v1}`,
     '[" Couldn\'t mark as unread"]': () => ` 未読にできませんでした`,
     '[" Couldn\'t open ",": ",""]': (v0, v1) => ` ${v0}を開けませんでした：${v1}`,
+    '[" Couldn\'t open it: ",""]': v0 => ` 開けませんでした: ${v0}`,
     '[" Couldn\'t remove ",": ",""]': (v0, v1) => ` ${v0}を削除できませんでした：${v1}`,
     '[" Deleted "," and its folder"]': v0 => ` ${v0}とそのフォルダーを削除しました`,
     '[" Dings enabled"]': () => ` 通知音を有効にしました`,
@@ -1730,7 +1766,6 @@ ${v1} 使用该账号。
     '[" Resource readings are off: turn them on in Corgi setup → Resources"]': () =>
       ` リソース表示はオフです。Corgi設定 → リソースで有効にできます`,
     '[" Retry !"]': () => ` 再試行 !`,
-    '[" Review changes on the remote machine"]': () => ` リモートマシンで変更をレビューしてください`,
     '[" Save · Ctrl+S "]': () => ` 保存 · Ctrl+S `,
     '[" Search "," agent"]': v0 => ` ${v0}エージェントを検索`,
     '[" Search "," agents"]': v0 => ` ${v0}エージェントを検索`,
@@ -1769,6 +1804,9 @@ ${v1} 使用该账号。
     '[" any key closes "]': () => ` 何かキーを押すと閉じます `,
     '[" back "]': () => ` 戻る `,
     '[" c Clone "]': () => ` c 複製 `,
+    '[" click to open · scroll "]': () => ` クリックで開く · スクロール `,
+    '[" click to open · scroll to the end to follow "]': () => ` クリックで開く · 末尾までスクロールで追従 `,
+    '[" click to open · scroll up to pause "]': () => ` クリックで開く · 上にスクロールで一時停止 `,
     '[" close "]': () => ` 閉じる `,
     '[" cpu "]': () => ` CPU `,
     '[" disk I/O "]': () => ` ディスクI/O `,
@@ -1783,12 +1821,14 @@ ${v1} 使用该账号。
     '[" sort: "]': () => ` 並べ替え：`,
     '[" vs "]': () => ` 対 `,
     '[" z: files "]': () => ` z: ファイル `,
+    '[" · "," new"]': v0 => ` · 新着${v0}行`,
     '[" · "," here"]': v0 => ` · この場所に${v0}件`,
     '[" · none here"]': () => ` · この場所にはありません`,
     '[" · over SSH"]': () => ` · SSH接続`,
     '[" · release to cancel"]': () => ` · 離すとキャンセル`,
     '[" … "," more characters"]': v0 => ` … 残り${v0}文字`,
     '[" ⇧⌘-click opens · click copies "]': () => ` ⇧⌘-クリックで開く · クリックでコピー `,
+    '[" ⋯ "," lines "]': v0 => ` ⋯ ${v0}行 `,
     '[" ✓  Copied"]': () => ` ✓  コピーしました`,
     '[" ⧉  Copy link"]': () => ` ⧉  リンクをコピー`,
     '[" ⧉  Copy path"]': () => ` ⧉  パスをコピー`,
@@ -1812,6 +1852,7 @@ ${v1} 使用该账号。
     '[""," in ",""]': (v0, v1) => `${v1}内に${v0}件`,
     '[""," leading process "," ago"]': (v0, v1) => `上位${v0}プロセス・${v1}前`,
     '[""," leading processes "," ago"]': (v0, v1) => `上位${v0}プロセス・${v1}前`,
+    '[""," lines · ",""]': (v0, v1) => `${v0}行 · ${v1}`,
     '[""," more outside "," · tab widens"]': (v0, v1) => `${v1}の外にほか${v0}件 · tabで範囲拡大`,
     '[""," note"]': v0 => `${v0}件のコメント`,
     '[""," notes"]': v0 => `${v0}件のコメント`,
@@ -1996,6 +2037,7 @@ ${v1} 使用该账号。
     '["Cached"]': () => `キャッシュ`,
     '["Can\'t read "," (","); repair it before saving preferences."]': (v0, v1) =>
       `${v0} を読み込めません（${v1}）。設定を保存する前に修正してください。`,
+    '["Can\'t read it: ",""]': v0 => `読み込めません: ${v0}`,
     '["Can\'t read this folder"]': () => `このフォルダーを読み込めません`,
     '["Can\'t save "," (",")"]': (v0, v1) => `${v0} を保存できません（${v1}）`,
     '["Cancel"]': () => `キャンセル`,
@@ -2111,6 +2153,7 @@ ${v1} 使用该账号。
     '["Couldn\'t read the workspace list. R refreshes."]': () => `ワークスペース一覧を読み取れませんでした。Rで更新。`,
     '["Couldn\'t read this source. R retries."]': () => `取り込み元を読み込めません。Rで再試行。`,
     '["Couldn\'t save the pasted image"]': () => `貼り付けた画像を保存できませんでした`,
+    '["Couldn\'t search conversations"]': () => `会話を検索できませんでした`,
     '["Create "]': () => `作成 `,
     '["Create a merge commit"]': () => `マージコミットを作成`,
     '["Create workspace"]': () => `ワークスペースを作成`,
@@ -2153,6 +2196,7 @@ ${v1} 使用该账号。
     '["Edit workspace"]': () => `ワークスペースを編集`,
     '["Edit ›"]': () => `編集 ›`,
     '["Edit, delete"]': () => `編集・削除`,
+    '["Empty file"]': () => `空のファイル`,
     '["Enable auto-merge for ","?"]': v0 => `${v0}の自動マージを有効にしますか？`,
     '["Ended"]': () => `終了`,
     '["Enlarge panel to view PR"]': () => `PRを表示するにはパネルを拡大`,
@@ -2180,6 +2224,7 @@ ${v1} 使用该账号。
     '["Find agents"]': () => `エージェントを探す`,
     '["Find it in the sidebar"]': () => `サイドバーに表示されます`,
     '["Finding ","…"]': v0 => `${v0} を検索中…`,
+    '["Finding line ","… "," of "," · "," lines"]': (v0, v1, v2, v3) => `${v0} 行目を検索中… ${v2} 中 ${v1} · ${v3} 行`,
     '["Finished"]': () => `完了`,
     '["Focus"]': () => `選択`,
     '["Focus a pane to review its checkout."]': () => `ペインを選択すると、その作業ディレクトリをレビューできます。`,
@@ -2309,6 +2354,7 @@ ${v1} 使用该账号。
     '["Mark ready"]': () => `レビュー可能にする`,
     '["Mem"]': () => `メモリ`,
     '["Memory"]': () => `メモリ`,
+    '["Mentioned in "," more"]': v0 => `ほかに ${v0} 件の会話で言及`,
     '["Merge"]': () => `マージ`,
     '["Merge ","?"]': v0 => `${v0}をマージしますか？`,
     '["Merge now if requirements are met, otherwise enable auto-merge."]': () =>
@@ -2414,6 +2460,7 @@ ${v1} 使用该账号。
     '["Nothing is waiting"]': () => `待機中の処理はありません`,
     '["Observed tokens"]': () => `観測されたトークン`,
     '["Off"]': () => `オフ`,
+    '["Older mentions not shown · type more to narrow"]': () => `古い言及は表示されていません · 入力を増やして絞り込む`,
     '["On"]': () => `オン`,
     '["Onboarding"]': () => `初期設定`,
     '["Open"]': () => `開く`,
@@ -2423,6 +2470,7 @@ ${v1} 使用该账号。
     '["Open an Issue on GitHub"]': () => `GitHubでIssueを作成`,
     '["Open folder"]': () => `フォルダーを開く`,
     '["Open folder as workspace"]': () => `フォルダーをワークスペースとして開く`,
+    '["Open link in browser"]': () => `ブラウザーでリンクを開く`,
     '["Open the agent picker"]': () => `エージェント選択を開く`,
     '["Open · jumps to its tab"]': () => `開いています · タブへ移動`,
     '["Operations never auto-start a server."]': () => `これらの操作でサーバーが自動起動することはありません。`,
@@ -2466,6 +2514,7 @@ ${v1} 使用该账号。
     '["Prefix + classic splits"]': () => `プレフィックス + 標準分割`,
     '["Prefix + home row"]': () => `プレフィックス + HJKL`,
     '["Prefix [ "," ]  P change"]': v0 => `プレフィックス [ ${v0} ]  P 変更`,
+    '["Prefix key"]': () => `プレフィックスキー`,
     '["Preparing your workspaces"]': () => `ワークスペースを準備中`,
     '["Press P for portable Herdr prefix keys, or Esc to choose again."]': () =>
       `Pで端末を選ばないHerdrキー、Escで選び直します。`,
@@ -2570,6 +2619,7 @@ ${v1} 使用该账号。
     '["Search conversation text"]': () => `会話の本文を検索`,
     '["Search models"]': () => `モデルを検索`,
     '["Search models, agents and accounts"]': () => `モデル、エージェント、アカウントを検索`,
+    '["Searching conversations…"]': () => `会話を検索中…`,
     '["Select"]': () => `選択`,
     '["Select tab"]': () => `タブを選択`,
     '["Select workspace"]': () => `ワークスペースを選択`,
@@ -2679,12 +2729,15 @@ ${v1} 使用该账号。
     '["This account is already being removed."]': () => `このアカウントはすでに削除中です。`,
     '["This agent"]': () => `このエージェント`,
     '["This commit changed nothing."]': () => `このコミットには変更がありません。`,
+    '["This file is ",". Finding line "," may take a while."]': (v0, v1) =>
+      `このファイルは ${v0} あります。${v1} 行目の検索には時間がかかることがあります。`,
     '["This folder has no commit to branch from"]': () => `このフォルダーには分岐元にできるコミットがありません`,
     '["This terminal"]': () => `この端末`,
     '["This terminal sends no paste events."]': () => `この端末は貼り付けイベントを送信しません。`,
     '["This viewer has no terminal to paste from."]': () => `このビューアーには貼り付け元の端末がありません。`,
     '["This viewer has no terminal."]': () => `このビューアーには端末がありません。`,
     '["This workspace"]': () => `このワークスペース`,
+    '["Tip: tap twice to send it to the pane."]': () => `ヒント: 2 回押すとペインに送信されます。`,
     '["Title"]': () => `タイトル`,
     '["Today"]': () => `今日`,
     '["Toggle PR viewer"]': () => `PRビューアーの表示切替`,
@@ -2914,6 +2967,7 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '["file"]': () => `ファイル`,
     '["files"]': () => `ファイル数`,
     '["find"]': () => `検索`,
+    '["first "," of ",""]': (v0, v1) => `${v1}件中最初の${v0}件`,
     '["focus"]': () => `フォーカス`,
     '["focus agents"]': () => `エージェントを選択`,
     '["fork"]': () => `分岐`,
@@ -2985,6 +3039,10 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '["pick"]': () => `選択`,
     '["pin"]': () => `固定`,
     '["play"]': () => `遊ぶ`,
+    '["q close  e edit  F follow  space page  g/G top/end"]': () =>
+      `q 閉じる  e 編集  F 追従  space ページ送り  g/G 先頭/末尾`,
+    '["q close  e edit  z fold  Z fold all  space page  g/G top/end"]': () =>
+      `q 閉じる  e 編集  z 折りたたむ  Z すべて折りたたむ  space ページ送り  g/G 先頭/末尾`,
     '["rate limited"]': () => `レート制限中`,
     '["ready"]': () => `準備完了`,
     '["reconnecting"]': () => `再接続中`,
@@ -3004,6 +3062,7 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '["search"]': () => `検索`,
     '["search or create"]': () => `検索または作成`,
     '["search titles, branches and messages"]': () => `タイトル、ブランチ、メッセージを検索`,
+    '["searching…"]': () => `検索中…`,
     '["select"]': () => `選択`,
     '["send"]': () => `送信`,
     '["send ",""]': v0 => `${v0}件送信`,
@@ -3020,11 +3079,11 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '["stale"]': () => `古い情報`,
     '["stalled"]': () => `応答待ち`,
     '["starred"]': () => `スター付き`,
-    '["switch to ",""]': v0 => `${v0}に切り替え`,
     '["tab"]': () => `タブ`,
     '["tab ",""]': v0 => `タブ${v0}`,
     '["term"]': () => `端末`,
     '["terminal graphics"]': () => `端末での画像表示`,
+    '["the chat runs on ",""]': v0 => `このチャットは ${v0} で動いています`,
     '["the wonderful pi-tui"]': () => `すばらしいpi-tui`,
     '["then"]': () => `続いて`,
     '["then key"]': () => `次のキー`,
@@ -3048,6 +3107,8 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '["untracked"]': () => `未追跡`,
     '["unwrap"]': () => `折り返しなし`,
     '["use"]': () => `使用`,
+    '["use a single key chord, such as f9 or ctrl+space; Escape is reserved"]': () =>
+      `f9 や ctrl+space などのキーの組み合わせを 1 つ指定してください。Escape は予約されています`,
     '["use a whole number from "," to ",""]': (v0, v1) => `${v0}〜${v1} の整数を指定してください`,
     '["use one of ",""]': v0 => `${v0} のいずれかを指定してください`,
     '["wait"]': () => `待機`,
@@ -3060,6 +3121,7 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '["your account"]': () => `アカウントの設定`,
     '["your terminal\'s"]': () => `端末の配色`,
     '["— tokens"]': () => `— トークン`,
+    '["‖ paused"]': () => `‖ 一時停止`,
     '["… "," done"]': v0 => `… ${v0}件完了`,
     '["…"," more"]': v0 => `…ほか${v0}件`,
     '["‹ "," · Effort"]': v0 => `‹ ${v0} · 推論量`,
@@ -3095,12 +3157,15 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '["↻ Resume available"]': () => `↻ 再開可能`,
     '["↻ resets in"]': () => `↻ リセットまで`,
     '["▶ Corgi (Activity summarizer)"]': () => `▶ Corgi（作業の要約）`,
+    '["▸ Find line ",""]': v0 => `▸ ${v0} 行目を検索`,
     '["◇ Prefix = ",""]': v0 => `◇ プレフィックス = ${v0}`,
     '["○ Approval pending"]': () => `○ 承認待ち`,
     '["○ Corgi (Activity summarizer)"]': () => `○ Corgi（作業の要約）`,
     '["● Changes requested"]': () => `● 変更のリクエストあり`,
     '["● Jump to who needs you"]': () => `● 対応待ちのエージェントへ`,
     '["● Unresolved"]': () => `● 未解決`,
+    '["● following"]': () => `● 追従中`,
+    '["● live"]': () => `● ライブ`,
     '["✓ All checks passed"]': () => `✓ すべてのチェックが成功`,
     '["✓ Already merged"]': () => `✓ マージ済み`,
     '["✓ Approved"]': () => `✓ 承認済み`,
@@ -3210,6 +3275,8 @@ Corgiに登録された全アカウントが対象になります。--accountで
       `  corgi start                   백그라운드 서비스 시작`,
     '["  corgi update                  download and safely apply an update"]': () =>
       `  corgi update                  업데이트 다운로드 후 안전하게 적용`,
+    '["  corgi update --channel stable|test  follow stable or test releases"]': () =>
+      `  corgi update --channel stable|test  안정 또는 테스트 릴리스 따르기`,
     '["  corgi update auto on|off      control automatic updates"]': () =>
       `  corgi update auto on|off      자동 업데이트 켜기 / 끄기`,
     '["  corgi update rollback         return to the previous release"]': () =>
@@ -3237,6 +3304,7 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '[" "," / resources "]': v0 => ` ${v0} / 리소스 `,
     '[" "," is busy: rename it once its input box is empty"]': v0 =>
       ` ${v0} 작업 중: 입력창이 비었을 때 이름을 변경하세요`,
+    '[" "," isn\'t connected"]': v0 => ` ${v0}에 연결되어 있지 않습니다`,
     '[" "," session ",": ",". Inspect: corgi headless events "," ",""]': (v0, v1, v2, v3, v4) =>
       ` ${v0} 세션 ${v1}: ${v2}. 확인: corgi headless events ${v3} ${v1}`,
     '[" ",": waiting for a session ID"]': v0 => ` ${v0}: 세션 ID 대기 중`,
@@ -3261,6 +3329,7 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '[" Couldn\'t add ",": ",""]': (v0, v1) => ` ${v0} 추가 실패: ${v1}`,
     '[" Couldn\'t mark as unread"]': () => ` 읽지 않음으로 표시할 수 없습니다`,
     '[" Couldn\'t open ",": ",""]': (v0, v1) => ` ${v0} 열기 실패: ${v1}`,
+    '[" Couldn\'t open it: ",""]': v0 => ` 열 수 없습니다: ${v0}`,
     '[" Couldn\'t remove ",": ",""]': (v0, v1) => ` ${v0} 제거 실패: ${v1}`,
     '[" Deleted "," and its folder"]': v0 => ` ${v0} 및 해당 폴더를 삭제했습니다`,
     '[" Dings enabled"]': () => ` 알림음 켜짐`,
@@ -3304,7 +3373,6 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '[" Resource readings are off: turn them on in Corgi setup → Resources"]': () =>
       ` 리소스 표시가 꺼져 있습니다: Corgi 설정 → 리소스에서 켜세요`,
     '[" Retry !"]': () => ` 재시도 !`,
-    '[" Review changes on the remote machine"]': () => ` 원격 컴퓨터에서 변경 사항을 리뷰하세요`,
     '[" Save · Ctrl+S "]': () => ` 저장 · Ctrl+S `,
     '[" Search "," agent"]': v0 => ` 에이전트 ${v0}개 검색`,
     '[" Search "," agents"]': v0 => ` 에이전트 ${v0}개 검색`,
@@ -3342,6 +3410,9 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '[" any key closes "]': () => ` 아무 키나 눌러 닫기 `,
     '[" back "]': () => ` 뒤로 `,
     '[" c Clone "]': () => ` c 복제 `,
+    '[" click to open · scroll "]': () => ` 클릭해 열기 · 스크롤 `,
+    '[" click to open · scroll to the end to follow "]': () => ` 클릭해 열기 · 끝까지 스크롤하면 따라가기 `,
+    '[" click to open · scroll up to pause "]': () => ` 클릭해 열기 · 위로 스크롤하면 일시 중지 `,
     '[" close "]': () => ` 닫기 `,
     '[" cpu "]': () => ` CPU `,
     '[" disk I/O "]': () => ` 디스크 I/O `,
@@ -3356,12 +3427,14 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '[" sort: "]': () => ` 정렬: `,
     '[" vs "]': () => ` 대비 `,
     '[" z: files "]': () => ` z: 파일 `,
+    '[" · "," new"]': v0 => ` · 새 ${v0}행`,
     '[" · "," here"]': v0 => ` · 여기 ${v0}개`,
     '[" · none here"]': () => ` · 여기에 없음`,
     '[" · over SSH"]': () => ` · SSH 연결`,
     '[" · release to cancel"]': () => ` · 손을 떼면 취소`,
     '[" … "," more characters"]': v0 => ` … ${v0}자 더`,
     '[" ⇧⌘-click opens · click copies "]': () => ` ⇧⌘-클릭 열기 · 클릭 복사 `,
+    '[" ⋯ "," lines "]': v0 => ` ⋯ ${v0}행 `,
     '[" ✓  Copied"]': () => ` ✓  복사됨`,
     '[" ⧉  Copy link"]': () => ` ⧉  링크 복사`,
     '[" ⧉  Copy path"]': () => ` ⧉  경로 복사`,
@@ -3385,6 +3458,7 @@ Corgiに登録された全アカウントが対象になります。--accountで
     '[""," in ",""]': (v0, v1) => `${v1}에 ${v0}개`,
     '[""," leading process "," ago"]': (v0, v1) => `상위 프로세스 ${v0}개 · ${v1} 전`,
     '[""," leading processes "," ago"]': (v0, v1) => `상위 프로세스 ${v0}개 · ${v1} 전`,
+    '[""," lines · ",""]': (v0, v1) => `${v0}행 · ${v1}`,
     '[""," more outside "," · tab widens"]': (v0, v1) => `${v1} 밖에 ${v0}개 더 · Tab 범위 넓히기`,
     '[""," note"]': v0 => `메모 ${v0}개`,
     '[""," notes"]': v0 => `메모 ${v0}개`,
@@ -3570,6 +3644,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Cached"]': () => `캐시됨`,
     '["Can\'t read "," (","); repair it before saving preferences."]': (v0, v1) =>
       `${v0}을(를) 읽을 수 없습니다(${v1}). 환경설정을 저장하기 전에 고쳐 주세요.`,
+    '["Can\'t read it: ",""]': v0 => `읽을 수 없음: ${v0}`,
     '["Can\'t read this folder"]': () => `이 폴더를 읽을 수 없습니다`,
     '["Can\'t save "," (",")"]': (v0, v1) => `${v0}을(를) 저장할 수 없습니다(${v1})`,
     '["Cancel"]': () => `취소`,
@@ -3684,6 +3759,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
       `작업 공간 목록을 읽지 못했습니다. R로 새로 고침하세요.`,
     '["Couldn\'t read this source. R retries."]': () => `이 소스를 읽을 수 없습니다. R로 다시 시도하세요.`,
     '["Couldn\'t save the pasted image"]': () => `붙여넣은 이미지를 저장할 수 없습니다`,
+    '["Couldn\'t search conversations"]': () => `대화를 검색할 수 없습니다`,
     '["Create "]': () => `만들기 `,
     '["Create a merge commit"]': () => `병합 커밋 만들기`,
     '["Create workspace"]': () => `작업 공간 만들기`,
@@ -3726,6 +3802,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Edit workspace"]': () => `작업 공간 편집`,
     '["Edit ›"]': () => `편집 ›`,
     '["Edit, delete"]': () => `편집, 삭제`,
+    '["Empty file"]': () => `빈 파일`,
     '["Enable auto-merge for ","?"]': v0 => `${v0}의 자동 병합을 활성화할까요?`,
     '["Ended"]': () => `종료됨`,
     '["Enlarge panel to view PR"]': () => `PR을 보려면 패널을 확대하세요`,
@@ -3752,6 +3829,8 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Find agents"]': () => `에이전트 찾기`,
     '["Find it in the sidebar"]': () => `사이드바에서 확인`,
     '["Finding ","…"]': v0 => `${v0} 찾는 중…`,
+    '["Finding line ","… "," of "," · "," lines"]': (v0, v1, v2, v3) =>
+      `${v0}번째 줄 찾는 중… ${v2} 중 ${v1} · ${v3}줄`,
     '["Finished"]': () => `완료됨`,
     '["Focus"]': () => `포커스`,
     '["Focus a pane to review its checkout."]': () => `패널에 포커스를 두면 해당 코드 디렉터리를 리뷰할 수 있습니다.`,
@@ -3881,6 +3960,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Mark ready"]': () => `검토 준비 완료`,
     '["Mem"]': () => `메모리`,
     '["Memory"]': () => `메모리`,
+    '["Mentioned in "," more"]': v0 => `그 밖에 ${v0}개 대화에서 언급됨`,
     '["Merge"]': () => `병합`,
     '["Merge ","?"]': v0 => `${v0}을(를) 병합할까요?`,
     '["Merge now if requirements are met, otherwise enable auto-merge."]': () =>
@@ -3984,6 +4064,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Nothing is waiting"]': () => `대기 중인 작업 없음`,
     '["Observed tokens"]': () => `관측된 토큰`,
     '["Off"]': () => `끔`,
+    '["Older mentions not shown · type more to narrow"]': () => `이전 언급은 표시되지 않음 · 더 입력해 범위 좁히기`,
     '["On"]': () => `켬`,
     '["Onboarding"]': () => `시작 안내`,
     '["Open"]': () => `열기`,
@@ -3993,6 +4074,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Open an Issue on GitHub"]': () => `GitHub에 이슈 등록`,
     '["Open folder"]': () => `폴더 열기`,
     '["Open folder as workspace"]': () => `폴더를 작업 공간으로 열기`,
+    '["Open link in browser"]': () => `브라우저에서 링크 열기`,
     '["Open the agent picker"]': () => `에이전트 선택창 열기`,
     '["Open · jumps to its tab"]': () => `열린 세션 · 해당 탭으로 이동`,
     '["Operations never auto-start a server."]': () => `명령은 서버를 자동으로 시작하지 않습니다.`,
@@ -4036,6 +4118,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Prefix + classic splits"]': () => `접두 키 + 기본 분할`,
     '["Prefix + home row"]': () => `접두 키 + 홈 포지션`,
     '["Prefix [ "," ]  P change"]': v0 => `접두 키 [ ${v0} ]  P 변경`,
+    '["Prefix key"]': () => `접두 키`,
     '["Preparing your workspaces"]': () => `작업 공간 준비 중`,
     '["Press P for portable Herdr prefix keys, or Esc to choose again."]': () =>
       `P로 어디서나 쓰는 Herdr 접두 키를 사용하거나, Esc로 다시 선택하세요.`,
@@ -4139,6 +4222,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Search conversation text"]': () => `대화 본문 검색`,
     '["Search models"]': () => `모델 검색`,
     '["Search models, agents and accounts"]': () => `모델, 에이전트, 계정 검색`,
+    '["Searching conversations…"]': () => `대화 검색 중…`,
     '["Select"]': () => `선택`,
     '["Select tab"]': () => `탭 선택`,
     '["Select workspace"]': () => `작업 공간 선택`,
@@ -4248,12 +4332,15 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["This account is already being removed."]': () => `이미 이 계정을 제거하고 있습니다.`,
     '["This agent"]': () => `이 에이전트`,
     '["This commit changed nothing."]': () => `이 커밋에는 변경이 없습니다.`,
+    '["This file is ",". Finding line "," may take a while."]': (v0, v1) =>
+      `이 파일은 ${v0}입니다. ${v1}번째 줄을 찾는 데 시간이 걸릴 수 있습니다.`,
     '["This folder has no commit to branch from"]': () => `이 폴더에는 분기를 시작할 커밋이 없습니다`,
     '["This terminal"]': () => `이 터미널`,
     '["This terminal sends no paste events."]': () => `이 터미널은 붙여넣기 이벤트를 보내지 않습니다.`,
     '["This viewer has no terminal to paste from."]': () => `이 클라이언트에는 붙여넣을 터미널이 없습니다.`,
     '["This viewer has no terminal."]': () => `이 클라이언트에는 터미널이 없습니다.`,
     '["This workspace"]': () => `이 작업 공간`,
+    '["Tip: tap twice to send it to the pane."]': () => `팁: 두 번 누르면 창에 전달됩니다.`,
     '["Title"]': () => `제목`,
     '["Today"]': () => `오늘`,
     '["Toggle PR viewer"]': () => `PR 뷰어 표시 전환`,
@@ -4484,6 +4571,7 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '["file"]': () => `파일`,
     '["files"]': () => `파일`,
     '["find"]': () => `찾기`,
+    '["first "," of ",""]': (v0, v1) => `${v1}개 중 처음 ${v0}개`,
     '["focus"]': () => `포커스`,
     '["focus agents"]': () => `에이전트 포커스`,
     '["fork"]': () => `분기`,
@@ -4555,6 +4643,10 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '["pick"]': () => `선택`,
     '["pin"]': () => `고정`,
     '["play"]': () => `플레이`,
+    '["q close  e edit  F follow  space page  g/G top/end"]': () =>
+      `q 닫기  e 편집  F 따라가기  space 페이지  g/G 처음/끝`,
+    '["q close  e edit  z fold  Z fold all  space page  g/G top/end"]': () =>
+      `q 닫기  e 편집  z 접기  Z 모두 접기  space 페이지  g/G 처음/끝`,
     '["rate limited"]': () => `요청 제한됨`,
     '["ready"]': () => `준비됨`,
     '["reconnecting"]': () => `재연결 중`,
@@ -4574,6 +4666,7 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '["search"]': () => `검색`,
     '["search or create"]': () => `검색 또는 만들기`,
     '["search titles, branches and messages"]': () => `제목, 브랜치, 메시지 검색`,
+    '["searching…"]': () => `검색 중…`,
     '["select"]': () => `선택`,
     '["send"]': () => `보내기`,
     '["send ",""]': v0 => `${v0}개 보내기`,
@@ -4590,11 +4683,11 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '["stale"]': () => `오래된 정보`,
     '["stalled"]': () => `응답 지연`,
     '["starred"]': () => `즐겨찾기됨`,
-    '["switch to ",""]': v0 => `${v0} 사용`,
     '["tab"]': () => `탭`,
     '["tab ",""]': v0 => `탭 ${v0}`,
     '["term"]': () => `터미널`,
     '["terminal graphics"]': () => `터미널 그래픽`,
+    '["the chat runs on ",""]': v0 => `이 채팅은 ${v0}에서 실행 중입니다`,
     '["the wonderful pi-tui"]': () => `멋진 pi-tui`,
     '["then"]': () => `그다음`,
     '["then key"]': () => `다음 키`,
@@ -4618,6 +4711,8 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '["untracked"]': () => `추적 안 됨`,
     '["unwrap"]': () => `줄 바꿈 해제`,
     '["use"]': () => `사용`,
+    '["use a single key chord, such as f9 or ctrl+space; Escape is reserved"]': () =>
+      `f9 또는 ctrl+space 같은 단일 키 조합을 사용하세요. Escape는 예약된 키입니다`,
     '["use a whole number from "," to ",""]': (v0, v1) => `${v0}에서 ${v1} 사이의 정수를 사용하세요`,
     '["use one of ",""]': v0 => `${v0} 중 하나를 사용하세요`,
     '["wait"]': () => `대기`,
@@ -4630,6 +4725,7 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '["your account"]': () => `내 계정`,
     '["your terminal\'s"]': () => `터미널 색상`,
     '["— tokens"]': () => `— 토큰`,
+    '["‖ paused"]': () => `‖ 일시 중지`,
     '["… "," done"]': v0 => `… ${v0}개 완료`,
     '["…"," more"]': v0 => `…${v0}개 더`,
     '["‹ "," · Effort"]': v0 => `‹ ${v0} · 추론 강도`,
@@ -4665,12 +4761,15 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '["↻ Resume available"]': () => `↻ 재개 가능`,
     '["↻ resets in"]': () => `↻ 초기화까지`,
     '["▶ Corgi (Activity summarizer)"]': () => `▶ Corgi (활동 요약)`,
+    '["▸ Find line ",""]': v0 => `▸ ${v0}번째 줄 찾기`,
     '["◇ Prefix = ",""]': v0 => `◇ 접두 키 = ${v0}`,
     '["○ Approval pending"]': () => `○ 승인 대기`,
     '["○ Corgi (Activity summarizer)"]': () => `○ Corgi (활동 요약)`,
     '["● Changes requested"]': () => `● 변경 요청됨`,
     '["● Jump to who needs you"]': () => `● 응답이 필요한 에이전트로 이동`,
     '["● Unresolved"]': () => `● 미해결`,
+    '["● following"]': () => `● 따라가는 중`,
+    '["● live"]': () => `● 실시간`,
     '["✓ All checks passed"]': () => `✓ 모든 검사 통과`,
     '["✓ Already merged"]': () => `✓ 이미 병합됨`,
     '["✓ Approved"]': () => `✓ 승인됨`,
@@ -4782,6 +4881,8 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
       `  corgi start                   запустить сервер в фоне`,
     '["  corgi update                  download and safely apply an update"]': () =>
       `  corgi update                  скачать и безопасно применить обновление`,
+    '["  corgi update --channel stable|test  follow stable or test releases"]': () =>
+      `  corgi update --channel stable|test  следить за стабильными или тестовыми выпусками`,
     '["  corgi update auto on|off      control automatic updates"]': () =>
       `  corgi update auto on|off      настроить автообновления`,
     '["  corgi update rollback         return to the previous release"]': () =>
@@ -4809,6 +4910,7 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '[" "," / resources "]': v0 => ` ${v0} / ресурсы `,
     '[" "," is busy: rename it once its input box is empty"]': v0 =>
       ` ${v0} занят: переименуйте его, когда поле ввода опустеет`,
+    '[" "," isn\'t connected"]': v0 => ` ${v0} не подключён`,
     '[" "," session ",": ",". Inspect: corgi headless events "," ",""]': (v0, v1, v2, v3, v4) =>
       ` Сеанс ${v0} ${v1}: ${v2}. Подробнее: corgi headless events ${v3} ${v1}`,
     '[" ",": waiting for a session ID"]': v0 => ` ${v0}: ожидание ID сеанса`,
@@ -4835,6 +4937,7 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '[" Couldn\'t add ",": ",""]': (v0, v1) => ` Не удалось добавить ${v0}: ${v1}`,
     '[" Couldn\'t mark as unread"]': () => ` Не удалось отметить как непрочитанное`,
     '[" Couldn\'t open ",": ",""]': (v0, v1) => ` Не удалось открыть ${v0}: ${v1}`,
+    '[" Couldn\'t open it: ",""]': v0 => ` Не удалось открыть: ${v0}`,
     '[" Couldn\'t remove ",": ",""]': (v0, v1) => ` Не удалось удалить ${v0}: ${v1}`,
     '[" Deleted "," and its folder"]': v0 => ` ${v0} и его папка удалены`,
     '[" Dings enabled"]': () => ` Звуки включены`,
@@ -4879,7 +4982,6 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '[" Resource readings are off: turn them on in Corgi setup → Resources"]': () =>
       ` Сбор данных о ресурсах выключен: включите его в Настройка Corgi → Ресурсы`,
     '[" Retry !"]': () => ` Повторить !`,
-    '[" Review changes on the remote machine"]': () => ` Просматривайте изменения на удалённом компьютере`,
     '[" Save · Ctrl+S "]': () => ` Сохранить · Ctrl+S `,
     '[" Search "," agent"]': v0 => {
       switch (plural("ru", Number(v0))) {
@@ -4943,6 +5045,9 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '[" any key closes "]': () => ` любая клавиша закрывает `,
     '[" back "]': () => ` назад `,
     '[" c Clone "]': () => ` c Копия `,
+    '[" click to open · scroll "]': () => ` клик — открыть · прокрутка `,
+    '[" click to open · scroll to the end to follow "]': () => ` клик — открыть · прокрутите до конца, чтобы следить `,
+    '[" click to open · scroll up to pause "]': () => ` клик — открыть · прокрутка вверх — пауза `,
     '[" close "]': () => ` закрыть `,
     '[" cpu "]': () => ` ЦП `,
     '[" disk I/O "]': () => ` дисковый ввод-вывод `,
@@ -4957,6 +5062,20 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
     '[" sort: "]': () => ` сортировка: `,
     '[" vs "]': () => ` против `,
     '[" z: files "]': () => ` z: файлы `,
+    '[" · "," new"]': v0 => {
+      switch (plural("ru", Number(v0))) {
+        case "one":
+          return ` · ${v0} новая строка`;
+        case "few":
+          return ` · ${v0} новые строки`;
+        case "many":
+          return ` · ${v0} новых строк`;
+        case "other":
+          return ` · ${v0} новой строки`;
+        default:
+          return ` · ${v0} новой строки`;
+      }
+    },
     '[" · "," here"]': v0 => ` · здесь: ${v0}`,
     '[" · none here"]': () => ` · здесь нет`,
     '[" · over SSH"]': () => ` · по SSH`,
@@ -4976,6 +5095,20 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
       }
     },
     '[" ⇧⌘-click opens · click copies "]': () => ` ⇧⌘-клик открыть · клик скопировать `,
+    '[" ⋯ "," lines "]': v0 => {
+      switch (plural("ru", Number(v0))) {
+        case "one":
+          return ` ⋯ ${v0} строка `;
+        case "few":
+          return ` ⋯ ${v0} строки `;
+        case "many":
+          return ` ⋯ ${v0} строк `;
+        case "other":
+          return ` ⋯ ${v0} строки `;
+        default:
+          return ` ⋯ ${v0} строки `;
+      }
+    },
     '[" ✓  Copied"]': () => ` ✓  Скопировано`,
     '[" ⧉  Copy link"]': () => ` ⧉  Скопировать ссылку`,
     '[" ⧉  Copy path"]': () => ` ⧉  Скопировать путь`,
@@ -5128,6 +5261,20 @@ ${v1} 환경 변수를 설정하여 해당 계정을 사용할 수 있습니다.
           return `${v0} ведущих процесса ${v1} назад`;
         default:
           return `${v0} ведущих процесса ${v1} назад`;
+      }
+    },
+    '[""," lines · ",""]': (v0, v1) => {
+      switch (plural("ru", Number(v0))) {
+        case "one":
+          return `${v0} строка · ${v1}`;
+        case "few":
+          return `${v0} строки · ${v1}`;
+        case "many":
+          return `${v0} строк · ${v1}`;
+        case "other":
+          return `${v0} строки · ${v1}`;
+        default:
+          return `${v0} строки · ${v1}`;
       }
     },
     '[""," more outside "," · tab widens"]': (v0, v1) => `Ещё ${v0} вне области «${v1}» · tab расширить`,
@@ -5523,6 +5670,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Cached"]': () => `Кэш`,
     '["Can\'t read "," (","); repair it before saving preferences."]': (v0, v1) =>
       `Не удаётся прочитать ${v0} (${v1}); исправьте файл, прежде чем сохранять настройки.`,
+    '["Can\'t read it: ",""]': v0 => `Не удалось прочитать: ${v0}`,
     '["Can\'t read this folder"]': () => `Не удалось прочитать эту папку`,
     '["Can\'t save "," (",")"]': (v0, v1) => `Не удаётся сохранить ${v0} (${v1})`,
     '["Cancel"]': () => `Отмена`,
@@ -5664,6 +5812,7 @@ profile/ID, имя копии или command/N — как в выводе launch
       `Не удалось прочитать список пространств. R — обновить.`,
     '["Couldn\'t read this source. R retries."]': () => `Не удалось прочитать источник. R — повторить.`,
     '["Couldn\'t save the pasted image"]': () => `Не удалось сохранить вставленное изображение`,
+    '["Couldn\'t search conversations"]': () => `Не удалось выполнить поиск по беседам`,
     '["Create "]': () => `Создать `,
     '["Create a merge commit"]': () => `Создать коммит слияния`,
     '["Create workspace"]': () => `Создать пространство`,
@@ -5707,6 +5856,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Edit workspace"]': () => `Изменить пространство`,
     '["Edit ›"]': () => `Изменить ›`,
     '["Edit, delete"]': () => `Изменить, удалить`,
+    '["Empty file"]': () => `Пустой файл`,
     '["Enable auto-merge for ","?"]': v0 => `Включить автослияние для ${v0}?`,
     '["Ended"]': () => `Завершён`,
     '["Enlarge panel to view PR"]': () => `Увеличьте панель для просмотра PR`,
@@ -5734,6 +5884,8 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Find agents"]': () => `Найти агентов`,
     '["Find it in the sidebar"]': () => `Оно появится в боковой панели`,
     '["Finding ","…"]': v0 => `Поиск ${v0}…`,
+    '["Finding line ","… "," of "," · "," lines"]': (v0, v1, v2, v3) =>
+      `Поиск строки ${v0}… ${v1} из ${v2} · строк: ${v3}`,
     '["Finished"]': () => `Завершено`,
     '["Focus"]': () => `Перейти`,
     '["Focus a pane to review its checkout."]': () => `Выберите панель, чтобы просмотреть её изменения.`,
@@ -5864,6 +6016,20 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Mark ready"]': () => `Готово к ревью`,
     '["Mem"]': () => `Пам.`,
     '["Memory"]': () => `Память`,
+    '["Mentioned in "," more"]': v0 => {
+      switch (plural("ru", Number(v0))) {
+        case "one":
+          return `Упоминается ещё в ${v0} беседе`;
+        case "few":
+          return `Упоминается ещё в ${v0} беседах`;
+        case "many":
+          return `Упоминается ещё в ${v0} беседах`;
+        case "other":
+          return `Упоминается ещё в ${v0} беседы`;
+        default:
+          return `Упоминается ещё в ${v0} беседы`;
+      }
+    },
     '["Merge"]': () => `Слить`,
     '["Merge ","?"]': v0 => `Слить ${v0}?`,
     '["Merge now if requirements are met, otherwise enable auto-merge."]': () =>
@@ -5969,6 +6135,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Nothing is waiting"]': () => `Нет ожидающих задач`,
     '["Observed tokens"]': () => `Учтённые токены`,
     '["Off"]': () => `Выкл.`,
+    '["Older mentions not shown · type more to narrow"]': () => `Старые упоминания не показаны · уточните запрос`,
     '["On"]': () => `Вкл.`,
     '["Onboarding"]': () => `Первоначальная настройка`,
     '["Open"]': () => `Открыть`,
@@ -5979,6 +6146,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Open an Issue on GitHub"]': () => `Создать обращение на GitHub`,
     '["Open folder"]': () => `Открыть папку`,
     '["Open folder as workspace"]': () => `Открыть папку как пространство`,
+    '["Open link in browser"]': () => `Открыть ссылку в браузере`,
     '["Open the agent picker"]': () => `Открыть выбор агента`,
     '["Open · jumps to its tab"]': () => `Открытые · переход на их вкладку`,
     '["Operations never auto-start a server."]': () => `Операции не запускают сервер автоматически.`,
@@ -6023,6 +6191,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Prefix + classic splits"]': () => `Префикс + классическое разделение`,
     '["Prefix + home row"]': () => `Префикс + основной ряд`,
     '["Prefix [ "," ]  P change"]': v0 => `Префикс [ ${v0} ]  P изменить`,
+    '["Prefix key"]': () => `Клавиша префикса`,
     '["Preparing your workspaces"]': () => `Подготовка ваших пространств`,
     '["Press P for portable Herdr prefix keys, or Esc to choose again."]': () =>
       `Нажмите P для переносимых клавиш Herdr или Esc для повторного выбора.`,
@@ -6127,6 +6296,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Search conversation text"]': () => `Поиск по тексту диалогов`,
     '["Search models"]': () => `Поиск моделей`,
     '["Search models, agents and accounts"]': () => `Поиск моделей, агентов и аккаунтов`,
+    '["Searching conversations…"]': () => `Поиск по беседам…`,
     '["Select"]': () => `Выбрать`,
     '["Select tab"]': () => `Выбрать вкладку`,
     '["Select workspace"]': () => `Выбрать пространство`,
@@ -6260,12 +6430,15 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["This account is already being removed."]': () => `Этот аккаунт уже удаляется.`,
     '["This agent"]': () => `Этот агент`,
     '["This commit changed nothing."]': () => `В этом коммите нет изменений.`,
+    '["This file is ",". Finding line "," may take a while."]': (v0, v1) =>
+      `Размер файла ${v0}. Поиск строки ${v1} может занять некоторое время.`,
     '["This folder has no commit to branch from"]': () => `В этой папке нет коммита для создания ветки`,
     '["This terminal"]': () => `Этот терминал`,
     '["This terminal sends no paste events."]': () => `Этот терминал не отправляет события вставки.`,
     '["This viewer has no terminal to paste from."]': () => `У этого клиента нет терминала для вставки.`,
     '["This viewer has no terminal."]': () => `У этого клиента нет терминала.`,
     '["This workspace"]': () => `Это пространство`,
+    '["Tip: tap twice to send it to the pane."]': () => `Подсказка: нажмите дважды, чтобы передать клавишу в панель.`,
     '["Title"]': () => `Заголовок`,
     '["Today"]': () => `Сегодня`,
     '["Toggle PR viewer"]': () => `Показать / скрыть PR`,
@@ -6522,6 +6695,7 @@ ${v1}, чтобы использовать этот аккаунт.
     '["file"]': () => `файл`,
     '["files"]': () => `файлы`,
     '["find"]': () => `поиск`,
+    '["first "," of ",""]': (v0, v1) => `первые ${v0} из ${v1}`,
     '["focus"]': () => `перейти`,
     '["focus agents"]': () => `к агентам`,
     '["fork"]': () => `ответвить`,
@@ -6593,6 +6767,10 @@ ${v1}, чтобы использовать этот аккаунт.
     '["pick"]': () => `выбрать`,
     '["pin"]': () => `закрепить`,
     '["play"]': () => `играть`,
+    '["q close  e edit  F follow  space page  g/G top/end"]': () =>
+      `q закрыть  e правка  F следить  space страница  g/G начало/конец`,
+    '["q close  e edit  z fold  Z fold all  space page  g/G top/end"]': () =>
+      `q закрыть  e правка  z свернуть  Z свернуть всё  space страница  g/G начало/конец`,
     '["rate limited"]': () => `лимит запросов`,
     '["ready"]': () => `готово`,
     '["reconnecting"]': () => `переподключение`,
@@ -6612,6 +6790,7 @@ ${v1}, чтобы использовать этот аккаунт.
     '["search"]': () => `поиск`,
     '["search or create"]': () => `найти или создать`,
     '["search titles, branches and messages"]': () => `поиск по заголовкам, веткам и сообщениям`,
+    '["searching…"]': () => `поиск…`,
     '["select"]': () => `выбрать`,
     '["send"]': () => `отправить`,
     '["send ",""]': v0 => `отправить ${v0}`,
@@ -6628,11 +6807,11 @@ ${v1}, чтобы использовать этот аккаунт.
     '["stale"]': () => `устарело`,
     '["stalled"]': () => `нет ответа`,
     '["starred"]': () => `в избранном`,
-    '["switch to ",""]': v0 => `переключить на ${v0}`,
     '["tab"]': () => `вкладка`,
     '["tab ",""]': v0 => `вкладка ${v0}`,
     '["term"]': () => `остановить`,
     '["terminal graphics"]': () => `графика терминала`,
+    '["the chat runs on ",""]': v0 => `чат работает на ${v0}`,
     '["the wonderful pi-tui"]': () => `замечательная pi-tui`,
     '["then"]': () => `затем`,
     '["then key"]': () => `затем клавиша`,
@@ -6656,6 +6835,8 @@ ${v1}, чтобы использовать этот аккаунт.
     '["untracked"]': () => `неотслеживаемый`,
     '["unwrap"]': () => `без переноса`,
     '["use"]': () => `применить`,
+    '["use a single key chord, such as f9 or ctrl+space; Escape is reserved"]': () =>
+      `укажите одно сочетание клавиш, например f9 или ctrl+space; Escape зарезервирован`,
     '["use a whole number from "," to ",""]': (v0, v1) => `укажите целое число от ${v0} до ${v1}`,
     '["use one of ",""]': v0 => `укажите одно из значений: ${v0}`,
     '["wait"]': () => `пауза`,
@@ -6668,6 +6849,7 @@ ${v1}, чтобы использовать этот аккаунт.
     '["your account"]': () => `ваш аккаунт`,
     '["your terminal\'s"]': () => `цвета терминала`,
     '["— tokens"]': () => `— токенов`,
+    '["‖ paused"]': () => `‖ пауза`,
     '["… "," done"]': v0 => `… выполнено: ${v0}`,
     '["…"," more"]': v0 => `…ещё ${v0}`,
     '["‹ "," · Effort"]': v0 => `‹ ${v0} · Усилие`,
@@ -6729,12 +6911,15 @@ ${v1}, чтобы использовать этот аккаунт.
     '["↻ Resume available"]': () => `↻ Доступно возобновление`,
     '["↻ resets in"]': () => `↻ сброс через`,
     '["▶ Corgi (Activity summarizer)"]': () => `▶ Corgi (Описания действий)`,
+    '["▸ Find line ",""]': v0 => `▸ Найти строку ${v0}`,
     '["◇ Prefix = ",""]': v0 => `◇ Префикс = ${v0}`,
     '["○ Approval pending"]': () => `○ Ожидается одобрение`,
     '["○ Corgi (Activity summarizer)"]': () => `○ Corgi (Описания действий)`,
     '["● Changes requested"]': () => `● Запрошены изменения`,
     '["● Jump to who needs you"]': () => `● Перейти к тому, кому вы нужны`,
     '["● Unresolved"]': () => `● Не решено`,
+    '["● following"]': () => `● слежение`,
+    '["● live"]': () => `● обновляется`,
     '["✓ All checks passed"]': () => `✓ Все проверки пройдены`,
     '["✓ Already merged"]': () => `✓ Уже слит`,
     '["✓ Approved"]': () => `✓ Одобрено`,

@@ -1,6 +1,8 @@
+import type { Installation } from "./machine_setup";
 import * as ssh from "./ssh";
 import { Remote, startup_ms } from "./daemon_transport";
 import * as preferences from "./preferences";
+import { createHash } from "node:crypto";
 import { readFileSync, existsSync, openSync, closeSync, statSync } from "node:fs";
 import { join, dirname, isAbsolute } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -45,7 +47,7 @@ function path(value: unknown): string {
     throw Error("InvalidRemotePath");
   return value;
 }
-export function info(value: unknown): Info {
+export function info(value: unknown, expectedSocket = ""): Info {
   if (!value || typeof value !== "object") throw Error("InvalidRemoteInfo");
   const v = value as Record<string, unknown>;
   if (
@@ -55,7 +57,7 @@ export function info(value: unknown): Info {
   )
     throw Error("IncompatibleRemoteCorgi");
   const socket = path(v.socket);
-  if (socket.includes(":")) throw Error("InvalidRemoteSocket");
+  if (socket.includes(":") || (expectedSocket && socket !== expectedSocket)) throw Error("InvalidRemoteSocket");
   return {
     remote_protocol,
     protocol: protocol.version,
@@ -101,6 +103,29 @@ export function find(value: string): Profile {
   if (!profile) throw Error("UnknownMachine");
   return profile;
 }
+/** Holds the machine's update lock: one automatic update of it at a time from this computer. */
+export async function updating(profile: Profile, signal?: AbortSignal): Promise<() => void> {
+  const directory = dirname(catalogPath());
+  os.privateDirectory(directory);
+  const key = createHash("sha256")
+    .update(JSON.stringify([profile.name, profile.target, profile.socket]))
+    .digest("hex")
+    .slice(0, 20);
+  const fd = openSync(join(directory, `update-${key}.lock`), "a", 0o600);
+  try {
+    while (!flock(fd)) {
+      signal?.throwIfAborted();
+      await Bun.sleep(50);
+    }
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+  return () => {
+    flock(fd, false);
+    closeSync(fd);
+  };
+}
 export async function edit(change: (profiles: Profile[]) => Profile[], file = catalogPath()): Promise<void> {
   os.privateDirectory(dirname(file));
   const fd = openSync(file + ".lock", "a", 0o600);
@@ -116,17 +141,24 @@ export async function edit(change: (profiles: Profile[]) => Profile[], file = ca
     closeSync(fd);
   }
 }
-export async function discover(host: string, executable = "corgi", socket = ""): Promise<Info> {
+export async function discover(
+  host: string,
+  installation: Installation,
+  socket = "",
+  signal?: AbortSignal,
+): Promise<Info> {
+  if (installation.info) return installation.info;
+  const { executable, build_id } = installation;
+  const args = build_id ? ["__remote-info", "--activate", build_id] : ["__remote-info"];
   const child = spawn(
     "ssh",
     [
-      ...ssh.args(host, true),
-      socket
-        ? ssh.command("env", [`CORGI_SOCKET=${socket}`, executable, "__remote-info"])
-        : ssh.command(executable, ["__remote-info"]),
+      ...ssh.args(host, ssh.canPrompt()),
+      socket ? ssh.command("env", [`CORGI_SOCKET=${socket}`, executable, ...args]) : ssh.command(executable, args),
     ],
     {
       stdio: ["inherit", "pipe", "inherit"],
+      signal,
     },
   );
   let output = "";
@@ -134,7 +166,7 @@ export async function discover(host: string, executable = "corgi", socket = ""):
     output += chunk.toString();
     if (output.length > 65536) child.kill();
   });
-  const code = await exited(child, 120_000);
+  const code = await exited(child, build_id ? 600_000 : 120_000);
   if (code !== 0) throw Error("RemoteDiscoveryFailed");
   // A shell's startup banner is not part of the protocol.
   const line = output.trim().split("\n").at(-1) ?? "";
@@ -148,8 +180,11 @@ export async function execute(profile: Profile, args: string[]): Promise<number>
   );
   return exited(child);
 }
+/** Sends a pasted image over the pane-data master, which already logged in,
+ * or on its own connection when the viewer's path is `fresh`. */
 export async function image(
   profile: Profile,
+  fresh: boolean,
   source: string,
   mime: string,
   instance: string,
@@ -162,7 +197,7 @@ export async function image(
   const child = spawn(
     "ssh",
     [
-      ...ssh.args(profile.target, false, true),
+      ...ssh.args(profile.target, false, fresh, "data"),
       ssh.command(profile.executable, ["__remote-image", profile.socket, instance, mime]),
     ],
     { stdio: ["pipe", "pipe", "pipe"], signal },

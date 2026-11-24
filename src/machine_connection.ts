@@ -1,4 +1,7 @@
+import * as viewerRef from "./viewer_ref";
+import * as agentRows from "./agent_rows";
 import * as telemetry from "./telemetry";
+import { Queue, pasting, type Input } from "./terminal_input";
 import { Stats } from "./connection_stats";
 import type { Output } from "./composition";
 import { Controller } from "./controller";
@@ -8,6 +11,9 @@ import { Connection } from "./rpc";
 import * as machine_path from "./machine_path";
 import * as viewer from "./viewer";
 import * as errors from "./errors";
+import * as buildInfo from "./machine_build";
+import type * as progress from "./machine_progress";
+import * as machine_update from "./machine_update";
 import type { Probe } from "./terminal_info";
 import type { Host } from "./host";
 import type { WorkspaceEntry } from "./sidebar";
@@ -18,6 +24,8 @@ import * as protocol from "./protocol";
 import * as rpc_http from "./rpc_http";
 import * as i18n from "./i18n";
 import { sshViewer } from "./trackers/ports";
+import * as webLinks from "./web_links";
+import { Forwards, type Link } from "./port_forwards";
 
 /** A request that must run once, waiting for its reply. It gets its number
  * the first time it's sent and keeps it when it's sent again. */
@@ -34,17 +42,8 @@ const handoff_input_limit = 64 * 1024;
 const handoff_ms = 30_000;
 
 export type Status = "connecting" | "online" | "stalled" | "offline" | "paused" | "incompatible" | "attention";
-/** Keys as they came, and whether the machine was dropping input then. */
-interface Typed {
-  bytes: number[];
-  dropped: boolean;
-}
-const typedLength = (typed: Typed[]) => typed.reduce((n, t) => n + t.bytes.length, 0);
-function addTyped(typed: Typed[], bytes: Uint8Array, dropped: boolean): void {
-  let last = typed.at(-1);
-  if (last?.dropped !== dropped) typed.push((last = { bytes: [], dropped }));
-  for (const byte of bytes) last.bytes.push(byte);
-}
+/** Parsed input and whether its machine was dropping input when it arrived. */
+type Typed = Input & { dropped: boolean };
 /** How often an idle viewer's machines are stepped. */
 export const quiet_ms = 500;
 /** A remote machine silent this long gets a second connection beside the first. */
@@ -99,7 +98,7 @@ export class Endpoint {
   ready = false;
   input_epoch = 0;
   updated = 0;
-  workspaces: WorkspaceEntry[] = [];
+  workspaces: WorkspaceEntry<number>[] = [];
   private displayed = false;
   private acknowledging = false;
   /** This daemon as the viewer sees it. */
@@ -117,6 +116,9 @@ export class Endpoint {
   uninstalled = false;
   private connection: Connection | null = null;
   private data: viewer_data.Connection | null = null;
+  /** How often a review read or a streamed search pings its connection, well
+   * inside the 10 s of silence it allows. */
+  private review_ping_ms = 3_000;
   private separate = false;
   private controls: protocol.Wire<protocol.Control[]> = [];
   /** The connection once its hello checked out; the view's requests use it. */
@@ -163,8 +165,7 @@ export class Endpoint {
   private next = 0;
   private opened = false;
   private connected = false;
-  private input: Typed[] = [];
-  /** The keys last routed came while dropping: what the view still holds of them did too. */
+  private input = new Queue<Typed>();
   private last_dropped = false;
   private handoff: {
     instance: string;
@@ -173,9 +174,10 @@ export class Endpoint {
     pane: number | null;
     generation: number;
     until: number;
-    input: Typed[];
+    input: Queue<Typed>;
   } | null = null;
   private ui_task: Promise<void> | null = null;
+  private ui_paste = false;
   private resource_detail: number | null = null;
   private bell = { seq: 0n };
   private retries = 0;
@@ -184,6 +186,28 @@ export class Endpoint {
   private cancellation = new AbortController();
   private focus: { instance: string; at: Focus } | null = null;
   private cache: Cache;
+  private updating: AbortController | null = null;
+  daemonVersion: buildInfo.Identity | null = null;
+  /** The computer whose viewer moved the daemon to its build, when it said. */
+  movedBy = "";
+  /** The update this endpoint starts with, which Ctrl+R runs again for a
+   * machine another viewer moved to a release this one can't talk to. */
+  private readonly follow: typeof this.update;
+  get daemonVersionLive(): boolean {
+    return !!this.connection;
+  }
+  updateProgress: progress.Status | null = null;
+  private updateTimer: ReturnType<typeof setTimeout> | null = null;
+  get updateMessage(): string {
+    return this.updateProgress?.message ?? "";
+  }
+  private updateFailure: machine_update.Failure | null = null;
+  get updateError(): string {
+    return this.updateFailure?.summary ?? "";
+  }
+  get updateLog(): string {
+    return this.updateFailure?.detail ?? "";
+  }
   folder: string | null = null;
   onChange: () => void = () => {};
   onMachines: () => void = () => {};
@@ -196,12 +220,23 @@ export class Endpoint {
     readonly name: string,
     readonly remote: boolean,
     identity: string[],
-    private readonly newPath: machine_path.Factory,
+    private newPath: machine_path.Factory,
     readonly probe: Probe,
     readonly host: Host,
+    /** Brings the machine's daemon to this build: a new way to reach it, or null when it needed nothing. */
+    private update?: (signal: AbortSignal, progress: progress.Report) => Promise<machine_path.Factory | null>,
+    private currentBuild?: (hello: machine_path.Hello) => boolean,
   ) {
+    this.follow = update;
     this.sample = newPath(false, false);
     this.machine = new Machine(this.transport(), this.name, remote);
+    // Forwards outlive paths: each connection takes the current one's way.
+    // With no browser here, there's nothing to forward links to.
+    if (this.sample.ports && webLinks.opensLinks())
+      this.machine.forwards = new Forwards({
+        prepare: signal => this.ports().prepare(signal),
+        dial: (host, port) => this.ports().dial(host, port),
+      });
     this.machine.order_scope = JSON.stringify(identity);
     // Links point at the daemon's machine: another one, or this one when the
     // viewer itself runs over SSH.
@@ -213,7 +248,7 @@ export class Endpoint {
         link_quality: remote ? (status === "online" ? this.stats.quality : quiet ? null : 0) : null,
         connecting: !quiet && (status === "connecting" || status === "stalled" || status === "offline"),
         stopped: status === "paused" || status === "attention" || status === "incompatible",
-        connection_status: quiet ? null : this.headerStatus(),
+        connection_status: quiet && !this.updateMessage && !this.updateError ? null : this.headerStatus(),
         description: this.description(),
         cached: this.workspaces,
         seen: this.updated > 0,
@@ -231,6 +266,9 @@ export class Endpoint {
         this.machine.runtime.workspaces.loaded = false;
       }
     }
+  }
+  private ports(): Link {
+    return this.path?.ports ?? this.sample.ports!;
   }
   private trace(name: "remote.connection" | "remote.race", phase: string, details: telemetry.Details = {}): void {
     if (telemetry.enabled)
@@ -278,9 +316,12 @@ export class Endpoint {
     this.interruptInput(true);
     this.next = 0;
   }
-  /** Keys the view hasn't routed yet, taken to go elsewhere. */
-  takeInput(): Uint8Array {
-    return Uint8Array.from(this.input.splice(0).flatMap(typed => typed.bytes));
+  /** Retain unrouted keys only before a cancelled paste; a later Enter must not submit its partial text. */
+  takeInput(): Typed[] {
+    const input = this.input.take();
+    if (this.ui_paste || (this.controller && this.shown && this.controller.input_state.paste !== null)) return [];
+    const paste = input.findIndex(pasting);
+    return paste < 0 ? input : input.slice(0, paste);
   }
   choose(at: Focus, instance: string): void {
     this.focus = null;
@@ -315,23 +356,16 @@ export class Endpoint {
     if (!(this.remote && this.status === "offline")) this.next = 0;
     this.onChange();
   }
-  /** Input for the view to route; `dropped` says it came while the
-   * machine's notice dropped input, so none of it reaches a pane. */
-  enqueue(bytes: Uint8Array, dropped = false): void {
-    if (this.handoff) {
-      if (typedLength(this.handoff.input) + bytes.length <= handoff_input_limit)
-        addTyped(this.handoff.input, bytes, dropped);
-      else this.clearInput();
-      this.wake();
-      return;
-    }
-    if (typedLength(this.input) + bytes.length > 1024 * 1024) {
+  enqueue(input: Input, dropped = false): void {
+    const queue = this.handoff?.input ?? this.input;
+    const limit = this.handoff ? handoff_input_limit : 1024 * 1024;
+    if (queue.bytes + input.bytes.length > limit) {
       this.error = "Input queue full; unsent input discarded";
       this.clearInput();
       this.fresh = false;
       return;
     }
-    addTyped(this.input, bytes, dropped);
+    queue.push({ ...input, dropped });
     this.wake();
   }
   private syncNavigation(): void {
@@ -361,23 +395,31 @@ export class Endpoint {
     }
     const view = this.view(),
       selection = this.selection,
+      epoch = this.input_epoch,
       dirty = view.dirty;
     // Before the machine's state is first drawn, a view with no pane in
     // focus has nowhere for keys to go: they wait for the pane it's making.
     if (!view.input_state.attached || (!this.settled && !view.focused())) return;
-    const current = () => this.shown && selection === this.selection && !this.stopped;
-    const input = this.input.splice(0);
+    const current = () => this.shown && selection === this.selection && epoch === this.input_epoch && !this.stopped;
+    const input = this.input.take();
+    this.ui_paste = input.some(pasting);
     this.ui_task = (async () => {
       try {
-        for (const typed of input) {
+        for (let start = 0; start < input.length;) {
           if (!current()) return;
-          await view.input(Uint8Array.from(typed.bytes), current, typed.dropped);
+          const dropped = input[start].dropped;
+          let end = start + 1;
+          while (end < input.length && input[end].dropped === dropped) end++;
+          await view.input(input.slice(start, end), current, dropped);
+          this.last_dropped = dropped;
+          start = end;
         }
-        if (input.length) this.last_dropped = input.at(-1)!.dropped;
+        this.ui_paste = false;
         if (current()) await view.expireInput(current, this.last_dropped);
       } catch (error) {
         if (current()) view.notice(errors.name(error) ?? "ActionFailed");
       } finally {
+        this.ui_paste = false;
         this.ui_task = null;
         // Typing waits in its pane for the next step, which an idle viewer
         // paces at `quiet_ms`: it goes now.
@@ -391,8 +433,63 @@ export class Endpoint {
     this.resource_detail = workspace;
     this.wake();
   }
+  /** The update belongs to the machine. Losing a tunnel leaves its build or transfer running. */
+  private async startUpdate(): Promise<void> {
+    if (!this.update || this.updating || this.updateError) return;
+    const job = (this.updating = new AbortController());
+    this.updateProgress = { message: "Checking…" };
+    try {
+      const factory = await this.update(job.signal, (message, extra) => {
+        if (job.signal.aborted) return;
+        this.updateProgress = { message, ...extra };
+        this.onChange();
+      });
+      if (job.signal.aborted) return;
+      this.update = undefined;
+      if (!factory) return;
+      this.newPath = factory;
+      // An incompatible or unreachable daemon may now be usable. A live link does its own handoff.
+      if (!this.checked && !this.handoff && !this.shut_down) this.reconnect();
+    } catch (error) {
+      if (!job.signal.aborted)
+        this.updateFailure =
+          error instanceof machine_update.Failure
+            ? error
+            : new machine_update.Failure(errors.name(error) || "MachineUpdateFailed");
+    } finally {
+      if (this.updating === job) {
+        this.updating = null;
+        this.updateProgress = null;
+        this.onChange();
+      }
+    }
+  }
+  private clearUpdateTimer(): void {
+    if (this.updateTimer) clearTimeout(this.updateTimer);
+    this.updateTimer = null;
+  }
+  private cancelUpdate(): void {
+    this.updating?.abort();
+    this.updating = null;
+    this.updateProgress = null;
+    this.updateFailure = null;
+    this.clearUpdateTimer();
+  }
+  /** Whether Ctrl+R takes the machine back from another viewer's release. */
+  get reclaimable(): boolean {
+    return this.status === "incompatible" && !!this.follow;
+  }
   retry(): void {
     if (this.stopped) return;
+    if (this.reclaimable) this.update = this.follow;
+    if (this.updateError) {
+      this.updateFailure = null;
+      void this.startUpdate();
+      if (this.status === "online") return;
+    }
+    this.reconnect();
+  }
+  private reconnect(): void {
     this.shut_down = false;
     this.releaseHandoff();
     this.interruption++;
@@ -405,6 +502,7 @@ export class Endpoint {
   }
   pause(): void {
     if (this.stopped) return;
+    this.cancelUpdate();
     this.releaseHandoff();
     this.interruption++;
     this.disconnect();
@@ -417,6 +515,17 @@ export class Endpoint {
     this.error = "";
   }
   headerStatus(now = performance.now()): WorkspaceEntry["connection_status"] {
+    if (this.updateError && !this.error)
+      return { label: "Update failed", seconds: null, color: "hot", diagnostic: true };
+    if (this.updateMessage)
+      return {
+        label: this.updateMessage,
+        metrics: this.updateProgress?.metrics,
+        compact: this.updateProgress?.compact,
+        seconds: null,
+        color: "warm",
+        diagnostic: !!this.error,
+      };
     const status = this.connectionStatus(now);
     // An SSH machine's failure opens its details from the header, whatever comes next.
     return status && this.remote && this.error ? { ...status, diagnostic: true } : status;
@@ -444,6 +553,11 @@ export class Endpoint {
     }
   }
   description(now = performance.now()): string {
+    if (this.updateProgress)
+      return [this.updateProgress.message, this.updateProgress.metrics].filter(Boolean).join(" ");
+    return this.updateError ? "Update failed" : this.connectionDescription(now);
+  }
+  connectionDescription(now = performance.now()): string {
     switch (this.status) {
       case "attention":
         return `Attention · ${this.error}`;
@@ -456,7 +570,8 @@ export class Endpoint {
       case "paused":
         return "Paused · automatic retries stopped";
       case "incompatible":
-        return "Incompatible Corgi · install a matching version, then retry";
+        if (!this.follow) return "Incompatible Corgi · install a matching version, then retry";
+        return `Moved to Corgi ${this.daemonVersion?.version || "another build"}${this.movedBy ? ` by ${this.movedBy}` : ""} · Ctrl+R takes it back`;
       case "online":
         return this.error || "online";
     }
@@ -658,13 +773,16 @@ export class Endpoint {
   /** Keys held for a reload go on as typed: a retry or a pause ends the
    * wait, not them. */
   private releaseHandoff(): void {
-    if (this.handoff) this.input = this.handoff.input.concat(this.input);
+    if (this.handoff) {
+      for (const input of this.input.take()) this.handoff.input.push(input);
+      this.input = this.handoff.input;
+    }
     this.handoff = null;
   }
   private holdHandoffInput(): void {
     const input = this.input;
-    this.input = [];
-    if (typedLength(input) > handoff_input_limit) {
+    this.input = new Queue<Typed>();
+    if (input.bytes > handoff_input_limit) {
       this.clearInput();
       this.error = "Input queue full; unsent input discarded";
     }
@@ -675,13 +793,22 @@ export class Endpoint {
       pane: this.view().focused()?.id ?? null,
       generation: this.generation,
       until: performance.now() + handoff_ms,
-      input: typedLength(input) <= handoff_input_limit ? input : [],
+      input: input.bytes <= handoff_input_limit ? input : new Queue<Typed>(),
     };
     this.ready = this.fresh = false;
     this.wake();
   }
   private async connect(): Promise<void> {
+    // A quick hello can confirm the last deployment without spawning a helper.
+    // A slow or broken dial still lets the update run independently.
+    if (this.update && this.currentBuild) {
+      this.updateTimer ??= setTimeout(() => {
+        this.updateTimer = null;
+        void this.startUpdate();
+      }, 1500);
+    } else void this.startUpdate();
     const previous = this.instance;
+    const had_viewer = this.machine.viewer_id !== 0;
     const generation = ++this.generation;
     this.trace("remote.connection", "start");
     let conn: Connection, hello: machine_path.Hello;
@@ -712,6 +839,20 @@ export class Endpoint {
       }
       this.connection = conn;
     }
+    this.clearUpdateTimer();
+    this.daemonVersion = buildInfo.identity(hello);
+    this.movedBy =
+      typeof hello.moved_by === "string" ? hello.moved_by.replace(/[\x00-\x1f\x7f]/g, "").slice(0, 64) : "";
+    if (
+      this.update &&
+      !this.updating &&
+      hello.protocol === protocol.version &&
+      hello.viewer_protocol === protocol.viewer_version &&
+      this.currentBuild?.(hello)
+    ) {
+      this.update = undefined;
+      this.updateFailure = null;
+    } else void this.startUpdate();
     this.trace("remote.connection", "hello");
     conn.onEvent(event => {
       if (this.connection !== conn) return;
@@ -726,6 +867,7 @@ export class Endpoint {
       for (const listener of this.listeners) listener(event);
     });
     this.instance = machine_path.compatible(hello);
+    this.machine.executable = hello.executable;
     if (!hello.capabilities.includes("viewer.stream")) throw Error("IncompatibleRemoteCorgi");
     this.incremental = hello.capabilities.includes("viewer.receipt");
     this.separate =
@@ -738,6 +880,11 @@ export class Endpoint {
       this.data = null;
     } else if (this.shown) this.openData();
     this.checked = conn;
+    // A failed check can follow the same network outage as the dial. Try it again once SSH is back.
+    if (this.updateError) {
+      this.updateFailure = null;
+      void this.startUpdate();
+    }
     // A view outlives its connections to one daemon. Another daemon's ids
     // mean nothing to it.
     const same = previous === this.instance;
@@ -748,7 +895,11 @@ export class Endpoint {
         view.closeMachineUi();
         // Its agents may have been updated: read their model lists again.
         view.model_cache.expire();
-      }
+      } else if (
+        view.worktree_card.workspace &&
+        viewerRef.parts(view.worktree_card.workspace).machine === this.machine.id
+      )
+        view.worktree_card.clear();
       this.machine.forget();
       this.workspaces = [];
       this.workspaces_instance = this.instance;
@@ -764,7 +915,10 @@ export class Endpoint {
     this.resumed = resumed;
     this.trace("remote.connection", "linked", { resumed: Number(this.resumed) });
     this.current(generation);
-    if (!this.resumed) view.resetConnection(this.machine);
+    if (!this.resumed) {
+      if (had_viewer || this.ui_paste || (this.shown && view.input_state.paste !== null)) this.interruptInput(true);
+      view.resetConnection(this.machine);
+    }
     this.trace("remote.connection", "snapshot");
     view.receiveSnapshot(snapshot, this.machine);
     this.machine.runtime.receiveResources(snapshot.resources);
@@ -881,12 +1035,69 @@ export class Endpoint {
           if (this.link) return this.sendOnce(op, args[0]);
         }
         const generation = this.generation;
-        const bulk = ["viewer.surfaces", "viewer.image", "viewer.search", "viewer.pick", "pane.surface"].includes(op);
-        const conn = bulk && this.opened ? (this.data?.channel ?? this.checked) : this.checked;
+        // Pane contents take the data connection, apart from input. Review's
+        // file lists and diffs, the file peek's and link pictures' reads, and
+        // a chat moved into a pane take it too, and never the control
+        // connection, opening it on a machine not shown, such as a prompt
+        // conversation's.
+        const contents = ["viewer.surfaces", "viewer.image", "viewer.search", "viewer.pick", "pane.surface"].includes(
+          op,
+        );
+        let conn: Connection | null, keepalive: ReturnType<typeof setInterval> | undefined;
+        if (
+          [
+            "review.read",
+            "review.diffs",
+            "file.stat",
+            "file.read",
+            "file.count",
+            "file.scan",
+            "file.thumbnail",
+            "job.poll",
+            "job.cancel",
+            "headless.handoff",
+          ].includes(op)
+        ) {
+          if (!this.checked) throw Error("StaleConnection");
+          // One that failed or closed is dialed again, unless a viewer's stream
+          // is bound to it: then the reconnect that brings the stream back does.
+          if (this.data?.dead && !this.opened) {
+            this.data.close();
+            this.data = null;
+          }
+          const data = await this.openData().openedTo(this.instance);
+          this.current(generation);
+          // Git may take longer than the silence a connection allows, and one
+          // with no stream on it hears nothing else meanwhile.
+          keepalive = setInterval(() => void data.request("ping").catch(() => {}), this.review_ping_ms);
+          conn = data;
+        } else conn = contents && this.opened ? (this.data?.channel ?? this.checked) : this.checked;
         if (!conn) throw Error("StaleConnection");
-        const reply = await conn.request(op, ...args);
-        this.current(generation);
-        return reply;
+        try {
+          const reply = await conn.request(op, ...args);
+          this.current(generation);
+          return reply;
+        } finally {
+          clearInterval(keepalive);
+        }
+      },
+      streamed: async (op, fields, more) => {
+        const generation = this.generation,
+          conn = this.checked;
+        if (!conn) throw Error("StaleConnection");
+        // A search may find nothing for longer than the silence a connection
+        // allows, and over SSH the viewer's stream runs on another one.
+        const keepalive = setInterval(() => void conn.request("ping").catch(() => {}), this.review_ping_ms);
+        try {
+          // Parts from a connection since replaced belong to no one.
+          const reply = await conn.streamed(op, fields, part => {
+            if (generation === this.generation) more(part);
+          });
+          this.current(generation);
+          return reply;
+        } finally {
+          clearInterval(keepalive);
+        }
       },
     };
   }
@@ -916,6 +1127,7 @@ export class Endpoint {
         this.onboarding = false;
       }
       machine.remote_links = this.remote || sshViewer();
+      const previews = view.launch_previews;
       let data = this.connection!;
       if (this.separate && this.link) {
         const lane = this.openData();
@@ -924,6 +1136,8 @@ export class Endpoint {
         machine.viewer_id = lane.viewer;
       }
       this.opened = true;
+      // Switching machines during attachment may have replaced the history stream.
+      if (this.shown && view.launch_previews !== previews) view.launch_previews.connect(machine.connection);
       this.stream = new Stream(
         this.connection!,
         () => {
@@ -953,7 +1167,11 @@ export class Endpoint {
       stream.check();
       const taken = stream.take();
       let reply = taken?.frame ?? null;
-      if (visible && this.controls.length) {
+      if (
+        this.controls.length &&
+        (visible ||
+          viewer.leadingLinks(this.controls, machine.last_control).some(c => BigInt(c.seq) > machine.last_control))
+      ) {
         reply ??= {
           type: "view",
           viewer_protocol: protocol.viewer_version,
@@ -1045,6 +1263,7 @@ export class Endpoint {
     } else {
       const snapshot = await this.connection!.call("session.snapshot", {
         resources: this.host.prefs.resources.enabled,
+        worktree_detail: view.worktreeDetailWanted(machine),
       });
       this.current(generation);
       view.receiveSnapshot(snapshot, machine);
@@ -1082,13 +1301,16 @@ export class Endpoint {
     this.cancellation.abort();
     this.cancellation = new AbortController();
     this.ready = false;
-    if (!keepUnrouted) this.input = [];
+    if (keepUnrouted) {
+      for (const input of this.takeInput()) this.input.push(input);
+    } else this.input = new Queue<Typed>();
+    if (this.controller && this.shown) this.controller.cancelPaste();
   }
   private clearInput(): void {
-    this.interruptInput();
     for (const pane of this.machine.runtime.panes) {
       pane.terminal.pending = [];
     }
+    this.interruptInput();
     // Keys on their way belong to the machine shown.
     if (!this.controller || !this.shown) return;
     const view = this.controller;
@@ -1136,6 +1358,8 @@ export class Endpoint {
   }
   async close(): Promise<void> {
     this.stopped = true;
+    this.machine.forwards?.close();
+    this.cancelUpdate();
     this.disconnect();
     this.settleNumbered(() => true);
     await this.task;
@@ -1158,8 +1382,12 @@ function show(view: Controller, at: Focus): void {
   const runtime = view.runtime;
   if ("workspace" in at) {
     if (runtime.workspaces.index(at.workspace) !== null) view.switchWorkspace(at.workspace);
-  } else if ("pane" in at ? runtime.workspaces.owner(at.pane) : runtime.sessions.some(s => s.id === at.headless))
-    view.selectAgent(at);
+  } else if (
+    "pane" in at ? runtime.workspaces.owner(at.pane) : agentRows.sessions(runtime).some(s => s.id === at.headless)
+  )
+    view.selectAgent(
+      "pane" in at ? viewerRef.pane(view.machine.id, at.pane) : viewerRef.headless(view.machine.id, at.headless),
+    );
 }
 /** Whether the daemon speaks another viewer protocol than this viewer. */
 function incompatible(error: unknown): boolean {

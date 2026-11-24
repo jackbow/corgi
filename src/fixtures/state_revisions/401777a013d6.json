@@ -1,0 +1,9 @@
+{
+  "parent": "2fab55a9485b",
+  "structures": {
+    "checkpoint": "edcdba9f9356b6a4601e7a7e854aaad8fc4f793c12afdc012b9c4f6fb656f2f9",
+    "handoff": "8a34b124f1754daaac34fbfff6428b87ab19ffe3a1db943e7ade31bae3222a83",
+    "protocol": "7dd4e944a962502255e3ea7ed32213c4e71d7f9371d3a2a684d1e0c455c77b6d",
+    "viewer": "02c36d674dbf3689cd11283c930e20347b23752afe1406c74ca3763bd529c8d9"
+  }
+}

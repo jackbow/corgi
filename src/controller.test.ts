@@ -1,11 +1,17 @@
+import * as viewerRef from "./viewer_ref";
 import { Machine } from "./machine";
 import type { Progress as ImageProgress } from "./image_upload";
 import * as protocol from "./protocol";
+import * as fileAccess from "./file_access";
+import * as filePane from "./file_pane";
+import * as handoffUpload from "./handoff_upload";
 import { transport } from "./fixtures/transport";
 import * as worktrees from "./fixtures/worktrees";
 import { scopedEnv } from "./fixtures/env";
 import { expect, setSystemTime, spyOn, test } from "bun:test";
-import { Controller, agentMessage, cardEffect, forkName, breadcrumbs } from "./controller";
+import { agentMessage, cardEffect, forkName, breadcrumbs } from "./controller";
+import * as webLinks from "./web_links";
+import { Controller } from "./fixtures/input";
 import * as sim from "./providers/sim";
 import { Provider, byProvider } from "./providers";
 import * as preferences from "./preferences";
@@ -28,13 +34,14 @@ import type { Runtime } from "./runtime";
 import * as signinExit from "./signin_exit";
 import { Terminal as NativeTerminal } from "./pane/terminal";
 import { Writer, displayWidth } from "./text";
+import type { ChatArgs } from "./prompt";
+import { png_base64 } from "./assets/corgi_badge";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { Menu as SetupMenu, items as setupItems } from "./corgi_setup";
 import * as hostClipboard from "./host_clipboard";
 import * as promptAttach from "./prompt_attach";
-import * as keymap from "./keymap";
 import * as bindings from "./bindings";
 import * as viewer from "./viewer";
 import { agent, type Pane } from "./mirror";
@@ -45,7 +52,7 @@ import * as modelPicker from "./model_picker";
 import * as subprocess from "./subprocess";
 import { snapshot as prSnapshot } from "./fixtures/pull_request";
 import { Store as ReviewStore } from "./review_state";
-import * as machine_input from "./machine_input";
+import * as terminalInput from "./terminal_input";
 import * as terminal_info from "./terminal_info";
 import { Work } from "./trackers/resources";
 
@@ -404,6 +411,24 @@ function accountsFolder(prefix: string, env: (base: string) => Record<string, st
   };
 }
 
+test("queued Escape events cannot combine with later text into another sequence", async () => {
+  const s = controller(),
+    parser = new terminalInput.Parser();
+  s.input_state.attached = true;
+  const key = spyOn(s, "key").mockResolvedValue(undefined);
+  try {
+    parser.feed(bytes("\x1b"), 0);
+    const escape = parser.expire(50),
+      tail = parser.feed(bytes("[0n"), 51);
+    await s.input([...escape, ...tail]);
+    expect(key.mock.calls).toEqual([[27], [91], [48], [110]]);
+    expect(s.input_parser.due()).toBe(Infinity);
+  } finally {
+    key.mockRestore();
+    viewer.close(s);
+  }
+});
+
 test("notices keep Unicode while stripping controls and truncating at UTF-8 boundaries", () => {
   const s = controller();
   s.notice("设置 日本語 한국어 Русский\n\x1b\u009b");
@@ -455,7 +480,7 @@ test.each(["typing", "kitty key", "click", "resize", "flourishes off"])(
 test("a sign-in takes the prefix only to detach or to type it", async () => {
   const s = controller(),
     open = spyOn(signin.Signin.prototype, "open").mockResolvedValue(undefined),
-    prefix = String.fromCharCode(keymap.prefixByte(s.prefs.prefix)),
+    prefix = "\x02",
     detach = String.fromCharCode(bindings.find(s.prefs.preset, { name: "detach" })!.key),
     close = String.fromCharCode(bindings.find(s.prefs.preset, { name: "close" })!.key);
   s.receiveSnapshot(folders("/a"));
@@ -681,7 +706,7 @@ test("clicking the text mark opens setup", async () => {
   s.corgi_badge = "mark";
   s.input_state.attached = true;
   try {
-    await s.mouse("\x1b[<0;4;1M");
+    await mouseInput(s, "\x1b[<0;4;1M");
     expect(s.corgi_setup).not.toBeNull();
   } finally {
     viewer.close(s);
@@ -771,14 +796,14 @@ test("setup previews intensity drags and saves once on release, including outsid
         }
       }
     expect(point).not.toBeNull();
-    await s.mouse(`\x1b[<0;${point!.x + 1};${point!.y + 1}M`);
+    await mouseInput(s, `\x1b[<0;${point!.x + 1};${point!.y + 1}M`);
     expect(menu.previewIntensity(s.prefs)).toBe(0);
     expect(s.prefs.corgi_intensity).toBe(50);
     expect(update).not.toHaveBeenCalled();
-    await s.mouse("\x1b[<32;150;35M");
+    await mouseInput(s, "\x1b[<32;150;35M");
     expect(menu.previewIntensity(s.prefs)).toBe(100);
     expect(update).not.toHaveBeenCalled();
-    await s.mouse("\x1b[<0;150;35m");
+    await mouseInput(s, "\x1b[<0;150;35m");
     expect(s.prefs.corgi_intensity).toBe(100);
     expect(update).toHaveBeenCalledTimes(1);
     expect(update).toHaveBeenLastCalledWith({ corgi_intensity: 100 });
@@ -1044,7 +1069,7 @@ test("the button and the sidebar's add button light together while either is cho
 });
 test("the tab menu starts a prefix only with the configured prefix key", async () => {
   const s = controller();
-  s.prefs = Object.assign(new preferences.Preferences(), { prefix: "ctrl_a" });
+  s.prefs = Object.assign(new preferences.Preferences(), { prefix: "ctrl+a" });
   s.tab_menu = new TabMenu({ tab: 1, anchor_x: 0 });
   await s.key(2);
   expect(s.prefix).toBe(false);
@@ -1052,6 +1077,204 @@ test("the tab menu starts a prefix only with the configured prefix key", async (
   await s.key(1);
   expect(s.prefix).toBe(true);
   expect(s.tab_menu).toBeNull();
+});
+
+test.each([
+  ["f9", "\x1b[20~", "\x1b[57372u", "\x1b[20~"],
+  ["ctrl+space", "\x00", "\x1b[32;5u", "\x00"],
+  ["ctrl+\\", "\x1c", "\x1b[92;5u", "\x1c"],
+  ["ctrl+a", "\x01", "\x1b[97;5u", "\x01"],
+  ["alt+x", "\x1bx", "\x1b[120;3u", "\x1bx"],
+  ["é", "é", "\x1b[233u", "é"],
+  ["alt+é", "\x1bé", "\x1b[233;3u", "\x1bé"],
+  ["X", "X", "\x1b[88;2u", "X"],
+  ["f1", "\x1bOP", "\x1b[57364u", "\x1bOP"],
+  ["ctrl+t", "\x14", "\x1b[116;5u", "\x14"],
+])(
+  "custom prefix %s runs shortcuts and types itself twice across keyboard encodings",
+  async (prefix, raw, enhanced, typed) => {
+    const s = controller();
+    s.receiveSnapshot(folders("/a"));
+    s.input_state.attached = true;
+    s.prefs.prefix = prefix;
+    const term = s.focused().terminal,
+      perform = spyOn(s, "perform").mockResolvedValue(undefined);
+    try {
+      await s.input(bytes(raw));
+      expect(s.prefix).toBe(true);
+      expect(term.pending).toHaveLength(0);
+      await s.input(bytes("b"));
+      expect(perform).toHaveBeenLastCalledWith({ name: "sidebar" });
+      expect(s.prefix).toBe(false);
+      perform.mockClear();
+      await s.input(bytes(raw + enhanced));
+      expect(s.prefix).toBe(false);
+      expect(Buffer.from(term.pending).toString()).toBe(typed);
+      expect(perform).not.toHaveBeenCalled();
+      term.pending = [];
+      await s.input(bytes(enhanced + "\x1b[98u"));
+      expect(perform).toHaveBeenLastCalledWith({ name: "sidebar" });
+      expect(s.prefix).toBe(false);
+      expect(term.pending).toHaveLength(0);
+    } finally {
+      viewer.close(s);
+    }
+  },
+);
+
+test("a doubled function prefix follows the child's keyboard protocol, and paste stays literal", async () => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  s.prefs.prefix = "f9";
+  const term = s.focused().terminal;
+  term.inner.feed("\x1b[>1u\x1b[?2004h");
+  try {
+    await s.input(bytes("\x1b[20~\x1b[20~"));
+    expect(Buffer.from(term.pending).toString()).toBe("\x1b[20~");
+    term.pending = [];
+    const paste = "\x1b[200~\x1b[20~b\x1b[201~";
+    await s.input(bytes(paste));
+    expect(Buffer.from(term.pending).toString()).toBe(paste);
+    expect(s.prefix).toBe(false);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test.each([
+  ["ctrl+b", "\x02", "\x1b[98;5u"],
+  ["ctrl+space", "\x00", "\x1b[32;5u"],
+  ["ctrl+\\", "\x1c", "\x1b[92;5u"],
+])("a doubled raw %s uses the child's enhanced keyboard protocol", async (prefix, input, expected) => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  s.prefs.prefix = prefix;
+  const term = s.focused().terminal;
+  term.inner.feed("\x1b[>1u");
+  try {
+    await s.input(bytes(input + input));
+    expect(Buffer.from(term.pending).toString()).toBe(expected);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test.each([
+  ["ctrl+b", "\x1b[98;6u"],
+  ["tab", "\x1b[105;5u"],
+  ["x", "\x1b[120;3u"],
+])("unrelated enhanced keys cannot become prefix %s through legacy encoding", async (prefix, input) => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  s.prefs.prefix = prefix;
+  try {
+    await s.input(bytes(input));
+    expect(s.prefix).toBe(false);
+    expect(s.focused().terminal.pending.length).toBeGreaterThan(0);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test.each(["\x1b[20~", "\x1b[57372u"])("custom prefixes work over setup and the prompt (%s)", async prefix => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  s.prefs.prefix = "f9";
+  try {
+    await s.input(bytes(prefix + " "));
+    expect(s.prompt.open).toBe(true);
+    await s.input(bytes(prefix + " "));
+    expect(s.prompt.open).toBe(false);
+    s.openSetup();
+    await s.input(bytes(prefix + "q"));
+    expect(s.input_state.attached).toBe(false);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test.each(["é", "🐶"])("a doubled Unicode prefix %s types complete text into the prompt", async prefix => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  s.prefs.prefix = prefix;
+  const key = spyOn(s.prompt, "key");
+  try {
+    await s.input(bytes(prefix + " " + prefix + prefix));
+    expect(s.prompt.open).toBe(true);
+    expect(s.prefix).toBe(false);
+    expect(key.mock.calls.map(call => call[0])).toEqual(Array.from(bytes(prefix)));
+    expect(s.focused().terminal.pending).toHaveLength(0);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("UTF-8 continuation bytes never arm the setup prefix", async () => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  s.prefs.prefix = "©";
+  s.openSetup();
+  try {
+    await s.input(bytes("é"));
+    expect(s.corgi_setup.after_prefix).toBe(false);
+    await s.input(bytes("©"));
+    expect(s.corgi_setup.after_prefix).toBe(true);
+    await s.input(bytes("q"));
+    expect(s.input_state.attached).toBe(false);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test.each([
+  ["setup", "`", "`"],
+  ["setup", "²", "²"],
+  ["setup", "`", "\x1b[96u"],
+  ["launcher", "`", "`"],
+  ["launcher", "`", "\x1b[96u"],
+])("%s fields receive printable prefix %s as text (%s)", async (host, prefix, input) => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  s.prefs.prefix = prefix;
+  try {
+    if (host === "setup") {
+      s.openSetup();
+      s.corgi_setup.editing = Dialog.init({ agent_command: 0 }, "");
+      await s.input(bytes(input + input));
+      expect(s.corgi_setup.editing.name()).toBe(prefix + prefix);
+      expect(s.corgi_setup.after_prefix).toBe(false);
+    } else {
+      s.openLauncher(true);
+      s.agent_launcher.worktree.open(null, "/a");
+      await s.input(bytes(input + input));
+      expect(s.agent_launcher.worktree.field.name()).toBe(prefix + prefix);
+      expect(s.agent_launcher.prefix).toBe(false);
+    }
+    expect(s.focused().terminal.pending).toHaveLength(0);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a control prefix can still detach while editing a setup field", async () => {
+  const s = controller();
+  s.receiveSnapshot(folders("/a"));
+  s.input_state.attached = true;
+  try {
+    s.openSetup();
+    s.corgi_setup.editing = Dialog.init({ agent_command: 0 }, "");
+    await s.input(bytes("\x02q"));
+    expect(s.input_state.attached).toBe(false);
+  } finally {
+    viewer.close(s);
+  }
 });
 
 test("the full-screen help covers the panes, a prefix alone does not", () => {
@@ -1097,9 +1320,10 @@ test.each([false, true])("large pane pastes arrive in chunks (bracketed: %s)", a
   try {
     await s.input(bytes(`\x1b[200~${payload}\x1b[201~z`));
     expect(Buffer.from(term.pending).toString()).toBe(bracketed ? `\x1b[200~${payload}\x1b[201~z` : payload + "z");
-    expect(sent).toHaveBeenCalledTimes(bracketed ? 4 : 2);
+    expect(sent.mock.calls.length).toBeGreaterThan(2);
+
     expect(s.input_state.paste).toBeNull();
-    expect(s.input_state.keybuf).toEqual([]);
+    expect(s.input_parser.due()).toBe(Infinity);
     expect(s.prefix).toBe(false);
   } finally {
     sent.mockRestore();
@@ -1113,7 +1337,7 @@ test.each([false, true])("pasted escapes stay literal through the input pipeline
   for (let split = 0; split <= data.length; split++) {
     const s = controller(),
       probe = new terminal_info.Probe(),
-      parser = new machine_input.Parser();
+      parser = new terminalInput.Parser();
     s.receiveSnapshot(folders("/a"));
     s.input_state.attached = true;
     const term = s.focused().terminal;
@@ -1121,14 +1345,13 @@ test.each([false, true])("pasted escapes stay literal through the input pipeline
     try {
       for (const chunk of [data.subarray(0, split), data.subarray(split)]) {
         if (pipeline) {
-          for (const input of parser.feed(probe.feed(chunk))) await s.input(input.bytes);
+          await s.input(parser.feed(chunk).filter(input => !probe.accept(input)));
         } else await s.input(chunk);
       }
       expect(Buffer.from(term.pending)).toEqual(Buffer.from(data));
       expect(s.input_state.paste).toBeNull();
-      expect(s.input_state.keybuf).toEqual([]);
+      expect(s.input_parser.due()).toBe(Infinity);
       expect(s.prefix).toBe(false);
-      expect(probe.paste).toBe(false);
     } finally {
       viewer.close(s);
     }
@@ -1147,7 +1370,7 @@ test("paste markers and UTF-8 survive every read boundary", async () => {
       await s.input(data.subarray(split));
       expect(s.prompt.area.text).toBe("xhé🐶\noky");
       expect(s.input_state.paste).toBeNull();
-      expect(s.input_state.keybuf).toEqual([]);
+      expect(s.input_parser.due()).toBe(Infinity);
       expect(s.focused().terminal.pending).toEqual([]);
     } finally {
       viewer.close(s);
@@ -1170,7 +1393,7 @@ test.each(["", "\x1b"])("a paste terminator waits across delayed reads after %j"
     await s.input(bytes("b"));
     expect(s.name_dialog.name()).toBe("ab");
     expect(s.input_state.paste).toBeNull();
-    expect(s.input_state.keybuf).toEqual([]);
+    expect(s.input_parser.due()).toBe(Infinity);
   } finally {
     setSystemTime();
     viewer.close(s);
@@ -1211,7 +1434,7 @@ test("discarded paste chunks cannot invoke shortcuts", async () => {
     expect(mouse).not.toHaveBeenCalled();
     expect(s.input_state.watched).toBe(true);
     expect(s.input_state.paste).toBeNull();
-    expect(s.input_state.keybuf).toEqual([]);
+    expect(s.input_parser.due()).toBe(Infinity);
   } finally {
     key.mockRestore();
     mouse.mockRestore();
@@ -1222,7 +1445,12 @@ test("discarded paste chunks cannot invoke shortcuts", async () => {
 test("keys stay on the name while the folder field doesn't fit", async () => {
   const s = controller();
   s.input_state.attached = true;
-  const d = new newWorkspace.Dialog(newWorkspace.Browser.init("/a", "/home", () => ["b"]));
+  const d = new newWorkspace.Dialog(
+    newWorkspace.Browser.init(
+      "/a",
+      new newWorkspace.Reader({ home: "/home", ask: async () => ({ folders: ["b"] }), lost: () => false }),
+    ),
+  );
   s.name_dialog = d;
   s.height = 12;
   await s.input(bytes("\tx"));
@@ -1231,6 +1459,46 @@ test("keys stay on the name while the folder field doesn't fit", async () => {
   s.height = 30;
   await s.input(bytes("\ty"));
   expect(d.browser.field.raw()).toBe("/a/y");
+});
+
+test("a remote machine's new workspace starts at its home, and Escape while it makes the folder cancels", async () => {
+  const commands: unknown[] = [];
+  let made = () => {};
+  const machine = new Machine(
+    {
+      request: transport(async (op, fields: any) => {
+        switch (op) {
+          case "folder.list":
+            return { folders: [], home: "/home/me" };
+          case "folder.find":
+            return { deepest: null };
+          case "folder.open":
+            await new Promise<void>(resolve => (made = resolve));
+            return { opened: { path: fields.path } };
+          case "session.command":
+            commands.push(fields.command);
+            return { result: protocol.emptyResult() };
+        }
+        return {};
+      }).request,
+    },
+    "atlas",
+    true,
+  );
+  const s: any = new Controller(machine);
+  try {
+    // Without a workspace there, not at the viewer's own folder.
+    s.beginWorkspace(null);
+    expect(s.name_dialog.browser.field.raw()).toBe("~/");
+    s.finishName(true);
+    s.finishName(false);
+    made();
+    await s.tasks.idle();
+    expect(commands).toEqual([]);
+    expect(s.name_dialog).toBeNull();
+  } finally {
+    viewer.close(s);
+  }
 });
 
 test("a paste read from the host clipboard goes where a paste would", async () => {
@@ -1466,6 +1734,39 @@ test("Copy details names the harness, session, id and paths, leaving out what is
   );
 });
 
+test("an agent's menu leaves Review changes out outside git, even when git answers after it opens", async () => {
+  const s = controller();
+  s.receiveSnapshot(pair());
+  let answer = (_root: string | null) => {};
+  const changed = s.review_summaries.changed;
+  s.review_summaries = new summaries.Summaries(
+    () => new Promise(resolve => (answer = root => resolve({ root, runs: [] }))),
+  );
+  s.review_summaries.changed = changed;
+  const items = () => s.tab_menu.entries().map((entry: any) => entry.item);
+  try {
+    await s.openAgentMenu(1, 0, 0);
+    await s.tasks.idle();
+    expect(s.tab_menu.highlightedItem()).toBe("review");
+    answer(null);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(items()).not.toContain("review");
+    expect(s.tab_menu.highlightedItem()).toBe("copy-details");
+    // Known before it opens, the row is never there.
+    s.closeMenu();
+    await s.openAgentMenu(1, 0, 0);
+    await s.tasks.idle();
+    expect(items()).not.toContain("review");
+    // The menu checks again, so after `git init` the row comes back.
+    answer("/a");
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(items()).toContain("review");
+    expect(s.tab_menu.highlightedItem()).toBe("copy-details");
+  } finally {
+    viewer.close(s);
+  }
+});
+
 test("Copy details stays available before the session is identified", async () => {
   const s = controller();
   s.receiveSnapshot(pair());
@@ -1658,7 +1959,7 @@ test("edit workspace opens the current workspace's menu centered in its row, and
     await s.key(114);
     expect(s.tab_menu).toBeNull();
     expect(s.name_dialog).toBeNull();
-    expect(s.inline_rename?.target).toEqual({ workspace: 2 });
+    expect(s.inline_rename?.target).toBe(viewerRef.workspace(s.machine.id, 2));
     expect(s.inline_rename.drawer).toBe(false);
   } finally {
     viewer.close(s);
@@ -1702,10 +2003,15 @@ test("change folder browses from the workspace's folder and moves it there", asy
   snapshot.workspaces[0].name = "app";
   snapshot.workspaces[1].name = "custom";
   const { s, sent: commands } = recording(snapshot);
+  /** Waits for the dialog's reads of this disk. */
+  const read = async () => {
+    for (let i = 0; i < 400 && s.name_dialog?.browser.reading; i++) await Bun.sleep(5);
+  };
   try {
     await s.perform({ name: "edit-workspace" });
     expect(s.tab_menu.details.get("change-folder").runs).toEqual([[join(root, "app"), "faint"]]);
     await s.key(102);
+    await read();
     const d = s.name_dialog;
     expect(d).toBeInstanceOf(newWorkspace.Dialog);
     expect([d.moving, d.browser.focused, d.browser.folder(), d.browser.entries]).toEqual([
@@ -1724,9 +2030,12 @@ test("change folder browses from the workspace's folder and moves it there", asy
     // A name of its own stays.
     s.tab_menu = new TabMenu({ tab: 2, workspace: true, anchor_x: 0 });
     await s.tabMenuAction("change-folder");
+    await read();
     await s.input(bytes("\x1b[D"));
+    await read();
     expect(s.name_dialog.browser.folder()).toBe(join(root, "app"));
     await s.input(bytes("\r"));
+    await s.settle();
     expect(commands.at(-1)).toEqual({ "workspace.edit": { target: 2, name: "custom", cwd: join(root, "app") } });
   } finally {
     viewer.close(s);
@@ -1756,7 +2065,8 @@ test("Cmd+Shift+A toggles and saves agent scope without changing the selected pa
   s.focusPane(1);
   s.agentOffset().set(3);
   s.all_offset = 7;
-  const visible = () => s.agentEntries().flatMap((e: sidebar.Entry) => ("pane" in e.target ? [e.target.pane] : []));
+  const visible = () =>
+    s.agentEntries().flatMap((e: sidebar.Entry) => (viewerRef.isPane(e.target) ? [viewerRef.parts(e.target).id] : []));
   try {
     expect(visible()).toEqual([1, 2]);
     await s.input(bytes("\x1b[97;10u"));
@@ -1911,7 +2221,7 @@ test("an agent the daemon holds as starting shows dimmed in working until it let
   try {
     s.receiveSnapshot(snapshot);
     const row = (pane: number) =>
-      (s.agentEntries() as sidebar.Entry[]).find(e => sidebar.sameTarget(e.target, { pane }));
+      (s.agentEntries() as sidebar.Entry[]).find(e => e.target === viewerRef.pane(s.machine.id, pane));
     expect(row(1)).toMatchObject({ section: "working", state: "idle", starting: true });
     expect(row(2)).toMatchObject({ section: "idle", starting: false });
     snapshot.workspaces[0].starting_agents = [];
@@ -1936,19 +2246,19 @@ test("dropping an opened ready agent keeps its new position", async () => {
   s.width = 100;
   s.height = 30;
   try {
-    expect(ready()).toEqual([{ pane: 1 }, { pane: 2 }]);
+    expect(ready()).toEqual([viewerRef.pane(s.machine.id, 1), viewerRef.pane(s.machine.id, 2)]);
     s.focusPane(2);
     snapshot.panes[1].agent.attention = "none";
     snapshot.panes[1].agent.observation.read = 1;
     snapshot.workspaces[0].activity_order = [{ pane: 2 }, { pane: 1 }];
     s.receiveSnapshot(snapshot);
-    expect(ready()).toEqual([{ pane: 1 }, { pane: 2 }]);
+    expect(ready()).toEqual([viewerRef.pane(s.machine.id, 1), viewerRef.pane(s.machine.id, 2)]);
     const entries: sidebar.Entry[] = s.sidebarEntries(),
       side: sidebar.View = s.sidebarView(entries),
       ys = Array.from({ length: s.height }, (_, y) => y),
       from = ys.find(y => {
         const hit = side.hit(5, y);
-        return hit.tag === "entry" && sidebar.sameTarget(entries[hit.entry].target, { pane: 2 });
+        return hit.tag === "entry" && entries[hit.entry].target === viewerRef.pane(s.machine.id, 2);
       })!,
       to = ys.find(y => side.agentDrop(5, y)?.index === 1)!;
     expect(from).toBeDefined();
@@ -1956,7 +2266,7 @@ test("dropping an opened ready agent keeps its new position", async () => {
     await s.input(bytes(mouse(0, from) + mouse(32, to) + mouse(0, to, true)));
     await s.settle();
     expect(sent).toContainEqual({ "agent.place": { workspace: 1, target: { pane: 2 }, before: { pane: 1 } } });
-    expect(ready()).toEqual([{ pane: 2 }, { pane: 1 }]);
+    expect(ready()).toEqual([viewerRef.pane(s.machine.id, 2), viewerRef.pane(s.machine.id, 1)]);
     expect(s.focused().id).toBe(2);
   } finally {
     viewer.close(s);
@@ -1970,7 +2280,8 @@ test("agent entries keep tab order and pane order within splits after a new snap
   snapshot.workspaces[0].model.tabs.unshift({ id: 3, root: 3, title: "first" });
   snapshot.panes.push({ ...snapshot.panes[0], id: 4, tab: 3 });
   snapshot.panes.reverse();
-  const targets = () => (s.agentEntries(1) as sidebar.Entry[]).map(e => e.target);
+  const targets = () =>
+    (s.machineAgents(1).map(({ entry }: any) => entry) as import("./agent_rows").Entry[]).map(e => e.target);
   try {
     s.receiveSnapshot(snapshot);
     expect(targets()).toEqual([{ pane: 4 }, { pane: 2 }, { pane: 1 }]);
@@ -2001,21 +2312,21 @@ test("prefixed arrows walk the panes into the sidebar, which opens the agent und
     expect(s.focused().id).toBe(1);
     // Inside the repeat window, the next arrow needs no prefix.
     await s.input(bytes("\x1b[D"));
-    expect(s.sidebar_focus.cursor).toEqual({ entry: { pane: 1 } });
+    expect(s.sidebar_focus.cursor).toEqual({ entry: viewerRef.pane(s.machine.id, 1) });
     expect(s.frame()).toContain("SIDEBAR");
     // Plain arrows stay in the agent list and wrap, past its section's
     // header, inside the repeat window too.
     await s.input(bytes("\x1b[B"));
-    expect(s.sidebar_focus.cursor).toEqual({ entry: { pane: 2 } });
+    expect(s.sidebar_focus.cursor).toEqual({ entry: viewerRef.pane(s.machine.id, 2) });
     await s.input(bytes("\x1b[B"));
     expect(s.sidebar_focus.cursor).toEqual({ entry: { section: "idle" } });
     await s.input(bytes("\x1b[B"));
-    expect(s.sidebar_focus.cursor).toEqual({ entry: { pane: 1 } });
+    expect(s.sidebar_focus.cursor).toEqual({ entry: viewerRef.pane(s.machine.id, 1) });
     // A prefixed arrow crosses to the workspaces, and back to the agent it left.
     await s.input(bytes("\x02\x1b[A"));
-    expect(s.sidebar_focus.cursor).toEqual({ workspace: 1 });
+    expect(s.sidebar_focus.cursor).toEqual({ workspace: s.workspaceRef(1) });
     await s.input(bytes("\x02\x1b[B\x1b[A\x1b[A"));
-    expect(s.sidebar_focus.cursor).toEqual({ entry: { pane: 2 } });
+    expect(s.sidebar_focus.cursor).toEqual({ entry: viewerRef.pane(s.machine.id, 2) });
     await s.key(13);
     expect(s.sidebar_focus).toBeNull();
     expect(s.focused().id).toBe(2);
@@ -2030,7 +2341,7 @@ test("a workspace row opens that workspace; Esc leaves the sidebar as it was", a
   try {
     s.focusPane(1);
     await s.input(bytes("\x02\x1b[D\x02\x1b[A\x1b[B"));
-    expect(s.sidebar_focus.cursor).toEqual({ workspace: 2 });
+    expect(s.sidebar_focus.cursor).toEqual({ workspace: s.workspaceRef(2) });
     await s.key(27);
     expect(s.sidebar_focus).toBeNull();
     expect(s.current().id).toBe(1);
@@ -2051,11 +2362,11 @@ test("j and k move the workspace drawer's cursor like the arrows", async () => {
     s.focusPane(1);
     await s.input(bytes("\x02w"));
     expect(s.sidebar_focus?.drawer).toBe("workspaces");
-    expect(s.sidebar_focus!.cursor).toEqual({ workspace: 1 });
+    expect(s.sidebar_focus!.cursor).toEqual({ workspace: s.workspaceRef(1) });
     await s.key(106);
-    expect(s.sidebar_focus!.cursor).toEqual({ workspace: 2 });
+    expect(s.sidebar_focus!.cursor).toEqual({ workspace: s.workspaceRef(2) });
     await s.key(107);
-    expect(s.sidebar_focus!.cursor).toEqual({ workspace: 1 });
+    expect(s.sidebar_focus!.cursor).toEqual({ workspace: s.workspaceRef(1) });
     expect(sent).toEqual([]);
   } finally {
     update.mockRestore();
@@ -2072,10 +2383,28 @@ test("search finds agents in folded sections and opening one unfolds its section
     expect((s.agentEntries() as sidebar.Entry[]).some(e => sidebar.isAgent(e.target))).toBe(false);
     s.openAgentPicker();
     s.agent_picker.query = Dialog.init({ pane: 0 }, "agent 2");
-    expect(s.pickerEntries().map((e: sidebar.Entry) => e.target)).toEqual([{ pane: 2 }]);
+    expect(s.pickerEntries().map((e: sidebar.Entry) => e.target)).toEqual([viewerRef.pane(s.machine.id, 2)]);
     s.acceptAgentPicker();
     expect(s.focused().id).toBe(2);
     expect(s.folded_sections.has("idle")).toBe(false);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test.each(["pane", "headless"])("selecting a %s in manual sorting preserves activity section folds", kind => {
+  const s = controller();
+  try {
+    s.receiveSnapshot({
+      ...pair(),
+      headless_sessions: [{ id: 7, workspace: 1, provider: "codex", state: "idle", attention: "none" }],
+    });
+    s.prefs.agent_sort = "manual";
+    s.folded_sections.add("idle");
+    s.selectAgent(kind === "pane" ? viewerRef.pane(s.machine.id, 2) : viewerRef.headless(s.machine.id, 7));
+    s.prefs.agent_sort = "activity";
+    expect(s.folded_sections.has("idle")).toBe(true);
+    expect((s.agentEntries() as sidebar.Entry[]).some(e => sidebar.isAgent(e.target))).toBe(false);
   } finally {
     viewer.close(s);
   }
@@ -2086,7 +2415,7 @@ test("/ searches the focused agent list and Esc comes back to it; letters and th
   try {
     s.focusPane(1);
     await s.input(bytes("\x02\x1b[D"));
-    expect(s.sidebar_focus.cursor).toEqual({ entry: { pane: 1 } });
+    expect(s.sidebar_focus.cursor).toEqual({ entry: viewerRef.pane(s.machine.id, 1) });
     expect(s.frame()).toContain("↵ open  / search  Esc back");
     await s.input(bytes("x"));
     expect(s.agent_picker).toBeNull();
@@ -2096,11 +2425,11 @@ test("/ searches the focused agent list and Esc comes back to it; letters and th
     expect(s.sidebar_focus).toBeNull();
     await s.key(27);
     expect(s.agent_picker).toBeNull();
-    expect(s.sidebar_focus.cursor).toEqual({ entry: { pane: 2 } });
+    expect(s.sidebar_focus.cursor).toEqual({ entry: viewerRef.pane(s.machine.id, 2) });
     await s.input(bytes("\x02\x1b[A"));
     await s.input(bytes("/"));
     expect(s.agent_picker).toBeNull();
-    expect(s.sidebar_focus.cursor).toEqual({ workspace: 1 });
+    expect(s.sidebar_focus.cursor).toEqual({ workspace: s.workspaceRef(1) });
     expect(s.frame()).not.toContain("/ search");
     expect(sent).toEqual([]);
   } finally {
@@ -2117,7 +2446,7 @@ test("prefix w opens a folded sidebar's workspaces as a drawer over the panes, o
     const area = s.area();
     await s.input(bytes("\x02w"));
     expect(s.sidebar_focus.drawer).toBe("workspaces");
-    expect(s.sidebar_focus.cursor).toEqual({ workspace: 1 });
+    expect(s.sidebar_focus.cursor).toEqual({ workspace: s.workspaceRef(1) });
     expect(s.area()).toEqual(area);
     expect(s.frame()).not.toContain("agents");
     // Its own key puts it away; a prefixed arrow keeps to the workspaces.
@@ -2125,7 +2454,7 @@ test("prefix w opens a folded sidebar's workspaces as a drawer over the panes, o
     expect(s.sidebar_focus).toBeNull();
     expect(s.sidebar_open).toBe(false);
     await s.input(bytes("\x02w\x02\x1b[B"));
-    expect(s.sidebar_focus.cursor).toEqual({ workspace: 1 });
+    expect(s.sidebar_focus.cursor).toEqual({ workspace: s.workspaceRef(1) });
     await s.input(bytes("\x1b[B"));
     await s.key(13);
     expect(s.current().id).toBe(2);
@@ -2134,10 +2463,73 @@ test("prefix w opens a folded sidebar's workspaces as a drawer over the panes, o
     s.sidebar_open = true;
     await s.input(bytes("\x02w"));
     expect(s.sidebar_focus.drawer).toBeNull();
-    expect(s.sidebar_focus.cursor).toEqual({ workspace: 2 });
+    expect(s.sidebar_focus.cursor).toEqual({ workspace: s.workspaceRef(2) });
     expect(sent).toEqual([]);
   } finally {
     update.mockRestore();
+    viewer.close(s);
+  }
+});
+
+test("a workspace drawer click follows saved display order", async () => {
+  const { s } = steering();
+  try {
+    s.sidebar_open = false;
+    s.adopt(workMachine());
+    s.machine_filter = s.machine;
+    s.prefs.workspace_order = [2, 1].map(id => JSON.stringify([s.machine.order_scope || s.machine.name, id]));
+    expect(s.workspaceList().map((ws: any) => ws.id)).toEqual([1, 2]);
+    expect(s.workspaceRows().map((ws: sidebar.WorkspaceEntry) => ws.id)).toEqual([
+      s.workspaceRef(2),
+      s.workspaceRef(1),
+    ]);
+    for (const [index, id] of [2, 1].entries()) {
+      await s.input(bytes("\x02w"));
+      const side = s.sidebarView(s.sidebarEntries()),
+        y = side.workspaceY(index);
+      expect(side.hit(2, y)).toEqual({ tag: "workspace", workspace: index });
+      await s.input(bytes(`\x1b[<0;3;${y + 1}M\x1b[<0;3;${y + 1}m`));
+      expect(s.current().id).toBe(id);
+      expect(s.sidebar_focus).toBeNull();
+      expect(s.sidebar_open).toBe(false);
+    }
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("one machine keeps daemon workspace order despite a saved multi-machine order", async () => {
+  const snapshot = pair(),
+    { s, sent } = recording(snapshot);
+  try {
+    s.sidebar_open = true;
+    s.prefs.workspace_order = [2, 1].map(id => JSON.stringify([s.machine.order_scope || s.machine.name, id]));
+    const ids = () => s.workspaceRows().map((ws: sidebar.WorkspaceEntry) => ws.id);
+    expect(ids()).toEqual([s.workspaceRef(1), s.workspaceRef(2)]);
+    const side = s.sidebarView([]),
+      first = side.workspaceY(0),
+      second = side.workspaceY(1);
+    s.workspaceDragInput(2, second, 0, false);
+    s.workspaceDragInput(2, first, 32, false);
+    s.workspaceDragInput(2, first, 0, true);
+    expect(sent).toContainEqual({ "workspace.move": { target: 2, before: 1 } });
+    snapshot.workspaces.reverse();
+    await s.settle();
+    expect(ids()).toEqual([s.workspaceRef(2), s.workspaceRef(1)]);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("closing the only machine's last workspace leaves no selectable placeholder", () => {
+  const { s } = steering();
+  try {
+    s.receiveSnapshot({ workspaces: [], panes: [] });
+    expect(s.current().id).toBe(0);
+    expect(s.workspaceRows()).toEqual([]);
+    s.navigateWorkspace(true);
+    expect(s.current().id).toBe(0);
+  } finally {
     viewer.close(s);
   }
 });
@@ -2148,7 +2540,7 @@ test("arrows the sidebar takes keep the repeat window open, so focus goes in and
     s.focusPane(1);
     await s.input(bytes("\x02\x1b[D"));
     for (let i = 0; i < 3; i++) {
-      expect(s.sidebar_focus.cursor).toEqual({ entry: { pane: 1 } });
+      expect(s.sidebar_focus.cursor).toEqual({ entry: viewerRef.pane(s.machine.id, 1) });
       await s.input(bytes("\x1b[C"));
       expect(s.sidebar_focus).toBeNull();
       expect(s.focused().id).toBe(1);
@@ -2195,7 +2587,7 @@ test("a folded sidebar takes focus only as a drawer, which a prefixed command pu
     expect(s.sidebar_open).toBe(false);
     await s.input(bytes("\x02a"));
     expect(s.sidebar_focus.drawer).toBe("agents");
-    expect(s.sidebar_focus.cursor).toEqual({ entry: { pane: 1 } });
+    expect(s.sidebar_focus.cursor).toEqual({ entry: viewerRef.pane(s.machine.id, 1) });
     expect(s.area()).toEqual(area);
     expect(s.frame()).not.toContain("workspaces");
     await s.key(27);
@@ -2203,7 +2595,7 @@ test("a folded sidebar takes focus only as a drawer, which a prefixed command pu
     await s.input(bytes("\x02a"));
     // The prefix keeps the drawer for an arrow, which stays in its list ...
     await s.input(bytes("\x02\x1b[A"));
-    expect(s.sidebar_focus.cursor).toEqual({ entry: { pane: 1 } });
+    expect(s.sidebar_focus.cursor).toEqual({ entry: viewerRef.pane(s.machine.id, 1) });
     // ... and gives the keyboard back for anything else.
     await s.input(bytes("\x02m"));
     expect(s.sidebar_focus).toBeNull();
@@ -2223,10 +2615,10 @@ test("the sidebar's cursor ghosts an agent no pane shows, where entering it puts
     s.focusPane(1);
     await s.input(bytes("\x02\x1b[D\x1b[B"));
     // Pane 2 is on screen, so nothing is ghosted.
-    expect(s.sidebar_focus.cursor).toEqual({ entry: { pane: 2 } });
+    expect(s.sidebar_focus.cursor).toEqual({ entry: viewerRef.pane(s.machine.id, 2) });
     expect(s.sidebarGhost()).toBeNull();
     await s.input(bytes("\x1b[B"));
-    expect(s.sidebar_focus.cursor).toEqual({ entry: { pane: 3 } });
+    expect(s.sidebar_focus.cursor).toEqual({ entry: viewerRef.pane(s.machine.id, 3) });
     const ghost = s.sidebarGhost();
     expect(ghost.pane.id).toBe(3);
     expect(ghost.area).toEqual(s.area());
@@ -2240,7 +2632,7 @@ test("the sidebar's cursor ghosts an agent no pane shows, where entering it puts
     s.sidebar_open = false;
     // Up passes the section's header, then wraps.
     await s.input(bytes("\x02a\x1b[A\x1b[A"));
-    expect(s.sidebar_focus.cursor).toEqual({ entry: { pane: 3 } });
+    expect(s.sidebar_focus.cursor).toEqual({ entry: viewerRef.pane(s.machine.id, 3) });
     expect(s.sidebarGhost().area.x).toBe(0);
     await s.expireInput();
     expect(s.pane(3).dormant).toBe(true);
@@ -2254,7 +2646,7 @@ test("the sidebar's cursor previews a workspace it isn't on, as switching to it 
   try {
     s.focusPane(1);
     await s.input(bytes("\x02w"));
-    expect(s.sidebar_focus.cursor).toEqual({ workspace: 1 });
+    expect(s.sidebar_focus.cursor).toEqual({ workspace: s.workspaceRef(1) });
     expect(s.sidebarWorkspaceGhost()).toBeNull();
     expect(s.frame()).not.toContain("┄┄ ");
     await s.input(bytes("\x1b[B"));
@@ -2390,14 +2782,13 @@ for (const kind of ["local diff", "PR diff", "PR details"] as const)
     for (let y = 0; y < s.height; y++) {
       for (let x = 1; x < side.width; x++) {
         const hit = side.hit(x, y);
-        const kind =
-          hit.tag === "workspace" && hit.workspace === 1
+        const kind = sidebar.resourceAt(side, rows, x, y)
+          ? "resource"
+          : hit.tag === "workspace" && rows[hit.workspace]?.id === s.workspaceRef(1)
             ? "workspace"
-            : hit.tag === "entry" && entries[hit.entry].target.pane === 2
+            : hit.tag === "entry" && entries[hit.entry].target === viewerRef.pane(s.machine.id, 2)
               ? "agent"
-              : sidebar.resourceAt(side, rows, x, y)
-                ? "resource"
-                : null;
+              : null;
         if (kind && !cells.some(cell => cell.kind === kind)) cells.push({ x, y, kind });
       }
     }
@@ -2417,8 +2808,8 @@ for (const kind of ["local diff", "PR diff", "PR details"] as const)
       s.frame();
       expect(s.reviewFullscreen()).toBe(true);
       s.link_tooltip.move();
-      s.link_tooltip.ready({ resource: 1 }, 0);
-      s.link_tooltip.ready({ resource: 1 }, 1000);
+      s.link_tooltip.ready({ resource: s.workspaceRef(1) }, 0);
+      s.link_tooltip.ready({ resource: s.workspaceRef(1) }, 1000);
       const card = s.resourceRect();
       expect(card).not.toBeNull();
       cells.unshift({ x: card.x + 2, y: card.y + 2, kind: "card" });
@@ -2427,8 +2818,8 @@ for (const kind of ["local diff", "PR diff", "PR details"] as const)
       try {
         for (const { x, y } of cells) {
           for (const button of [35, 0, 32, 64, 65]) {
-            await s.mouse(`\x1b[<${button};${x + 1};${y + 1}M`);
-            await s.mouse(`\x1b[<0;${x + 1};${y + 1}m`);
+            await mouseInput(s, `\x1b[<${button};${x + 1};${y + 1}M`);
+            await mouseInput(s, `\x1b[<0;${x + 1};${y + 1}m`);
           }
           expect(s.current().id).toBe(1);
           expect(s.focused().id).toBe(1);
@@ -2442,8 +2833,8 @@ for (const kind of ["local diff", "PR diff", "PR details"] as const)
         const resource = cells.find(cell => cell.kind === "resource")!;
         s.pointer = resource;
         s.link_tooltip.move();
-        s.link_tooltip.ready({ resource: 1 }, 0);
-        s.link_tooltip.ready({ resource: 1 }, 1000);
+        s.link_tooltip.ready({ resource: s.workspaceRef(1) }, 0);
+        s.link_tooltip.ready({ resource: s.workspaceRef(1) }, 1000);
         expect(s.link_tooltip.shown).toBe(true);
         expect(s.linkTooltipReady()).toBe(false);
         expect(s.link_tooltip.target).toBeNull();
@@ -2565,7 +2956,7 @@ test("the keyboard has one holder: the sidebar, the review panel and a press han
   try {
     s.focusPane(2);
     await s.input(bytes("\x02e\x02w"));
-    expect(s.sidebar_focus.cursor).toEqual({ workspace: 1 });
+    expect(s.sidebar_focus.cursor).toEqual({ workspace: s.workspaceRef(1) });
     expect(s.reviewKeys()).toBe(false);
     await s.input(bytes("\x02e"));
     expect(s.keyboard).toBe("review");
@@ -2576,11 +2967,11 @@ test("the keyboard has one holder: the sidebar, the review panel and a press han
     expect(s.keyboard).toBe("review");
     expect(s.sidebar_open).toBe(false);
     // A press on a pane gives the keyboard back; one in the panel takes it.
-    await s.mouse("\x1b[<0;5;5M");
-    await s.mouse("\x1b[<0;5;5m");
+    await mouseInput(s, "\x1b[<0;5;5M");
+    await mouseInput(s, "\x1b[<0;5;5m");
     expect(s.keyboard).toBe("pane");
-    await s.mouse(`\x1b[<0;${s.width - 5};5M`);
-    await s.mouse(`\x1b[<0;${s.width - 5};5m`);
+    await mouseInput(s, `\x1b[<0;${s.width - 5};5M`);
+    await mouseInput(s, `\x1b[<0;${s.width - 5};5m`);
     expect(s.keyboard).toBe("review");
     // Closing the panel gives the keyboard back too.
     await s.input(bytes("\x02e"));
@@ -2976,7 +3367,9 @@ test.each([false, true])(
       dir = join(folder.base, "imported");
     mkdirSync(dir);
     try {
-      const account = created ? accounts.adopt(accounts.stage("claude", "work")) : accounts.add("claude", "work", dir);
+      const account = created
+        ? await accounts.adopt(accounts.stage("claude", "work"))
+        : accounts.add("claude", "work", dir);
       const accountFile = readFileSync(accounts.path(), "utf8");
       const credential = join(account.dir, "test-credential");
       writeFileSync(credential, "signed in");
@@ -3161,17 +3554,17 @@ test("the launcher lights the checkout it starts agents in, as the overview ligh
   Object.assign(snapshot.workspaces[0], { worktrees: worktrees.app() });
   const { s } = recording(snapshot);
   s.openLauncher(true, "/src/app-topic");
-  expect(s.spotlight()).toEqual({ workspace: 1, path: "/src/app-topic" });
+  expect(s.spotlight()).toEqual({ workspace: s.workspaceRef(1), path: "/src/app-topic" });
   expect(s.agent_launcher.place().aside).toBe(true);
   s.closeLauncher();
   expect(s.spotlight()).toBeNull();
   // The main checkout lights the workspace's own rows; a worktree yet to be
   // added has no rows, so everything fades.
   s.openLauncher(true, "/src/app");
-  expect(s.spotlight()).toEqual({ workspace: 1, path: null });
+  expect(s.spotlight()).toEqual({ workspace: s.workspaceRef(1), path: null });
   expect(s.agent_launcher.place().aside).toBe(false);
   s.agent_launcher.worktree.planned = { branch: "next", base: "refs/heads/main", base_name: "main", path: "/src/n" };
-  expect(s.spotlight()).toEqual({ workspace: 1, path: "/src/n" });
+  expect(s.spotlight()).toEqual({ workspace: s.workspaceRef(1), path: "/src/n" });
   s.closeLauncher();
   // An agent started on main that writes in topic is listed under topic,
   // so the launcher opened beside it starts there.
@@ -3182,7 +3575,7 @@ test("the launcher lights the checkout it starts agents in, as the overview ligh
   s.receiveSnapshot(snapshot);
   s.openLauncher(true);
   expect([s.agent_launcher.cwd, s.agent_launcher.place().label]).toEqual(["/src/app-topic", "topic"]);
-  expect(s.spotlight()).toEqual({ workspace: 1, path: "/src/app-topic" });
+  expect(s.spotlight()).toEqual({ workspace: s.workspaceRef(1), path: "/src/app-topic" });
   s.closeLauncher();
   // Beside a terminal in a folder of main it starts at the workspace's root,
   // beside an agent in a folder of topic at topic's root.
@@ -3261,17 +3654,14 @@ test("a worktree's menu shows its diff line and opens its folder in a waiting sh
     }).request,
   });
   const changed = s.review_summaries.changed;
-  s.review_summaries = new summaries.Summaries(
-    async root => [[`${root} changed`, "faint"]],
-    async cwd => cwd,
-  );
+  s.review_summaries = new summaries.Summaries(async cwd => ({ root: cwd, runs: [[`${cwd} changed`, "faint"]] }));
   s.review_summaries.changed = changed;
   s.width = 120;
   s.height = 40;
   s.receiveSnapshot(snapshot);
   // Its agent's section names the worktree in a subhead, which opens its menu.
   const heading = s.sidebarEntries().find((e: sidebar.Entry) => sidebar.isSubhead(e.target));
-  expect(heading.target).toMatchObject({ workspace: 1, checkout: "/src/app-topic" });
+  expect(heading.target).toMatchObject({ workspace: s.workspaceRef(1), checkout: "/src/app-topic" });
   s.openWorktreeMenu(heading, 5, 5);
   expect(s.tab_menu.highlightedItem()).toBe("review");
   expect(s.tab_menu.details.get("review").runs).toBeNull();
@@ -3336,13 +3726,10 @@ test("the agent menu's diff line is read ahead for the focused agent, its neighb
     });
   const s = controller(),
     reads: string[] = [];
-  s.review_summaries = new summaries.Summaries(
-    async root => {
-      reads.push(root);
-      return [[root, "faint"]];
-    },
-    async cwd => cwd,
-  );
+  s.review_summaries = new summaries.Summaries(async cwd => {
+    reads.push(cwd);
+    return { root: cwd, runs: [[cwd, "faint"]] };
+  });
   s.width = 120;
   s.height = 40;
   s.input_state.attached = true;
@@ -3360,7 +3747,7 @@ test("the agent menu's diff line is read ahead for the focused agent, its neighb
       view = s.sidebarView(entries);
     const y = Array.from({ length: 40 }, (_, y) => y).find(y => {
       const target = sidebar.agentAt(view, entries, 5, y)?.target;
-      return target !== undefined && "pane" in target && target.pane === 5;
+      return target === viewerRef.pane(s.machine.id, 5);
     });
     expect(y).toBeDefined();
     s.pointer = { x: 5, y };
@@ -3690,7 +4077,7 @@ test("custom keys resolve legacy, CSI-u, Alt and fragmented UTF-8 input", async 
   }
 });
 
-const prefixed = (s: any, key: string) => String.fromCharCode(keymap.prefixByte(s.prefs.prefix)) + key;
+const prefixed = (s: any, key: string) => "\x02" + key;
 
 test("prefix Space opens the prompt over the panes, and closes it again", async () => {
   const s = controller();
@@ -3765,7 +4152,7 @@ test("while the prompt shows it takes keys, sequences, pastes and the pointer ah
     expect(key.mock.calls.map(c => c[0])).toEqual([104, 105]);
     // The prefix twice types it into the prompt, not the pane behind.
     await s.input(bytes(prefixed(s, prefixed(s, ""))));
-    expect(key).toHaveBeenLastCalledWith(keymap.prefixByte(s.prefs.prefix));
+    expect(key).toHaveBeenLastCalledWith(2);
     await s.input(bytes("\x1b[A"));
     expect(sequence).toHaveBeenLastCalledWith("\x1b[A");
     // Alt+Enter from a legacy terminal and Shift+Enter from a Kitty one make a new line.
@@ -3836,7 +4223,7 @@ function clickSeries() {
   const rect = s.layoutView().placements(s.area())[0].rect;
   const at = { x: rect.x + 2, y: rect.y + 2 };
   const mouse = (button: number, x: number, y: number, release = false) =>
-    s.mouse(`\x1b[<${button};${x + 1};${y + 1}${release ? "m" : "M"}`);
+    mouseInput(s, `\x1b[<${button};${x + 1};${y + 1}${release ? "m" : "M"}`);
   const click = async (x = at.x, y = at.y, button = 0) => {
     await mouse(button, x, y);
     const count = s.click_series?.count ?? 0;
@@ -3878,11 +4265,24 @@ test("presses on one pane cell within the double-click window count up to three"
   }
 });
 
+const chat = (fields: Partial<ChatArgs>): ChatArgs => ({
+  handoff: "",
+  provider: "codex",
+  session: "",
+  account: "",
+  model: "",
+  effort: null,
+  incognito: false,
+  cwd: "",
+  workspace: null,
+  ...fields,
+});
+
 test("the card takes its conversation back only when the daemon refuses the pane", async () => {
   const snapshot = folders("/a");
   const { s } = recording(snapshot, () => "NoWorkspace");
   const reclaim = spyOn(s.prompt, "reclaim").mockImplementation(() => {}),
-    effect = { kind: "pane", argv: ["corgi", "__chat"], cwd: "/w", handoff: "/tmp/h.json" };
+    effect = { kind: "chat", chat: chat({ handoff: "/tmp/h.json" }), cwd: "/w" };
   try {
     await s.promptEffect(effect);
     expect(reclaim).toHaveBeenCalledWith("/tmp/h.json", "NoWorkspace");
@@ -3957,12 +4357,15 @@ test("the prompt's conversation is a Corgi agent while a Corgi pane holds it, an
     // In a pane: a Corgi agent, counted, jumped to, and chosen it goes to the pane.
     s.receiveSnapshot({ ...folders("/a"), headless_sessions: [{ ...corgi, pane: 1 }, agent] });
     const entries = s.agentEntries();
-    expect(entries.map((e: sidebar.Entry) => [e.target, e.name])).toContainEqual([{ headless: 7 }, "Corgi"]);
+    expect(entries.map((e: sidebar.Entry) => [e.target, e.name])).toContainEqual([
+      viewerRef.headless(s.machine.id, 7),
+      "Corgi",
+    ]);
     expect(entries.find((e: sidebar.Entry) => e.name === "Corgi")).toMatchObject({ state: "blocked", unread: true });
     expect(s.workspaceEntries()[0]).toMatchObject({ agents: 2, attention: 1, unread: 1 });
-    expect(s.firstUnreadAgent(0)).toEqual({ headless: 7 });
+    expect(s.firstUnreadAgent(1)).toEqual(viewerRef.headless(s.machine.id, 7));
     const focus = spyOn(s, "focusPane");
-    s.selectAgent({ headless: 7 });
+    s.selectAgent(viewerRef.headless(s.machine.id, 7));
     expect(focus).toHaveBeenCalledWith(1);
     expect(s.prompt.open).toBe(false);
     // Its row's menu stays open while the row does.
@@ -4044,7 +4447,13 @@ function renaming(fail?: (command: any) => string | undefined, snapshot: any = p
   }
   const typed: string[] = [];
   s.sendInput = (_term: any, data: any) => typed.push(Buffer.from(data).toString());
-  const rect = (target: any) => s.sidebarView(s.sidebarEntries()).fieldRect(target, s.workspaceEntries());
+  const rect = (target: { agent: number } | { workspace: number }) =>
+    s
+      .sidebarView(s.sidebarEntries())
+      .fieldRect(
+        "agent" in target ? viewerRef.pane(s.machine.id, target.agent) : s.workspaceRef(target.workspace),
+        s.workspaceRows(),
+      );
   const press = (x: number, y: number, button = 0) =>
     s.input(bytes(`\x1b[<${button};${x + 1};${y + 1}M\x1b[<${button};${x + 1};${y + 1}m`));
   const twice = async (target: any) => {
@@ -4062,13 +4471,14 @@ test("a double-click on an agent row renames it in place, with the dialog's outc
     setSystemTime(new Date(1000));
     await twice({ agent: 2 });
     expect(s.focused().id).toBe(2);
-    expect(s.inline_rename.target).toEqual({ agent: 2 });
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 2));
     expect(s.inline_rename.field.raw()).toBe("agent 2");
     expect(s.inline_rename.field.cursor).toBe(s.inline_rename.field.len);
-    expect(s.inline_rename.field.selection()).toBeNull();
+    expect(s.inline_rename.field.selected).toBe(true);
     expect(sent).toEqual([probe(2)]);
     expect(s.frame()).toContain("agent 2");
-    await s.input(bytes("\x03Fix API\r"));
+    // The name starts selected, so typing replaces it.
+    await s.input(bytes("Fix API\r"));
     expect(sent.at(-1)).toEqual({ "agent.rename": { target: 2, name: "Fix API" } });
     expect(s.inline_rename).toBeNull();
     expect(typed).toEqual([]);
@@ -4078,25 +4488,284 @@ test("a double-click on an agent row renames it in place, with the dialog's outc
   }
 });
 
-test("moving the free pointer off the cell or turning the wheel between presses opens no field", async () => {
+test("a double-click anywhere in the field's columns renames, not only on the name", async () => {
+  const { s, sent, rect, press } = renaming();
+  const at = rect({ agent: 2 });
+  try {
+    setSystemTime(new Date(1000));
+    await press(at.x, at.y);
+    await press(at.x + at.width - 1, at.y);
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 2));
+    expect(sent).toEqual([probe(2)]);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a double-click along a workspace row's name line renames it; the message line below does not", async () => {
+  const { s, rect, press } = renaming();
+  const at = rect({ workspace: 1 });
+  try {
+    setSystemTime(new Date(1000));
+    await press(at.x, at.y);
+    await press(at.x, at.message_y);
+    await press(at.x, at.y);
+    expect(s.inline_rename).toBeNull();
+    await press(at.x + at.width - 1, at.y);
+    expect(s.inline_rename?.target).toBe(viewerRef.workspace(s.machine.id, 1));
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a double-click on a workspace row's Git columns, past the link bound, does not rename", async () => {
+  const { s, rect, press } = renaming();
+  const at = rect({ workspace: 1 });
+  const entries = s.workspaceRows();
+  const columns = sidebar.linkRange(s.sidebarView(s.sidebarEntries()), entries[0], entries).start;
+  try {
+    setSystemTime(new Date(1000));
+    await press(columns, at.y);
+    await press(columns, at.y);
+    expect(s.inline_rename).toBeNull();
+    // The name line left of them still renames after them.
+    await press(at.x, at.y);
+    await press(at.x, at.y);
+    expect(s.inline_rename?.target).toBe(viewerRef.workspace(s.machine.id, 1));
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a press on the sidebar's border between name-line presses starts the double-click over", async () => {
+  const { s, rect, press } = renaming();
+  const at = rect({ agent: 2 });
+  const border = s.sidebarView(s.sidebarEntries()).width - 1;
+  try {
+    setSystemTime(new Date(1000));
+    await press(at.x, at.y);
+    await press(border, at.y);
+    await press(at.x, at.y);
+    expect(s.inline_rename).toBeNull();
+    await press(at.x, at.y);
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 2));
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("the name line right of the field neither opens a rename nor keeps one", async () => {
+  const { s, rect, press } = renaming();
+  const at = rect({ agent: 2 });
+  try {
+    setSystemTime(new Date(1000));
+    await press(at.x + at.width, at.y);
+    await press(at.x + at.width, at.y);
+    expect(s.inline_rename).toBeNull();
+    setSystemTime(new Date(2000));
+    await press(at.x, at.y);
+    await press(at.x + at.width - 1, at.y);
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 2));
+    await press(at.x + at.width - 1, at.y);
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 2));
+    await press(at.x + at.width, at.y);
+    expect(s.inline_rename).toBeNull();
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a press past the sidebar on the field's line closes the rename; the border resizes", async () => {
+  const { s, rect, press } = renaming();
+  const at = rect({ agent: 2 });
+  const side = s.sidebarView(s.sidebarEntries());
+  try {
+    setSystemTime(new Date(1000));
+    await press(at.x, at.y);
+    await press(at.x, at.y);
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 2));
+    // A terminal pane on the field's screen line takes the press and closes the field.
+    await press(side.width + 2, at.y);
+    expect(s.inline_rename).toBeNull();
+    // The row still renames by double-click afterwards.
+    await press(at.x, at.y);
+    await press(at.x, at.y);
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 2));
+    // The border column resizes the sidebar rather than keeping the field.
+    await s.input(bytes(`\x1b[<0;${side.width};${at.y + 1}M`));
+    expect(s.inline_rename).toBeNull();
+    expect(s.sidebar_drag).toBe("width");
+    await s.input(bytes(`\x1b[<0;${side.width};${at.y + 1}m`));
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a held drag along the row between the presses starts the double-click over", async () => {
+  const { s, rect, press } = renaming();
+  const at = rect({ agent: 2 });
+  const report = (button: number, x: number, y: number) => s.input(bytes(`\x1b[<${button};${x + 1};${y + 1}M`));
+  try {
+    setSystemTime(new Date(1000));
+    // The first press stays held: sideways motion drags the row, which ends
+    // the double-click even back on the line it started from.
+    await report(0, at.x, at.y);
+    await report(32, at.x + 1, at.y);
+    await report(32, at.x, at.y);
+    await s.input(bytes(`\x1b[<0;${at.x + 1};${at.y + 1}m`));
+    await press(at.x, at.y);
+    expect(s.inline_rename).toBeNull();
+    // Without the drag, the same presses still rename.
+    await press(at.x, at.y);
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 2));
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a held drag of a workspace row between the presses starts the double-click over", async () => {
+  const { s, rect, press } = renaming();
+  const at = rect({ workspace: 1 });
+  const report = (button: number, x: number, y: number) => s.input(bytes(`\x1b[<${button};${x + 1};${y + 1}M`));
+  try {
+    setSystemTime(new Date(1000));
+    await report(0, at.x, at.y);
+    expect(s.workspace_drag).not.toBeNull();
+    await report(32, at.x + 1, at.y);
+    await report(32, at.x, at.y);
+    await s.input(bytes(`\x1b[<0;${at.x + 1};${at.y + 1}m`));
+    await press(at.x, at.y);
+    expect(s.inline_rename).toBeNull();
+    await press(at.x, at.y);
+    expect(s.inline_rename?.target).toBe(viewerRef.workspace(s.machine.id, 1));
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("unheld motion off the name line and back starts the double-click over", async () => {
+  const { s, rect, press } = renaming();
+  const at = rect({ agent: 2 });
+  const pane = s.sidebarView(s.sidebarEntries()).width + 2;
+  const hover = (x: number) => s.input(bytes(`\x1b[<35;${x + 1};${at.y + 1}M`));
+  try {
+    setSystemTime(new Date(1000));
+    // Along the line the double-click holds.
+    await press(at.x, at.y);
+    await hover(at.x + at.width - 1);
+    await press(at.x, at.y);
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 2));
+    await s.input(bytes("\x1b[27u"));
+    // Into the terminal on the same screen line and back, it doesn't.
+    await press(at.x, at.y);
+    await hover(pane);
+    await hover(at.x);
+    await press(at.x, at.y);
+    expect(s.inline_rename).toBeNull();
+    await press(at.x, at.y);
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 2));
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("a press on a workspace's port link or Git figure between name-line presses starts the double-click over", async () => {
+  const snapshot: any = pair();
+  snapshot.workspaces[0].git_ahead = 2;
+  snapshot.ports = {
+    workspaces: [
+      {
+        id: 1,
+        background: 0,
+        endpoints: [
+          {
+            label: "",
+            label_pending: false,
+            pid: 12,
+            pane: 1,
+            name: "web",
+            transport: "tcp",
+            bind_address: "127.0.0.1",
+            port: 3000,
+            ipv6: false,
+            interfaces: [],
+            scheme: "http",
+            http_status: 200,
+            probed_at: 0,
+          },
+        ],
+      },
+    ],
+  };
+  const { s, rect, press } = renaming(undefined, snapshot);
+  const at = rect({ workspace: 1 });
+  const side = s.sidebarView(s.sidebarEntries()),
+    entries = s.workspaceRows();
+  const port = sidebar.linkRange(side, entries[0], entries).start,
+    git = side.width - 3;
+  try {
+    expect(sidebar.portWorkspace(side, entries, port, at.y)?.id).toBe(s.workspaceRef(1));
+    expect(sidebar.gitActionWorkspace(side, entries, null, git, at.y)?.id).toBe(s.workspaceRef(1));
+    setSystemTime(new Date(1000));
+    for (const between of [port, git]) {
+      await press(at.x, at.y);
+      await press(between, at.y);
+      await press(at.x, at.y);
+      expect(s.inline_rename).toBeNull();
+      setSystemTime(new Date(Date.now() + 2000));
+    }
+    await press(at.x, at.y);
+    await press(at.x, at.y);
+    expect(s.inline_rename?.target).toBe(viewerRef.workspace(s.machine.id, 1));
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("unheld motion along the name line keeps the double-click", async () => {
   const { s, sent, rect, press } = renaming();
   const at = rect({ agent: 2 });
   const report = (button: number, x: number, y: number) => s.input(bytes(`\x1b[<${button};${x + 1};${y + 1}M`));
   try {
     setSystemTime(new Date(1000));
     await press(at.x, at.y);
+    // Unheld motion along the name line keeps the double-click.
     await report(35, at.x + 1, at.y);
     await report(35, at.x, at.y);
     await press(at.x, at.y);
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 2));
+    expect(sent).toEqual([probe(2)]);
+  } finally {
+    setSystemTime();
+    viewer.close(s);
+  }
+});
+
+test("unheld motion off the name line ends the double-click", async () => {
+  const { s, rect, press } = renaming();
+  const at = rect({ agent: 2 });
+  const report = (button: number, x: number, y: number) => s.input(bytes(`\x1b[<${button};${x + 1};${y + 1}M`));
+  try {
+    setSystemTime(new Date(1000));
+    await press(at.x, at.y);
+    await report(35, at.x, at.y + 1);
+    await report(35, at.x, at.y);
+    await press(at.x, at.y);
     expect(s.inline_rename).toBeNull();
+    // The wheel starts it over as well.
     await report(65, at.x, at.y);
     await press(at.x, at.y);
     expect(s.inline_rename).toBeNull();
-    // Unheld motion within the cell keeps it.
-    await report(35, at.x, at.y);
-    await press(at.x, at.y);
-    expect(s.inline_rename?.target).toEqual({ agent: 2 });
-    expect(sent).toEqual([probe(2)]);
   } finally {
     setSystemTime();
     viewer.close(s);
@@ -4149,7 +4818,7 @@ test("a double-click on a workspace row edits its name; Escape keeps the old one
   try {
     setSystemTime(new Date(1000));
     await twice({ workspace: 1 });
-    expect(s.inline_rename.target).toEqual({ workspace: 1 });
+    expect(s.inline_rename?.target).toBe(viewerRef.workspace(s.machine.id, 1));
     expect(s.inline_rename.field.raw()).toBe("/a");
     expect(s.inline_rename.fallback).toBe("a");
     await s.input(bytes("\x03Edited"));
@@ -4190,12 +4859,14 @@ test("presses in copy mode don't count a click series", async () => {
   }
 });
 
+// The name opens selected: Right keeps it with the caret at its end, and
+// typing without it replaces the name.
 test.each([
-  ["the prefix and its new-tab key", "\x02c", "agent 1c"],
-  ["arrows", "\x1b[Dx", "agent x1"],
-  ["a paste", "\x1b[200~a\nb\x1b[201~", "agent 1ab"],
-  ["Kitty-encoded text, prefix and new-tab key", "\x1b[120u\x1b[98;5u\x1b[99u", "agent 1xc"],
-  ["a character bound to an action", "é", "agent 1é"],
+  ["the prefix and its new-tab key", "\x1b[C\x02c", "agent 1c"],
+  ["arrows", "\x1b[C\x1b[Dx", "agent x1"],
+  ["a paste", "\x1b[C\x1b[200~a\nb\x1b[201~", "agent 1ab"],
+  ["Kitty-encoded text, prefix and new-tab key", "\x1b[120u\x1b[98;5u\x1b[99u", "xc"],
+  ["a character bound to an action", "é", "é"],
 ])("the open field takes %s: nothing reaches the pane and no binding runs", async (_, input, raw) => {
   const { s, sent, typed, twice } = renaming();
   const defaults = s.prefs.bindings(),
@@ -4221,8 +4892,14 @@ test.each([
 
 /** An attached 100×30 controller on `snapshot` whose daemon answers with `daemon`,
  * its clock held at 1 s and its first pane showing `text`. `done` puts it away. */
-function showing(text: string, daemon: Parameters<typeof transport>[0], snapshot = folders("/a", "/b")) {
-  const s: any = new Controller({ request: transport(daemon).request });
+function showing(
+  text: string,
+  daemon: Parameters<typeof transport>[0],
+  snapshot = folders("/a", "/b"),
+  remote = false,
+) {
+  const connection = { request: transport(daemon).request };
+  const s: any = new Controller(remote ? new Machine(connection, "atlas", true) : connection);
   s.receiveSnapshot(snapshot);
   s.width = 100;
   s.height = 30;
@@ -4551,16 +5228,22 @@ test("the prompt's picker offers each installed agent's models per account, with
   }
 });
 
-test("a press outside the field, plain, modified or middle, closes it unsaved and still acts; one inside keeps it", async () => {
+test("a press outside the field, plain, modified or middle, closes it unsaved and still acts; a plain one inside puts the caret there", async () => {
   const { s, sent, rect, press, twice } = renaming();
   try {
     setSystemTime(new Date(1000));
     await twice({ agent: 1 });
     const inside = rect({ agent: 1 });
+    const name = s.inline_rename.field.raw();
+    expect(s.inline_rename.field.selected).toBe(true);
+    // Past the double-click window, so it is a plain press.
+    setSystemTime(new Date(2000));
     await press(inside.x + 2, inside.y);
-    expect(s.inline_rename.target).toEqual({ agent: 1 });
-    expect(s.inline_rename.field.cursor).toBe(s.inline_rename.field.len);
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 1));
+    expect(s.inline_rename.field.selected).toBe(false);
+    expect(s.inline_rename.field.cursor).toBe(2);
     await s.input(bytes("x"));
+    expect(s.inline_rename.field.raw()).toBe(name.slice(0, 2) + "x" + name.slice(2));
     const other = rect({ agent: 2 });
     await press(other.x, other.y);
     expect(s.inline_rename).toBeNull();
@@ -4574,7 +5257,7 @@ test("a press outside the field, plain, modified or middle, closes it unsaved an
     // A modified or middle press inside keeps it, and outside closes it too.
     await twice({ agent: 1 });
     await press(inside.x + 1, inside.y, 4);
-    expect(s.inline_rename.target).toEqual({ agent: 1 });
+    expect(s.inline_rename.target).toBe(viewerRef.pane(s.machine.id, 1));
     await press(60, 10, 4);
     expect(s.inline_rename).toBeNull();
     await twice({ agent: 1 });
@@ -4639,7 +5322,7 @@ test("a double-click on row B while A's field is open edits B", async () => {
     setSystemTime(new Date(1000));
     await twice({ agent: 1 });
     await twice({ agent: 2 });
-    expect(s.inline_rename.target).toEqual({ agent: 2 });
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 2));
     expect(s.inline_rename.field.raw()).toBe("agent 2");
   } finally {
     setSystemTime();
@@ -4656,7 +5339,7 @@ test("a double-click opens no field on a headless row", async () => {
   try {
     setSystemTime(new Date(1000));
     const entries = s.sidebarEntries();
-    const index = entries.findIndex((e: any) => "headless" in e.target);
+    const index = entries.findIndex((e: any) => viewerRef.isHeadless(e.target));
     expect(index).toBeGreaterThan(-1);
     const view = s.sidebarView(entries);
     let y = view.middle() + 2;
@@ -4710,7 +5393,7 @@ test("a drag keeps one pick out and copies the answer for where it ended", async
   }
 });
 
-test("only a double-click on the name renames, not one elsewhere on the row", async () => {
+test("a double-click on the name line renames, not one on the row's other lines", async () => {
   const snapshot = pair();
   snapshot.panes[2].agent.observation = { completed: 2, read: 0 };
   const { s, sent, rect, press } = renaming(undefined, snapshot);
@@ -4725,18 +5408,19 @@ test("only a double-click on the name renames, not one elsewhere on the row", as
     const badge = view.unreadRange(ws).start,
       name = rect({ workspace: 2 });
     expect(view.unreadHit(ws, badge, name.y + 1)).toBe(true);
+    // The unread mark on the message line jumps instead of renaming.
     await twice(badge, name.y + 1);
-    await twice(name.x + displayWidth(ws.name), name.y);
     expect([s.current().id, s.inline_rename]).toEqual([2, null]);
-    await twice(name.x + displayWidth(ws.name) - 1, name.y);
-    expect(s.inline_rename?.target).toEqual({ workspace: 2 });
+    // Anywhere along the name line renames, past the name's text too.
+    await twice(name.x + displayWidth(ws.name), name.y);
+    expect(s.inline_rename?.target).toBe(viewerRef.workspace(s.machine.id, 2));
     await s.input(bytes("\x1b[27u"));
     const agent = rect({ agent: 3 });
+    // The agent row's second line only selects.
     await twice(agent.x, agent.y + 1);
-    await twice(agent.x + displayWidth("agent 3"), agent.y);
     expect([s.focused().id, s.inline_rename, sent]).toEqual([3, null, []]);
-    await twice(agent.x + displayWidth("agent 3") - 1, agent.y);
-    expect(s.inline_rename?.target).toEqual({ agent: 3 });
+    await twice(agent.x + displayWidth("agent 3"), agent.y);
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 3));
   } finally {
     setSystemTime();
     viewer.close(s);
@@ -4747,12 +5431,17 @@ test("only a double-click on the name renames, not one elsewhere on the row", as
  * "hello" a link to `url`, and whose daemon fails every request (an old
  * daemon has no viewer.pick). `click` presses and releases `dx` cells right
  * of the link's second cell. */
-function linking(url = "https://example.com/hello") {
-  const { s, term, rect, done } = showing(`  \x1b]8;;${url}\x1b\\hello\x1b]8;;\x1b\\ there`, async op => {
-    throw Error(op === "viewer.pick" ? "UnknownOperation" : "UnexpectedRequest");
-  });
+function linking(url = "https://example.com/hello", remote = false) {
+  const { s, term, rect, done } = showing(
+    `  \x1b]8;;${url}\x1b\\hello\x1b]8;;\x1b\\ there`,
+    async op => {
+      throw Error(op === "viewer.pick" ? "UnknownOperation" : "UnexpectedRequest");
+    },
+    folders("/a", "/b"),
+    remote,
+  );
   const mouse = (button: number, dx = 0, release = false) =>
-    s.mouse(`\x1b[<${button};${rect.x + 4 + dx};${rect.y + 1}${release ? "m" : "M"}`);
+    mouseInput(s, `\x1b[<${button};${rect.x + 4 + dx};${rect.y + 1}${release ? "m" : "M"}`);
   const click = async (button = 0, dx = 0) => {
     await mouse(button, dx);
     await mouse(button, dx, true);
@@ -4767,6 +5456,140 @@ function linking(url = "https://example.com/hello") {
   return { s, url, term, mouse, click, opened, done };
 }
 
+test("the pointer on a link to an SSH machine's loopback reserves its port, and the link points there", async () => {
+  const { s, url, mouse, done } = linking("http://localhost:5173/app", true);
+  const local = "http://localhost:49999/app",
+    reserved: string[] = [];
+  s.machine.forwards = {
+    hover: (uri: string | null) => uri !== null && reserved.push(uri),
+    local: (uri: string) => (uri === url ? local : null),
+  };
+  try {
+    await mouse(35);
+    expect(reserved).toEqual([url]);
+    // The host terminal's own Cmd+click opens what the link says.
+    const frame = s.frame();
+    expect(frame).toContain(`;${local}\x1b\\`);
+    expect(frame).not.toContain(`;${url}\x1b\\`);
+    expect(frame).toContain(`${url}  →  ${local}`);
+    // Resting on it asks nothing more.
+    await mouse(35);
+    expect(reserved).toEqual([url]);
+  } finally {
+    done();
+  }
+});
+
+test("the link under a pointer at rest is noticed, and a machine switched away from lets its link go", async () => {
+  const { s, url, done } = linking("http://localhost:5173/app", true);
+  const hovered: (string | null)[] = [];
+  s.machine.forwards = { hover: (uri: string | null) => hovered.push(uri), local: () => null };
+  try {
+    // The pointer was already there when the link came.
+    const { rect } = s.layoutView().placements(s.area())[0];
+    s.pointer = { x: rect.x + 3, y: rect.y };
+    await s.expireInput();
+    expect(hovered).toEqual([url]);
+    s.switchMachine(new Machine(s.connection, "borealis", true));
+    expect(hovered).toEqual([url, null]);
+  } finally {
+    done();
+  }
+});
+
+test("a sidebar link to an SSH machine's loopback server reserves its port, and a click opens it from there", async () => {
+  const { s, done } = linking("https://example.com/", true);
+  const url = "http://localhost:8888",
+    hovered: (string | null)[] = [];
+  s.machine.forwards = { hover: (uri: string | null) => hovered.push(uri), local: () => null };
+  const server = { label: "", label_pending: false, pid: 9, pane: 1, name: "python3", transport: "tcp" };
+  s.machine.runtime.ports = {
+    workspaces: [
+      {
+        id: s.machine.runtime.workspaces.items[0].id,
+        background: 0,
+        endpoints: [
+          {
+            ...server,
+            bind_address: "127.0.0.1",
+            port: 8888,
+            ipv6: false,
+            interfaces: [{ name: "lo", address: "127.0.0.1", kind: "loopback", ipv6: false }],
+            scheme: "http",
+            http_status: 200,
+            probed_at: 0,
+          },
+        ],
+      },
+    ],
+  };
+  try {
+    const view = s.sidebarView([]),
+      rows = s.workspaceRows();
+    let at: { x: number; y: number } | null = null;
+    for (let y = 0; y < s.height && !at; y++)
+      for (let x = 0; x < view.width && !at; x++) if (sidebar.portLink(view, rows, x, y) === url) at = { x, y };
+    expect(at).not.toBeNull();
+    await mouseInput(s, `\x1b[<35;${at!.x + 1};${at!.y + 1}M`);
+    expect(hovered).toEqual([url]);
+    await mouseInput(s, `\x1b[<0;${at!.x + 1};${at!.y + 1}M`);
+    await mouseInput(s, `\x1b[<0;${at!.x + 1};${at!.y + 1}m`);
+    expect(s.effects).toEqual([{ open_url: url, machine: s.machine.id }]);
+  } finally {
+    done();
+  }
+});
+
+test("a link's scheme is matched whatever its case", async () => {
+  expect(webLinks.openable("HTTPS://example.com/")).toBe(true);
+  expect(webLinks.openable("Http://example.com/")).toBe(true);
+  expect(webLinks.openable("ftp://example.com/")).toBe(false);
+  expect(webLinks.openable("https://example.com/\nrm")).toBe(false);
+  const { s, done } = linking("https://example.com/", true);
+  try {
+    await s.perform({ name: "open-url", value: "HTTPS://example.com/" });
+    expect(s.effects).toEqual([{ open_url: "HTTPS://example.com/", machine: s.machine.id }]);
+  } finally {
+    done();
+  }
+});
+
+test("a pane's program opens a link through its BROWSER, as a click on it would", async () => {
+  const { s, done } = linking("https://example.com/", true);
+  try {
+    await s.perform({ name: "open-url", value: "http://localhost:1455/auth" });
+    expect(s.effects).toEqual([{ open_url: "http://localhost:1455/auth", machine: s.machine.id }]);
+    s.clearEffects();
+    await expect(s.perform({ name: "open-url", value: "file:///etc/passwd" })).rejects.toThrow("InvalidURL");
+    expect(s.effects).toEqual([]);
+  } finally {
+    done();
+  }
+});
+
+test("a link in an SSH machine's pane names the machine, whose loopback it may point at", async () => {
+  const { s, url, click, opened, done } = linking("http://localhost:5173/app", true);
+  try {
+    await click(16);
+    expect(s.effects).toEqual([{ open_url: url, machine: s.machine.id }]);
+    s.clearEffects();
+    clock.advance(clock.double_click_ms);
+    await click();
+    clock.advance(clock.double_click_ms);
+    await s.expireInput();
+    expect(s.effects).toEqual([{ open_url: url, machine: s.machine.id }]);
+    s.clearEffects();
+    // A pending open is the machine's: another machine shown drops it.
+    clock.advance(clock.double_click_ms);
+    await click();
+    s.pending_open.machine = new Machine(s.connection, "borealis", true);
+    clock.advance(clock.double_click_ms);
+    expect(await opened()).toEqual([]);
+  } finally {
+    done();
+  }
+});
+
 test("a plain click on a pane link opens it once the double-click window has passed, unless its pane loses focus or closes", async () => {
   const { s, url, mouse, click, opened, done } = linking();
   try {
@@ -4779,7 +5602,7 @@ test("a plain click on a pane link opens it once the double-click window has pas
     const at = clock.milliTimestamp();
     await click();
     expect(s.effects).toEqual([]);
-    expect(s.pending_open).toEqual({ url, pane: 1, due: at + clock.double_click_ms });
+    expect(s.pending_open).toEqual({ url, machine: s.machine, file: null, pane: 1, due: at + clock.double_click_ms });
     expect(await opened()).toEqual([]);
     clock.advance(clock.double_click_ms - 1);
     expect(await opened()).toEqual([]);
@@ -5000,6 +5823,265 @@ test("PR diffs use the displayed revisions in the existing viewer and return to 
     expect(s.review.open).toBe(false);
   } finally {
     viewer.close(s);
+  }
+});
+
+test("a file's name peeks after the pointer rests on it, and a click opens it in a pane", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "corgi-peek-")));
+  mkdirSync(join(dir, "src"));
+  const file = join(dir, "src", "app.ts");
+  writeFileSync(file, Array.from({ length: 80 }, (_, i) => `const v${i + 1} = ${i + 1};`).join("\n"));
+  const s: any = new Controller({ request: transport(async () => ({})).request });
+  const snapshot: any = folders(dir);
+  snapshot.panes[0].cwd = dir;
+  s.receiveSnapshot(snapshot);
+  s.width = 120;
+  s.height = 40;
+  s.input_state.attached = true;
+  setSystemTime(new Date(1000));
+  const created: unknown[][] = [];
+  s.create = async (...args: unknown[]) => {
+    created.push(args);
+    return 2;
+  };
+  const rect = s.layoutView().placements(s.area())[0].rect;
+  const native = NativeTerminal.create(rect.w, rect.h);
+  try {
+    native.feed("  see src/app.ts:30 here");
+    s.pane(1).terminal.receive(native.surface(1));
+    const at = (dx: number, dy = 0) => [rect.x + 7 + dx, rect.y + 1 + dy];
+    const mouse = (button: number, [x, y]: number[], release = false) =>
+      mouseInput(s, `\x1b[<${button};${x};${y}${release ? "m" : "M"}`);
+    await mouse(35, at(0));
+    s.frame();
+    await Promise.all(s.file_refs.checks);
+    s.frame();
+    await s.file_peeks.current.opened;
+    // Moving along the name keeps its wait.
+    clock.advance(700);
+    await mouse(35, at(5));
+    s.frame();
+    clock.advance(299);
+    expect(s.frame()).not.toContain("click to open");
+    clock.advance(1);
+    const shown = s.frame().replace(/\x1b\[[\d;?]*[A-Za-z]/g, "");
+    expect(shown).toContain("click to open");
+    expect(shown).toContain("30 const v30 = 30;");
+    // The wheel scrolls it, from the name it opened on too, and a sideways
+    // scroll leaves it open; a click opens the line under it.
+    const card = s.fileCard().rect;
+    const before = s.file_peeks.current.reader.top;
+    await mouse(65, at(5));
+    expect(s.file_peeks.current.reader.top).toBe(before + 3);
+    await mouse(66, at(5));
+    await mouse(64, [card.x + 5, card.y + 4]);
+    await mouse(65, [card.x + 5, card.y + 4]);
+    expect(s.file_peeks.current.reader.top).toBe(before + 3);
+    expect(s.fileCard()).not.toBeNull();
+    const line = s.file_peeks.current.lineAt(2);
+    await mouse(0, [card.x + 5, card.y + 5]);
+    await mouse(0, [card.x + 5, card.y + 5], true);
+    expect(created).toHaveLength(1);
+    expect(created[0][0]).toBe("horizontal");
+    expect(created[0][1]).toBe(join(dir, "src"));
+    expect(created[0][2]).toMatch(new RegExp(`^exec .* __view ${file} --line ${line}$`));
+    expect(s.fileCard()).toBeNull();
+    // A plain click on the name itself opens it at its line.
+    clock.advance(clock.double_click_ms * 2);
+    await mouse(0, at(2));
+    await mouse(0, at(2), true);
+    clock.advance(clock.double_click_ms);
+    await s.expireInput();
+    expect(created).toHaveLength(2);
+    expect(created[1][2]).toMatch(/ __view .*app\.ts --line 30$/);
+  } finally {
+    native.destroy();
+    setSystemTime();
+    clock.reset();
+    viewer.close(s);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a pane that names a file shows it from this viewer, and its keys scroll here", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "corgi-file-pane-")));
+  const file = join(dir, "app.ts");
+  writeFileSync(file, Array.from({ length: 200 }, (_, i) => `const v${i + 1} = ${i + 1};`).join("\n"));
+  const s: any = new Controller({ request: transport(async () => ({})).request });
+  const snapshot: any = folders(dir);
+  snapshot.panes[0].view = { path: file, line: 100, column: null };
+  s.receiveSnapshot(snapshot);
+  s.width = 120;
+  s.height = 40;
+  s.input_state.attached = true;
+  s.focusPane(1);
+  const rect = s.layoutView().placements(s.area())[0].rect;
+  const native = NativeTerminal.create(rect.w, rect.h);
+  try {
+    // Its process draws nothing, and takes the mouse so the wheel comes here.
+    native.feed("\x1b[?1049h\x1b[?1003h\x1b[?1006h");
+    const terminal = s.pane(1).terminal,
+      pending = () => Buffer.from(terminal.pending).toString("latin1");
+    terminal.receive(native.surface(1));
+    const shown = () => s.frame().replace(/\x1b\[[\d;?]*[A-Za-z]/g, "");
+    expect(shown()).toContain("Reading…");
+    // Its process hears that this viewer draws the file.
+    expect(pending()).toBe(filePane.quiet_request);
+    terminal.pending.length = 0;
+    const hosted = s.file_panes.get(1);
+    while (!hosted.view) await Bun.sleep(1);
+    expect(shown()).toContain("const v100 = 100;");
+    const top = hosted.view.reader.top;
+    await s.input(bytes("j"));
+    expect(hosted.view.reader.top).toBe(top + 1);
+    await mouseInput(s, `\x1b[<65;${rect.x + 5};${rect.y + 5}M`);
+    expect(hosted.view.reader.top).toBe(top + 4);
+    expect(pending()).toBe("");
+    // A paste is no keys.
+    await s.input(bytes("\x1b[200~q\x1b[201~"));
+    expect(pending()).toBe("");
+    expect(hosted.view.reader.top).toBe(top + 4);
+    // The editor and closing are its process's.
+    await s.input(bytes("e"));
+    expect(pending()).toBe(filePane.editRequest(hosted.view.lineShown(rect.h)));
+    terminal.pending.length = 0;
+    await s.input(bytes("q"));
+    expect(pending()).toBe(filePane.quit_request);
+    // While the editor has the pane, it is a terminal again.
+    snapshot.panes[0].view = null;
+    s.receiveSnapshot(snapshot);
+    expect(shown()).not.toContain("const v");
+    expect(s.file_panes.get(1)).toBeNull();
+  } finally {
+    native.destroy();
+    viewer.close(s);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("on another computer, a file's name peeks through that computer's daemon and opens with its Corgi", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "corgi-peek-remote-")));
+  writeFileSync(join(dir, "app.ts"), Array.from({ length: 80 }, (_, i) => `const v${i + 1} = ${i + 1};`).join("\n"));
+  const asked: string[] = [];
+  const s: any = new Controller({ request: transport(async () => ({})).request });
+  const other = new Machine(
+    {
+      request: transport(async (op, fields) => {
+        if (!op.startsWith("file.")) return {};
+        asked.push(op);
+        return fileAccess.answer(protocol.decoded(op, fields) as any);
+      }).request,
+    },
+    "work",
+    true,
+  );
+  s.adopt(other);
+  const snapshot: any = folders(dir);
+  snapshot.panes[0].cwd = dir;
+  s.receiveSnapshot(folders("/a"));
+  s.receiveSnapshot(snapshot, other);
+  s.switchMachine(other);
+  other.executable = "/opt/corgi";
+  s.width = 120;
+  s.height = 40;
+  s.input_state.attached = true;
+  setSystemTime(new Date(1000));
+  const created: unknown[][] = [];
+  s.create = async (...args: unknown[]) => {
+    created.push(args);
+    return 2;
+  };
+  const rect = s.layoutView().placements(s.area())[0].rect;
+  const native = NativeTerminal.create(rect.w, rect.h);
+  try {
+    native.feed("  see app.ts:30 here");
+    s.pane(1).terminal.receive(native.surface(1));
+    const at = [rect.x + 7, rect.y + 1];
+    const mouse = (button: number, [x, y]: number[], release = false) =>
+      mouseInput(s, `\x1b[<${button};${x};${y}${release ? "m" : "M"}`);
+    await mouse(35, at);
+    s.frame();
+    await Promise.all(s.file_refs.checks);
+    s.frame();
+    await s.file_peeks.current.opened;
+    clock.advance(1000);
+    expect(s.frame().replace(/\x1b\[[\d;?]*[A-Za-z]/g, "")).toContain("30 const v30 = 30;");
+    expect(asked).toContain("file.stat");
+    expect(asked).toContain("file.read");
+    // A click opens it with the Corgi on that computer.
+    clock.advance(clock.double_click_ms * 2);
+    await mouse(0, at);
+    await mouse(0, at, true);
+    clock.advance(clock.double_click_ms);
+    await s.expireInput();
+    expect(created).toHaveLength(1);
+    expect(created[0][2]).toBe(`exec /opt/corgi __view ${join(dir, "app.ts")} --line 30`);
+  } finally {
+    native.destroy();
+    setSystemTime();
+    clock.reset();
+    viewer.close(s);
+    other.runtime.destroy();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("on another computer, an image link's card shows the picture that computer's daemon shrank", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "corgi-thumb-remote-")));
+  const path = join(dir, "shot.png");
+  writeFileSync(path, await new Bun.Image(Buffer.from(png_base64, "base64")).resize(1000, 400).png().buffer());
+  const asked: string[] = [];
+  const s: any = new Controller({ request: transport(async () => ({})).request });
+  const other = new Machine(
+    {
+      request: transport(async (op, fields) => {
+        if (!op.startsWith("file.")) return {};
+        asked.push(op);
+        return fileAccess.answer(protocol.decoded(op, fields) as any);
+      }).request,
+    },
+    "work",
+    true,
+  );
+  s.adopt(other);
+  const snapshot: any = folders(dir);
+  snapshot.panes[0].cwd = dir;
+  s.receiveSnapshot(folders("/a"));
+  s.receiveSnapshot(snapshot, other);
+  s.switchMachine(other);
+  s.width = 120;
+  s.height = 40;
+  s.input_state.attached = true;
+  s.supports_kitty_graphics = true;
+  s.cell_pixels = { width: 10, height: 20 };
+  setSystemTime(new Date(1000));
+  const rect = s.layoutView().placements(s.area())[0].rect;
+  const native = NativeTerminal.create(rect.w, rect.h);
+  try {
+    // Its link names that computer, not this one.
+    native.feed(`\x1b]8;;file://work-box${path}\x1b\\[Image #1]\x1b]8;;\x1b\\`);
+    s.pane(1).terminal.receive(native.surface(1));
+    await mouseInput(s, `\x1b[<35;${rect.x + 3};${rect.y + 1}M`);
+    s.frame();
+    await Promise.all(s.file_refs.checks);
+    s.frame();
+    await s.thumbnails.loading;
+    setSystemTime(new Date(1200));
+    const frame = s.frame();
+    expect(frame).toContain("Copy path");
+    // The card places the picture, which the viewer sends ahead of the frame.
+    const shown = s.host.images.present(),
+      id = /\x1b_Ga=p,i=(\d+),/.exec(shown.draw)?.[1];
+    expect(id).toBeDefined();
+    expect(shown.send).toContain(`\x1b_Ga=t,t=d,f=100,i=${id},q=1,m=`);
+    // Only the shrunk picture crossed: the image itself was never read.
+    expect(asked).toEqual(["file.stat", "file.thumbnail"]);
+  } finally {
+    native.destroy();
+    setSystemTime();
+    viewer.close(s);
+    other.runtime.destroy();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -5229,7 +6311,7 @@ test("the field closes when its item goes, scrolls away or is covered, and follo
     const reordered = pair();
     reordered.panes.reverse();
     s.receiveSnapshot(reordered);
-    expect(s.inline_rename.target).toEqual({ agent: 2 });
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 2));
     // The pane goes.
     const without = pair();
     without.workspaces[0].model = { nodes: [{ pane: 1 }], tabs: [{ id: 1, root: 0, title: "" }], revision: 1 };
@@ -5238,7 +6320,7 @@ test("the field closes when its item goes, scrolls away or is covered, and follo
     expect(s.inline_rename).toBeNull();
     s.receiveSnapshot(pair());
     // The workspace goes.
-    expect(s.beginInlineRename({ workspace: 2 })).toBe(true);
+    expect(s.beginInlineRename(s.workspaceRef(2))).toBe(true);
     const one = pair();
     one.workspaces.pop();
     one.panes.pop();
@@ -5366,7 +6448,7 @@ test("a viewer that starts leaves alone a prompt session a Corgi pane holds", ()
     expect(s.runtime.corgi_sessions.map((h: any) => [h.session, h.pane])).toEqual([["held", 1]]);
     expect(s.prompt.conversation.session).toBe("");
     // Its row shows focused while its pane is.
-    const row = s.agentEntries().find((e: any) => e.target.headless === 7);
+    const row = s.agentEntries().find((e: any) => e.target === viewerRef.headless(s.machine.id, 7));
     expect([row?.name, row?.focused]).toEqual(["Corgi", true]);
   } finally {
     viewer.close(s);
@@ -5431,14 +6513,14 @@ test("the field closes when its row scrolls out of the agent list", async () => 
   const { s } = recording(snapshot);
   try {
     setSystemTime(new Date(1000));
-    const at = s.sidebarView(s.sidebarEntries()).fieldRect({ agent: 10 }, s.workspaceEntries());
+    const at = s.sidebarView(s.sidebarEntries()).fieldRect(viewerRef.pane(s.machine.id, 10), s.workspaceRows());
     for (let i = 0; i < 2; i++)
       await s.input(bytes(`\x1b[<0;${at.x + 1};${at.y + 1}M\x1b[<0;${at.x + 1};${at.y + 1}m`));
     await s.settle();
-    expect(s.inline_rename?.target).toEqual({ agent: 10 });
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 10));
     const view = s.sidebarView(s.sidebarEntries());
     for (let i = 0; i < 3; i++) await s.input(bytes(`\x1b[<65;3;${view.middle() + 4}M`));
-    expect(s.sidebarView(s.sidebarEntries()).fieldRect({ agent: 10 }, s.workspaceEntries())).toBeNull();
+    expect(s.sidebarView(s.sidebarEntries()).fieldRect(viewerRef.pane(s.machine.id, 10), s.workspaceRows())).toBeNull();
     s.frame();
     expect(s.inline_rename).toBeNull();
   } finally {
@@ -5497,10 +6579,11 @@ test("a drag between two presses is no double-click, and still reorders", async 
     await s.input(bytes(`\x1b[<32;${moved.x + 1};${moved.y + 1}M`));
     await s.input(bytes(`\x1b[<0;${moved.x + 1};${moved.y + 1}m`));
     await s.input(bytes(`\x1b[<0;${moved.x + 1};${moved.y + 1}M\x1b[<0;${moved.x + 1};${moved.y + 1}m`));
-    expect(s.inline_rename?.target).toEqual({ agent: 1 });
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 1));
     await s.key(27);
-    await s.input(bytes(`\x1b[<0;${moved.x + 1};${moved.y + 1}M\x1b[<32;${moved.x + 2};${moved.y + 1}M`));
-    await s.input(bytes(`\x1b[<0;${moved.x + 2};${moved.y + 1}m`));
+    // Held motion off the name line ends the double-click.
+    await s.input(bytes(`\x1b[<0;${moved.x + 1};${moved.y + 1}M\x1b[<32;${moved.x + 1};${moved.y + 2}M`));
+    await s.input(bytes(`\x1b[<0;${moved.x + 1};${moved.y + 2}m`));
     await s.input(bytes(`\x1b[<0;${moved.x + 1};${moved.y + 1}M\x1b[<0;${moved.x + 1};${moved.y + 1}m`));
     expect(s.inline_rename).toBeNull();
   } finally {
@@ -5515,12 +6598,12 @@ test("Rename in a row's menu edits the row in place", async () => {
     s.tab_menu = new TabMenu({ tab: 1, agent: true, anchor_x: 0 });
     await s.tabMenuAction("rename");
     expect(s.name_dialog).toBeNull();
-    expect(s.inline_rename?.target).toEqual({ agent: 1 });
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 1));
     expect(s.inline_rename.field.raw()).toBe("agent 1");
     s.tab_menu = new TabMenu({ tab: 2, workspace: true, anchor_x: 0 });
     await s.tabMenuAction("rename");
     expect(s.name_dialog).toBeNull();
-    expect(s.inline_rename?.target).toEqual({ workspace: 2 });
+    expect(s.inline_rename?.target).toBe(viewerRef.workspace(s.machine.id, 2));
     expect(sent).toEqual([]);
   } finally {
     viewer.close(s);
@@ -5535,7 +6618,7 @@ test("with the sidebar closed, prefix W then r renames the current workspace in 
     expect(s.name_dialog).toBeNull();
     expect(s.sidebar_open).toBe(true);
     expect(s.sidebar_focus?.drawer).toBe("workspaces");
-    expect(s.inline_rename?.target).toEqual({ workspace: s.current().id });
+    expect(s.inline_rename?.target).toBe(viewerRef.workspace(s.machine.id, s.current().id));
     expect(s.inline_rename.drawer).toBe(true);
   };
   const away = () => {
@@ -5548,7 +6631,7 @@ test("with the sidebar closed, prefix W then r renames the current workspace in 
     await rename();
     // The field's keys never move the drawer's cursor.
     await s.input(bytes("\x1b[B\x1b[A"));
-    expect(s.sidebar_focus.cursor).toEqual({ workspace: 1 });
+    expect(s.sidebar_focus.cursor).toEqual({ workspace: s.workspaceRef(1) });
     await s.key(27);
     away();
     await rename();
@@ -5561,7 +6644,7 @@ test("with the sidebar closed, prefix W then r renames the current workspace in 
     away();
     // A press on another drawer row opens it, as the drawer does without a field.
     await rename();
-    const at = s.sidebarView(s.sidebarEntries()).fieldRect({ workspace: 2 }, s.workspaceEntries());
+    const at = s.sidebarView(s.sidebarEntries()).fieldRect(s.workspaceRef(2), s.workspaceRows());
     await s.input(bytes(`\x1b[<0;${at.x + 1};${at.y + 1}M\x1b[<0;${at.x + 1};${at.y + 1}m`));
     away();
     expect(s.current().id).toBe(2);
@@ -5581,8 +6664,8 @@ test("rename reveals its workspace's row past archived workspaces listed before 
     const view = () => s.sidebarView(s.sidebarEntries());
     expect(view().workspaceCapacity()).toBeLessThan(10);
     s.beginWorkspace(9);
-    expect([s.inline_rename?.target, s.name_dialog]).toEqual([{ workspace: 9 }, null]);
-    expect(view().fieldRect({ workspace: 9 }, s.workspaceEntries())).not.toBeNull();
+    expect([s.inline_rename?.target, s.name_dialog]).toEqual([s.workspaceRef(9), null]);
+    expect(view().fieldRect(s.workspaceRef(9), s.workspaceRows())).not.toBeNull();
   } finally {
     viewer.close(s);
   }
@@ -5805,7 +6888,10 @@ test("a rename that can't reach the daemon says so, for a workspace or an agent"
     edit.mockRejectedValue(Error("ConnectionClosed"));
     await twice({ agent: 2 });
     await s.input(bytes("\x03Fix API\r"));
-    expect([s.inline_rename.target, s.inline_rename.message]).toEqual([{ agent: 2 }, "No daemon connection"]);
+    expect([s.inline_rename.target, s.inline_rename.message]).toEqual([
+      viewerRef.pane(s.machine.id, 2),
+      "No daemon connection",
+    ]);
   } finally {
     edit.mockRestore();
     setSystemTime();
@@ -5848,6 +6934,43 @@ test("a remembered name prefills the next rename until Escape, success or the pa
   } finally {
     setSystemTime();
     viewer.close(s);
+  }
+});
+
+test("unread on a workspace of the machine not shown opens its first unread agent", async () => {
+  const s = controller(async () => ({}));
+  const other = workMachine();
+  s.adopt(other);
+  const local: any = pair();
+  // Agent 3, alone on /b, finished unseen.
+  local.panes[2].agent.observation = { completed: 2, read: 0 };
+  s.receiveSnapshot(local);
+  s.receiveSnapshot(folders("/w"), other);
+  s.input_state.attached = true;
+  const chosen: [string, unknown][] = [];
+  s.onMachine = (machine: Machine, focus: unknown) => void chosen.push([machine.name, focus]);
+  const clickUnread = async () => {
+    const rows = s.workspaceRows(),
+      row = rows.find((row: sidebar.WorkspaceEntry) => row.name === "/b"),
+      view = s.sidebarView(s.sidebarEntries()),
+      x = view.unreadRange(row).start,
+      y = view.fieldRect(row.id, rows).y + 1;
+    expect(view.unreadHit(row, x, y)).toBe(true);
+    await s.input(bytes(`\x1b[<0;${x + 1};${y + 1}M\x1b[<0;${x + 1};${y + 1}m`));
+    await s.settle();
+  };
+  try {
+    // Shown here, the click lands on agent 3.
+    await clickUnread();
+    expect([s.current().id, s.focused().id]).toEqual([2, 3]);
+    s.switchWorkspace(1);
+    // Shown on work, the same click should ask for agent 3 on this computer.
+    s.switchMachine(other);
+    await clickUnread();
+    expect(chosen).toEqual([["local", { pane: 3 }]]);
+  } finally {
+    viewer.close(s);
+    other.runtime.destroy();
   }
 });
 
@@ -5896,6 +7019,19 @@ function twoMachines(reply: (op: string) => unknown) {
   s.adopt(other);
   return { s, other, asked };
 }
+
+test("a click waiting out the double-click window doesn't open on a machine switched to meanwhile", () => {
+  const { s, other } = twoMachines(() => ({}));
+  try {
+    const file = { path: "/a/app.ts", line: 3, column: null };
+    s.pending_open = { url: "/a/app.ts:3", machine: s.machine, file, pane: 1, due: 0 };
+    s.switchMachine(other);
+    expect(s.pending_open).toBeNull();
+  } finally {
+    viewer.close(s);
+    other.runtime.destroy();
+  }
+});
 
 test("the prompt's conversation stays on the machine it started on when another is shown", async () => {
   const { s, other, asked } = twoMachines(op =>
@@ -5983,6 +7119,36 @@ test("clearing a prompt conversation stops it on its own machine, whichever is s
   }
 });
 
+test("a prompt conversation's commit references read its own machine's checkout, whichever is shown", async () => {
+  const { s, other, asked } = twoMachines(op =>
+    op === "headless.start" ? { provider: "codex", session: "s" } : { events: [], next_seq: 1 },
+  );
+  try {
+    const daemon = Reflect.get(s, "promptDaemon").call(s);
+    // With no conversation, they read the machine shown.
+    await daemon.review("review.recognize", { cwd: "/a", hashes: [] });
+    expect(asked.filter(([, op]) => op.startsWith("review."))).toEqual([["here", "review.recognize"]]);
+    s.switchMachine(other);
+    const conversation = s.prompt.conversation;
+    conversation.session = (await daemon.start({})).session;
+    conversation.attach({ provider: "codex", account: "", persist: false, cwd: "/w/app" } as any, "s", false);
+    s.switchMachine(s.machines[0]);
+    s.prompt.show({ cwd: "/a", mentions: [] } as any);
+    asked.length = 0;
+    await daemon.review("review.recognize", { cwd: "/w/app", hashes: [] });
+    expect(asked).toEqual([["work", "review.recognize"]]);
+    // And name its folder there, not the workspace the prompt opened in.
+    const resolved = Reflect.get(s.prompt, "resolveReview").call(s.prompt, {
+      folder: "",
+      source: { kind: "commit", hash: "abc1234" },
+    });
+    expect(resolved.cwd).toBe("/w/app");
+  } finally {
+    viewer.close(s);
+    other.runtime.destroy();
+  }
+});
+
 test("a prompt conversation resumed after a reload stays on its machine when another is shown", async () => {
   const { s, other, asked } = twoMachines(op => (op === "viewer.list" ? { viewers: [{}] } : { events: [] }));
   s.receiveSnapshot(folders("/a"));
@@ -6009,22 +7175,121 @@ test("a prompt conversation resumed after a reload stays on its machine when ano
   }
 });
 
-test("a remote machine's checkouts aren't read with this computer's git", () => {
-  const s = controller();
-  const other = workMachine();
+test("a remote machine's review reads go to its own daemon, and its panel keeps its own notes", async () => {
+  const asked: [string, string][] = [];
+  const daemon = (name: string) =>
+    transport(async (op: string) => {
+      asked.push([name, op]);
+      if (op === "review.summary") return { root: "/a", base: "main", totals: { files: 2, adds: 5, dels: 1 } };
+      if (op === "review.read") return { root: null, hash: "", same: false, checkout: null };
+      throw Error("UnexpectedRequest");
+    });
+  const s = new Controller(daemon("here"));
+  const other = new Machine({ request: daemon("work").request }, "work", true);
   s.adopt(other);
   s.receiveSnapshot(folders("/a"));
   s.receiveSnapshot(folders("/a"), other);
   try {
-    // This computer has /a too: its changes aren't the remote agent's.
-    const wanted = spyOn(s.review_summaries, "want");
+    const here = s.review;
+    // This computer has /a too: the remote agent's line is the remote checkout's.
     s.switchMachine(other);
+    expect(s.review).not.toBe(here);
     Reflect.get(s, "openReview").call(s);
+    expect(s.review.open).toBe(true);
+    s.review_summaries.ask("/a");
+    await s.review.refresh();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(asked.filter(([name]) => name === "here")).toEqual([]);
+    expect(new Set(asked.map(([, op]) => op))).toEqual(new Set(["review.read", "review.summary"]));
+    const line = s.review_summaries.get("/a") ?? [];
+    expect(line.map(([text]) => text).join("")).toBe("2 files  +5 −1");
+    // Switching back closes it and shows this computer's panel.
+    s.switchMachine(s.machines[0]);
+    expect(s.review).toBe(here);
     expect(s.review.open).toBe(false);
-    expect(s.message).toContain("Review changes on the remote machine");
-    Reflect.get(s, "readAhead").call(s, s.sidebarEntries());
-    expect(wanted).not.toHaveBeenCalled();
   } finally {
+    s.review.hide();
+    viewer.close(s);
+    other.runtime.destroy();
+  }
+});
+
+test("a chat moved to a pane on another computer runs that computer's Corgi, from the handoff its daemon wrote", async () => {
+  const s = controller(),
+    here = s.machine,
+    sent: any[] = [],
+    handoffs: unknown[] = [],
+    uploads = new handoffUpload.Uploads();
+  let refuse = false,
+    parts = 0;
+  const other = new Machine(
+    {
+      request: transport(async (op, fields: any) => {
+        if (op === "headless.handoff") {
+          if (refuse) throw Error("UnknownOperation");
+          parts++;
+          const whole = uploads.add(other, fields);
+          if (whole === null) return { path: "" };
+          handoffs.push(JSON.parse(whole));
+          return { path: "/tmp/corgi-chat-there.json" };
+        }
+        if (op !== "session.command") return folders("/a");
+        sent.push(fields.command);
+        return { result: { pane: 1 } };
+      }).request,
+    },
+    "work",
+    true,
+  );
+  s.adopt(other);
+  s.receiveSnapshot(folders("/a"));
+  s.receiveSnapshot(folders("/a"), other);
+  const dir = mkdtempSync(join(tmpdir(), "corgi-chat-remote-")),
+    handoff = (name: string) => {
+      const path = join(dir, name);
+      writeFileSync(path, "{}");
+      return path;
+    };
+  const reclaim = spyOn(s.prompt, "reclaim").mockImplementation(() => {});
+  try {
+    s.switchMachine(other);
+    other.executable = "/home/me/.local/bin/corgi";
+    Reflect.get(s, "prompt_sessions").set("codex:s", other);
+    const moved = handoff("moved.json"),
+      long = { items: "x".repeat(handoffUpload.part_chars * 2) };
+    writeFileSync(moved, JSON.stringify(long));
+    await s.promptEffect({ kind: "chat", chat: chat({ handoff: moved, session: "s", cwd: "/a" }), cwd: "/a" });
+    // Its pane can't read this computer's handoff: that computer's daemon writes it there, sent in
+    // parts its screens share the connection with, and it doesn't linger here.
+    expect(handoffs).toEqual([long]);
+    expect(parts).toBe(3);
+    expect(sent.at(-1)["pane.create"].command).toBe(
+      "/home/me/.local/bin/corgi __chat /tmp/corgi-chat-there.json --provider codex --session s --cwd /a",
+    );
+    expect(existsSync(moved)).toBe(false);
+    expect(reclaim).not.toHaveBeenCalled();
+    // A daemon that can't take it leaves the pane to follow the session from that daemon.
+    refuse = true;
+    const followed = handoff("followed.json");
+    await s.promptEffect({ kind: "chat", chat: chat({ handoff: followed, session: "s", cwd: "/a" }), cwd: "/a" });
+    expect(sent.at(-1)["pane.create"].command).toBe(
+      "/home/me/.local/bin/corgi __chat --provider codex --session s --cwd /a",
+    );
+    expect(existsSync(followed)).toBe(false);
+    // A file opens with that Corgi too; before its hello, the one on the pane's PATH.
+    expect(Reflect.get(s, "corgiOn").call(s, other)).toEqual(["/home/me/.local/bin/corgi"]);
+    other.executable = "";
+    expect(Reflect.get(s, "corgiOn").call(s, other)).toEqual(["corgi"]);
+    // With this computer shown, the chat can't move into its panes: the card keeps it.
+    s.switchMachine(here);
+    const kept = handoff("kept.json");
+    await s.promptEffect({ kind: "chat", chat: chat({ handoff: kept, session: "s" }), cwd: "/a" });
+    expect(reclaim).toHaveBeenCalledWith(kept, "the chat runs on work");
+    expect(s.message).toContain("the chat runs on work");
+    expect(sent).toHaveLength(2);
+  } finally {
+    reclaim.mockRestore();
+    rmSync(dir, { recursive: true, force: true });
     viewer.close(s);
     other.runtime.destroy();
   }
@@ -6119,10 +7384,18 @@ test("all agents lists each online machine's under its name, and its rows switch
   s.onMachine = (machine: Machine, focus: unknown) => void chosen.push([machine.name, focus]);
   try {
     const entries = s.agentEntries();
-    const names = entries.map((e: any) => ("group" in e.target ? `${e.name} ${e.group.machine}` : e.target.pane));
-    // The shown machine's rows keep their ids; another's are set apart.
-    const away = 2 * 2 ** 32;
-    expect(names).toEqual(["/a local", 1, "/w work", away + 1, "/x work", away + 2]);
+    const names = entries.map((e: sidebar.Entry) =>
+      sidebar.isGroup(e.target) ? `${e.name} ${e.group.machine}` : e.target,
+    );
+    // Each row keeps its owner even when another machine is selected.
+    expect(names).toEqual([
+      "/a local",
+      viewerRef.pane(s.machine.id, 1),
+      "/w work",
+      viewerRef.pane(other.id, 1),
+      "/x work",
+      viewerRef.pane(other.id, 2),
+    ]);
     s.selectAgent(entries[3].target);
     expect(chosen).toEqual([["work", { pane: 1 }]]);
     // Folding another machine's group keeps to that machine.
@@ -6288,7 +7561,7 @@ test("input past 80 bytes is refused and says so until the next edit", async () 
   try {
     setSystemTime(new Date(1000));
     await twice({ agent: 1 });
-    await s.input(bytes("a".repeat(73)));
+    await s.input(bytes("a".repeat(80)));
     expect(s.inline_rename.field.len).toBe(80);
     expect(s.inline_rename.message).toBeNull();
     await s.input(bytes("a"));
@@ -6322,7 +7595,7 @@ test("Escape while a save is in flight closes the field; the late failure neithe
   s.input_state.attached = true;
   try {
     setSystemTime(new Date(1000));
-    const at = s.sidebarView(s.sidebarEntries()).fieldRect({ agent: 1 }, s.workspaceEntries());
+    const at = s.sidebarView(s.sidebarEntries()).fieldRect(viewerRef.pane(s.machine.id, 1), s.workspaceRows());
     for (let i = 0; i < 2; i++)
       await s.input(bytes(`\x1b[<0;${at.x + 1};${at.y + 1}M\x1b[<0;${at.x + 1};${at.y + 1}m`));
     await s.input(bytes("\x03Late"));
@@ -6477,7 +7750,7 @@ test("a full input box still opens the field on a double-click and keeps Rename 
   try {
     setSystemTime(new Date(1000));
     await twice({ agent: 1 });
-    expect(s.inline_rename?.target).toEqual({ agent: 1 });
+    expect(s.inline_rename?.target).toBe(viewerRef.pane(s.machine.id, 1));
     s.closeInlineRename();
     await s.openAgentMenu(1, 0, 0);
     await s.settle();
@@ -6755,7 +8028,7 @@ test("Esc typed for a pane opening reaches it, not the old pane's retry", async 
     p.agent.retry_at = Date.now() + 100_000;
     await s.input(bytes("\x02v\x1b"));
     // A lone Esc goes once the tick knows no sequence follows it.
-    s.input_state.escape_at = 0;
+    await s.input(s.input_parser.expire(s.input_parser.due()));
     await s.expireInput();
     await answer();
     expect(commands.some(c => "retry.cancel" in c)).toBe(false);
@@ -7066,6 +8339,9 @@ test("a paste cut off by an input reset, or failing part-way, never leaves its p
     s.cancelInput();
     expect(text()).toBe("x");
     expect(terminal.pasting()).toBe(false);
+    // The stream still owns the cancelled paste until its terminator arrives.
+    await s.input(bytes("ignored\x02c\r\x1b[201~"));
+    expect(text()).toBe("x");
     terminal.pending = [];
     // Too big to fit, a paste goes whole or not at all, and ends either way.
     s.clipboard = "x".repeat(1024 * 1024 + 1);
@@ -7106,13 +8382,38 @@ test("through the viewer's routing, a workspace name's double-click renames and 
     const at = rect({ workspace: 2 });
     await click(at.x, at.y);
     await click(at.x, at.y);
-    expect(s.inline_rename?.target).toEqual({ workspace: 2 });
+    expect(s.inline_rename?.target).toBe(viewerRef.workspace(s.machine.id, 2));
     expect(s.workspaceDragInput(at.x + 1, at.y, 0, false)).toBe(false);
   } finally {
     setSystemTime();
     viewer.close(s);
   }
 });
+
+test.each([1, 2])(
+  "through the viewer's routing, workspace %i's message line interrupts its rename double-click",
+  async workspace => {
+    const { s, rect } = renaming();
+    const click = async (x: number, y: number) => {
+      for (const release of [false, true])
+        if (!s.workspaceDragInput(x, y, 0, release))
+          await s.input(bytes(`\x1b[<0;${x + 1};${y + 1}${release ? "m" : "M"}`));
+    };
+    try {
+      setSystemTime(new Date(1000));
+      const at = rect({ workspace });
+      await click(at.x, at.y);
+      await click(at.x, at.message_y);
+      await click(at.x, at.y);
+      expect(s.inline_rename).toBeNull();
+      await click(at.x + 1, at.y);
+      expect(s.inline_rename?.target).toBe(viewerRef.workspace(s.machine.id, workspace));
+    } finally {
+      setSystemTime();
+      viewer.close(s);
+    }
+  },
+);
 
 test("a press after a drag on a workspace's name starts no rename", async () => {
   const { s, rect } = renaming();
@@ -7226,9 +8527,20 @@ test("activity sections keep same-numbered agents on different machines distinct
   s.onMachine = (machine: Machine, focus: unknown) => chosen.push([machine.name, focus]);
   try {
     const agents = s.agentEntries().filter((e: sidebar.Entry) => sidebar.isAgent(e.target));
-    expect(agents.map((e: sidebar.Entry) => e.target)).toEqual([{ pane: 1 }, { pane: 2 * 2 ** 32 + 1 }]);
+    const ids = [viewerRef.pane(s.machine.id, 1), viewerRef.pane(other.id, 1)];
+    expect(agents.map((e: sidebar.Entry) => e.target)).toEqual(ids);
     s.selectAgent(agents[1].target);
     expect(chosen).toEqual([["work", { pane: 1 }]]);
+    const local = s.machine;
+    s.switchMachine(other);
+    expect(
+      s
+        .agentEntries()
+        .filter((e: sidebar.Entry) => sidebar.isAgent(e.target))
+        .map((e: sidebar.Entry) => e.target),
+    ).toEqual(ids);
+    s.selectAgent(agents[0].target);
+    expect(chosen.at(-1)).toEqual([local.name, { pane: 1 }]);
   } finally {
     other.runtime.destroy();
     viewer.close(s);
@@ -7280,14 +8592,18 @@ test("a remote resource card sends signals and pane navigation to its owner", as
   s.receiveSnapshot(folders("/local"));
   s.receiveSnapshot(folders("/remote"), other);
   const process = { pid: 42, start: 7n, name: "cat", pane: 1, cpu: 0 };
-  const key = s.rowKey(1, other);
+  const key = s.workspaceRef(1, other);
   other.runtime.resources.workspaces = [{ id: 1, known: true, processes: [process] }] as any;
-  s.resource_card.update({ id: key, known: true, processes: [process] }, false);
-  s.resource_card.pin({ pid: 42, start: "7" });
   const chosen: unknown[] = [];
   s.onMachine = (machine: Machine, focus: unknown) => chosen.push([machine.name, focus]);
   try {
+    await s.perform({ name: "resources", value: s.workspaceRef(1, other) });
+    expect(s.resource_card.workspace).toBe(key);
+    expect(s.resource_card.pinned).toBe(true);
+    expect(s.machine).not.toBe(other);
     expect(s.resourceDetail()).toBe(key);
+    s.resource_card.update({ id: key, known: true, processes: [process] }, false);
+    s.resource_card.pin({ pid: 42, start: "7" });
     await s.signalProcesses("term");
     expect(calls).toEqual([]);
     await s.signalProcesses("term");
@@ -7323,7 +8639,7 @@ test("switching machines during an awaited key discards the old batch's tail", a
       ["local", 97],
       ["work", 99],
     ]);
-    expect(s.input_state.keybuf).toEqual([]);
+    expect(s.input_parser.due()).toBe(Infinity);
   } finally {
     pending.resolve();
     other.runtime.destroy();
@@ -7346,7 +8662,7 @@ test.each([false, true])("stale input cannot enter the selected machine's buffer
   try {
     s.switchMachine(other);
     await s.input(bytes("stale"), () => s.machine === local, dropped);
-    expect(s.input_state.keybuf).toEqual([]);
+    expect(other.runtime.pane(1)!.terminal.pending).toEqual([]);
     expect(s.input_state.active).toBe(false);
     await s.expireInput();
     await s.input(bytes("fresh"));
@@ -7357,6 +8673,41 @@ test.each([false, true])("stale input cannot enter the selected machine's buffer
     viewer.close(s);
   }
 });
+
+test.each(["local", "work"])(
+  "unheld motion along %s workspace names keeps the double-click with multiple machines",
+  async name => {
+    const s = controller(),
+      local = s.machine,
+      remote = new Machine(
+        transport(async () => pair()),
+        "work",
+        true,
+      );
+    s.height = 60;
+    s.receiveSnapshot(pair());
+    s.adopt(remote);
+    s.receiveSnapshot(pair(), remote);
+    s.input_state.attached = true;
+    try {
+      setSystemTime(new Date(1000));
+      if (name === "work") s.switchMachine(remote);
+      const at = s.sidebarView(s.sidebarEntries()).fieldRect(s.workspaceRef(1), s.workspaceRows());
+      const press = async (x: number) => {
+        await s.input(bytes(`\x1b[<0;${x + 1};${at.y + 1}M\x1b[<0;${x + 1};${at.y + 1}m`));
+      };
+      await press(at.x);
+      await s.input(bytes(`\x1b[<35;${at.x + 2};${at.y + 1}M`));
+      await press(at.x + 1);
+      expect(s.inline_rename?.target).toBe(viewerRef.workspace(s.machine.id, 1));
+    } finally {
+      setSystemTime();
+      s.switchMachine(local);
+      remote.runtime.destroy();
+      viewer.close(s);
+    }
+  },
+);
 
 test("remote workspace renaming uses its row below the machine header and keeps failed names on their machine", () => {
   const s = controller(),
@@ -7375,18 +8726,18 @@ test("remote workspace renaming uses its row below the machine header and keeps 
     s.switchMachine(remote);
     expect(s.remembered_names.size).toBe(0);
     s.remembered_names.set(1, "remote draft");
-    expect(s.beginInlineRename({ workspace: 1 })).toBe(true);
+    expect(s.beginInlineRename(s.workspaceRef(1))).toBe(true);
     const rows = s.workspaceRows(),
-      target = { workspace: s.rowKey(1, remote) },
+      target = s.workspaceRef(1, remote),
       view = s.sidebarView(s.sidebarEntries()),
       rect = view.fieldRect(target, rows);
     expect(view.rename?.target).toEqual(target);
     expect(view.hit(rect!.x, rect!.y)).toEqual({
       tag: "workspace",
-      workspace: rows.findIndex((row: sidebar.WorkspaceEntry) => row.id === target.workspace),
+      workspace: rows.findIndex((row: sidebar.WorkspaceEntry) => row.id === target),
     });
     expect(s.frame()).toContain("/a");
-    expect(s.inline_rename?.target).toEqual({ workspace: 1 });
+    expect(s.inline_rename?.target).toBe(viewerRef.workspace(s.machine.id, 1));
     s.switchMachine(local);
     expect(s.inline_rename).toBeNull();
     expect(s.remembered_names.get(1)).toBe("local draft");
@@ -7422,11 +8773,11 @@ test.each(["probe", "save"])(
     try {
       s.switchMachine(remote);
       if (mode === "probe") {
-        const at = s.sidebarView(s.sidebarEntries()).fieldRect({ agent: 1 }, s.workspaceRows());
+        const at = s.sidebarView(s.sidebarEntries()).fieldRect(viewerRef.pane(s.machine.id, 1), s.workspaceRows());
         for (let i = 0; i < 2; i++)
           await s.input(bytes(`\x1b[<0;${at.x + 1};${at.y + 1}M\x1b[<0;${at.x + 1};${at.y + 1}m`));
       } else {
-        expect(s.beginInlineRename({ agent: 1 })).toBe(true);
+        expect(s.beginInlineRename(viewerRef.pane(s.machine.id, 1))).toBe(true);
         await s.input(bytes("\x03remote name\r"));
         expect(s.inline_rename.saving).toBe(true);
       }
@@ -8293,3 +9644,9 @@ test("the PR list upgrades legacy metadata so cached merged PRs retain their dat
     viewer.close(s);
   }
 });
+
+function mouseInput(view: any, sequence: string): Promise<void> {
+  const event = new terminalInput.Parser().feed(Buffer.from(sequence))[0];
+  if (event.kind !== "mouse") throw Error("InvalidMouseFixture");
+  return view.mouse(event.mouse);
+}

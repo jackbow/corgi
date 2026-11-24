@@ -15,6 +15,9 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import * as preferences from "../src/preferences";
+import * as keymap from "../src/keymap";
+import * as keys from "../src/keys";
 
 /** What `tools/sandboxes/NAME.ts` exports as `world`. */
 export interface World {
@@ -83,8 +86,7 @@ export class Sandbox {
   /** What Corgi, and everything it starts, runs with. */
   readonly env: Record<string, string>;
   /** Inside a Corgi pane the outer Corgi takes its own prefix, so the sandbox takes the other one. */
-  readonly prefix: "ctrl_a" | "ctrl_b";
-  private readonly outer_prefix: "ctrl_a" | "ctrl_b";
+  readonly prefix: "ctrl+a" | "ctrl+b";
   private readonly nested = process.env.CORGI_PANE !== undefined;
 
   constructor(
@@ -95,27 +97,16 @@ export class Sandbox {
   ) {
     this.dir = join(`/tmp/corgi-sandbox-${process.getuid?.() ?? 0}`, name);
     this.home = join(this.dir, "home");
-    this.outer_prefix = (() => {
-      // Where the outer Corgi's preferences.configPath finds config.json; an older one kept it in viewer.json.
-      const e = process.env,
-        home = e.HOME ?? "";
-      for (const file of [
-        e.CORGI_ENV_DIR
-          ? join(e.CORGI_ENV_DIR, "config/corgi/config.json")
-          : join(e.XDG_CONFIG_HOME ?? join(home, ".config"), "corgi/config.json"),
-        join(e.XDG_STATE_HOME ?? join(home, ".local/state"), "corgi/viewer.json"),
-      ])
-        try {
-          const prefix = JSON.parse(readFileSync(file, "utf8")).prefix;
-          if (prefix !== undefined) return prefix === "ctrl_a" ? "ctrl_a" : "ctrl_b";
-        } catch {}
-      return "ctrl_b";
-    })();
-    this.prefix = this.nested && this.outer_prefix === "ctrl_b" ? "ctrl_a" : "ctrl_b";
+    this.prefix =
+      this.nested && keys.same(keymap.prefixKey(preferences.read().prefix), keymap.prefixKey("ctrl+b"))
+        ? "ctrl+a"
+        : "ctrl+b";
     const env: Record<string, string> = { ...(process.env as Record<string, string>) };
     for (const key of [
       "CORGI_PANE",
       "CORGI_APP_EXE",
+      "CORGI_DEV_ROOT",
+      "CORGI_DEV_BUN",
       "CORGI_ENV_BASE",
       "CODEX_THREAD_ID",
       "CLAUDE_CODE_SESSION_KIND",
@@ -141,7 +132,7 @@ export class Sandbox {
 
   /** The prefix as the help names it. */
   get prefixName(): string {
-    return this.prefix === "ctrl_a" ? "Ctrl+A" : "Ctrl+B";
+    return this.prefix === "ctrl+a" ? "Ctrl+A" : "Ctrl+B";
   }
   /** Printed before the viewer attaches. */
   intro(): string {
@@ -151,8 +142,7 @@ export class Sandbox {
         [`${this.prefixName} q`, `detach; ./go.ts --sandbox ${this.name} comes back, and with --restart starts over`],
       ]),
     ];
-    if (this.nested && this.prefix !== this.outer_prefix)
-      lines.push(`You're inside Corgi, so this sandbox uses ${this.prefixName} as its prefix.`);
+    if (this.nested) lines.push(`You're inside Corgi, so this sandbox uses ${this.prefixName} as its prefix.`);
     return lines.map(line => `  ${line}`).join("\n") + "\n";
   }
 
@@ -215,8 +205,14 @@ export class Sandbox {
   }
   async shutdown(): Promise<void> {
     await this.world.shutdown?.(this);
-    if (existsSync(this.env.CORGI_SOCKET) && this.running())
+    if (existsSync(this.env.CORGI_SOCKET) && this.running()) {
       spawnSync(this.exe, ["shutdown"], { env: this.env, stdio: "ignore" });
+      // The CLI returns once the daemon acknowledges, before it finishes:
+      // wiping the world while it still writes brings the tree back under
+      // rmSync's feet, so wait for it to let go of the socket.
+      const end = Date.now() + 5000;
+      while (this.running() && Date.now() < end) Bun.sleepSync(100);
+    }
   }
   prepareHome(): void {
     mkdirSync(join(this.home, ".local/state/corgi"), { recursive: true });
@@ -390,6 +386,13 @@ const interval = Number(option('--sandbox-interval')) || 0;
 let progress = null;
 if (task && provider === 'claude')
   appendFileSync(transcript, JSON.stringify({ type: 'custom-title', sessionId: session, customTitle: task }) + '\n');
+const figure = option('--sandbox-context');
+if (figure && provider === 'claude') {
+  // One assistant record with a known model and usage, so the sidebar's
+  // context figure has something to read: percent of the 1M window.
+  const used = Math.round(Number(figure) * 10000);
+  appendFileSync(transcript, JSON.stringify({ type: 'assistant', sessionId: session, timestamp: new Date().toISOString(), message: { id: 'msg-context', model: 'claude-opus-5-5', usage: { input_tokens: used, output_tokens: 10 } } }) + '\n');
+}
 let turn = 0;
 function event(name) {
   if (!existsSync(hooks)) return;

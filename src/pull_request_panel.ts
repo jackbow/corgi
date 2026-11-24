@@ -1,6 +1,6 @@
 //! Viewer-local PR navigation, backed by the persistent GitHub cache.
 import * as tui from "@earendil-works/pi-tui";
-import type { Action } from "./action";
+import { parse, type Action } from "./action";
 import * as i18n from "./i18n";
 import { Rect } from "./layout";
 import * as palette from "./palette";
@@ -17,10 +17,13 @@ export interface Row {
   framed?: boolean;
   prefix?: string;
 }
-const action = (name: string, value?: string): Action => ({
-  name: `pull-request${name ? "-" + name : ""}`,
-  ...(value === undefined ? {} : { value }),
-});
+type PullRequestAction = Extract<Action, { name: `pull-request${string}` }>;
+type Suffix<Name> = Name extends `pull-request-${infer Rest}` ? Rest : never;
+const action = (name: Suffix<PullRequestAction["name"]> | "", value?: string): PullRequestAction => {
+  const parsed = parse(name ? `pull-request-${name}` : "pull-request", value) as PullRequestAction;
+  if (value === undefined) delete parsed.value;
+  return parsed;
+};
 const clean = (value: string) => value.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, " ");
 const ink = (value: string, color: palette.Token = "text", bold = false) =>
   new palette.Style({ fg: color, bg: "surface", bold }).sgr() + value + "\x1b[0m";

@@ -1,3 +1,4 @@
+import { Parser } from "./terminal_input";
 import { expect, spyOn, test } from "bun:test";
 import { Machine } from "./machine";
 import { Controller } from "./controller";
@@ -7,7 +8,6 @@ import { Host } from "./host";
 import { State } from "./navigation";
 import { Runtime } from "./mirror";
 import { transport } from "./fixtures/transport";
-import { prefixByte } from "./keymap";
 import * as viewer from "./viewer";
 import * as protocol from "./protocol";
 import * as sidebar from "./sidebar";
@@ -110,11 +110,14 @@ test("workspace and tab input runs while a network update is unresolved, and she
     endpoint.pump(true);
     await Reflect.get(endpoint, "ui_task");
     const side = view.sidebarView([]);
-    endpoint.enqueue(Buffer.from(`\x1b[<0;3;${side.workspaceY(2) + 1}M\x1b[<0;3;${side.workspaceY(2) + 1}m`));
+    for (const input of new Parser().feed(
+      Buffer.from(`\x1b[<0;3;${side.workspaceY(2) + 1}M\x1b[<0;3;${side.workspaceY(2) + 1}m`),
+    ))
+      endpoint.enqueue(input);
     endpoint.pump(true);
     await Reflect.get(endpoint, "ui_task");
     expect(view.current().id).toBe(3);
-    endpoint.enqueue(Uint8Array.from([prefixByte(view.prefs.prefix), 110, 120]));
+    for (const input of new Parser().feed(Uint8Array.from([2, 110, 120]))) endpoint.enqueue(input);
     endpoint.pump(true);
     await Reflect.get(endpoint, "ui_task");
     expect(endpoint.machine.navigation.tabs(endpoint.machine.runtime.workspaces).active).toBe(1);
@@ -289,4 +292,24 @@ test("a focus control waits past any time limit while the daemon says its pane i
     clock.mockRestore();
     viewer.close(view);
   }
+});
+
+test("a machine in the background opens the links its panes ask for, while its other controls wait", async () => {
+  const shown = new Machine(never),
+    background = new Machine(never, "atlas", true);
+  const view = new Controller(shown);
+  view.adopt(background);
+  const controls = [
+    { seq: 1, kind: "action", name: "open-url", value: "http://localhost:3000/" },
+    { seq: 2, kind: "focus", id: 31 },
+    { seq: 3, kind: "action", name: "open-url", value: "https://example.com/" },
+  ] as protocol.Wire<protocol.Control[]>;
+  expect(viewer.leadingLinks(controls, 0n)).toEqual(controls.slice(0, 1));
+  // A control taken already, its ack still on the way, doesn't hold the link behind it.
+  expect(viewer.leadingLinks(controls.slice(1), 2n)).toEqual(controls.slice(1));
+  await viewer.receive(view, reply(null, controls), { seq: 0n }, false, background);
+  expect(view.effects).toEqual([{ open_url: "http://localhost:3000/", machine: background.id }]);
+  expect(background.last_control).toBe(1n);
+  // The focus waits for its machine to be shown, and the link behind it with it.
+  expect(background.waiting_controls).toEqual(controls.slice(1));
 });

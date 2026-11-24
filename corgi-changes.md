@@ -4,7 +4,7 @@ Application changes added during development.
 
 ## Code colors
 
-- Diffs and chat code blocks share bundled Shiki grammars and VS Code Dark+ (the default), VS Code Light+, and Terminal palettes. Settings previews the same diff and chat sample on palette and Corgi backgrounds; Enter/Save confirms, Cancel/Escape restores the saved choice. `code_palette` and `code_background` live in `config.json`, independently of the application theme.
+- Diffs, file panes, and chat code blocks share bundled Shiki grammars and VS Code Dark+ (the default), VS Code Light+, and Terminal palettes. Settings previews the same diff and chat sample on palette and Corgi backgrounds; Enter/Save confirms, Cancel/Escape restores the saved choice. `code_palette` and `code_background` live in `config.json`, independently of the application theme.
 - Highlighting runs in one lazy worker per viewer, leaving pending code readable as plain text. Separate diff-side grammar states include folded lines and reset at missing remote context; loading full context rebuilds colors. Existing size and line-length limits remain. Terminal uses yellow functions and readable italic comments.
 - Diff word highlights remain visible on the focused row; selection and search take precedence. Token colors and bold, italic and underline styles survive terminal rendering.
 - Viewer revision `2de8732b5be8` adds the preferences; older readers ignore the config keys and missing or unknown values default to Dark+ with its background enabled.
@@ -88,7 +88,7 @@ Application changes added during development.
 
 - Pasting a directory path into the diff viewer opens it immediately, replacing the path editor’s current value. Note and search-field paste remain normal text input.
 - Each conversation has its own diff visibility and selected repo/subfolder, remembered for the lifetime of the viewer.
-- Repo/subfolder selection supports fuzzy suggestions, Up/Down selection, Tab/Right completion, and initially unselected text. Outside a Git checkout, the empty state explains that `r` opens another repo by path.
+- Repo/subfolder selection supports fuzzy suggestions, Up/Down selection, Tab/Right completion, and initially unselected text. It reads the selected machine's folders. Outside a Git checkout, the empty state explains that `r` opens another repo by path.
 - `C` adds a whole-file review comment for the associated conversation.
 - Cmd+Shift+B opens, focuses, or closes the diff viewer.
 - Cmd+Shift+Enter toggles fullscreen; leaving fullscreen reveals the conversation panes again.

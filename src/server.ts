@@ -1,4 +1,5 @@
 import * as desktopNotifications from "./permission_notifications";
+import * as buildConfig from "./build_config";
 import * as signinService from "./signin_service";
 import * as accountService from "./account_service";
 import * as startup from "./startup_service";
@@ -37,9 +38,17 @@ import * as integration from "./integration";
 import * as observers from "./observer_service";
 import * as trackers from "./trackers";
 import * as updates from "./updates";
+import * as user_agent from "./user_agent";
+import * as bug_report from "./bug_report";
 import * as errors from "./errors";
+import * as machine_moved from "./machine_moved";
+import * as fileAccess from "./file_access";
+import * as handoffUpload from "./handoff_upload";
+import * as jobs from "./jobs";
 import * as importer from "./import_service";
 import * as worktreeAdd from "./worktree_add";
+import * as reviewService from "./review/service";
+import * as folders from "./folders";
 import { testBuild } from "./build_assets";
 import { Failure } from "./failure";
 import { getLogger } from "./log";
@@ -112,6 +121,10 @@ export class Server {
   private modelReads = new Map<string, { quit: ModelQuit; done: Promise<agentModels.Choice[]> }>();
   /** Deferred replies, each with whether it changes state and how to answer it early. */
   private deferred = new Map<Promise<void>, { busy: protocol.Busy | null; drop: () => void }>();
+  /** Long reads for other computers' viewers, each the connection's that started it. */
+  private remote_jobs = new jobs.Jobs();
+  /** Chats other computers' prompt cards are moving into panes here, as they come in parts. */
+  private handoff_uploads = new handoffUpload.Uploads();
   private timer?: ReturnType<typeof setInterval>;
   private stopped = false;
   private subscribedRevision = -1n;
@@ -136,6 +149,10 @@ export class Server {
   /** When this daemon next looks for a newer release. */
   private updateTimer: ReturnType<typeof setTimeout> | null = null;
   private updateFailure = "";
+  /** Terminals viewers reported since this daemon started, which update checks name. */
+  private readonly terminals = new user_agent.Terminals();
+  /** Whether the first update check has started. */
+  private updateChecked = false;
   /** Stops a check under way when the daemon stops. */
   private readonly updateStop = new AbortController();
   private uninstalling = false;
@@ -354,7 +371,10 @@ export class Server {
       this.watchInstall();
       this.listen();
       this.startLoop();
-      if (this.install) void this.checkForUpdates();
+      // The first check waits briefly for the viewer that started the daemon
+      // to say which terminal it runs in, so the check can name it.
+      if (this.install)
+        this.updateTimer = setTimeout(() => void this.checkForUpdates(), Math.min(10_000, this.updateInterval()));
       process.on("SIGTERM", () => void this.shutdown());
       process.on("SIGINT", () => void this.shutdown());
       await this.saveWorkspaces();
@@ -581,6 +601,15 @@ export class Server {
       },
       () => {
         this.closing?.(client);
+        this.remote_jobs.drop(client);
+        // A view lasts as long as the process that named it stays connected.
+        for (const pane of this.runtime.panes) {
+          if (pane.view?.owner !== client) continue;
+          pane.view = null;
+          this.dirty = true;
+          this.runtime.changed();
+        }
+        this.handoff_uploads.drop(client);
         if (this.handed_off) return;
         if (client.viewer) viewer.data(this, client)?.close();
         if (client.headless_start) {
@@ -687,7 +716,7 @@ export class Server {
     let tracked = gitStatusChanged || gitPushChanged || portsChanged;
     const viewers = this.clients.filter(c => c.viewer && !c.dead);
     const overviews = new Set(
-      viewers.filter(c => c.watched && c.worktree_detail !== null).map(c => c.worktree_detail!),
+      this.clients.filter(c => !c.dead && c.worktree_detail !== null).map(c => c.worktree_detail!),
     );
     tracked = this.runtime.worktree_tracker.tick(this.runtime, overviews) || tracked;
     const inference = this.runtime.inference;
@@ -907,6 +936,8 @@ export class Server {
         if (encoding && !cl.canCompress) throw Error("InvalidEncodingNegotiation");
         const compress = encoding && v.runtime_protocol === protocol.version;
         cl.protocol_version = v.runtime_protocol === protocol.version ? protocol.version : null;
+        const release = updates.release(this.executable),
+          moved_by = machine_moved.by(this.socket, this.build_id);
         reply.send({
           type: "hello",
           protocol: protocol.version,
@@ -915,11 +946,14 @@ export class Server {
           server_pid: process.pid,
           build_id: this.build_id,
           executable: this.executable,
-          release_version: updates.release(this.executable).version,
+          release_version: release.version,
+          release_commit: release.commit,
+          source_hash: buildConfig.sourceHash,
           update_abi: updates.abi,
           handoff: transfer.protocol,
           viewer_protocol: protocol.viewer_version,
           instance: this.instance,
+          ...(moved_by ? { moved_by } : {}),
           ...(compress ? { content_encoding: encoding } : {}),
         });
         if (compress) cl.compress();
@@ -988,17 +1022,18 @@ export class Server {
           cwd = q.cwd || (q.workspace ? this.runtime.getWorkspace(q.workspace).cwd : process.cwd());
         if (!isAbsolute(cwd) || Buffer.byteLength(cwd) > 4096) throw Error("InvalidDirectory");
         if (!q.preview) {
-          reply.ok({ agents: launcherConfig.catalog(this.runtime), data: accountService.data(this.runtime) });
+          reply.ok({ agents: launcherConfig.catalog(this.runtime), data: await accountService.data(this.runtime) });
           return;
         }
         this.defer(cl, reply, null, async () => {
           const service = launch.service(this);
           service.follow(launch.removed(this.runtime));
+          await service.launch_previews.prepare(cwd);
           service.launch_previews.preview(cwd);
           await service.launch_previews.pump();
           return {
             agents: launcherConfig.catalog(this.runtime, service.launch_previews.preview(cwd)),
-            data: accountService.data(this.runtime),
+            data: await accountService.data(this.runtime),
           };
         });
         return;
@@ -1022,6 +1057,8 @@ export class Server {
           cl.resource_observer = true;
           cl.resources = request.payload.resources;
         }
+        // Resumed viewers can poll before streaming; omitted interests leave their configuration alone.
+        if (!cl.viewer || "worktree_detail" in v) cl.worktree_detail = request.payload.worktree_detail;
         reply.send(session.snapshot(this.runtime));
         return;
       case "session.subscribe":
@@ -1089,6 +1126,16 @@ export class Server {
         observers.claimPane(this, request.payload);
         reply.ok({});
         return;
+      case "pane.view": {
+        const { pane: id, path, line, column } = request.payload,
+          pane = this.runtime.pane(id);
+        if (!pane) throw Error("NoPane");
+        pane.view = path === null ? null : { path, line, column, owner: cl };
+        this.dirty = true;
+        this.runtime.changed();
+        reply.ok({});
+        return;
+      }
       case "action":
         await viewer.action(this, cl, request.payload, reply);
         return;
@@ -1101,6 +1148,20 @@ export class Server {
       case "conversation.list":
         reply.send({ ok: true, conversations: session.snapshot(this.runtime).conversations });
         return;
+      case "conversation.grep": {
+        const grep = await import("./conversation_grep_service"),
+          q = request.payload;
+        this.defer(cl, reply, null, (signal, more) =>
+          grep.searches.search(this.runtime, cl, q, signal, q.stream ? more : null),
+        );
+        return;
+      }
+      case "conversation.grep.cancel": {
+        const grep = await import("./conversation_grep_service");
+        grep.searches.stop(cl, request.payload.key);
+        reply.ok();
+        return;
+      }
       case "conversation.acknowledge": {
         const actor = this.runtime.conversations.byId(request.payload.conversation);
         if (!actor) throw Error("NoConversation");
@@ -1127,6 +1188,11 @@ export class Server {
         return;
       case "viewer.terminal":
         cl.terminal = request.payload.terminal;
+        this.terminals.report(bug_report.wireTerminal(cl.terminal));
+        if (this.updateTimer && !this.updateChecked) {
+          clearTimeout(this.updateTimer);
+          void this.checkForUpdates();
+        }
         reply.send({ ok: true });
         return;
       case "bugreport": {
@@ -1210,6 +1276,14 @@ export class Server {
       case "headless.memory": {
         const headless = await import("./headless");
         await headless.request(this, cl, request, reply);
+        return;
+      }
+      case "headless.handoff": {
+        // Another computer's prompt card moves its chat into a pane here, which reads this file.
+        const text = this.handoff_uploads.add(cl, request.payload);
+        if (text === null) return reply.send({ ok: true, path: "" });
+        const { writeHandoff } = await import("./prompt");
+        reply.send({ ok: true, path: writeHandoff(JSON.parse(text)) });
         return;
       }
       case "agent.command.preview":
@@ -1312,6 +1386,39 @@ export class Server {
           branches: await worktreeAdd.branches(this.runtime, request.payload.workspace),
         }));
         return;
+      // Git reads that can take seconds run beside the job chain.
+      case "review.read":
+      case "review.diffs":
+      case "review.summary":
+      case "review.recognize":
+        this.defer(cl, reply, null, () => reviewService.answer(request));
+        return;
+      case "file.stat":
+      case "file.read":
+      case "file.count":
+      case "file.thumbnail":
+        this.defer(cl, reply, null, () => fileAccess.answer(request));
+        return;
+      case "file.scan": {
+        const { payload } = request;
+        this.defer(cl, reply, null, () =>
+          this.remote_jobs.begin(cl, job => fileAccess.scan(payload, job), payload.wait),
+        );
+        return;
+      }
+      case "job.poll":
+        this.defer(cl, reply, null, () => this.remote_jobs.poll(cl, request.payload.job, request.payload.wait));
+        return;
+      case "job.cancel":
+        this.remote_jobs.cancel(cl, request.payload.job);
+        reply.ok();
+        return;
+      // A remote viewer's folder browser reads and makes this machine's folders.
+      case "folder.list":
+      case "folder.find":
+      case "folder.open":
+        this.defer(cl, reply, null, () => folders.answer(request));
+        return;
       case "worktree.add":
         this.defer(cl, reply, { op: "worktree.add", path: request.payload.path }, async () => {
           await worktreeAdd.add(
@@ -1363,8 +1470,16 @@ export class Server {
   }
   /** Replies once `work` finishes, letting the client's later requests run
    * meanwhile. A request without an id holds them, so its replies stay in order.
-   * Reload refuses while `busy` work runs, saying which, and answers the rest with `Reloading`. */
-  private defer(cl: Client, reply: Reply, busy: protocol.Busy | null, work: () => Promise<object>): void {
+   * Reload refuses while `busy` work runs, saying which, answers the rest with
+   * `Reloading` and aborts `signal`. `more` sends a `{more: true}` part before
+   * the reply; null where a request takes only one answer, as untagged and HTTP ones do. */
+  private defer(
+    cl: Client,
+    reply: Reply,
+    busy: protocol.Busy | null,
+    work: (signal: AbortSignal, more: ((value: object) => void) | null) => Promise<object>,
+  ): void {
+    const abort = new AbortController();
     let held = reply.id === null;
     cl.held ||= held;
     const release = () => {
@@ -1379,7 +1494,13 @@ export class Server {
       answered = true;
       reply.send(value);
     };
-    const pending = work().then(
+    const more =
+      reply.id !== null && !cl.http
+        ? (value: object) => {
+            if (!answered) reply.send({ more: true, ...value });
+          }
+        : null;
+    const pending = work(abort.signal, more).then(
       value => answer({ ok: true, ...value }),
       error => answer({ err: error instanceof Error ? error.message : String(error) }),
     );
@@ -1387,6 +1508,7 @@ export class Server {
       busy,
       drop: () => {
         answer({ err: "Reloading" });
+        abort.abort();
         release();
       },
     });
@@ -1397,15 +1519,21 @@ export class Server {
         release();
       });
   }
-  /** Downloads a newer release for the next launch to activate: once the
-   * daemon starts, then about hourly. */
+  /** About an hour, or what a test sets. */
+  private updateInterval(): number {
+    return (testBuild && Number(process.env.CORGI_TEST_UPDATE_CHECK_MS)) || 3_600_000 + Math.random() * 300_000;
+  }
+  /** Downloads a newer release for the next launch to activate: soon after
+   * the daemon starts, then about hourly. */
   private async checkForUpdates(): Promise<void> {
-    const hourly = (testBuild && Number(process.env.CORGI_TEST_UPDATE_CHECK_MS)) || 3_600_000 + Math.random() * 300_000;
+    this.updateChecked = true;
+    const hourly = this.updateInterval();
     let wait = hourly;
     try {
       // Another runtime's download, or the daemon this one took over from
       // on its way out, held the lock: look again soon.
-      if (!(await updates.background(this.executable, this.updateStop.signal))) wait = Math.min(hourly, 60_000);
+      if (!(await updates.background(this.executable, this.updateStop.signal, this.terminals.list())))
+        wait = Math.min(hourly, 60_000);
       this.updateFailure = "";
     } catch (error) {
       if (this.stopped) return;
@@ -1484,6 +1612,14 @@ export class Server {
     // A model read would keep its agent's CLI, and this process, alive.
     for (const read of this.modelReads.values()) read.quit.signal();
     this.pluginWatch?.close();
+    this.remote_jobs.close();
+    // Save before the socket and start lock go: whoever sees this daemon
+    // gone, such as `corgi shutdown` or the next daemon, reads the final state.
+    try {
+      await recovery.save(this.runtime, this.socket);
+    } catch (error) {
+      console.error("recovery save:", error);
+    }
     // Nothing new connects, and the path goes so pollers see it gone; replies
     // already on their way, such as the one to `shutdown`, still leave.
     void this.listening?.stop();
@@ -1495,11 +1631,6 @@ export class Server {
     this.socketPath?.release();
     if (this.start_lock >= 0) start_lock.release(this.start_lock);
     this.start_lock = -1;
-    try {
-      await recovery.save(this.runtime, this.socket);
-    } catch (error) {
-      console.error("recovery save:", error);
-    }
     await launch.stop(this);
     observers.stop(this);
     importer.stop(this);

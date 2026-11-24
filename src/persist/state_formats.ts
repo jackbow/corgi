@@ -31,6 +31,8 @@ import * as r_430a324f1048 from "./revisions/20261119_214008_430a324f1048_retain
 import * as r_ec1764d3653f from "./revisions/20261119_215256_ec1764d3653f_remember_the_conversation_pr_list_width";
 import * as r_2de8732b5be8 from "./revisions/20261120_214857_2de8732b5be8_save_code_palette_and_background_preferences";
 import * as r_2fab55a9485b from "./revisions/20261124_213350_2fab55a9485b_expose_derived_chat_message_timestamps_in_agent_";
+import * as r_401777a013d6 from "./revisions/20261124_225114_401777a013d6_integrate_remote_review_file_panes_and_announced";
+import * as r_63755426cdf3 from "./revisions/20261124_225114_63755426cdf3_store_the_prefix_as_a_key_chord";
 
 export const revisions = [
   r_1dfaa1773956.revision,
@@ -64,13 +66,15 @@ export const revisions = [
   r_ec1764d3653f.revision,
   r_2de8732b5be8.revision,
   r_2fab55a9485b.revision,
+  r_401777a013d6.revision,
+  r_63755426cdf3.revision,
 ];
 export const heads = {
-  state: r_2fab55a9485b.revision.id,
+  state: r_401777a013d6.revision.id,
   checkpoint: r_1dfaa1773956.revision.id,
   handoff: r_3a005bd21b0d.revision.id,
   workspaces: r_f4c12b1642bd.revision.id,
-  viewer: r_2de8732b5be8.revision.id,
+  viewer: r_63755426cdf3.revision.id,
 };
 export const current = heads.state;
 const histories = formats.histories(heads, revisions);

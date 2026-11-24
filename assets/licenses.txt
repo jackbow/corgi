@@ -34,6 +34,9 @@ These are distributed under the MIT License, whose text follows the list.
   pi-tui: https://github.com/earendil-works/pi
     Copyright (c) 2025 Mario Zechner
 
+  marked-cjk-friendly: https://github.com/tats-u/markdown-cjk-friendly
+    Copyright (c) 2024 Tatsunori Uchino, and authors and contributors of original packages
+
   Shiki (@shikijs/core, engine-javascript, langs, themes, primitive, types): https://github.com/shikijs/shiki
     Copyright (c) 2021 Pine Wu
     Copyright (c) 2023 Anthony Fu <https://github.com/antfu>

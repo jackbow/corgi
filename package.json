@@ -30,12 +30,13 @@
     "zlib": "./site/browser/zlib.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-tui": "1.0.4",
+    "@earendil-works/pi-tui": "1.5.2",
     "@shikijs/core": "4.6.0",
     "@shikijs/engine-javascript": "4.6.0",
     "@shikijs/langs": "4.6.0",
     "@shikijs/themes": "4.6.0",
     "marked": "18.0.11",
+    "marked-cjk-friendly": "0.1.2",
     "qr": "0.6.0"
   },
   "devDependencies": {

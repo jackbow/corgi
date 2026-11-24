@@ -1,3 +1,4 @@
+import * as viewerRef from "./viewer_ref";
 import { test, expect, setSystemTime, spyOn } from "bun:test";
 import { State, geometry, copyAt, draw, filePath } from "./link_tooltip";
 import type { Controller } from "./controller";
@@ -16,7 +17,12 @@ const source = { updateRender() {}, hyperlinks: () => [] };
 const pointed = { source, id: 1n, uri: "https://example.com", x: 5, y: 2 },
   retargeted = { ...pointed, uri: "https://other.example.com" };
 test.each([
-  ["resource card", { resource: 1 }, { resource: 2 }, { resource: 1 }],
+  [
+    "resource card",
+    { resource: viewerRef.workspace(1, 1) },
+    { resource: viewerRef.workspace(1, 2) },
+    { resource: viewerRef.workspace(1, 1) },
+  ],
   // The same URL in another pane is another link.
   ["link", { link: pointed }, { link: retargeted }, { link: { ...retargeted, source: { ...source } } }],
 ] as const)(
@@ -36,9 +42,18 @@ test.each([
     expect(s.ready(next, 402)).toBe(false);
   },
 );
+test("a link found to name a file waits for its peek rather than showing its copy card", () => {
+  const s = new State();
+  s.move();
+  expect(s.ready({ link: pointed }, 0)).toBe(false);
+  expect(s.ready({ link: pointed, file: true }, 100)).toBe(false);
+  expect(s.target?.file).toBe(true);
+  expect(s.ready({ link: pointed, file: true }, 1099)).toBe(false);
+  expect(s.ready({ link: pointed, file: true }, 1100)).toBe(true);
+});
 test("tooltip waits for rest and requires fresh movement after interaction", () => {
   const s = new State(),
-    target = { git: 1 };
+    target = { git: viewerRef.workspace(1, 1) };
   expect(s.ready(target, 0)).toBe(false);
   s.move();
   expect(s.ready(target, 100)).toBe(false);
@@ -49,7 +64,7 @@ test("tooltip waits for rest and requires fresh movement after interaction", () 
   s.move();
   expect(s.ready(target, 2001)).toBe(false);
   expect(s.ready(target, 2501)).toBe(true);
-  expect(s.ready({ git: 2 }, 2502)).toBe(false);
+  expect(s.ready({ git: viewerRef.workspace(1, 2) }, 2502)).toBe(false);
   expect(s.ready(null, 4000)).toBe(false);
   expect(s.ready(target, 4001)).toBe(false);
 });
@@ -365,6 +380,9 @@ test("an image link's popover shows a thumbnail on Kitty hosts and frees it when
     setSystemTime(new Date(1000));
     await s.input(mouse(35, 2, 1));
     s.frame();
+    // It loads once the link is known to name a file.
+    await Promise.all(s.file_refs.checks);
+    s.frame();
     await s.thumbnails.loading;
     expect(s.dirty).toBe(true);
     setSystemTime(new Date(1150));
@@ -372,18 +390,22 @@ test("an image link's popover shows a thumbnail on Kitty hosts and frees it when
     expect(frame).toContain("Copy path");
     expect(frame).toContain("├" + "─".repeat(64) + "┤");
     // 1000×400 shrinks to 280×112: 28 cells by 6, centered in the rows.
-    expect(frame).toContain("\x1b[6;4H\x1b_Ga=p,i=730140,p=1,X=0,Y=2,z=1,C=1,q=2\x1b\\");
-    const sent = s.effects.map(e => ("write_terminal" in e ? e.write_terminal : "")).join("");
-    expect(sent.startsWith("\x1b_Ga=t,t=d,f=100,i=730140,q=2,m=")).toBe(true);
-    s.clearEffects();
+    const shown = s.host.images.present(),
+      id = /\x1b\[6;4H\x1b_Ga=p,i=(\d+),p=\d+,Y=2,z=1,C=1,q=1\x1b\\/.exec(shown.draw)?.[1];
+    expect(id).toBeDefined();
+    // The viewer sends it ahead of the frame, once.
+    expect(shown.send).toContain(`\x1b_Ga=t,t=d,f=100,i=${id},q=1,m=`);
     s.frame();
-    expect(s.effects).toEqual([]);
+    expect(s.host.images.present()).toMatchObject({ send: "", draw: "" });
     await s.input(mouse(0, 4, 3));
     await s.input(mouse(0, 4, 3, true));
     expect(s.clipboard).toBe(path);
     await s.input(mouse(35, 90, 20));
-    expect(s.frame()).not.toContain("a=p,i=730140");
-    expect(s.effects.at(-1)).toEqual({ write_terminal: "\x1b_Ga=d,d=I,i=730140,q=2\x1b\\" });
+    s.frame();
+    const closed = s.host.images.present();
+    expect(closed.draw).toContain(`a=d,d=i,i=${id},`);
+    expect(closed.redraw).not.toContain(`a=p,i=${id},`);
+    expect(closed.free).toContain(`\x1b_Ga=d,d=I,i=${id},q=2\x1b\\`);
   } finally {
     setSystemTime();
     viewer.close(s);
@@ -408,9 +430,9 @@ test("an arrow over the resource card selects its top row first, or else moves f
   } as any);
   const hover = () => {
     s.resource_card.release();
-    s.link_tooltip.target = { resource: 1 };
+    s.link_tooltip.target = { resource: s.workspaceRef(1) };
     s.link_tooltip.shown = true;
-    s.resource_card.update(s.runtime.resources.workspaces[0], true);
+    s.resource_card.update({ ...s.runtime.resources.workspaces[0], id: s.workspaceRef(1) }, true);
   };
   hover();
   await s.input(Buffer.from("\x1b[B"));

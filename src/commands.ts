@@ -36,6 +36,7 @@ export type Item =
   | "split-right"
   | "split-down"
   | "zoom"
+  | "break"
   | "fork"
   | "copy-details"
   | "copy-path"
@@ -70,14 +71,16 @@ const actions = () => [
   row("move", "m", i18n.t`Move tab to workspace…`),
   row("close", "x", i18n.t`Close`),
 ];
-const pane_actions = () => [
-  row("swap", "s", i18n.t`Swap with focused pane`),
+/** Naming, layout, then moves; Swap joins the moves only on a pane other than the focused one. */
+const pane_actions = (swap: boolean) => [
   row("rename", "r", i18n.t`Rename pane`),
   row("clear-name", "c", i18n.t`Clear pane name`),
-  row("split-right", "v", i18n.t`Split right`),
+  row("split-right", "v", i18n.t`Split right`, { rule: true }),
   row("split-down", "d", i18n.t`Split down`),
   row("zoom", "z", i18n.t`Zoom / unzoom`),
-  row("close", "x", i18n.t`Close pane`),
+  ...(swap ? [row("swap", "s", i18n.t`Swap with focused pane`, { rule: true })] : []),
+  row("break", "!", i18n.t`Move to new tab`, { rule: !swap }),
+  row("close", "x", i18n.t`Close pane`, { rule: true }),
 ];
 const agent_actions = () => [
   row("review", "e", i18n.t`Review changes`),
@@ -146,6 +149,8 @@ export class TabMenu {
   destination_capacity = 9;
   /** Rows shown crossed out, which neither keys nor clicks run. */
   off = new Set<Item>();
+  /** Rows left out, such as Review changes with nothing to read. */
+  hidden = new Set<Item>();
   /** A second line under a row, such as what Review changes would show. */
   details = new Map<Item, Detail>();
   constructor(fields: Partial<TabMenu> & { tab: number; anchor_x: number }) {
@@ -159,7 +164,13 @@ export class TabMenu {
     else if (runs !== null && !(old.runs && dropdown.sameRuns(old.runs, runs)))
       this.details.set(item, { runs, since: now, placeholder: old.runs === null });
   }
+  /** The rows shown, without hidden ones or a rule above the first. */
   entries(): Row[] {
+    const shown = this.rows().filter(entry => !this.hidden.has(entry.item));
+    if (shown[0]?.rule) shown[0] = { ...shown[0], rule: false };
+    return shown;
+  }
+  private rows(): Row[] {
     if (this.destinations !== null) {
       const first = this.destination_page * this.destination_capacity;
       const entries = this.destinations
@@ -186,7 +197,7 @@ export class TabMenu {
           : [row("fold", "f", this.folded ? i18n.t`Unfold` : i18n.t`Fold`, { rule: true })]),
         row("close-all", "x", i18n.t`Close all agents for ${title}`, { rule: true }),
       ];
-    if (this.pane) return this.source !== null ? pane_actions() : pane_actions().slice(1);
+    if (this.pane) return pane_actions(this.source !== null);
     return this.workspace
       ? [
           actions().find(e => e.item === "rename")!,
@@ -197,6 +208,16 @@ export class TabMenu {
           { ...actions().find(e => e.item === "close")!, rule: true },
         ]
       : actions();
+  }
+  /** Leaves `item` out or shows it, keeping the highlight on the row it was on. */
+  setHidden(item: Item, hidden: boolean): void {
+    if (this.hidden.has(item) === hidden) return;
+    const was = this.entries()[this.highlighted]?.item;
+    if (hidden) this.hidden.add(item);
+    else this.hidden.delete(item);
+    const at = this.entries().findIndex(entry => entry.item === was);
+    if (at >= 0) this.highlighted = at;
+    else this.highlightFirst();
   }
   /** The row a key picks. Keys are the menu's own, lowercase, and Shift picks the same row. */
   itemFor(key: number): Item | null {

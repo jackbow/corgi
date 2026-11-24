@@ -5,11 +5,11 @@ import { generateKeyPairSync, sign, createHash } from "node:crypto";
 import { mkdtemp, mkdir, writeFile, readFile, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { closeSync, openSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { EXE, Lines, Pty, deadline, versioned, quote, waitUntil } from "./support";
 import { running } from "./runtime";
-import { installer, manifests as releaseManifests } from "../scripts/publish.ts";
+import { channelKeys, installer, targets as releaseTargets } from "../scripts/publish.ts";
 import { Scope } from "../scripts/process_scope";
 import { flock } from "../src/native_bridge";
 import * as text from "../src/text";
@@ -20,19 +20,19 @@ const publicKey = Buffer.from(keys.publicKey.export({ type: "spki", format: "der
   .subarray(-32)
   .toString("hex");
 let latest = "1.0.1",
+  latestTest: string | null = null,
   invalid = false,
   corrupt = false,
   unavailable = false,
   badAbi = false;
 let requests = 0;
+/** The releases whose binaries were served. */
+let downloads: string[] = [];
+/** What each request's User-Agent said, by path. */
+let agents: { path: string; agent: string }[] = [];
 let beforeDownload: (() => Promise<void>) | null = null;
 const binaries = new Map<string, Uint8Array>();
 const manifests = new Map<string, string>();
-// The manifest a release serves this platform, chosen as the updater does (every Mac is
-// macos-aarch64); CORGI_OLD_EXE may predate the others' targets.
-const host =
-    process.platform === "darwin" ? "macos-aarch64" : process.arch === "arm64" ? "linux-aarch64" : "linux-x86_64",
-  feed = releaseManifests.find(m => (m.targets as readonly string[]).includes(host))!;
 const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -41,8 +41,12 @@ const server = Bun.serve({
     requests++;
     if (unavailable) return new Response("unavailable", { status: 503 });
     const path = new URL(req.url).pathname;
-    if (path === `/${feed.channel}`) {
-      const envelope = JSON.parse(manifests.get(latest)!);
+    agents.push({ path, agent: req.headers.get("user-agent") ?? "" });
+    // Both stable feeds, as CORGI_OLD_EXE may read either.
+    const key = path.slice(1),
+      offered = channelKeys("stable").includes(key) ? latest : channelKeys("test").includes(key) ? latestTest : null;
+    if (offered) {
+      const envelope = JSON.parse(manifests.get(offered)!);
       if (badAbi) {
         const payload = JSON.parse(envelope.payload);
         payload.update_abi = "incompatible";
@@ -54,8 +58,9 @@ const server = Bun.serve({
     }
     const v = path.split("/")[2];
     // A release's own manifest, which a plugin's pin names.
-    if (path === `/releases/${v}/${feed.name}` && manifests.has(v)) return new Response(manifests.get(v)!);
+    if (path === `/releases/${v}/manifest.json` && manifests.has(v)) return new Response(manifests.get(v)!);
     if (path.endsWith("/corgi")) {
+      downloads.push(v);
       await beforeDownload?.();
       const binary = binaries.get(v);
       return new Response(corrupt ? new Uint8Array([0, 1]) : binary && new Uint8Array(binary));
@@ -100,7 +105,7 @@ beforeAll(async () => {
       commit: info.commit,
       version: v,
       update_abi: info.update_abi,
-      targets: Object.fromEntries(feed.targets.map(name => [name, target])),
+      targets: Object.fromEntries(releaseTargets.map(t => [t.name, target])),
     });
     manifests.set(
       v,
@@ -111,8 +116,11 @@ beforeAll(async () => {
 beforeEach(async () => {
   scope = await Scope.start();
   latest = "1.0.1";
+  latestTest = null;
   invalid = corrupt = unavailable = badAbi = false;
   requests = 0;
+  downloads = [];
+  agents = [];
   beforeDownload = null;
   home = await mkdtemp("/tmp/cu-");
   root = join(home, "install");
@@ -328,6 +336,61 @@ test("a newer download replaces the update waiting before it", async () => {
   expect(await readFile(join(root, "staged"), "utf8")).toBe("1.0.2");
   expect((await readdir(join(root, "releases"))).sort()).toEqual(["1.0.0", "1.0.2"]);
 }, 30_000);
+// CORGI_OLD_EXE makes 1.0.0 a release without channels.
+test.skipIf(!!process.env.CORGI_OLD_EXE)(
+  "an installation follows the channel it chooses, and leaves one without going back",
+  async () => {
+    const staged = () => readFile(join(root, "staged"), "utf8"),
+      channel = () => readFile(join(root, "channel"), "utf8").catch(() => "stable");
+    let downloads = 0;
+    beforeDownload = async () => void downloads++;
+    latest = "1.0.2";
+    await cli(["update", "--download-only"]);
+    // A channel without a release yet changes nothing.
+    expect((await cli(["update", "--channel", "test", "--download-only"], false)).code).not.toBe(0);
+    expect(await channel()).toBe("stable");
+    expect(await staged()).toBe("1.0.2");
+    // A check only looks, whatever stable has waiting.
+    latestTest = "1.0.1";
+    expect((await cli(["update", "--channel", "test", "--check"])).err).toContain("Corgi 1.0.1 is available on test.");
+    expect(await channel()).toBe("stable");
+    // A release both channels have stays downloaded.
+    latestTest = "1.0.2";
+    downloads = 0;
+    await cli(["update", "--channel", "test", "--download-only"]);
+    expect(await channel()).toBe("test");
+    expect(await staged()).toBe("1.0.2");
+    expect(downloads).toBe(0);
+    latestTest = "1.0.3";
+    await cli(["update", "--download-only"]);
+    expect(await staged()).toBe("1.0.3");
+    expect((await cli(["update", "status"])).err).toContain("Channel: test");
+    // The test release waiting to apply goes with the channel.
+    latest = "1.0.1";
+    await cli(["update", "--channel", "stable", "--download-only"]);
+    expect(await Bun.file(join(root, "channel")).exists()).toBe(false);
+    expect(await staged()).toBe("1.0.1");
+    expect((await readdir(join(root, "releases"))).sort()).toEqual(["1.0.0", "1.0.1"]);
+    await cli(["update", "--channel", "test"]);
+    expect(await readFile(join(root, "current"), "utf8")).toBe("1.0.3");
+    // Stable doesn't take the installation back to an older release.
+    expect((await cli(["update", "--channel", "stable", "--check"])).out).toContain(
+      "Corgi 1.0.3 is newer than 1.0.1, the latest on stable.",
+    );
+    expect(await channel()).toBe("test");
+    expect((await cli(["update", "--channel", "stable", "--download-only"])).out).toContain(
+      "Corgi 1.0.3 is newer than 1.0.1, the latest on stable; it stays until stable passes it.",
+    );
+    expect(await channel()).toBe("stable");
+    expect(await readFile(join(root, "current"), "utf8")).toBe("1.0.3");
+    // Choosing stable clears a channel only a newer release knows.
+    await writeFile(join(root, "channel"), "nightly");
+    await cli(["update", "--channel", "stable", "--download-only"]);
+    expect(await Bun.file(join(root, "channel")).exists()).toBe(false);
+    expect((await cli(["update", "--channel", "beta"], false)).err).toContain("corgi update --channel stable|test");
+  },
+  30_000,
+);
 test("an installer staging a newer release during a download keeps its update", async () => {
   latest = "1.0.2";
   beforeDownload = async () => {
@@ -505,6 +568,20 @@ test("a runtime keeps looking for newer releases, also after an update", async (
   latest = "1.0.2";
   await waitFor(async () => (await staged()) === "1.0.2");
   expect(await readFile(join(root, "current"), "utf8")).toBe("1.0.1");
+  // A check names the release, OS and CPU, and no terminal without viewers;
+  // a download names only the release.
+  const from = agents.filter(a => a.agent.startsWith("corgi/1.0.1"));
+  expect(from.find(a => a.path.startsWith("/channels/"))?.agent).toMatch(
+    /^corgi\/1\.0\.1 \((macos \d+|linux[^;]*); (aarch64|x86_64); -\)$/,
+  );
+  expect(from.find(a => a.path.endsWith("/corgi"))?.agent).toBe("corgi/1.0.1");
+  // A viewer's terminal stays named in the daemon's checks after it leaves.
+  await rpc({ op: "viewer.terminal", terminal: { source: "viewer", name: "kitty(0.36.4)", env: {} } });
+  await waitFor(async () =>
+    agents.some(
+      a => a.path.startsWith("/channels/") && a.agent.startsWith("corgi/1.0.1 ") && a.agent.endsWith("; kitty 0.36.4)"),
+    ),
+  );
 }, 30_000);
 // CORGI_OLD_EXE makes 1.0.0, whose update worker downloads instead, the older release.
 test.skipIf(!!process.env.CORGI_OLD_EXE)(
@@ -639,8 +716,8 @@ esac
     const manifest = JSON.parse(manifests.get("1.0.1")!),
       payload = JSON.parse(manifest.payload);
     if (discovery) payload.update_abi = "different-abi";
-    payload.targets[host].sha256 = sha(Buffer.from(wrapper));
-    payload.targets[host].size = Buffer.byteLength(wrapper);
+    payload.targets[updates.platform].sha256 = sha(Buffer.from(wrapper));
+    payload.targets[updates.platform].size = Buffer.byteLength(wrapper);
     manifest.payload = JSON.stringify(payload);
     manifest.signature = sign(null, Buffer.from(manifest.payload), keys.privateKey).toString("hex");
     await writeFile(join(directory, "manifest.json"), JSON.stringify(manifest));
@@ -887,3 +964,116 @@ test("machine setup bootstraps a single standalone command and refuses wrappers"
   expect(refused.err).toContain("CannotReplaceCorgiWrapper");
   expect(await readFile(destination, "utf8")).toBe("#!/bin/sh\nexit 0\n");
 });
+
+/** Release `v` as a viewer whose saved machine "work" is this test's
+ * installation, through an ssh that runs the machine's commands here. */
+async function machineViewer(v: string) {
+  const state = join(home, "viewer"),
+    tools = join(home, "viewer-bin");
+  await mkdir(join(state, "corgi/remote"), { recursive: true, mode: 0o700 });
+  await mkdir(tools, { recursive: true });
+  await writeFile(
+    join(tools, "ssh"),
+    `#!/bin/sh\nfor last; do :; done\nexport PATH=${quote(env.PATH)} XDG_STATE_HOME=${quote(env.XDG_STATE_HOME)}\nexec /bin/sh -c "$last"\n`,
+    { mode: 0o755 },
+  );
+  await writeFile(
+    join(state, "corgi/remote/machines.json"),
+    JSON.stringify({ version: 1, machines: [{ name: "work", target: "work", executable: bin, socket, home }] }),
+  );
+  const viewer = { ...env, XDG_STATE_HOME: state, PATH: `${tools}:${env.PATH}`, CORGI_MACHINE_SYNC: "1" };
+  const info = JSON.parse((await exec([fixture(v), "__update-info"], viewer)).out);
+  const revision = JSON.stringify([info.version, info.commit, info.source_hash]);
+  return async () => {
+    const { out, err, code } = await exec(
+      [fixture(v), "__machine-sync", "work", "work", socket, revision],
+      viewer,
+      false,
+    );
+    const events = out
+      .trim()
+      .split("\n")
+      .map(line => JSON.parse(line));
+    if (code) throw new Error(`machine sync: ${code}\n${out}\n${err}`);
+    return events;
+  };
+}
+/** A shell in the machine's runtime, whose process an update must keep. */
+async function shellPid(): Promise<number> {
+  await cli(["start"]);
+  const session = await rpc({ op: "session.snapshot" });
+  await rpc({
+    op: "session.command",
+    command: { "pane.create": { workspace: session.workspaces[0].id, cwd: home, command: "exec /bin/sh" } },
+  });
+  return (await rpc({ op: "session.snapshot" })).panes[0].pid;
+}
+async function runsRelease(v: string, pid: number) {
+  expect((await readFile(join(root, "current"), "utf8")).trim()).toBe(v);
+  const hello = await rpc({ op: "hello" });
+  expect(hello.release_version).toBe(v);
+  expect(hello.executable).toBe(await realpath(join(root, `releases/${v}/corgi`)));
+  expect((await rpc({ op: "session.snapshot" })).panes[0].pid).toBe(pid);
+}
+
+test.skipIf(!!process.env.CORGI_OLD_EXE)(
+  "a release viewer moves its machine to its release with the copy the machine already downloaded",
+  async () => {
+    const pid = await shellPid();
+    await cli(["update", "--download-only"]);
+    expect(await readFile(join(root, "staged"), "utf8")).toBe("1.0.1");
+    const served = downloads.length;
+    const sync = await machineViewer("1.0.1");
+    // The machine's `update auto off` only stops its own hourly updates.
+    const events = await sync();
+    expect(events.at(-1)).toEqual({ type: "ready" });
+    expect(events.some(event => event.message === "Downloading")).toBe(false);
+    expect(downloads.length).toBe(served);
+    await runsRelease("1.0.1", pid);
+    // Once it matches, the next connect leaves it be.
+    expect((await sync()).at(-1)).toEqual({ type: "current" });
+  },
+  60_000,
+);
+
+test.skipIf(!!process.env.CORGI_OLD_EXE)(
+  "a runtime another one left behind catches up to the installed release",
+  async () => {
+    const pid = await shellPid();
+    await cli(["update", "--download-only"]);
+    // Another socket's runtime made 1.0.1 current; this one still runs 1.0.0.
+    await writeFile(join(root, "previous"), "1.0.0");
+    await writeFile(join(root, "current"), "1.0.1");
+    await rm(join(root, "staged"));
+    expect((await rpc({ op: "hello" })).release_version).toBe("1.0.0");
+    const sync = await machineViewer("1.0.1");
+    expect((await sync()).at(-1)).toEqual({ type: "ready" });
+    await runsRelease("1.0.1", pid);
+    expect((await sync()).at(-1)).toEqual({ type: "current" });
+  },
+  60_000,
+);
+
+test.skipIf(!!process.env.CORGI_OLD_EXE)(
+  "a machine follows its viewer's release up and down, downloading each once",
+  async () => {
+    const pid = await shellPid();
+    const newer = await machineViewer("1.0.2");
+    const events = await newer();
+    expect(events.at(-1)).toEqual({ type: "ready" });
+    expect(events.some(event => event.message === "Downloading")).toBe(true);
+    expect(events.some(event => event.message === "Downloading here…")).toBe(false);
+    await runsRelease("1.0.2", pid);
+    // Viewers this move leaves behind can say whose it was.
+    expect((await rpc({ op: "hello" })).moved_by).toBe(hostname().split(".")[0]);
+    expect((await (await machineViewer("1.0.1"))()).at(-1)).toEqual({ type: "ready" });
+    await runsRelease("1.0.1", pid);
+    // The machine kept the release it left.
+    expect((await newer()).at(-1)).toEqual({ type: "ready" });
+    await runsRelease("1.0.2", pid);
+    expect(downloads).toEqual(["1.0.2", "1.0.1"]);
+    // Each move cleans up after itself, though the machine's own updates are off.
+    expect((await readdir(join(root, "releases"))).sort()).toEqual(["1.0.1", "1.0.2"]);
+  },
+  60_000,
+);

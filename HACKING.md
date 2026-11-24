@@ -73,6 +73,30 @@ buffers. A local socket adapter preserves the interface used by RPC and preview
 clients. Old saved profiles without a bridge path retain dedicated SSH socket forwarding;
 remove and add the machine again to discover the helper.
 
+Viewer workspace and pane references are branded strings in `viewer_ref.ts`,
+such as `7/w42` and `7/p9`. Machine IDs are unique within the viewer process
+and survive reconnects; the controller resolves their owner through its
+registry. Sidebar rows, selections and cards carry the same qualified workspace
+ID, including for local workspaces. Daemon snapshots and persisted machine
+caches keep their local numeric IDs; only local IDs cross the owner's connection.
+Agent targets use the same qualified strings (`7/p9` for a pane, `7/h3` for a
+headless session). Agent history, hover and rename carry the ID itself. Headings
+keep their section or worktree context separately; an agent shown in two checkouts
+still has two display rows. `machineAgents` reads and annotates daemon-local rows;
+`agentRows.qualify` qualifies them once for the shared sidebar. The CLI and saved agent
+ordering continue to use daemon-local IDs.
+Background worktree scans do not mark that workspace as read.
+`action.ts` derives action names and argument types from its command table.
+Executable workspace actions require a qualified target. Saved bindings and CLI
+input use `action.Template`; `invoke` binds their numeric or current-workspace
+selector to an owner before dispatching an `action.Action`. Clicks already carry
+a qualified target and dispatch directly. Viewer-local IDs are not saved as
+shortcuts. Saved IDs and CLI target syntax are unchanged.
+The optional `worktree_detail` on `session.snapshot` requests these scans before
+a viewer has opened on that daemon. Older daemons ignore the new field; both
+ends need this change for background details to refresh. Saved IDs and CLI
+target syntax are unchanged.
+
 Normal stdio attachments and CLI commands share a private Corgi OpenSSH master,
 with ten minutes of idle persistence. Bulk image uploads, explicit machine
 checks, manual retries, and recovery probes use independent connections. Closing
@@ -92,8 +116,9 @@ either direction and across branches. Setup keeps the canonical executable,
 managed launcher and release history. Signed releases use the local update
 trust; development artifacts match by source identity, without Git ancestry.
 Cross-platform development setup requires a matching `dist/corgi-<target>` and
-its build metadata. Setup never installs a remote build onto the local machine.
-Transfers and RPCs have deadlines; reconnecting viewers never switch builds.
+its build metadata; `./go.ts` builds that target automatically when needed.
+Setup never installs a remote build onto the local machine. Transfers and RPCs
+have deadlines.
 
 Daemons from the branch-aware handoff baseline advertise `handoff: 1` in
 management hello and answer `__handoff-info` with their readable state revision IDs.
@@ -117,6 +142,22 @@ fails validation is also discarded, with a fresh runtime validating the core
 before recovery starts any process. During baseline rollout,
 recovery files also retain the legacy checkpoint fields for older readers.
 
+Development launches through `./go.ts` dial each saved SSH machine and check its build in parallel. You can use a compatible remote daemon throughout a cross-build and upload. Each machine has one status row. Builds show elapsed time, and uploads show the percentage and average transfer speed. On a narrow sidebar the label shortens to keep the metrics visible. Hover over the machine for the full build target, update details, daemon version, and any mismatch with the viewer. A quick hello that matches this checkout and its deployment receipt skips setup entirely. Older peers can report their installed source during setup before a cross-build is needed. The viewer reconnects when installation reloads the daemon. An update failure has its own details and can be retried from the picker while the session stays online. Local startup waits only for the local incremental build and daemon. Remote commands and machine add/check wait for setup. Machine status and `list --all-machines` report on the existing installation.
+
+Each dev launch installs this checkout’s build on a mismatched machine, including one updated by another checkout. Use `./go.ts --no-remote-update` to connect to the installed builds for one launch. Verified executable hashes in `dist/dev-deploy/` let a matching machine skip setup on reattach. Pause or quit cancels pending builds and transfers. A helper that has started the atomic install finishes verification independently. Helpers serialize target builds and updates to the same machine.
+
+`go.ts` uses `bun build.ts --incremental`: unchanged artifacts are reused, and
+TypeScript-only changes skip Zig. Each target keeps one artifact and native output;
+the native key includes the target, native sources, build script, pinned toolchain
+and SDK identity. Binaries publish by atomic rename after checking that sources
+didn't change during compilation. Builds that share native output or an executable
+wait for each other. A background cross-build can run alongside the local build.
+Cross-building macOS needs an SDK at `.tools/macos-sdk` (the main checkout's copy
+also works) or `CORGI_PROBE_SYSROOT`; the normal pinned Zig/Bun pipeline handles
+the rest. The remote needs neither Bun nor a compiler.
+
+A changed dev build takes two SSH commands on the shared connection. The first reads the installed build. The second stages the transfer, installs and verifies the executable, confirms the daemon is running it, and returns the bridge path. A receiver that advertises `delta_transfer: "rsync-zstd-v1"` sends checksums of its installed binary and receives a compressed delta. The sender needs only the new build. Older receivers and first installs receive the full executable. A failed transfer cleans up the candidate so it can be retried. The Bun port of Apache-2.0 `fast_rsync` also runs over arbitrary duplex Web streams. The installer checks the basis and candidate, verifies signed release manifests when applicable, preflights saved state, and hands off live shells. Managed installations retain their existing release-history policy.
+
 Pane surfaces carry Kitty image placements; `viewer.image` transfers decoded
 pixels in bounded chunks. [pane_images.ts](src/pane_images.ts) gives each viewer
 its own image ids, clips pictures to their panes and frees images that leave
@@ -138,8 +179,21 @@ rather than the outer host's protocol. `TERM` stays `xterm-256color` for
 portable terminfo lookup. Already-running shells keep their old environment;
 open a new pane after updating to pick up the corrected identity.
 
-`terminal_info.ts` owns live terminal state and separates replies from typed
-input. The viewer and daemon keep its plain snapshot, including `Probe.info`,
+`terminal_input.ts` frames host stdin once into keys, mouse reports, control
+sequences and streaming paste events. The viewer's endpoint queues retain those
+events through routing and reconnects; the controller never re-frames queued input.
+The standalone prompt uses the same decoder. Only the decoder owns Escape and
+incomplete-sequence deadlines, and cancelling a paste destination does not reset
+its stream. Legacy Escape/Alt prefixes still require a timing decision.
+String replies need a recognizable header: a numeric OSC command, DCS parameters
+or intermediates, or Kitty's APC `G`. Other prefixes remain legacy Alt chords.
+Identified controls have a fixed deadline and briefly drain late tails; a missing
+terminator cannot hold normal typing indefinitely. Only a clipboard packet, which
+a slow link can take seconds to deliver, gets the long deadline; every other
+string gives up within a second. Paste delimiters never expire.
+
+`terminal_info.ts` consumes complete terminal replies and owns live terminal
+state. The viewer and daemon keep its plain snapshot, including `Probe.info`,
 without report formatting. `bug_report.ts` interprets that data only when a
 report is requested. Its reader also accepts the older `answers` payload.
 The cached terminal JSON now carries optional `info`; required wire fields and
@@ -555,6 +609,8 @@ records the target revision, and retains the original config on downgrade. An ol
 viewer's save can drop `format`, so up steps must also work on a file stepped
 up once already. Releases predating viewer migrations need a reverse
 migration before they can read settings from this layout.
+
+Viewer revision `63755426cdf3` stores the prefix as a key chord. Its up step rewrites only `ctrl_a` and `ctrl_b`; other values pass through. The down step keeps `ctrl+a` and uses the old Ctrl+B default for every other explicit prefix. This is intentionally asymmetric: downgrading loses a custom prefix.
 
 1. Keep the envelope and core in `persist/core.ts` and the
    `fixtures/transfer-v1.json` fixture fixed. Core is the permanent common

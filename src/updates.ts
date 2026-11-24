@@ -1,5 +1,4 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
-import * as transfer from "./persist/transfer";
 import {
   chmodSync,
   closeSync,
@@ -22,11 +21,13 @@ import { homedir } from "node:os";
 import { atomicWrite } from "./os";
 import { flock } from "./native_bridge";
 import * as rpc_http from "./rpc_http";
-import { path as recoveryPath } from "./persist/recovery";
 import { testBuild } from "./build_assets";
 import * as config from "./build_config";
 import * as errors from "./errors";
 import * as json from "./json";
+import * as release_channel from "./release_channel";
+import * as user_agent from "./user_agent";
+import type { Channel } from "./release_channel";
 import type { Failure } from "./state_report";
 export const abi = "1-a826bd22ebcdbe60";
 const platforms = ["macos-aarch64", "linux-x86_64", "linux-aarch64"] as const;
@@ -34,8 +35,6 @@ export type Platform = (typeof platforms)[number];
 export const platform: Platform =
   process.platform === "darwin" ? "macos-aarch64" : process.arch === "arm64" ? "linux-aarch64" : "linux-x86_64";
 const parsePlatform = (name: string): Platform | null => platforms.find(p => p === name) ?? null;
-// Releases from before Linux arm64 reject a manifest naming a target they don't know, so it has its own channel.
-const channel = platform === "linux-aarch64" ? "stable-linux-aarch64" : "stable";
 export type Release = { version: string; commit: string; feed_url: string; public_key: string; test_mode: boolean };
 type Target = { url: string; sha256: string; size: number };
 type Manifest = {
@@ -146,6 +145,32 @@ export function currentOf(exe: string): (() => string | null) | null {
   const root = managed(release(exe), exe);
   return root === null ? null : () => pointer(root, "current");
 }
+/** The channel the installation at `root` follows: stable without a choice,
+ * or with one a newer release named. */
+export function channelOf(root: string): Channel {
+  return release_channel.parse(read(root, "channel")?.trim() ?? "") ?? "stable";
+}
+/** Has the installation at `root` follow `channel`, whose latest release is
+ * `latest`, under the download lock. An update staged from the channel it
+ * leaves goes, unless it's `latest`; the current release stays until `channel`
+ * passes it. */
+async function follow(root: string, channel: Channel, latest: string) {
+  const stored = read(root, "channel");
+  // A name this release doesn't know reads as stable, but isn't a choice of it.
+  if ((stored === null ? "stable" : release_channel.parse(stored.trim())) === channel) return;
+  const unlock = (await lock(root, "activation.lock", true))!;
+  try {
+    if (channel === "stable") remove(root, "channel");
+    else write(root, "channel", channel);
+    if (pointer(root, "staged") !== latest) {
+      remove(root, "staged");
+      prune(root, true);
+    }
+  } finally {
+    unlock();
+  }
+  console.log(`Following the ${channel} channel.`);
+}
 /** The Omarchy plugin folder that installed the Corgi at `root`, as its
  * installer recorded it, or null. Corgi removes itself when that folder goes. */
 export function pluginOf(root: string): string | null {
@@ -210,9 +235,9 @@ export function parse(rel: Release, bytes: string, targetPlatform: Platform = pl
   integer(m, "schema_version", 32);
   for (const field of ["version", "commit", "update_abi"]) string(m, field);
   const targets = record(m.targets, null);
-  for (const key of Object.keys(targets)) if (parsePlatform(key) === null) throw Error("UnknownField");
   if (!Object.hasOwn(targets, targetPlatform)) throw Error("MissingField");
-  for (const key of Object.keys(targets)) {
+  // Every platform reads one manifest, so one a later release adds is left alone.
+  for (const key of Object.keys(targets).filter(key => parsePlatform(key) !== null)) {
     const target = record(targets[key], ["url", "sha256", "size"]);
     string(target, "url");
     string(target, "sha256");
@@ -252,19 +277,26 @@ function secure(rel: Release, url: string) {
   if (!url.startsWith("https://") && !(rel.test_mode && url.startsWith("http://127.0.0.1:")))
     throw Error("InsecureUpdateURL");
 }
-/** The body the feed serves at `url`, following redirects, in chunks of at most `limit` bytes in all. */
+/** The body the feed serves at `url`, following redirects, in chunks of at
+ * most `limit` bytes in all. Another host it redirects to sees only the release. */
 async function* fetchChunks(
   rel: Release,
   url: string,
   limit: number,
   signal?: AbortSignal,
+  agent = user_agent.bare(rel.version),
 ): AsyncGenerator<Uint8Array> {
   const timeout = AbortSignal.timeout(300000);
+  let origin = "";
   for (let redirect = 0; redirect < 10; redirect++) {
     secure(rel, url);
+    const at = new URL(url).origin;
+    origin ||= at;
+    if (at !== origin) agent = user_agent.bare(rel.version);
     const response = await fetch(url, {
       redirect: "manual",
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      headers: { "User-Agent": agent },
     });
     // A body that isn't read goes, rather than wait on its connection.
     const skip = () => response.body?.cancel().catch(() => {});
@@ -299,9 +331,15 @@ async function* fetchChunks(
   }
   throw Error("UpdateSubprocessFailed");
 }
-async function fetchBytes(rel: Release, url: string, limit: number, signal?: AbortSignal): Promise<Buffer> {
+async function fetchBytes(
+  rel: Release,
+  url: string,
+  limit: number,
+  signal?: AbortSignal,
+  agent?: string,
+): Promise<Buffer> {
   const chunks: Uint8Array[] = [];
-  for await (const chunk of fetchChunks(rel, url, limit, signal)) chunks.push(chunk);
+  for await (const chunk of fetchChunks(rel, url, limit, signal, agent)) chunks.push(chunk);
   return Buffer.concat(chunks);
 }
 /** Writes release target `t` to `path` as it downloads, checking its size and
@@ -343,48 +381,73 @@ function verifyFile(path: string, t: Target): Buffer {
     throw Error("UpdateChecksumMismatch");
   return bytes;
 }
-/** Fetch one exact signed release, using the caller's existing update trust. */
-export async function artifact(rel: Release, v: string, target: Platform, directory: string): Promise<string> {
+/** The signed manifest of exact release `v` and its `target`, checked with the caller's existing update trust. */
+export async function published(rel: Release, v: string, target: Platform, signal?: AbortSignal) {
   version(v);
-  const manifest = target === "linux-aarch64" ? "manifest-linux-aarch64.json" : "manifest.json";
-  const bytes = (await fetchBytes(rel, `${rel.feed_url}/releases/${v}/${manifest}`, 1024 * 1024)).toString();
+  const bytes = (await fetchBytes(rel, `${rel.feed_url}/releases/${v}/manifest.json`, 1024 * 1024, signal)).toString();
   const m = parse(rel, bytes, target);
   if (m.version !== v) throw Error("WrongReleaseManifest");
-  atomicWrite(join(directory, "manifest.json"), bytes, 0o600);
+  return { bytes, commit: m.commit, ...m.targets[target]! };
+}
+/** Fetch one exact signed release, using the caller's existing update trust. */
+export async function artifact(rel: Release, v: string, target: Platform, directory: string): Promise<string> {
+  const m = await published(rel, v, target);
+  atomicWrite(join(directory, "manifest.json"), m.bytes, 0o600);
   const file = join(directory, "corgi");
-  atomicWrite(file, await fetchBytes(rel, m.targets[target]!.url, m.targets[target]!.size), 0o700);
-  verifyFile(file, m.targets[target]!);
+  atomicWrite(file, await fetchBytes(rel, m.url, m.size), 0o700);
+  verifyFile(file, m);
   return file;
 }
-/** Looks for a newer release, and downloads and stages it when asked; false
- * when another download holds the lock and an automatic check gave way. */
+/** Looks for a newer release on the installation's channel, or on `choice`,
+ * and downloads and stages it when asked; false when another download holds
+ * the lock and an automatic check gave way. A download from `choice` follows
+ * it, once its feed answered; a check only looks. `terminals` are the ones
+ * viewers ran in, which the check's User-Agent names. */
 async function feed(
   rel: Release,
   root: string,
   download: boolean,
   explicit: boolean,
   signal?: AbortSignal,
+  choice: Channel | null = null,
+  terminals: readonly string[] = [],
 ): Promise<boolean> {
   const unlock = await lock(root, "download.lock", explicit);
   if (!unlock) return false;
   try {
     // What a download cut short by a crash or a handoff left.
     remove(root, "download.tmp");
-    const channelUrl = `${rel.feed_url}/channels/${channel}.json`;
-    const bytes = (await fetchBytes(rel, channelUrl, 1024 * 1024, signal)).toString(),
+    const channel = choice ?? channelOf(root),
+      channelUrl = `${rel.feed_url}/channels/${channel}.json`;
+    const agent = user_agent.full(rel.version, platform, terminals),
+      bytes = (await fetchBytes(rel, channelUrl, 1024 * 1024, signal, agent)).toString(),
       m = parse(rel, bytes),
       current = pointer(root, "current");
     if (!current) throw Error("MissingInstalledVersion");
+    if (choice && download) await follow(root, choice, m.version);
+    // A check of another channel only says what it has.
+    const followed = channel === channelOf(root);
     if (compare(m.version, current) <= 0) {
-      if (explicit) console.log("Corgi is up to date.");
+      const newer = `Corgi ${current} is newer than ${m.version}, the latest on ${channel}`;
+      if (explicit)
+        console.log(
+          compare(m.version, current) === 0
+            ? "Corgi is up to date."
+            : followed
+              ? `${newer}; it stays until ${channel} passes it.`
+              : `${newer}.`,
+        );
       return true;
     }
     const suppressed = pointer(root, "suppressed");
     if (!explicit && suppressed && compare(m.version, suppressed) <= 0) return true;
     // A stale feed doesn't take back a newer update, such as one the installer staged.
     const staged = pointer(root, "staged");
-    if (staged && compare(m.version, staged) < 0) return true;
-    if (explicit) console.error(`Corgi ${m.version} is available.${download ? " Downloading…" : ""}`);
+    if (followed && staged && compare(m.version, staged) < 0) return true;
+    if (explicit)
+      console.error(
+        `Corgi ${m.version} is available${followed ? "" : ` on ${channel}`}.${download ? " Downloading…" : ""}`,
+      );
     if (!download) return true;
     const dest = executable(root, m.version),
       dir = dirname(dest);
@@ -503,18 +566,46 @@ function runtimeHolds(dir: string): boolean {
     }
   });
 }
+/** How long, and how many of, the releases viewers asked a machine for stay
+ * for a viewer to switch it back to. */
+const requested_ms = 14 * 86_400_000,
+  requested_kept = 3;
+/** Marks the release in `dir` as one a viewer asked this machine for. Only
+ * prune reads it, so an install doesn't fail over it. */
+export function requested(dir: string): void {
+  try {
+    write(dir, "requested", String(Date.now()));
+  } catch {}
+}
+/** The releases in `dir` viewers asked for lately, newest first. */
+function asked(dir: string): string[] {
+  const since = Date.now() - requested_ms;
+  return readdirSync(dir)
+    .flatMap(v => {
+      try {
+        const at = Number(read(join(dir, v), "requested"));
+        return at > since ? [{ v, at }] : [];
+      } catch {
+        return [];
+      }
+    })
+    .sort((a, b) => b.at - a.at)
+    .slice(0, requested_kept)
+    .map(r => r.v);
+}
 /** Removes the releases nothing needs: all but the current one, the previous
- * one kept for rollback, a staged update and any a runtime runs. Normally
- * only older releases go; `downloads` says the download lock is held too,
- * so superseded downloads can go regardless of version. */
+ * one kept for rollback, a staged update, the ones viewers asked for lately
+ * and any a runtime runs. Normally only older releases go; `downloads` says
+ * the download lock is held too, so superseded downloads can go regardless
+ * of version. */
 export function prune(root: string, downloads = false) {
   try {
     const guard = openSync(join(root, "releases.lock"), "a", 0o600);
     try {
       if (!flock(guard)) return;
       const current = pointer(root, "current"),
-        keep = [current, pointer(root, "previous"), pointer(root, "staged")],
-        dir = join(root, "releases");
+        dir = join(root, "releases"),
+        keep = [current, pointer(root, "previous"), pointer(root, "staged"), ...asked(dir)];
       if (current === null) return;
       for (const v of readdirSync(dir))
         try {
@@ -591,7 +682,8 @@ export async function check(
       // The runtime saves on its own too; the check reads the last of those.
     }
   let timed_out = false;
-  const p = Bun.spawn([target, "__update-check", daemon.socket, recoveryPath(daemon.socket)], {
+  const recovery = await import("./persist/recovery");
+  const p = Bun.spawn([target, "__update-check", daemon.socket, recovery.path(daemon.socket)], {
       env: { ...process.env, CORGI_APP_EXE: target },
       stdin: "ignore",
       stdout: "pipe",
@@ -745,6 +837,7 @@ async function select(
       if (explicit) throw Error("UpdateCheckFailed");
       return old;
     }
+    const transfer = await import("./persist/transfer");
     let safe = !h || h.update_abi === m.update_abi;
     if (safe || transfer.compatible(h)) {
       try {
@@ -796,7 +889,8 @@ async function select(
       const fresh = await hello(daemon);
       if (!fresh || fresh.server_pid !== h.server_pid) throw Error("UpdateRuntimeChanged");
       await save(daemon, h);
-      copyFileSync(recoveryPath(daemon.socket), recoveryPath(daemon.socket) + ".before-update");
+      const checkpoint = (await import("./persist/recovery")).path(daemon.socket);
+      copyFileSync(checkpoint, checkpoint + ".before-update");
       await daemon.call("shutdown");
       let stopped = false;
       for (let i = 0; i < 100; i++) {
@@ -849,6 +943,7 @@ export function state(root: string): string[] {
   const plugin = pluginOf(root);
   return [
     `Automatic updates: ${existsSync(join(root, "auto-off")) ? "off" : "on"}`,
+    `Channel: ${channelOf(root)}`,
     ...(plugin ? [`Installed by the Omarchy plugin in ${plugin}; removing it removes Corgi`] : []),
     ...(["current", "staged", "previous", "suppressed"] as const).flatMap(name => {
       const v = pointer(root, name);
@@ -863,6 +958,15 @@ export async function command(args: string[], daemon: rpc_http.Client, exe: stri
   if (!root) {
     console.error("This is a development or unmanaged build. Install a release to enable updates.");
     throw Error("UnmanagedInstallation");
+  }
+  // A channel goes with an update, a check or a download.
+  const at = args.indexOf("--channel");
+  let choice: Channel | null = null;
+  if (at >= 0) {
+    choice = release_channel.parse(args[at + 1] ?? "");
+    args = args.filter((_, i) => i !== at && i !== at + 1);
+    if (!choice || args.length > 1 || (args.length === 1 && !["--check", "--download-only"].includes(args[0])))
+      throw Error("Usage");
   }
   if (args.length === 2 && args[0] === "auto") {
     if (args[1] === "off") write(root, "auto-off", "off");
@@ -879,7 +983,7 @@ export async function command(args: string[], daemon: rpc_http.Client, exe: stri
   const rollback = args.length === 1 && args[0] === "rollback";
   if (args.length > 1 || (args.length === 1 && !rollback && !["--check", "--download-only"].includes(args[0])))
     throw Error("Usage");
-  if (!rollback) await feed(rel, root, args.length === 0 || args[0] === "--download-only", true);
+  if (!rollback) await feed(rel, root, args.length === 0 || args[0] === "--download-only", true, undefined, choice);
   if (args.length === 1 && !rollback) return;
   if (rollback && !existsSync(join(root, "previous"))) throw Error("NoPreviousRelease");
   await select(rel, root, daemon, true, true, rollback);
@@ -888,13 +992,17 @@ export async function command(args: string[], daemon: rpc_http.Client, exe: stri
 /** Downloads a newer release for the next launch to activate, as a runtime
  * running `exe` does about hourly while automatic updates are on; false when
  * another download was under way. A failure is kept for `corgi update
- * status`; one `signal` cut short isn't. */
-export async function background(exe: string, signal: AbortSignal): Promise<boolean> {
+ * status`; one `signal` cut short isn't. `terminals` are its viewers'. */
+export async function background(
+  exe: string,
+  signal: AbortSignal,
+  terminals: readonly string[] = [],
+): Promise<boolean> {
   const rel = release(exe),
     root = managed(rel, exe);
   if (!root || existsSync(join(root, "auto-off"))) return true;
   try {
-    return await feed(rel, root, true, false, signal);
+    return await feed(rel, root, true, false, signal, null, terminals);
   } catch (error) {
     if (!signal.aborted) recordError(root, error);
     throw error;
@@ -952,15 +1060,39 @@ export async function internal(args: string[], exe: string): Promise<boolean> {
       return true;
     case "__update-info": {
       const r = release(exe);
-      console.log(
-        JSON.stringify({ ...(await import("./machine_build")).describe(exe), platform, test_mode: r.test_mode }),
-      );
+      const installed = (await import("./machine_build")).describe(exe);
+      let machine;
+      if (process.env.CORGI_MACHINE_PROBE === "1") {
+        const live = await new rpc_http.Client(installed.socket).discover(1000, 0, 0).catch(() => null);
+        // Test releases share their bytes, so the release must match too.
+        if (
+          live &&
+          "build_id" in live &&
+          live.build_id === installed.build_id &&
+          live.release_version === installed.version
+        )
+          machine = (await import("./machine_cli")).remoteInfo(exe);
+      }
+      console.log(JSON.stringify({ ...installed, platform, test_mode: r.test_mode, machine }));
       return true;
     }
     case "__machine-install": {
-      if (args.length !== 4) throw Error("Usage");
+      if (args.length !== 4 && args.length !== 5) throw Error("Usage");
+      if (args.length === 5) (await import("./machine_build")).requireRevision(args[4]);
       const target = await (await import("./machine_install")).install(exe, args[1], args[2], args[3]);
       console.log(JSON.stringify({ executable: target }));
+      return true;
+    }
+    case "__machine-receive": {
+      if (args.length !== 4) throw Error("Usage");
+      const transfer = await import("./machine_transfer_file");
+      await transfer.receive(
+        { readable: Bun.stdin.stream(), writable: new WritableStream({ write: bytes => transfer.write(1, bytes) }) },
+        exe,
+        args[1],
+        args[2],
+        args[3],
+      );
       return true;
     }
     case "__update-check": {

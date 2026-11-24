@@ -265,7 +265,7 @@ test("conversations sit below the agents and their rows hit-test", () => {
   expect(m.resumeHit(120, 40, side, b.x + 2, first_line + 2)).toBeNull();
   expect(m.resumeHit(120, 40, side, b.x + 2, first_line + 3)).toEqual({ row: 2 });
   expect(m.resumeHit(120, 40, side, b.x + 2, first_line - 1)).toBeNull();
-  expect(b.h).toBeGreaterThanOrEqual(m.rowsHeight());
+  expect(b.h).toBeGreaterThanOrEqual(m.rowsHeight(40));
   m.resume_view.expand();
   expect(m.bounds(120, 40, side).w).toBe(b.w);
 });
@@ -368,8 +368,9 @@ test("launcher hides providers that are not installed", () => {
   m.normalize();
   expect(m.selected).toBe("claude");
   const b = m.bounds(120, 24, side);
-  // Border, headings, two rows, a gap, footer and border.
-  expect(b.h).toBe(7);
+  // Border, headings, two rows, a gap, the conversations' rule, heading and
+  // search row with gaps, footer and border.
+  expect(b.h).toBe(11);
   expect(m.hit(120, 24, side, b.x + 2, b.y + 2)).toBe("claude");
   expect(m.hit(120, 24, side, b.x + 2, b.y + 3)).toBe("terminal");
   m.move(true, true);
@@ -380,6 +381,39 @@ test("launcher hides providers that are not installed", () => {
   m.normalize();
   expect(m.selected).toBe("terminal");
   expect(m.first()).toBe("terminal");
+});
+
+test("conversations show while there's room for them, with nothing said of them before the first read", () => {
+  const m = menu();
+  m.preview.installed = byProvider(p => p === "claude");
+  m.normalize();
+  let side = SidebarView.init(120, 24, true, 0, 0);
+  expect(m.hasResume(24)).toBe(true);
+  let text = screen(m, 120, 24, side).join("\n");
+  expect(text).toContain("Search every folder");
+  expect(text).not.toContain("none here");
+  m.history = { pending: false, entries: [] };
+  expect(screen(m, 120, 24, side).join("\n")).toContain("Resume · none here");
+  // Too short for them, the launcher keeps its agents and leaves them out.
+  side = SidebarView.init(120, 9, true, 0, 0);
+  expect(m.hasResume(9)).toBe(false);
+  expect(m.bounds(120, 9, side).h).toBe(7);
+  text = screen(m, 120, 9, side).join("\n");
+  expect(text).toContain("New terminal");
+  expect(text).not.toContain("Resume");
+});
+
+test("a search opened where the full list wouldn't fit keeps to the room the short one had", () => {
+  const m = menu();
+  m.preview.installed = byProvider(p => p === "claude");
+  m.normalize();
+  const side = SidebarView.init(120, 11, true, 0, 0);
+  expect(m.hasResume(11)).toBe(true);
+  m.resume_view.startSearch();
+  for (const ch of "needle") m.resume_view.query.key(ch.charCodeAt(0));
+  expect(m.hasResume(11)).toBe(true);
+  expect(m.bounds(120, 11, side).h).toBe(11);
+  expect(screen(m, 120, 11, side).join("\n")).toContain("needle");
 });
 
 test("first load shows discovery instead of speculative launcher or Active rows", () => {
@@ -561,7 +595,7 @@ test("digit shortcuts enumerate visible agents and exclude terminal and manageme
   expect(m.shortcutRow(c("0"))).toBeNull();
 });
 
-test("custom picker cells preserve account scope and permission state", () => {
+test("custom picker cells preserve account scope and permission state", async () => {
   const m = menu({ selected: "custom0", last: "claude" });
   m.preview.pending = false;
   m.preview.options.claude.account = "personal@example.com";
@@ -569,7 +603,7 @@ test("custom picker cells preserve account scope and permission state", () => {
   m.preview.options.claude.model = "opus";
   m.preview.options.claude.model_name = "Opus";
   m.commands[0].set("claude --dangerously-skip-permissions");
-  m.commands[0].semantics = analyze(m.commands[0].text(), "/tmp");
+  m.commands[0].semantics = await analyze(m.commands[0].text(), "/tmp");
   let values = m.customCells(0);
   expect(values[2]).toBe("Opus");
   expect(values[3]).toBe("personal@example.com");
@@ -582,7 +616,7 @@ test("custom picker cells preserve account scope and permission state", () => {
   expect(values[4]).toBe("—");
   expect(m.usageCell("custom0").fallback).toBe("—");
   m.commands[1].set("claude --model sonnet[1m]");
-  m.commands[1].semantics = analyze(m.commands[1].text(), "/tmp");
+  m.commands[1].semantics = await analyze(m.commands[1].text(), "/tmp");
   expect(m.customCells(1)[2]).toBe("Sonnet (1M)");
 });
 
@@ -1119,7 +1153,7 @@ test("each agent and conversation row leads with its brand mark", () => {
   const placed: [Provider, number, number][] = [];
   m.marks = (provider, col, row) => {
     placed.push([provider, col, row]);
-    return "<mark>";
+    return true;
   };
   const b = m.bounds(120, 40, side);
   m.draw(new Writer(), 120, 40, side);

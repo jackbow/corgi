@@ -1,5 +1,6 @@
+import * as viewerRef from "./viewer_ref";
 import { expect, setSystemTime, spyOn, test } from "bun:test";
-import { Controller } from "./controller";
+import { Controller } from "./fixtures/input";
 import { Frame, same } from "./composition";
 import { Differ } from "./frame_diff";
 import { transport } from "./fixtures/transport";
@@ -44,12 +45,7 @@ function fixture() {
     result = new Terminal(100, 30),
     differ = Differ.create(100, 30),
     readAhead = spyOn(view.review_summaries, "want").mockImplementation(() => {}),
-    images = [
-      spyOn(view.images, "begin"),
-      spyOn(view.images, "end"),
-      spyOn(view.tab_icons, "begin"),
-      spyOn(view.tab_icons, "end"),
-    ];
+    images = [spyOn(view.images, "begin"), spyOn(view.images, "end")];
   const at = (ms: number) => setSystemTime(new Date(10000 + ms));
   const update = (text: string, cursor = "\x1b[2;3H\x1b[?25h") => {
     source.feed("\x1b[0m\x1b[2J\x1b[H" + text + cursor);
@@ -60,9 +56,11 @@ function fixture() {
     view.dirty = false;
     return output;
   };
-  const present = (frame: string | Frame) => {
+  const present = (frame: string | Frame, pictures?: { draw: string; redraw: string }) => {
     reference.feed(typeof frame === "string" ? frame : frame.text());
-    result.feed(differ.diff(frame));
+    // The differ places pictures inside the update, leaving the cursor where the frame put it.
+    if (pictures) reference.feed("\x1b7" + pictures.redraw + "\x1b8");
+    result.feed(differ.diff(frame, pictures));
     const normalized = (terminal: Terminal) => {
       const surface = terminal.surface(0).surface;
       // Image IDs include the owning terminal's identity; placement and pixels agree.
@@ -241,14 +239,14 @@ test("subagent metadata follows observation freshness without a dirty flag", () 
 test.each(["exit", "unbound"] as const)("retained sidebar advances the existing %s transition", transition => {
   const f = fixture(),
     first = sidebar.entry({
-      target: { pane: 1 },
+      target: viewerRef.pane(0, 1),
       name: "stays",
       provider: "claude",
       conversation: 91,
       state: "working",
       activity: "reading",
     }),
-    second = sidebar.entry({ target: { pane: 2 }, name: "leaves", provider: "claude" });
+    second = sidebar.entry({ target: viewerRef.pane(0, 2), name: "leaves", provider: "claude" });
   let live = transition === "exit" ? [first, second] : [first];
   const metadata = spyOn(f.view, "agentEntries").mockImplementation(() => live);
   try {
@@ -423,31 +421,32 @@ test("the sidebar mark and stable Kitty tab placements survive redraws and equiv
     f.view.corgi_badge = "mark";
     f.view.current().model.tabs[0].rename("");
     f.emit("\x1b_Ga=t,t=d,f=24,s=1,v=1,i=730031,q=2;AAAA\x1b\\");
+    // The first frame places its pictures; the viewer sends them ahead of it.
     const first = retained(f.compose());
-    f.present(first);
-    const upload = f.view.effects
-      .flatMap(effect => ("write_terminal" in effect ? [effect.write_terminal] : []))
-      .join("");
-    expect(upload).toContain("\x1b_Ga=t");
-    f.emit(upload);
-    f.view.clearEffects();
+    const shown = f.view.host.images.present();
+    expect(shown.send).toContain("\x1b_Ga=t");
+    f.emit(shown.send);
+    f.present(first, shown);
+    expect(first.chrome).toContain(">_");
+    expect(shown.draw).toContain("\x1b_Ga=p");
     f.at(10);
     const placed = retained(f.compose());
-    f.present(placed);
-    expect(placed.chrome).toContain("\x1b_Ga=d,d=i");
-    expect(placed.chrome).toContain("\x1b_Ga=p");
+    const again = f.view.host.images.present();
+    f.present(placed, again);
+    expect(placed.chrome).toBe(first.chrome);
+    expect(again).toMatchObject({ send: "", draw: "", redraw: shown.redraw });
     f.at(20);
     f.view.cell_pixels = { width: 8, height: 16 };
     f.update("pane changed under static graphics");
     const hit = retained(f.compose());
-    f.present(hit);
+    const still = f.view.host.images.present();
+    f.present(hit, still);
     expect(hit.chrome).toBe(placed.chrome);
-    expect(f.view.effects).toHaveLength(0);
+    expect(still).toMatchObject({ send: "", draw: "" });
     f.at(30);
     f.view.cell_pixels = { width: 9, height: 16 };
     f.compose();
-    expect(f.view.effects.some(effect => "write_terminal" in effect)).toBe(true);
-    f.view.clearEffects();
+    expect(f.view.host.images.present().send).toContain("\x1b_Ga=t");
     f.at(40);
     f.compose();
   } finally {

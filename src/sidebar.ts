@@ -1,3 +1,4 @@
+import * as viewerRef from "./viewer_ref";
 //! The sidebar: workspaces above, agents below. Mirrors sidebar.zig.
 import * as i18n from "./i18n";
 import type { Quality } from "./connection_stats";
@@ -11,6 +12,7 @@ import * as resourceTooltip from "./resource_tooltip";
 import * as gitTooltip from "./git_tooltip";
 import * as dropdown from "./dropdown";
 import * as worktrees from "./worktrees";
+import type * as hostImages from "./host_images";
 import * as rowGlide from "./row_glide";
 import type { Summary as ArchiveSummary } from "./archive_summary";
 import type { Brand } from "./process_name";
@@ -18,12 +20,13 @@ import * as tabIcons from "./tab_icons";
 import type { Cell } from "./fork_hero";
 import type { Mention } from "./conversation_prs";
 import { url as portUrl } from "./trackers/ports";
+import type { Forwards } from "./port_forwards";
 import { cpuText, memoryText } from "./trackers/resources";
 import { View as ContextView } from "./usage/context_window";
-import { rank, type Target as OrderTarget } from "./agent_order";
+
 import type { Section as SectionKind } from "./agent_order";
 import { writeField, View as NameView, type Dialog } from "./name_dialog";
-import { sameRenameTarget, type RenameTarget } from "./inline_rename";
+import { type RenameTarget } from "./inline_rename";
 import { Rect } from "./layout";
 import {
   Writer,
@@ -47,13 +50,13 @@ export const spotlight_dim = 0.55;
 /** A checkout whose rows stay lit: a linked worktree's group, or with no
  * path, the workspace's own rows, those outside its worktree groups. */
 export interface Spotlight {
-  workspace: number;
+  workspace: viewerRef.Workspace;
   path: string | null;
 }
 /** Which rows fade around `spot`. In All, a row belongs to the workspace
  * whose header it follows; a one-workspace list is the spotlight's. */
 export function unlit(entries: Entry[], spot: Spotlight | null): boolean[] {
-  let workspace: number | null = null;
+  let workspace: viewerRef.Workspace | null = null;
   return entries.map(e => {
     if (isGroup(e.target)) workspace = e.target.group;
     if (spot === null) return false;
@@ -137,38 +140,45 @@ palette.derived(() => {
 export type State = "initializing" | "idle" | "working" | "blocked" | "done" | string;
 export type Attention = "none" | "finished" | "needs_input";
 /** `group` is a workspace header row in the grouped "All" list, not an agent. */
-export type Target =
-  | OrderTarget
-  | { group: number }
-  | { worktree: string; workspace: number }
-  /** A conversation a browsed worktree's ghost shows, which entering it
-   * brings back as a hibernated agent. */
-  | { asleep: string; provider: Provider }
+export type Heading<Workspace = viewerRef.Workspace> =
+  | { group: Workspace }
+  | { worktree: string; workspace: Workspace }
   /** An activity section's header in the agent list. */
   | { section: SectionKind }
   /** Neighbouring rows in one checkout: a linked worktree's, or in "all", a
    * workspace's own; in a section, or a hand-sorted list's null. `run` tells
    * apart two runs of one checkout. */
-  | { section: SectionKind | null; workspace: number; checkout: string | null; run: number };
-export const isAgent = (t: Target): t is OrderTarget => "pane" in t || "headless" in t;
-export const isHeading = (t: Target): boolean => "group" in t || "worktree" in t || "section" in t;
-export const isSection = (t: Target): t is { section: SectionKind } => "section" in t && !("workspace" in t);
+  | { section: SectionKind | null; workspace: Workspace; checkout: string | null; run: number };
+export interface Asleep {
+  asleep: string;
+  provider: Provider;
+}
+export type Target = viewerRef.Agent | Heading | Asleep;
+export const isAgent = (t: Target): t is viewerRef.Agent => typeof t === "string";
+export const isHeading = (t: Target): t is Heading => typeof t !== "string" && !("asleep" in t);
+export const isSection = (t: Target): t is { section: SectionKind } =>
+  isHeading(t) && "section" in t && !("workspace" in t);
 export const isSubhead = (
   t: Target,
-): t is { section: SectionKind | null; workspace: number; checkout: string | null; run: number } =>
-  "section" in t && "workspace" in t;
-/** A header that starts a run of rows: a workspace's in "all", or a section's. */
+): t is { section: SectionKind | null; workspace: viewerRef.Workspace; checkout: string | null; run: number } =>
+  isHeading(t) && "section" in t && "workspace" in t;
+/** A header that starts a run of rows: a workspace group, or a section. */
 const isOuter = (t: Target): boolean => isGroup(t) || isSection(t);
 export function sameTarget(a: Target | null | undefined, b: Target | null | undefined): boolean {
-  if (!a || !b) return !a && !b;
-  if ("pane" in a) return "pane" in b && a.pane === b.pane;
-  if ("headless" in a) return "headless" in b && a.headless === b.headless;
+  if (a === b) return true;
+  if (!a || !b || isAgent(a) || isAgent(b)) return false;
   return (
     Object.keys(a).length === Object.keys(b).length &&
     Object.entries(a).every(([key, value]) => value === (b as Record<string, unknown>)[key])
   );
 }
-export const isGroup = (t: Target): t is { group: number } => "group" in t;
+export const isGroup = (t: Target): t is { group: viewerRef.Workspace } => isHeading(t) && "group" in t;
+/** The entity whose machine owns this target; activity headings have none. */
+export function owner(target: Target): viewerRef.Entity | null {
+  if (isAgent(target)) return target;
+  if ("group" in target) return target.group;
+  return "workspace" in target ? target.workspace : null;
+}
 /** Just past the rows header `index` holds: a workspace group's run to the
  * next workspace, a worktree's are its checkout's. */
 export function groupEnd(entries: Entry[], index: number): number {
@@ -176,7 +186,7 @@ export function groupEnd(entries: Entry[], index: number): number {
   let end = index + 1;
   if (header && isOuter(header)) while (end < entries.length && !isOuter(entries[end].target)) end += 1;
   else if (header && isSubhead(header)) while (end < entries.length && !isHeading(entries[end].target)) end += 1;
-  else if (header && "worktree" in header)
+  else if (header && isHeading(header) && "worktree" in header)
     while (
       end < entries.length &&
       !isHeading(entries[end].target) &&
@@ -218,11 +228,11 @@ export interface Subagents {
   blocked: number;
   waiting: boolean;
 }
-export interface Entry {
+export interface Entry<T = Target, Workspace = viewerRef.Workspace> {
   /** Latest chat message in Unix ms; 0 when unavailable. */
   last_message_at: number;
   pull_requests: Mention[];
-  worktree: { workspace: number; path: string; ghost: boolean; end?: boolean } | null;
+  worktree: { workspace: Workspace; path: string; ghost: boolean; end?: boolean } | null;
   conversation: number;
   children: number;
   exit: { frame_ms: number; progress: number } | null;
@@ -238,7 +248,7 @@ export interface Entry {
    * shows while it steps there. */
   slide: number;
   name: string;
-  target: Target;
+  target: T;
   /** Null for workspace group headers. */
   provider: Provider | null;
   state: State;
@@ -266,7 +276,10 @@ export interface Entry {
   starting: boolean;
   starred: boolean;
 }
-export function entry(fields: Partial<Entry> & { target: Target }): Entry {
+export type Data = Omit<Entry, "target" | "worktree">;
+export function entry<const T = Target, Workspace = viewerRef.Workspace>(
+  fields: Partial<Entry<T, Workspace>> & { target: T },
+): Entry<T, Workspace> {
   return {
     last_message_at: 0,
     worktree: null,
@@ -301,13 +314,8 @@ export function entry(fields: Partial<Entry> & { target: Target }): Entry {
     ...fields,
   };
 }
-export function orderTarget(e: Entry): OrderTarget | null {
-  if ("pane" in e.target) return { pane: e.target.pane };
-  if ("headless" in e.target) return { headless: e.target.headless };
-  return null;
-}
-export function lessThan(order: OrderTarget[], left: Entry, right: Entry): boolean {
-  return rank(order, orderTarget(left)!) < rank(order, orderTarget(right)!);
+export function agentId(e: Entry): viewerRef.Agent | null {
+  return isAgent(e.target) ? e.target : null;
 }
 /** An agent row's name: its own, or else its provider's. */
 export function rowTitle(e: Pick<Entry, "name" | "provider">): string {
@@ -315,7 +323,7 @@ export function rowTitle(e: Pick<Entry, "name" | "provider">): string {
 }
 /** The line under an agent's name: what it's doing, or why it isn't. With
  * `now_ms` null, a retry leaves out its countdown. */
-export function rowDetail(e: Entry, now_ms: number | null = Date.now()): string {
+export function rowDetail(e: Data, now_ms: number | null = Date.now()): string {
   const compacting = e.state === "working" && e.compacting,
     waiting = e.state === "working" && e.subagents.waiting && !compacting;
   if (retrying(e)) {
@@ -340,7 +348,7 @@ export function rowDetail(e: Entry, now_ms: number | null = Date.now()): string 
 }
 /** The corgi on an agent row's second line, at the sidebar's corgi
  * `intensity`, in a row with `room` columns for it. */
-export function corgiMode(e: Entry, intensity: number, room = Infinity): corgiAnimation.Mode {
+export function corgiMode(e: Data, intensity: number, room = Infinity): corgiAnimation.Mode {
   const compacting = e.state === "working" && e.compacting,
     waiting = e.state === "working" && e.subagents.waiting && !compacting;
   // Narrow rows keep the text; the pile beside it still moves.
@@ -350,7 +358,7 @@ export function corgiMode(e: Entry, intensity: number, room = Infinity): corgiAn
   return e.state === "idle" ? "asleep" : "content";
 }
 /** The glyph before an agent row's second line; `corgi watch --json` reports it. */
-export function activityKind(e: Entry, intensity: number): corgiAnimation.Activity {
+export function activityKind(e: Data, intensity: number): corgiAnimation.Activity {
   const compacting = e.state === "working" && e.compacting;
   if ((e.state === "working" && e.subagents.waiting && !compacting) || retrying(e)) return "waiting";
   if (e.tool_active && (e.state === "working" || e.state === "blocked")) return "tool";
@@ -492,8 +500,8 @@ export interface Stats {
   [key: string]: unknown;
 }
 /** A workspace's resource readings, as resources.zig's `Work`. */
-export interface Work {
-  id: number;
+export interface Work<Id = number> {
+  id: Id;
   known: boolean;
   cpu: number | null;
   memory: bigint | null;
@@ -504,7 +512,7 @@ export interface Work {
   gpu_shown: boolean;
   [key: string]: unknown;
 }
-export function work(fields: Partial<Work> & { id: number }): Work {
+export function work<Id>(fields: Partial<Work<Id>> & { id: Id }): Work<Id> {
   return {
     known: false,
     cpu: null,
@@ -518,7 +526,7 @@ export function work(fields: Partial<Work> & { id: number }): Work {
   };
 }
 /** The workspace's readings in a resources snapshot, or none. */
-export function resourcesFor(snapshot: any, id: number): Work {
+export function resourcesFor<Id>(snapshot: any, id: Id): Work<Id> {
   const found = (snapshot?.workspaces ?? []).find((w: any) => w.id === id);
   return work({ ...(found ?? {}), id });
 }
@@ -527,21 +535,48 @@ export interface Endpoint {
   label_pending?: boolean;
   [key: string]: any;
 }
-export interface PortsSnapshot {
+export interface PortsSnapshot<Id = number> {
   processes_available?: boolean;
   ports_available?: boolean;
-  workspaces: { id: number; background?: number; endpoints: Endpoint[] }[];
+  workspaces: { id: Id; background?: number; endpoints: Endpoint[] }[];
 }
-function portEndpoints(ports: PortsSnapshot, id: number): Endpoint[] {
+function portEndpoints<Id>(ports: PortsSnapshot<Id>, id: Id): Endpoint[] {
   return (ports?.workspaces ?? []).find(w => w.id === id)?.endpoints ?? [];
 }
+function endpointUrl<Id>(ws: WorkspaceEntry<Id>, endpoint: Endpoint): string | null {
+  return portUrl(endpoint as any, ws.remote_links, ws.link_forwards !== null);
+}
+/** Where the host terminal's Cmd+click on `url` goes. A remote machine's
+ * loopback goes nowhere until the pointer on it reserves its port here. */
+export function linkTarget<Id>(ws: WorkspaceEntry<Id>, url: string): string | null {
+  return ws.link_forwards ? ws.link_forwards.opens(url) : url;
+}
+/** `url` as the status line shows it, with where it opens when a forward moved it. */
+export function linkStatus<Id>(ws: WorkspaceEntry<Id>, url: string): string {
+  const opens = linkTarget(ws, url);
+  return opens && opens !== url ? `${url}  →  ${opens}` : url;
+}
 export interface ConnectionStatus {
+  metrics?: string;
+  compact?: string;
   diagnostic?: boolean;
   label: string;
   seconds: number | null;
   color: palette.Token;
 }
-export interface WorkspaceEntry {
+/** Keep the machine name and progress on the same row, including in a narrow sidebar. */
+function machineStatusLabel(status: ConnectionStatus, width: number, name: string): string {
+  const metrics = status.metrics ?? (status.seconds === null ? "" : `${status.seconds}s`);
+  const available = sat(width, 7);
+  const nameRoom = Math.max(4, Math.min(Math.floor(width / 3), available - displayWidth(metrics)));
+  const room = sat(available, Math.min(displayWidth(name), nameRoom));
+  if (!metrics) return ellipsis(status.label, room);
+  const label = displayWidth(status.label + " " + metrics) <= room ? status.label : (status.compact ?? status.label);
+  if (displayWidth(metrics) >= room) return ellipsis(metrics, room);
+  const prefix = ellipsis(label, sat(room, displayWidth(metrics) + 1));
+  return [prefix, metrics].filter(Boolean).join(" ");
+}
+export interface WorkspaceEntry<Id = viewerRef.Workspace> {
   archived: boolean;
   collapsed: boolean;
   machine: string;
@@ -551,14 +586,16 @@ export interface WorkspaceEntry {
   connection_status: ConnectionStatus | null;
   external: boolean;
   resources: Work;
-  ports: PortsSnapshot;
+  ports: PortsSnapshot<Id>;
   remote_links: boolean;
+  /** A remote machine's forwards here, through which its loopback servers open. */
+  link_forwards: Forwards | null;
   git_push: GitPush;
   git_ahead: number | null;
   git_commits: GitCommit[];
   git_diff: GitDiff;
   worktrees: worktrees.Snapshot | null;
-  id: number;
+  id: Id;
   name: string;
   cwd: string;
   active: boolean;
@@ -569,9 +606,9 @@ export interface WorkspaceEntry {
   stats: Stats;
 }
 export type ArchivedWorkspace = Pick<WorkspaceEntry, "id" | "name" | "active"> & { summary?: ArchiveSummary | null };
-export function workspaceEntry(
-  fields: Partial<WorkspaceEntry> & { id: number; name: string; cwd: string; active: boolean },
-): WorkspaceEntry {
+export function workspaceEntry<Id>(
+  fields: Partial<WorkspaceEntry<Id>> & { id: Id; name: string; cwd: string; active: boolean },
+): WorkspaceEntry<Id> {
   return {
     archived: false,
     collapsed: false,
@@ -584,6 +621,7 @@ export function workspaceEntry(
     resources: work({ id: 0 }),
     ports: { workspaces: [] },
     remote_links: false,
+    link_forwards: null,
     git_push: { phase: "idle", message: "" },
     git_ahead: null,
     git_commits: [],
@@ -643,7 +681,12 @@ export type Hit =
 const hit = <T extends Hit["tag"]>(tag: T): Hit => ({ tag }) as Hit;
 /** A row renamed in place: its field drawn over the name, the notice from
  * its last try, and the name the row falls back to while the text is empty. */
-export type RenameState = { target: RenameTarget; field: Dialog; message: string | null; fallback: string };
+export type RenameState = {
+  target: RenameTarget;
+  field: Dialog;
+  message: string | null;
+  fallback: string;
+};
 /** Where a row's rename field sits, in screen columns, and the line its message takes. */
 export interface FieldRect {
   x: number;
@@ -681,9 +724,13 @@ export class View {
   supports_kitty_graphics = false;
   /** The host's cell in pixels, for images placed by the pixel. */
   cell: Cell | null = null;
+  /** The frame's pictures, where the host shows Kitty images. */
+  pictures: hostImages.FrameImages | null = null;
   archive_marks: ((brand: Brand, col: number, row: number) => void) | null = null;
   /** Places reception bars as an image `signalBars.cells` wide; without it they're blocks. */
   signal_marks: ((quality: Quality, col: number, row: number) => void) | null = null;
+  /** Asks for a frame by `at_ms`, in `Date.now()` time, for what moves with time alone. */
+  animate: ((at_ms: number) => void) | null = null;
   cols = 0;
   rows = 0;
   width = 0;
@@ -710,7 +757,7 @@ export class View {
   resources: { enabled: boolean } = { enabled: true };
   /** Whether the host has GPUs: rows keep a GPU reading's place, used or not. */
   gpus = false;
-  resource_hover: number | null = null;
+  resource_hover: viewerRef.Workspace | null = null;
   /** Decorative corgis only; contextual compaction keeps its animation. */
   corgi_intensity = 50;
   /** The agents header row as last dragged; null splits the sidebar in half. */
@@ -1007,7 +1054,10 @@ export class View {
   }
   static height(e: Entry): number {
     const content = isHeading(e.target) ? 1 + Number(e.group.gap === true) : 2;
-    return content + (e.worktree?.ghost ? Number("worktree" in e.target) + Number(e.worktree.end === true) : 0);
+    return (
+      content +
+      (e.worktree?.ghost ? Number(isHeading(e.target) && "worktree" in e.target) + Number(e.worktree.end === true) : 0)
+    );
   }
   /** The headers of the groups the entry at `from` belongs to, which stay
    * pinned above it: its workspace's in the grouped list, then its
@@ -1023,7 +1073,7 @@ export class View {
     if (
       checkout &&
       !checkout.ghost &&
-      !("worktree" in first.target) &&
+      !(isHeading(first.target) && "worktree" in first.target) &&
       !isSubhead(first.target) &&
       index.worktree[from] >= 0
     )
@@ -1081,7 +1131,7 @@ export class View {
       if (isOuter(e.target)) {
         header = i;
         checkouts = new Map();
-      } else if ("worktree" in e.target) checkouts.set(e.target.worktree, i);
+      } else if (isHeading(e.target) && "worktree" in e.target) checkouts.set(e.target.worktree, i);
       else if (isSubhead(e.target) && e.target.checkout !== null) checkouts.set(e.target.checkout, i);
     });
     prev.push(last);
@@ -1173,11 +1223,13 @@ export class View {
   }
   /** The rename open on `target`'s row, or null. */
   private renaming(target: RenameTarget): RenameState | null {
-    return this.rename !== null && sameRenameTarget(this.rename.target, target) ? this.rename : null;
+    return this.rename !== null && this.rename.target === target ? this.rename : null;
   }
-  /** The name columns of `target`'s row, as `hit` finds it, and the line
-   * below it for a message, or the one above when the row is the last
-   * visible line of its list. Null while the row is not on screen. */
+  /** The columns `target`'s rename field takes on its name line, from the
+   * name's start, and the line below it for a message, or the one above
+   * when the row is the last visible line of its list. The field hugs the
+   * name, or the text typed into it, rather than filling the room before
+   * the row's right side. Null while the row is not on screen. */
   fieldRect(target: RenameTarget, workspaces: WorkspaceEntry[]): FieldRect | null {
     if (this.framed()) {
       const rect = this.lists().fieldRect(target, workspaces);
@@ -1185,56 +1237,59 @@ export class View {
     }
     const v = this;
     if (v.width === 0) return null;
-    if ("workspace" in target) {
+    if (viewerRef.isWorkspace(target)) {
       if (v.drawer === "agents") return null;
-      const index = workspaces.findIndex(ws => ws.id === target.workspace);
+      const index = workspaces.findIndex(ws => ws.id === target);
       if (index < v.workspace_offset || index < 0 || v.workspace_collapsed[index]) return null;
       const y = v.workspaceY(index);
       if (y >= v.workspaceEnd()) return null;
-      return { x: 1, y, width: sat(linkRange(v, workspaces[index], workspaces).start, 2), message_y: y + 1 };
+      const ws = workspaces[index];
+      const room = sat(linkRange(v, ws, workspaces).start, 2);
+      const open = v.renaming(target);
+      const name = displayWidth(workspaceName(ws)) + (ws.archived ? displayWidth(archivedSuffix()) : 0);
+      return { x: 1, y, width: renameColumns(open ? renameTextWidth(open) : name, room), message_y: y + 1 };
     }
     if (v.drawer === "workspaces") return null;
-    const index = v.entries.findIndex(e => "pane" in e.target && e.target.pane === target.agent);
+    const index = v.entries.findIndex(e => viewerRef.isPane(e.target) && e.target === target);
     if (index < 0 || index < v.offset) return null;
     const end = v.drawEnd(v.badge("below"));
     const y = v.middle() + 2 + v.pinned(v.offset).length + v.rowsBefore(index) - v.rowsBefore(v.offset);
     if (y >= end) return null;
-    return { x: 4, y, width: v.nameRoom(v.entries[index]), message_y: y + 1 < end ? y + 1 : y - 1 };
+    const e = v.entries[index];
+    const open = v.renaming(target);
+    const width = renameColumns(open ? renameTextWidth(open) : displayWidth(agentName(e)), v.nameRoom(e));
+    return { x: 4, y, width, message_y: y + 1 < end ? y + 1 : y - 1 };
   }
-  /** Whether `x`, `y` lands on `target`'s name as its row draws it, rather
-   * than elsewhere on the row. */
-  onName(target: RenameTarget, workspaces: WorkspaceEntry[], x: number, y: number): boolean {
+  /** Whether `x`, `y` lands where `target`'s rename field opens: the name
+   * and a little past it, never the row's other lines, the workspace
+   * line's port link and Git figures, an agent's context figure and notes,
+   * or the border. */
+  onNameLine(target: RenameTarget, workspaces: WorkspaceEntry[], x: number, y: number): boolean {
     const rect = this.fieldRect(target, workspaces);
-    if (rect === null || y !== rect.y || x < rect.x) return false;
-    let width = 0;
-    if ("workspace" in target) {
-      const ws = workspaces.find(ws => ws.id === target.workspace);
-      if (ws) width = displayWidth(workspaceName(ws)) + (ws.archived ? displayWidth(archivedSuffix()) : 0);
-    } else {
-      const e = this.entries.find(e => "pane" in e.target && e.target.pane === target.agent);
-      if (e) width = displayWidth(agentName(e));
-    }
-    return x < rect.x + Math.min(width, rect.width);
+    return rect !== null && y === rect.y && x >= rect.x && x < rect.x + rect.width;
   }
   /** The columns an agent row's name has, before its context figure and notes. */
   nameRoom(e: Entry): number {
     return sat(this.width - 6, nameRight(e, contextFigure(e, false, colors.bg)));
   }
   /** Shows the terminal caret in the rename field, as `searchCursor` does
-   * for the search; nothing while no renamed row is on screen. */
+   * for the search; nothing while no renamed row is on screen, or while
+   * the whole name is selected, which shows as the highlight instead. */
   renameCursor(w: Writer, workspaces: WorkspaceEntry[]): void {
     const state = this.rename;
     if (state === null) return;
     const rect = this.fieldRect(state.target, workspaces);
     if (rect === null) return;
+    if (state.field.len > 0 && state.field.selected) return;
     const column = writeField(new Writer(), state.field, NameView.scroll(state.field, rect.width), rect.width, "");
     w.write(`\x1b[0m${w.cup(rect.y + 1, rect.x + column + 1)}\x1b[?25h`);
   }
-  /** The rename field over `width` columns of the name line from `x`: its
+  /** The rename field on the name line from `x`, within `room` columns: its
    * text scrolled so the caret shows, or the fallback name, muted, while
    * the text is empty. */
-  private drawField(w: Writer, state: RenameState, x: number, y: number, width: number): void {
+  private drawField(w: Writer, state: RenameState, x: number, y: number, room: number): void {
     const field = state.field;
+    const width = renameColumns(renameTextWidth(state), room);
     w.write(`${w.cup(y + 1, x + 1)}${rename_field}`);
     w.splat(" ", width);
     w.write(w.cup(y + 1, x + 1));
@@ -1572,14 +1627,12 @@ export class View {
         const quality = ws.link_quality;
         const bars = v.signal_marks ? signalBars.cells : 4;
         const status = ws.connection_status;
-        const timer = !status || status.seconds === null ? "" : ` ${status.seconds}s`;
-        const status_room = sat(v.width, 12);
-        const label = status ? ellipsis(status.label, sat(status_room, displayWidth(timer))) + timer : "";
+        const label = status ? machineStatusLabel(status, v.width, v.workspace_machines[absolute]) : "";
         const status_width = displayWidth(label);
         writeEllipsis(
           w,
           v.workspace_machines[absolute],
-          sat(v.width, status ? status_width + 8 : quality === null ? 6 : 8 + bars),
+          sat(v.width, status ? status_width + 7 : quality === null ? 6 : 8 + bars),
         );
         if (status) {
           w.write(w.cup(y, v.width - status_width - 1) + fg(status.color) + label);
@@ -1609,7 +1662,7 @@ export class View {
       const badge = gitLabel(ws, false);
       const badge_width = displayWidth(badge);
       const link = linkRange(v, ws, workspaces);
-      const rename = v.renaming({ workspace: ws.id });
+      const rename = v.renaming(ws.id);
       const name = workspaceName(ws);
       const name_room = sat(link.start, 2);
       w.write(`${w.cup(y + 1, 2)}${style}`);
@@ -1696,7 +1749,10 @@ export class View {
           // Keep the cached card dim; let the workspace name glimmer at full brightness.
           w.write(`${w.cup(y + 1, 2)}`);
           writeExit(w, style, 0.5);
-          if (!ws.archived) writeConnectionGlimmer(w, clipped(name, name_room), now_ms);
+          if (!ws.archived) {
+            writeConnectionGlimmer(w, clipped(name, name_room), now_ms);
+            v.animate?.((Math.floor(now_ms / glimmer_step_ms) + 1) * glimmer_step_ms);
+          }
           w.write(panel);
         }
       }
@@ -1827,7 +1883,6 @@ export class View {
       next_y += 1;
     });
     const list_top = next_y;
-    let glide = "";
     const end = v.drawEnd(v.badge("below"));
     const visible = entries.slice(v.offset, Math.min(entries.length, v.offset + v.shown(end)));
     const sleepers: string[] = [];
@@ -1874,10 +1929,14 @@ export class View {
         else if (cut) w.write(bytes);
       };
       const frame_ms = e.exit ? e.exit.frame_ms : now_ms;
-      const y = top + Number(e.worktree?.ghost === true && "worktree" in e.target) + Number(e.group.gap === true);
-      if (gliding) {
+      const y =
+        top +
+        Number(e.worktree?.ghost === true && isHeading(e.target) && "worktree" in e.target) +
+        Number(e.group.gap === true);
+      if (gliding && v.pictures) {
         const from = list_top + moved.from - v.rowsBefore(v.offset);
-        glide = rowGlide.place(
+        rowGlide.place(
+          v.pictures,
           w.column,
           rowGlide.position(from, top, moved.ms),
           v.width - 1,
@@ -1916,7 +1975,6 @@ export class View {
       v.drawGhost(row_writer, e, top);
       finish();
     });
-    if (glide.length > 0) w.write(glide);
     if (v.search !== null) v.line(w, v.rows - 1, i18n.t`↑↓  ↵ jump  Esc back`, panel);
     const t = v.thumb();
     if (t)
@@ -1997,7 +2055,7 @@ export class View {
     const figure_width = figure ? displayWidth(figure.text) : 0;
     const notes = noteLabel(e);
     const right = nameRight(e, figure);
-    const rename = "pane" in e.target ? v.renaming({ agent: e.target.pane }) : null;
+    const rename = viewerRef.isPane(e.target) ? v.renaming(e.target) : null;
     const name_style = waits
       ? "\x1b[1m" + fg("warm")
       : dot.unread || (grouped && e.focused)
@@ -2123,7 +2181,7 @@ export class View {
       w.write("\x1b[22m");
     }
     let name_x = arrow_x + 2;
-    if ("worktree" in e.target) {
+    if (isHeading(e.target) && "worktree" in e.target) {
       w.write(w.cup(y + 1, name_x + 1) + fg("faint") + "⌥");
       name_x += 2;
     }
@@ -2200,7 +2258,7 @@ export class View {
     for (let row = y; row < Math.min(y + height, this.listEnd()); row++) {
       w.write(`${w.cup(row + 1, 1)}${style}┊${w.cup(row + 1, right + 1)}┊`);
     }
-    if ("worktree" in e.target) w.write(`${w.cup(y + 1, 1)}${style}╭${"┄".repeat(right - 1)}╮`);
+    if (isHeading(e.target) && "worktree" in e.target) w.write(`${w.cup(y + 1, 1)}${style}╭${"┄".repeat(right - 1)}╮`);
     if (e.worktree.end && y + height <= this.listEnd())
       w.write(`${w.cup(y + height, 1)}${style}╰${"┄".repeat(right - 1)}╯`);
   }
@@ -2278,6 +2336,20 @@ function workspaceName(ws: WorkspaceEntry): string {
   return directoryLabel(ws.name, null, 4097);
 }
 const archivedSuffix = () => i18n.t` (archived)`;
+/** The fewest columns a rename field takes, so a short name still makes a
+ * target for the double-click. */
+const rename_min_columns = 8;
+/** The columns a rename field takes in `room` for text `width` columns wide:
+ * the text, the caret after it and one spare column. */
+function renameColumns(width: number, room: number): number {
+  return Math.min(room, Math.max(rename_min_columns, width + 2));
+}
+/** The columns an open rename field's text takes, or its fallback name's
+ * while the text is empty. */
+function renameTextWidth(state: RenameState): number {
+  const field = state.field;
+  return field.len > 0 ? displayWidth(field.raw()) : displayWidth(directoryLabel(state.fallback, null, 160));
+}
 /** An agent row's name line: its title, starred outside the starred section. */
 function agentName(e: Entry): string {
   return (e.starred && e.section !== "starred" ? "★ " : "") + rowTitle(e);
@@ -2294,9 +2366,8 @@ function nameRight(e: Entry, figure: { text: string } | null): number {
   return figure_width + (figure_width > 0 ? 1 : 0) + (notes.length > 0 ? displayWidth(notes) + 1 : 0);
 }
 export function animationKey(e: Entry): string {
-  if ("pane" in e.target) return `pane:${e.target.pane}`;
-  if ("headless" in e.target) return `headless:${e.target.headless}`;
-  if ("asleep" in e.target) return `asleep:${e.target.asleep}`;
+  if (isAgent(e.target)) return e.target;
+  if (!isAgent(e.target) && "asleep" in e.target) return `asleep:${e.target.asleep}`;
   throw Error("unreachable");
 }
 function subagentBadge(status: Subagents, children: number): string {
@@ -2550,34 +2621,34 @@ export function linkRange(v: View, ws: WorkspaceEntry, workspaces: WorkspaceEntr
   return { start: end - width, end };
 }
 /** Resolve names through the same deduplicated URL selection used by clicks. */
-export function workspaceUrlName(ws: WorkspaceEntry, index: number): string {
+export function workspaceUrlName<Id>(ws: WorkspaceEntry<Id>, index: number): string {
   const target = workspaceUrl(ws, index);
   if (target === null) return "";
   for (const endpoint of portEndpoints(ws.ports, ws.id)) {
-    const candidate = portUrl(endpoint as any, ws.remote_links);
+    const candidate = endpointUrl(ws, endpoint);
     if (candidate === null) continue;
     if (target === candidate && (endpoint.label ?? "").length > 0) return endpoint.label!;
   }
   return "";
 }
-function workspaceUrlPending(ws: WorkspaceEntry, index: number): boolean {
+function workspaceUrlPending<Id>(ws: WorkspaceEntry<Id>, index: number): boolean {
   if (workspaceUrlName(ws, index).length > 0) return false;
   const target = workspaceUrl(ws, index);
   if (target === null) return false;
   for (const endpoint of portEndpoints(ws.ports, ws.id)) {
-    const candidate = portUrl(endpoint as any, ws.remote_links);
+    const candidate = endpointUrl(ws, endpoint);
     if (candidate === null) continue;
     if (target === candidate && endpoint.label_pending) return true;
   }
   return false;
 }
-function portPending(ws: WorkspaceEntry): boolean {
+function portPending<Id>(ws: WorkspaceEntry<Id>): boolean {
   for (let i = 0; i < urlCount(ws); i++) if (workspaceUrlPending(ws, i)) return true;
   return false;
 }
 /** The link button's name, empty when it has none, or null while inference is
  * still naming it. */
-export function portName(ws: WorkspaceEntry): string | null {
+export function portName<Id>(ws: WorkspaceEntry<Id>): string | null {
   let name = workspaceUrlName(ws, 0);
   // A common name is useful for duplicate app endpoints; distinct apps keep
   // the generic chooser label and their individual names inside the menu.
@@ -2588,7 +2659,7 @@ export function portName(ws: WorkspaceEntry): string | null {
     }
   return name.length === 0 && portPending(ws) ? null : name;
 }
-export function portLabel(ws: WorkspaceEntry): string {
+export function portLabel<Id>(ws: WorkspaceEntry<Id>): string {
   const count = urlCount(ws);
   // A name stands alone; without one the button says what it does.
   const name = portName(ws) ?? `${i18n.t`Open `}...`;
@@ -2617,8 +2688,9 @@ export function writePortLabel(w: Writer, label: string, width: number, naming: 
   const start = prefixWidth + 3;
   if (width > start) writeClipped(w, label.slice(prefix.length + 3), width - start);
 }
+const glimmer_step_ms = 80;
 function writeConnectionGlimmer(w: Writer, label: string, now_ms: number): void {
-  const phase = mod(Math.floor(now_ms / 80) * 80, 2000) / 2000;
+  const phase = mod(Math.floor(now_ms / glimmer_step_ms) * glimmer_step_ms, 2000) / 2000;
   const center = -4 + (displayWidth(label) + 8) * phase;
   const dim = mix(colors.muted, colors.bg, 50);
   let col = 0;
@@ -2636,7 +2708,7 @@ export function worktreeLabel(ws: WorkspaceEntry): string {
   const count = worktrees.linked(ws.worktrees).length;
   return count ? (count === 1 ? i18n.t`${count} worktree` : i18n.t`${count} worktrees`) : "";
 }
-export function worktreeBadge(v: View, workspaces: WorkspaceEntry[], id: number): Rect | null {
+export function worktreeBadge(v: View, workspaces: WorkspaceEntry[], id: viewerRef.Workspace): Rect | null {
   const index = workspaces.findIndex(ws => ws.id === id),
     slot = index - v.workspace_offset;
   if (v.width === 0 || index < 0 || slot < 0 || slot >= v.workspaceCapacity() || workspaces[index].collapsed)
@@ -2650,7 +2722,7 @@ export function worktreeAt(v: View, workspaces: WorkspaceEntry[], x: number, y: 
   const hit = v.hit(x, y);
   if (hit.tag !== "workspace") return null;
   const ws = workspaces[hit.workspace];
-  if (ws?.external || ws?.unavailable) return null;
+  if (ws?.unavailable) return null;
   const width = ws ? displayWidth(worktreeLabel(ws)) : 0;
   return width && x >= v.width - 2 - width && x < v.width - 2 ? ws : null;
 }
@@ -2660,15 +2732,15 @@ export function portLink(v: View, workspaces: WorkspaceEntry[], x: number, y: nu
   return urlCount(ws) === 1 ? workspaceUrl(ws, 0) : null;
 }
 // Only confirmed browser URLs participate; duplicate binds collapse to one link.
-export function workspaceUrl(ws: WorkspaceEntry, wanted: number): string | null {
+export function workspaceUrl<Id>(ws: WorkspaceEntry<Id>, wanted: number): string | null {
   const endpoints = portEndpoints(ws.ports, ws.id);
   let count = 0;
   for (let i = 0; i < endpoints.length; i++) {
-    const target = portUrl(endpoints[i] as any, ws.remote_links);
+    const target = endpointUrl(ws, endpoints[i]);
     if (target === null) continue;
     let duplicate = false;
     for (const previous of endpoints.slice(0, i)) {
-      const other = portUrl(previous as any, ws.remote_links);
+      const other = endpointUrl(ws, previous);
       if (other !== null && target === other) {
         duplicate = true;
         break;
@@ -2680,7 +2752,7 @@ export function workspaceUrl(ws: WorkspaceEntry, wanted: number): string | null 
   }
   return null;
 }
-export function urlCount(ws: WorkspaceEntry): number {
+export function urlCount<Id>(ws: WorkspaceEntry<Id>): number {
   let count = 0;
   while (workspaceUrl(ws, count) !== null) count += 1;
   return count;
@@ -2709,7 +2781,8 @@ function portLine(
   if (count === 1) {
     const target = workspaceUrl(ws, 0)!;
     if (hitColumn !== null && hitColumn < Math.min(displayWidth(label), width)) return target;
-    if (w) w.write(`\x1b]8;id=corgi-port-${ws.id};${target}\x1b\\`);
+    const opens = linkTarget(ws, target);
+    if (w && opens) w.write(`\x1b]8;id=corgi-port-${ws.id};${opens}\x1b\\`);
   }
   if (w) {
     w.write("\x1b[4m" + fg("text"));
@@ -2822,7 +2895,7 @@ function newAgentLabel(width: number): string {
 export class PortMenu {
   selected = 0;
   constructor(
-    public workspace: number,
+    public workspace: viewerRef.Workspace,
     selected = 0,
   ) {
     this.selected = selected;
@@ -2858,7 +2931,7 @@ export class PortMenu {
       const url = workspaceUrl(ws, index);
       if (url === null) continue;
       w.write(
-        `${w.cup(rect.y + 3 + index - offset, rect.x + 1)}${index === selected ? fg("text") + selected_bg : fg("text") + bg("surface")} ${index === selected ? "›" : " "} \x1b]8;id=corgi-popup-${ws.id}-${index};${url}\x1b\\`,
+        `${w.cup(rect.y + 3 + index - offset, rect.x + 1)}${index === selected ? fg("text") + selected_bg : fg("text") + bg("surface")} ${index === selected ? "›" : " "} \x1b]8;id=corgi-popup-${ws.id}-${index};${linkTarget(ws, url) ?? ""}\x1b\\`,
       );
       const name = workspaceUrlName(ws, index);
       const naming = name.length === 0 && workspaceUrlPending(ws, index);
@@ -2904,7 +2977,7 @@ export function gitWorkspace(v: View, workspaces: WorkspaceEntry[], x: number, y
 export function gitActionWorkspace(
   v: View,
   workspaces: WorkspaceEntry[],
-  expanded: number | null,
+  expanded: viewerRef.Workspace | null,
   x: number,
   y: number,
 ): WorkspaceEntry | null {
@@ -2918,7 +2991,7 @@ export function gitActionWorkspace(
   const end = v.width - 2;
   return size > 0 && x >= sat(end, size) && x < end ? ws : null;
 }
-export function drawGitAction(w: Writer, v: View, workspaces: WorkspaceEntry[], id: number): void {
+export function drawGitAction(w: Writer, v: View, workspaces: WorkspaceEntry[], id: viewerRef.Workspace): void {
   if (v.width === 0) return;
   const shown = workspaces.slice(
     v.workspace_offset,
@@ -3161,8 +3234,7 @@ export function machineDiagnosticAt(v: View, rows: WorkspaceEntry[], x: number, 
   for (let i = v.workspace_offset; i < v.workspace_offset + v.workspaceCapacity(); i++) {
     const status = rows[i]?.connection_status;
     if (!status?.diagnostic || y !== v.workspaceY(i) - 1) continue;
-    const timer = status.seconds === null ? "" : ` ${status.seconds}s`;
-    const label = ellipsis(status.label, sat(sat(v.width, 12), displayWidth(timer))) + timer;
+    const label = machineStatusLabel(status, v.width, v.workspace_machines[i]);
     return x >= v.width - displayWidth(label) - 2 && x < v.width - 2;
   }
   return false;

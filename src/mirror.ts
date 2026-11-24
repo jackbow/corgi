@@ -47,6 +47,13 @@ export interface Transport {
   remote?: boolean;
   image?: (path: string, mime: string, progress?: ImageProgress) => Promise<string>;
   request<K extends protocol.Op>(op: K, ...args: protocol.Arguments<K>): Promise<protocol.Response<K>>;
+  /** A request whose reply comes after parts, each passed to `more`; absent
+   * where a transport takes one answer only. */
+  streamed?<K extends protocol.Op>(
+    op: K,
+    fields: protocol.RequestInput<K>,
+    more: (part: unknown) => void,
+  ): Promise<protocol.Response<K>>;
 }
 /** An RPC call that throws the daemon's error name, as Zig's `call` does. */
 export async function call<K extends protocol.Op>(
@@ -71,6 +78,8 @@ export interface Link {
   end: number;
   uri: string;
   id: bigint;
+  /** A file path found in plain text (see `file_ref.ts`). */
+  path?: boolean;
 }
 interface Selection {
   x: number;
@@ -552,8 +561,20 @@ export interface Pane {
   forking: boolean;
   /** Nothing runs yet: focusing it starts `restoring` here. */
   dormant: boolean;
+  /** The file this viewer shows in its place, which `corgi __view` named. */
+  view: FileView | null;
   /** When this viewer first saw it restoring, which its animation starts from. */
   restoring_since: number;
+}
+export interface FileView {
+  path: string;
+  line: number | null;
+  column: number | null;
+}
+function fileView(value: any): FileView | null {
+  if (typeof value?.path !== "string") return null;
+  const whole = (n: unknown) => (typeof n === "number" && Number.isInteger(n) && n > 0 ? n : null);
+  return { path: value.path, line: whole(value.line), column: whole(value.column) };
 }
 /** protocol.zig's `Workspace`, with its model parsed. */
 export interface Workspace {
@@ -815,6 +836,7 @@ export class Runtime {
           restoring: info.restoring ?? "",
           forking: info.forking === true,
           dormant: info.dormant === true,
+          view: fileView(info.view),
           restoring_since: was_restoring ? previous!.restoring_since : now,
         });
       }

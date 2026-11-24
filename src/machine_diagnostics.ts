@@ -13,7 +13,29 @@ export class Notice {
   }
   /** Opens `endpoint`'s problem; false when it has none to show. */
   show(endpoint: Endpoint): boolean {
+    if (endpoint.updateError && !endpoint.error) {
+      this.message = [
+        `${endpoint.name} · Update failed`,
+        "",
+        ...this.updateLines(endpoint),
+        "",
+        "Ctrl+R in the machine picker to retry",
+      ];
+      this.offset = 0;
+      return true;
+    }
     if (!endpoint.error) return false;
+    if (endpoint.reclaimable) {
+      this.message = [
+        `${endpoint.name} · ${endpoint.description()}`,
+        "",
+        "Another viewer moved this machine to a release this one can't talk to.",
+        "Ctrl+R moves it back to this viewer's release; its shells and agents keep running.",
+        ...(endpoint.updateError ? ["", "Update failed", ...this.updateLines(endpoint)] : []),
+      ];
+      this.offset = 0;
+      return true;
+    }
     const command = endpoint.issue === "auth" || endpoint.issue === "host-key" ? "reconnect" : "status";
     this.message = [
       `${endpoint.name} · ${endpoint.issue === "auth" ? "Authentication required" : "Connection problem"}`,
@@ -22,10 +44,14 @@ export class Notice {
       "",
       "Run in a terminal:",
       `corgi machine ${command} ${endpoint.name}`,
+      ...(endpoint.updateError ? ["", "Update failed", ...this.updateLines(endpoint)] : []),
       ...(endpoint.issue === "host-key" ? ["Verify the host fingerprint before approving its key."] : []),
     ];
     this.offset = 0;
     return true;
+  }
+  private updateLines(endpoint: Endpoint): string[] {
+    return endpoint.updateLog.replace(/[\x00-\x09\x0b-\x1f\x7f]/g, " ").split("\n");
   }
   close(): void {
     this.message = null;

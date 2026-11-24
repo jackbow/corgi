@@ -1,6 +1,7 @@
 import * as i18n from "./i18n";
-import type { Target as AgentTarget } from "./sidebar";
+import * as viewerRef from "./viewer_ref";
 import type { Cell } from "./fork_hero";
+import type { Image } from "./host_images";
 import type { Link as TerminalLink } from "./pane/hyperlinks";
 import { Rect } from "./layout";
 import * as palette from "./palette";
@@ -13,6 +14,8 @@ export interface Link {
   source: Source;
   id: bigint;
   uri: string;
+  /** A file path found in plain text (see `file_ref.ts`). */
+  path?: boolean;
   x: number;
   y: number;
 }
@@ -23,7 +26,7 @@ export function at(source: Source, rect: Rect, x: number, y: number): Link | nul
   const link = source
     .hyperlinks()
     .find(link => link.row === y - rect.y && link.start <= x - rect.x && x - rect.x < link.end);
-  return link ? { source, id: link.id, uri: link.uri, x, y } : null;
+  return link ? { source, id: link.id, uri: link.uri, path: link.path === true, x, y } : null;
 }
 export function sameLink(a: Link | null | undefined, b: Link | null | undefined): boolean {
   return a?.source === b?.source && a?.id === b?.id && a?.uri === b?.uri;
@@ -36,6 +39,8 @@ export interface Thumbnail {
   height: number;
   cell: Cell;
   of?: Thumbnail;
+  /** Its picture, once loaded. */
+  image?: Image;
 }
 export interface Card {
   link: Link;
@@ -57,25 +62,32 @@ export function thumbnailCells(t: Thumbnail): { cols: number; rows: number } {
 }
 export interface Target {
   link?: Link;
-  resource?: number | null;
-  git?: number | null;
-  worktree?: number | null;
+  /** The link names a file on this machine, which a peek shows. */
+  file?: boolean;
+  resource?: viewerRef.Workspace | null;
+  git?: viewerRef.Workspace | null;
+  worktree?: viewerRef.Workspace | null;
   usage?: boolean;
   conversation?: number;
-  agent?: AgentTarget | null;
+  agent?: viewerRef.Agent | null;
 }
 function same(a: Target, b: Target) {
   return (
     sameLink(a.link, b.link) &&
+    // A link found to name a file turns from a copy card into a peek.
+    (a.file ?? false) === (b.file ?? false) &&
     (a.resource ?? null) === (b.resource ?? null) &&
     (a.git ?? null) === (b.git ?? null) &&
     (a.worktree ?? null) === (b.worktree ?? null) &&
     (a.usage ?? false) === (b.usage ?? false) &&
     (a.conversation ?? 0) === (b.conversation ?? 0) &&
-    JSON.stringify(a.agent ?? null) === JSON.stringify(b.agent ?? null)
+    (a.agent ?? null) === (b.agent ?? null)
   );
 }
+/** How long the pointer rests on a file's name before its peek opens. */
+export const file_delay = 1000;
 function delay(target: Target | null): number {
+  if (target?.file) return file_delay;
   return target?.resource != null || target?.link != null ? 150 : 500;
 }
 /** The card under or over the link at `anchor`, with `thumbnail` under a
@@ -120,7 +132,7 @@ export function draw(w: Writer, rect: Rect, card: Card, hovered: boolean): void 
   const rule = "─".repeat(rect.w - 2);
   const label = card.copied
     ? i18n.t` ✓  Copied`
-    : filePath(card.link.uri) !== null
+    : card.link.path || filePath(card.link.uri) !== null
       ? i18n.t` ⧉  Copy path`
       : i18n.t` ⧉  Copy link`;
   w.write(border + `\x1b[${rect.y + 1};${rect.x + 1}H┌${rule}┐`);

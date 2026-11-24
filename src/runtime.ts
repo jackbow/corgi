@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import type { Wait as StartupWait } from "./startup";
 import * as json from "./json";
 import * as clock from "./clock";
@@ -272,6 +273,10 @@ export class Pane {
   ghost: Ghost | null = null;
   /** Recovered with nothing running: its old screen, faded, until `Runtime.wake`. */
   dormant = false;
+  /** The file `corgi __view` asks this pane's viewers to show in its place,
+   * while the connection that named it, `owner`, stays open; its process
+   * names it again after a reload. */
+  view: { path: string; line: number | null; column: number | null; owner: object } | null = null;
   /** Archived commands wait at the prompt, including after cold recovery. */
   manual_resume = false;
   /** A program archiving found running, typed at the prompt when no agent
@@ -470,7 +475,7 @@ export class Pane {
     if (pid <= 0) return false;
     try {
       const cwd = os.processCwd(pid);
-      if (typeof cwd === "string") {
+      if (typeof cwd === "string" && isAbsolute(cwd)) {
         this.cwd = cwd;
         return true;
       }
@@ -1270,7 +1275,8 @@ export class Runtime {
     return s ? worktreeAgents.listedWorktree(ws.worktrees, target, s.cwd) : null;
   }
   /** An agent's section, except that a new one waits in working until its
-   * first turn, through startup and idle. */
+   * first turn, through startup and idle. A resumed conversation has had
+   * turns, so it's not new. */
   private startingSection(
     ws: Workspace,
     target: Target,
@@ -1282,7 +1288,7 @@ export class Runtime {
       start = this.agentStart(target),
       fresh = !restored || start?.state === "unknown" || start?.state === "initializing",
       waiting = last ? ws.starting.has(key) : kind !== null && fresh;
-    if (waiting && kind === "idle" && start?.completed === 0n) {
+    if (waiting && kind === "idle" && start?.finished === false) {
       ws.starting.add(key);
       return "working";
     }
@@ -1292,10 +1298,10 @@ export class Runtime {
   private agentStart(target: Target) {
     if ("pane" in target) {
       const agent = this.pane(target.pane)?.agent();
-      return agent ? { state: agent.state, completed: agent.observation.completed } : null;
+      return agent ? { state: agent.state, finished: agent.hasFinished() } : null;
     }
     const s = this.sessions.find(s => s.id === target.headless);
-    return s ? { state: s.status(), completed: s.observation().completed } : null;
+    return s ? { state: s.status(), finished: s.hasFinished() } : null;
   }
   /** The agents waiting in working for their first turn. */
   startingAgents(ws: Workspace): Target[] {
