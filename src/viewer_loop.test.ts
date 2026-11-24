@@ -6,6 +6,56 @@ import { n } from "./native_ffi";
 import { Controller } from "./controller";
 import { transport } from "./fixtures/transport";
 import { Terminal } from "./pane/terminal";
+import * as subprocess from "./subprocess";
+import { Cache, parse } from "./pull_request";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+test("detaching cancels running GitHub processes and discards queued PR prefetches", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corgi-detach-prs-"));
+  const view = new Controller(
+    transport(async () => {
+      throw Error("UnexpectedRequest");
+    }),
+  );
+  const cache = new Cache(undefined, directory);
+  (view as unknown as { pr_cache: Cache }).pr_cache = cache;
+  const started = Promise.withResolvers<void>();
+  const running: Promise<subprocess.Output>[] = [];
+  const run = subprocess.run;
+  let ready = 0;
+  const requests = spyOn(subprocess, "run").mockImplementation((_args, options) => {
+    const work = run(["/bin/sh", "-c", "printf ready; sleep 30"], {
+      ...options,
+      on_output: () => {
+        if (++ready === 2) started.resolve();
+      },
+    });
+    running.push(work);
+    return work;
+  });
+  const refs = [1, 2, 3, 4, 5, 6].map(number => parse(`https://github.com/repro/unused/pull/${number}`)!);
+  try {
+    cache.prefetch(refs);
+    await started.promise;
+    close(view);
+    const results = await Promise.allSettled(running);
+    expect(results).toHaveLength(2);
+    for (const result of results) {
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected") expect(result.reason.message).toBe("Cancelled");
+    }
+    await expect(cache.client.revisions(refs[0])).rejects.toThrow("Cancelled");
+    cache.prefetch(refs);
+    await Bun.sleep(0);
+    expect(requests).toHaveBeenCalledTimes(2);
+  } finally {
+    close(view);
+    requests.mockRestore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 function output() {
   const bytes: string[] = [];

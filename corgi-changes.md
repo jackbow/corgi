@@ -48,6 +48,7 @@ Application changes added during development.
 
 - Option-click a GitHub PR link in chat to open its diff directly. Plain clicks open details; Cmd-click stays with the terminal’s browser handler. `corgi action pull-request-diff URL` also opens a linked diff directly.
 - Detected chat PR links prefetch basic metadata with two background requests at a time, sharing reads with the conversation list and viewer. Repeated mentions are deduplicated; open PR metadata is refreshed on access after one minute. Older cached entries are upgraded on demand to retain creation and update dates in the PR list.
+- Detaching cancels the viewer's GitHub requests and clears queued PR metadata reads, so background prefetches do not delay returning to the shell.
 - The overview displays metadata immediately, then adds aggregate CI state and unresolved-thread counts independently. Discussion bodies and reviews, recursive stack discovery, and individual CI checks load only when their tab or check expansion opens, with separate loading and error states.
 - Diff loading needs only metadata and pinned base/head revisions. Pressing `d` during initial loading queues it; closing or leaving the viewer cancels its pending navigation. Patches share in-flight reads and a viewer-local cache bounded to 32 MiB, keyed by repository and both revisions.
 

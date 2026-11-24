@@ -129,10 +129,11 @@ export type Mutation =
   | { kind: "comment"; body: string; thread?: string }
   | { kind: "ready" }
   | { kind: "retry"; check?: string };
-export type Run = (args: string[]) => Promise<string>;
-export const run: Run = async args => {
+export type Run = (args: string[], quit?: subprocess.Quit) => Promise<string>;
+export const run: Run = async (args, quit) => {
   const result = await subprocess.run(["gh", ...args, ...(args[0] === "api" ? ["--hostname", "github.com"] : [])], {
     timeout_ms: 30_000,
+    quit,
     max_output: 16 * 1024 * 1024,
     stderr: true,
     env: { ...process.env, GH_PROMPT_DISABLED: "1", GH_PAGER: "cat" },
@@ -181,7 +182,15 @@ const threadComments =
 const threadFields =
   "id isResolved path line originalLine startLine originalStartLine diffSide isOutdated " + threadComments;
 export class Client {
-  constructor(readonly execute: Run = run) {}
+  private quit = new subprocess.Quit();
+  constructor(private runner: Run = run) {}
+  execute(args: string[]): Promise<string> {
+    if (this.quit.aborted) return Promise.reject(Error("Cancelled"));
+    return this.runner(args, this.quit);
+  }
+  close(): void {
+    this.quit.signal();
+  }
   async revisions(ref: Ref): Promise<{ head: string; base: string }> {
     const meta = object(JSON.parse(await this.execute(["pr", "view", ref.url, "--json", "headRefOid,baseRefOid"]))),
       head = string(meta.headRefOid),
@@ -608,6 +617,7 @@ export class Client {
 const cacheWrites = new Map<string, Promise<void>>();
 let lastAccess = 0;
 export class Cache {
+  private closed = false;
   private memory = new Map<string, Snapshot>();
   private flights = new Map<string, Promise<Snapshot>>();
   private details = new Map<string, Promise<Snapshot>>();
@@ -620,6 +630,11 @@ export class Cache {
     readonly client = new Client(),
     readonly directory = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "corgi", "pull-requests"),
   ) {}
+  close(): void {
+    this.closed = true;
+    this.wanted.clear();
+    this.client.close();
+  }
   private file(ref: Ref): string {
     return join(this.directory, createHash("sha256").update(ref.url).digest("hex") + ".json");
   }
@@ -628,6 +643,7 @@ export class Cache {
     return cached && !stale(cached) ? cached : this.refresh(ref);
   }
   prefetch(refs: Ref[]): void {
+    if (this.closed) return;
     for (const ref of refs.slice(0, cache_size)) {
       if (this.prefetched.has(ref.url)) continue;
       this.prefetched.add(ref.url);

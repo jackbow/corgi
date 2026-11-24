@@ -56,6 +56,7 @@ interface Row {
   number?: string;
 }
 export class Panel {
+  private closed = false;
   open = false;
   focused = false;
   sort: Sort = "recent";
@@ -77,6 +78,10 @@ export class Panel {
   private pressed: string | null = null;
   private reveal = true;
   constructor(private readDetails: Load = load) {}
+  close(): void {
+    this.closed = true;
+    this.wanted.clear();
+  }
   update(ref: pr.Ref, details: Pick<Details, "state">) {
     if (details.state === "MERGED" && !this.mergedURLs.has(ref.url)) {
       this.mergedURLs.add(ref.url);
@@ -115,6 +120,7 @@ export class Panel {
     if (this.selected < 0 && !(toggle && this.merged.length)) this.selected = this.items.length ? 0 : -1;
   }
   private fetch() {
+    if (this.closed) return;
     for (const ref of this.mentions) this.wanted.set(ref.url, ref);
     for (const ref of [...this.mentions, ...this.wanted.values()]) {
       if (this.pending.size >= 4) break;
@@ -123,6 +129,7 @@ export class Panel {
       void this.readDetails(ref)
         .then(
           details => {
+            if (this.closed) return;
             if (!this.details.has(ref.url)) this.details.set(ref.url, details);
             if (details.state === "MERGED") this.mergedURLs.add(ref.url);
           },
@@ -130,6 +137,7 @@ export class Panel {
         )
         .finally(() => {
           this.pending.delete(ref.url);
+          if (this.closed) return;
           this.arrange();
           this.changed();
           this.fetch();

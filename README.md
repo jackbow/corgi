@@ -20,6 +20,7 @@ feature list and behavior changes.
   inspect checks, reviews, discussions, and stacked PRs, retry failed checks,
   and mark ready or merge. Reply to review threads, post PR comments, and send
   comments to the agent with file, line, and code context.
+  Detaching cancels pending GitHub requests so they do not hold up the shell.
 - **Conversation PR lists and search:** collect links from user and agent
   messages, including later mentions by number. Cmd+Ctrl+G toggles a resizable
   list between workspace navigation and the conversation, with repository

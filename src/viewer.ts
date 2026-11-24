@@ -91,6 +91,7 @@ export function close(view: Controller): void {
   view.closePreferences?.();
   view.closePreferences = null;
   view.model_cache.close();
+  view.closePRs();
   view.review.dispose();
   view.syntax.close();
   view.closeMoonlander();

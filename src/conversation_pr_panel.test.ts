@@ -161,6 +161,30 @@ test("PR viewer updates hide merged PRs without changing mention order", async (
   expect(p.items.map(p => p.number)).toEqual([9, 5]);
   expect(refs.map(p => p.number)).toEqual([12, 9, 5]);
 });
+test("closing the conversation PR list stops queued reads and late updates", async () => {
+  const pending: ReturnType<typeof Promise.withResolvers<Details>>[] = [];
+  const p = new Panel(() => {
+    const work = Promise.withResolvers<Details>();
+    pending.push(work);
+    return work.promise;
+  });
+  let changes = 0;
+  p.changed = () => changes++;
+  p.open = true;
+  p.follow(
+    "one",
+    [1, 2, 3, 4, 5, 6].map(n => ref(n)),
+  );
+  expect(pending).toHaveLength(4);
+  p.close();
+  pending.forEach(work => work.resolve(details));
+  await Bun.sleep(0);
+  expect(pending).toHaveLength(4);
+  expect(changes).toBe(0);
+  p.follow("two", [ref(7)]);
+  expect(pending).toHaveLength(4);
+});
+
 test("unavailable metadata preserves links and refresh retries", async () => {
   let calls = 0;
   const p = new Panel(async () => {
