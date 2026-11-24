@@ -219,6 +219,8 @@ export interface Subagents {
   waiting: boolean;
 }
 export interface Entry {
+  /** Latest chat message in Unix ms; 0 when unavailable. */
+  last_message_at: number;
   pull_requests: Mention[];
   worktree: { workspace: number; path: string; ghost: boolean; end?: boolean } | null;
   conversation: number;
@@ -266,6 +268,7 @@ export interface Entry {
 }
 export function entry(fields: Partial<Entry> & { target: Target }): Entry {
   return {
+    last_message_at: 0,
     worktree: null,
     conversation: 0,
     pull_requests: [],
@@ -2021,6 +2024,10 @@ export class View {
     const badge = subagentBadge(e.subagents, e.children);
     const badge_width = displayWidth(badge);
     const detail_room = sat(room, badge_width + (badge_width > 0 ? 1 : 0));
+    const age = e.state === "idle" ? messageAge(e.last_message_at, now_ms) : null;
+    const age_width = age ? displayWidth(age.text) : 0;
+    const show_age = age !== null && detail_room >= age_width + (v.corgi_intensity > 0 ? 7 : 0);
+    const corgi_room = show_age ? detail_room - age_width - 1 : detail_room;
     const animation_key = animationKey(e);
     const mode = corgiMode(e, v.corgi_intensity, detail_room);
     const herding = mode === "herding";
@@ -2052,7 +2059,7 @@ export class View {
     if (mode === "herding") {
       w.write(presentation!.writeHerding(detail_room, now_ms));
     } else if (mode !== "content") {
-      w.write(presentation!.writeCorgi(detail_room, now_ms, e.state === "working", sleep));
+      w.write(presentation!.writeCorgi(corgi_room, now_ms, e.state === "working", sleep));
     } else {
       // Lifecycle signals (blocked/ended/etc.) must be immediate.
       // Interrupts already switch straight to the sleeping mode.
@@ -2070,6 +2077,7 @@ export class View {
         );
       } else writeEllipsis(w, detail_text, detail_room);
     }
+    if (show_age) w.write(`${w.cup(y + 2, x + 5 + detail_room - age_width)}${fg(age.token)}${age.text}`);
     // Once the corgi has curled up, the compaction's time so far sits at the right.
     const took = herding && e.compacting_since > 0 ? elapsed(now_ms - e.compacting_since / 1000) : "";
     const took_width = displayWidth(took);
@@ -3086,6 +3094,18 @@ export function elapsed(ms: number): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
   return `${Math.floor(seconds / 3600)}h ${Math.floor(seconds / 60) % 60}m`;
 }
+export function messageAge(timestamp: number, now_ms: number): { text: string; token: palette.Token } | null {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return null;
+  const minutes = Math.floor(Math.max(0, now_ms - timestamp) / 60_000);
+  const text =
+    minutes < 60
+      ? `${minutes} min`
+      : minutes < 1440
+        ? `${Math.floor(minutes / 60)} hr`
+        : `${Math.floor(minutes / 1440)} d`;
+  return { text, token: minutes < 5 ? "accent" : minutes < 30 ? "warm" : "hot" };
+}
+
 export function relativeTime(timestamp: number, now: number): string {
   if (timestamp === 0) return "";
   const seconds = Math.abs(now - timestamp);

@@ -469,6 +469,8 @@ export function acknowledge(o: Observation, through: bigint): void {
 }
 /** protocol.zig's `Agent`, as the snapshot sends it. */
 export interface Agent {
+  /** Latest chat message in Unix ms; 0 when unavailable. */
+  last_message_at: number;
   pull_requests: Mention[];
   conversation: number;
   subagents: { running: number; blocked: number; waiting: boolean };
@@ -494,6 +496,7 @@ export interface Agent {
 }
 export function agent(value: any = {}): Agent {
   return {
+    last_message_at: Number.isFinite(value.last_message_at) && value.last_message_at > 0 ? value.last_message_at : 0,
     pull_requests: Array.isArray(value.pull_requests)
       ? value.pull_requests.flatMap((item: { url?: unknown; mentioned?: unknown }) => {
           const ref = typeof item?.url === "string" ? parsePR(item.url) : null;

@@ -608,6 +608,7 @@ function agentView(r: Runtime, a: any, conversation: number) {
   return {
     pull_requests: r.conversations.byId(conversation)?.pull_requests ?? [],
     conversation,
+    last_message_at: r.conversations.byId(conversation)?.last_message_at ?? 0,
     subagents: a.subagents,
     changed_at: a.changed_at,
     working_since: a.working_since,

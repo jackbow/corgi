@@ -588,6 +588,7 @@ $.snapshot.conversations[].checklist.items[].group: custom bounded_text.BoundedT
 $.snapshot.conversations[].checklist.partial: bool
 $.snapshot.conversations[].checklist.at: i64
 $.snapshot.conversations[].agent.conversation: u32
+$.snapshot.conversations[].agent.last_message_at: i64
 $.snapshot.conversations[].agent.pull_requests: optional
 $.snapshot.conversations[].agent.pull_requests?[].repo: string
 $.snapshot.conversations[].agent.pull_requests?[].number: u32
@@ -866,6 +867,7 @@ $.snapshot.panes[].cols: u16
 $.snapshot.panes[].rows: u16
 $.snapshot.panes[].exited: bool
 $.snapshot.panes[].agent.conversation: u32
+$.snapshot.panes[].agent.last_message_at: i64
 $.snapshot.panes[].agent.pull_requests: optional
 $.snapshot.panes[].agent.pull_requests?[].repo: string
 $.snapshot.panes[].agent.pull_requests?[].number: u32
@@ -902,6 +904,7 @@ $.snapshot.panes[].forking: bool
 $.snapshot.panes[].dormant: bool
 $.snapshot.headless_sessions[].agent: optional
 $.snapshot.headless_sessions[].agent?.conversation: u32
+$.snapshot.headless_sessions[].agent?.last_message_at: i64
 $.snapshot.headless_sessions[].agent?.pull_requests: optional
 $.snapshot.headless_sessions[].agent?.pull_requests?[].repo: string
 $.snapshot.headless_sessions[].agent?.pull_requests?[].number: u32

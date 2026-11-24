@@ -40,6 +40,7 @@ feature list and behavior changes.
 - **Workspace and agent navigation:** move tabs between workspaces, keep tab
   and agent ordering aligned, and switch agent scope with Cmd+Shift+A.
   Archived conversations restore at a clean prompt with a resume hint.
+  Sleeping agents show a colored age since their last chat message.
 - **Phone access and notifications:** a paired Tailscale phone app with
   conversation history, terminal control, agent management, launch profiles,
   archives, and web push. macOS alerts show conversation titles and previews

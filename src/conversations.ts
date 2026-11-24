@@ -17,6 +17,8 @@ export const max_actors = 1024;
 export type ActorId = number & { readonly __actorId: unique symbol };
 export class Actor {
   pull_requests: Mention[] = [];
+  /** Latest user or assistant message in the transcript, in Unix ms; rebuilt on startup. */
+  last_message_at = 0;
   static Id = {
     none: 0 as ActorId,
     first: 1 as ActorId,

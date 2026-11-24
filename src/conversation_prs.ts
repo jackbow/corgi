@@ -19,11 +19,14 @@ export function sorted(items: Mention[], sort: Sort = "recent"): Mention[] {
   );
 }
 export class Index {
+  last_message_at = 0;
   private refs = new Map<string, Mention>();
   private sequence = 0;
-  observe(messages: Pick<Message, "role" | "text">[]) {
+  observe(messages: (Pick<Message, "role" | "text"> & Partial<Pick<Message, "timestamp">>)[]) {
     for (const message of messages) {
       if (message.role !== "user" && message.role !== "assistant") continue;
+      if (message.timestamp && Number.isFinite(message.timestamp))
+        this.last_message_at = Math.max(this.last_message_at, message.timestamp);
       const mentioned = ++this.sequence;
       for (const match of message.text.matchAll(
         /https:\/\/github\.com\/[^\s<>"'\])]+|(?<![\w/.])#?[1-9]\d*(?![\w/.])/gi,
@@ -109,7 +112,11 @@ export class Tracker {
           // A history rebuild must not replace the current list with earlier mentions.
           if (reading.stamp !== stamp) continue;
           const items = reading.index.items();
-          if (JSON.stringify(actor.pull_requests) !== JSON.stringify(items)) {
+          if (
+            actor.last_message_at !== reading.index.last_message_at ||
+            JSON.stringify(actor.pull_requests) !== JSON.stringify(items)
+          ) {
+            actor.last_message_at = reading.index.last_message_at;
             actor.pull_requests = items;
             changed();
           }

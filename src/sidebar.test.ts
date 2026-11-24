@@ -35,6 +35,7 @@ import {
   ScopeMenu,
   gitWorkspace,
   relativeTime,
+  messageAge,
   elapsed,
   panel,
   active_name,
@@ -1156,6 +1157,81 @@ test("commit relative time humanizes elapsed and future timestamps", () => {
   expect(relativeTime(10000, 10060)).toBe("1 minute ago");
   expect(relativeTime(10000, 17200)).toBe("2 hours ago");
   expect(relativeTime(17200, 10000)).toBe("in 2 hours");
+});
+
+test("message ages use minutes, hours and days with age colors and safe unknown times", () => {
+  const now = 2_000_000_000_000;
+  for (const [minutes, text, token] of [
+    [0, "0 min", "accent"],
+    [4, "4 min", "accent"],
+    [5, "5 min", "warm"],
+    [29, "29 min", "warm"],
+    [30, "30 min", "hot"],
+    [60, "1 hr", "hot"],
+    [1440, "1 d", "hot"],
+  ] as const)
+    expect(messageAge(now - minutes * 60_000, now)).toEqual({ text, token });
+  expect(messageAge(now + 60_000, now)).toEqual({ text: "0 min", token: "accent" });
+  for (const unknown of [0, -1, NaN, Infinity]) expect(messageAge(unknown, now)).toBeNull();
+});
+
+test("sleeping rows keep colored message ages on the dog line, clear of child badges", () => {
+  const now = 2_000_000_000_000;
+  for (const intensity of [0, 50]) {
+    const e = entry({
+      target: { pane: 30101 },
+      provider: "codex",
+      last_message_at: now - 6 * 60_000,
+      subagents: { running: 2, blocked: 0, waiting: false },
+    });
+    const view = View.init(100, 30, true, 0, 1).withEntries([e]);
+    view.corgi_intensity = intensity;
+    const bytes = draw(view, [e], [], now);
+    expect(bytes).toContain(fg("warm") + "6 min");
+    const host = new Terminal(100, 30);
+    try {
+      host.feed(bytes);
+      const line = host
+        .text()
+        .split("\n")
+        .find(line => line.includes("6 min"))!;
+      expect(line).toBeDefined();
+      if (intensity > 0) expect(line).toContain("ᐯ");
+      expect(line.indexOf("6 min")).toBeLessThan(line.lastIndexOf("2"));
+      e.last_message_at = 0;
+      host.feed(draw(view, [e], [], now));
+      expect(host.text()).not.toContain("6 min");
+    } finally {
+      host.destroy();
+    }
+    e.last_message_at = now - 6 * 60_000;
+    for (const state of ["working", "blocked", "done"]) {
+      e.state = state;
+      expect(draw(view, [e], [], now)).not.toContain("6 min");
+    }
+  }
+});
+
+test("narrow sleeping rows omit the age rather than clip the dog or child badge", () => {
+  const now = 2_000_000_000_000;
+  const e = entry({
+    target: { pane: 30102 },
+    provider: "codex",
+    last_message_at: now - 6 * 60_000,
+    subagents: { running: 2, blocked: 0, waiting: false },
+  });
+  const view = View.init(100, 30, true, 0, 1).withEntries([e]);
+  view.width = 18;
+  const bytes = draw(view, [e], [], now);
+  expect(bytes).not.toContain("6 min");
+  const host = new Terminal(100, 30);
+  try {
+    host.feed(bytes);
+    expect(host.text()).toContain("ᐯ");
+    expect(host.text()).toContain("2");
+  } finally {
+    host.destroy();
+  }
 });
 
 test("content wipes over the old corgi in terminal cells and then clears it", () => {

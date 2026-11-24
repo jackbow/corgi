@@ -10,6 +10,10 @@ import { Workspace } from "./workspace";
 import { Terminal } from "./pane/terminal";
 import { Path } from "./agents";
 import { agent } from "./mirror";
+import { snapshot } from "./session";
+import { Runtime as Mirror } from "./mirror";
+import { rows } from "./agent_rows";
+import { transport } from "./fixtures/transport";
 
 const url = (n: number, repo = "acme/app") => `https://github.com/${repo}/pull/${n}`;
 test("user and assistant links introduce PRs and later short references raise them", () => {
@@ -49,11 +53,27 @@ test("code, emphasis, punctuation and host casing preserve canonical PR links", 
   expect(sorted(index.items(), "number").map(p => p.number)).toEqual([9, 12]);
 });
 test("wire normalization accepts older snapshots and rejects malformed PR references", () => {
+  expect(agent().last_message_at).toBe(0);
+  expect(agent({ last_message_at: 1234 }).last_message_at).toBe(1234);
+  for (const value of [-1, NaN, Infinity, "1234", null])
+    expect(agent({ last_message_at: value }).last_message_at).toBe(0);
   expect(agent().pull_requests).toEqual([]);
   expect(
     agent({ pull_requests: [{ url: url(12), mentioned: 2 }, null, { url: "https://evil.test/12", mentioned: 3 }] })
       .pull_requests,
   ).toHaveLength(1);
+});
+
+test("message age tracks user and assistant timestamps without tools or missing stamps resetting it", () => {
+  const index = new Index();
+  index.observe([{ role: "user", text: "hello", timestamp: 1000 }]);
+  index.observe([{ role: "assistant", text: "hi", timestamp: 2000 }]);
+  index.observe([
+    { role: "tool", text: "result", timestamp: 9000 },
+    { role: "user", text: "no stamp" },
+  ]);
+  index.observe([{ role: "assistant", text: "older", timestamp: 1500 }]);
+  expect(index.last_message_at).toBe(2000);
 });
 test("provider decoders include user input while excluding tool output and injected instructions", async () => {
   const providers = [
@@ -100,14 +120,16 @@ test("transcript tracking rebuilds history, reads appended user input, and isola
     pane = new Pane(1, terminal, dir);
   const actor = runtime.conversations.get("codex", "session");
   runtime.workspaces.items = [new Workspace(1, dir)];
+  runtime.workspaces.items[0].model.newTab("chat");
   runtime.panes.push(pane);
   pane.attachment.select(actor);
   actor.state.transcript = new Path(file);
   const tracker = new Tracker();
   let changes = 0;
-  const message = (text: string, role = "user") =>
+  const message = (text: string, role = "user", timestamp = "2026-11-24T12:00:00.000Z") =>
     JSON.stringify({
       type: "response_item",
+      timestamp,
       payload: { type: "message", role, content: [{ type: "input_text", text }] },
     }) + "\n";
   try {
@@ -120,6 +142,24 @@ test("transcript tracking rebuilds history, reads appended user input, and isola
     );
     await tracker.refresh(runtime, () => changes++, 0);
     expect(actor.pull_requests.map(p => p.number)).toEqual([9, 12]);
+    expect(actor.last_message_at).toBe(Date.parse("2026-11-24T12:00:00.000Z"));
+    expect(snapshot(runtime).panes[0].agent.last_message_at).toBe(actor.last_message_at);
+    const mirror = new Mirror();
+    try {
+      mirror.receive(
+        transport(async () => {}),
+        {
+          ...snapshot(runtime),
+          headless_sessions: [
+            { id: 2, workspace: 1, provider: "codex", state: "idle", agent: { last_message_at: 1234 } },
+          ],
+        },
+      );
+      const entries = rows(mirror, mirror.workspaces.items[0], Date.now()).map(row => row.entry);
+      expect(entries.map(e => e.last_message_at)).toEqual([actor.last_message_at, 1234]);
+    } finally {
+      mirror.destroy();
+    }
     const next = message("please update 12"),
       split = next.length - 5;
     await appendFile(file, next.slice(0, split));
@@ -130,9 +170,17 @@ test("transcript tracking rebuilds history, reads appended user input, and isola
     expect(actor.pull_requests[0].number).toBe(12);
     await tracker.refresh(runtime, () => changes++, 6000);
     expect(changes).toBe(2);
+    await appendFile(file, message("A new message without a PR", "assistant", "2026-11-24T12:05:00.000Z"));
+    await tracker.refresh(runtime, () => changes++, 8000);
+    expect(actor.last_message_at).toBe(Date.parse("2026-11-24T12:05:00.000Z"));
+    expect(changes).toBe(3);
+    await appendFile(file, message("tool output", "tool", "2026-11-24T12:10:00.000Z"));
+    await tracker.refresh(runtime, () => changes++, 10000);
+    expect(changes).toBe(3);
     const other = runtime.conversations.get("codex", "other");
     pane.attachment.select(other);
     expect(other.pull_requests).toEqual([]);
+    expect(other.last_message_at).toBe(0);
   } finally {
     tracker.stopped = true;
     runtime.destroy();
