@@ -24,5 +24,6 @@ export function snapshot(number = 12): Snapshot {
     stack: [],
     discussionVersion: 1,
     fetched: Date.now(),
+    statusFetched: Date.now(),
   };
 }

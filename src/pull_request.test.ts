@@ -118,7 +118,10 @@ test("GitHub reads paginate comments/checks, keep latest reviews/statuses, and f
       return JSON.stringify([[linked(13), { ...linked(14), head: { repo: { full_name: "fork/app" } } }]]);
     return "[[]]";
   });
-  const result = await client.fetch(s.ref);
+  let result = await client.fetch(s.ref);
+  result = await client.section(result, "discussion");
+  result = await client.section(result, "checks");
+  result = await client.section(result, "stack");
   expect(result.comments.map(c => c.body)).toEqual(["fine", "second", "first", "fix it"]);
   expect(result.comments.find(c => c.body === "second")?.author).toBe("deleted user");
   expect(result.reviews).toEqual([{ author: "reviewer", state: "APPROVED" }]);
@@ -234,7 +237,7 @@ test("cache survives recreation without expiry, deduplicates reads and rejects c
   }
 });
 
-test("only unmerged PRs become stale after two days, without expiring their data", () => {
+test("only unmerged PRs become stale after one minute, without expiring their data", () => {
   const s = snapshot();
   expect(stale(s, s.fetched + stale_ms - 1)).toBe(false);
   expect(stale(s, s.fetched + stale_ms)).toBe(true);
@@ -322,7 +325,7 @@ test("review threads and replies paginate with resolution state and chronologica
     }
     return "[[]]";
   });
-  const result = await client.fetch(s.ref);
+  const result = await client.section(await client.fetch(s.ref), "discussion");
   expect(result.threads).toEqual([
     {
       id: "thread-1",
@@ -468,7 +471,7 @@ test("stacks traverse ancestors and descendants and avoid old PRs on reused bran
     return JSON.stringify([
       nodes.filter(n => (head ? n.head.ref === head : base ? n.base.ref === base && n.state === "open" : false)),
     ]);
-  }).fetch(s.ref);
+  }).section(s, "stack");
   expect(result.stack.map(p => p.title).sort()).toEqual([
     "First child",
     "Foundation",
@@ -494,7 +497,7 @@ test("marking ready targets the displayed PR and rejects closed or already-ready
   expect(calls).toHaveLength(1);
 });
 
-test("status-only refresh updates head checks and unresolved count without refetching discussion or stacks", async () => {
+test("status-only refresh updates metadata, CI summary and unresolved count without refetching discussion or stacks", async () => {
   const s = snapshot(),
     calls: string[][] = [];
   const meta = {
@@ -511,12 +514,14 @@ test("status-only refresh updates head checks and unresolved count without refet
   };
   const client = new Client(async args => {
     calls.push(args);
-    if (args[0] === "pr") return JSON.stringify(meta);
+    if (args[0] === "pr") return JSON.stringify({ ...s, ...meta });
     if (args[1] === "graphql")
       return JSON.stringify({
         data: {
           repository: {
             pullRequest: {
+              headRefOid: meta.headRefOid,
+              commits: { nodes: [{ commit: { statusCheckRollup: { state: "PENDING" } } }] },
               reviewThreads: { nodes: [{ isResolved: false }, { isResolved: true }], pageInfo: { hasNextPage: false } },
             },
           },
@@ -528,13 +533,15 @@ test("status-only refresh updates head checks and unresolved count without refet
   });
   const result = await client.status(s);
   expect(result.body).toBe(s.body);
-  expect(result.comments).toBe(s.comments);
-  expect(result.stack).toBe(s.stack);
+  expect(result.comments).toEqual([]);
+  expect(result.stack).toEqual([]);
   expect(result.head).toBe(meta.headRefOid);
-  expect(result.checks).toEqual([{ title: "test", state: "pending" }]);
+  expect(result.checks).toEqual([]);
+  expect(result.checkSummary).toBe("pending");
+  expect(calls).toHaveLength(2);
   expect(result.unresolved).toBe(1);
   expect(result.autoMerge).toBe(true);
-  expect(result.fetched).toBe(s.fetched);
+  expect(result.fetched).toBeGreaterThanOrEqual(s.fetched);
   expect(calls.some(a => a.some(v => v.includes("/issues/") || v.includes("/pulls?") || v.includes("/reviews")))).toBe(
     false,
   );
@@ -636,4 +643,175 @@ test("agent comment context includes saved old-side ranges and numbered code", (
   ]);
   expect(commentPrompt(s, { ...comment, path: "", diffHunk: undefined })).not.toContain("Code context");
   expect(commentSnippet({ ...thread, comments: [] })).toEqual([]);
+});
+
+test("initial metadata needs one request and leaves expensive sections unloaded", async () => {
+  const s = snapshot(),
+    calls: string[][] = [];
+  const client = new Client(async args => {
+    calls.push(args);
+    return JSON.stringify({
+      ...s,
+      headRefOid: s.head,
+      baseRefOid: s.base,
+      headRefName: s.headBranch,
+      baseRefName: s.baseBranch,
+      createdAt: "2026-11-01",
+      updatedAt: "2026-11-24",
+    });
+  });
+  const basic = await client.fetch(s.ref);
+  expect(calls).toHaveLength(1);
+  expect(calls[0][0]).toBe("pr");
+  expect(basic.loaded).toEqual([]);
+  expect(basic.comments).toEqual([]);
+  expect(basic.checks).toEqual([]);
+  expect(basic.stack).toEqual([]);
+  expect(basic.head).toBe(s.head);
+  expect(basic.createdAt).toBe("2026-11-01");
+});
+
+test("prefetch limits concurrency, deduplicates mentions and shares foreground reads", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "corgi-pr-prefetch-"));
+  const client = new Client(),
+    pending = new Map<number, ReturnType<typeof Promise.withResolvers<ReturnType<typeof snapshot>>>>();
+  const reads: number[] = [];
+  client.fetch = ref => {
+    reads.push(ref.number);
+    const work = Promise.withResolvers<ReturnType<typeof snapshot>>();
+    pending.set(ref.number, work);
+    return work.promise;
+  };
+  const cache = new Cache(client, dir),
+    refs = [snapshot(1).ref, snapshot(2).ref, snapshot(3).ref];
+  try {
+    cache.prefetch([...refs, refs[0]]);
+    await Bun.sleep(5);
+    expect(reads).toEqual([1, 2]);
+    cache.prefetch(refs);
+    const foreground = cache.get(refs[0]);
+    pending.get(1)!.resolve(snapshot(1));
+    expect((await foreground).ref.number).toBe(1);
+    await Bun.sleep(5);
+    expect(reads).toEqual([1, 2, 3]);
+    pending.get(2)!.resolve(snapshot(2));
+    pending.get(3)!.reject(Error("offline"));
+    await Bun.sleep(5);
+    cache.prefetch(refs);
+    await Bun.sleep(5);
+    expect(reads).toEqual([1, 2, 3]);
+    const retry = cache.get(refs[2]);
+    await Bun.sleep(5);
+    pending.get(3)!.resolve(snapshot(3));
+    expect((await retry).ref.number).toBe(3);
+    expect(reads).toEqual([1, 2, 3, 3]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("parallel lazy sections merge without losing data and obsolete results cannot replace new revisions", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "corgi-pr-sections-")),
+    client = new Client();
+  const s = { ...snapshot(), loaded: [] as ("discussion" | "checks" | "stack")[] },
+    checks = Promise.withResolvers<typeof s>(),
+    discussion = Promise.withResolvers<typeof s>(),
+    stack = Promise.withResolvers<typeof s>();
+  client.fetch = async () => s;
+  client.section = (_, section) => ({ checks, discussion, stack })[section].promise;
+  const cache = new Cache(client, dir);
+  try {
+    await cache.refresh(s.ref);
+    const a = cache.section(s, "checks"),
+      b = cache.section(s, "discussion");
+    expect(cache.section(s, "checks")).toBe(a);
+    checks.resolve({ ...s, checks: [{ title: "lint", state: "failed" }] });
+    await a;
+    discussion.resolve({ ...s, comments: [{ author: "alice", body: "hello", at: "now", path: "" }] });
+    const both = await b;
+    expect(both.checks[0].title).toBe("lint");
+    expect(both.comments[0].body).toBe("hello");
+    expect(both.loaded?.sort()).toEqual(["checks", "discussion"]);
+    const late = cache.section(both, "stack"),
+      fresh = { ...s, head: "d".repeat(40), fetched: s.fetched + 1 };
+    client.fetch = async () => fresh;
+    await cache.refresh(s.ref);
+    stack.resolve({
+      ...s,
+      stack: [
+        {
+          ...snapshot(13).ref,
+          title: "Old child",
+          headBranch: "child",
+          baseBranch: "topic",
+          state: "OPEN",
+          draft: false,
+        },
+      ],
+    });
+    expect((await late).head).toBe(fresh.head);
+    expect((await cache.cached(s.ref))?.stack).toEqual([]);
+    const restored = await new Cache(client, dir).cached(s.ref);
+    expect(restored?.loaded).toEqual([]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("patches share in-flight reads, cache by both revisions and retry failures", async () => {
+  const client = new Client(),
+    cache = new Cache(client),
+    s = snapshot(),
+    pending = Promise.withResolvers<string>();
+  let reads = 0;
+  client.diff = () => {
+    reads++;
+    return pending.promise;
+  };
+  const a = cache.diff(s);
+  expect(cache.diff(s)).toBe(a);
+  pending.resolve("patch");
+  expect(await a).toBe("patch");
+  expect(await cache.diff(s)).toBe("patch");
+  expect(reads).toBe(1);
+  client.diff = async () => {
+    reads++;
+    throw Error("offline");
+  };
+  const fresh = { ...s, base: "c".repeat(40) };
+  await expect(cache.diff(fresh)).rejects.toThrow("offline");
+  client.diff = async () => {
+    reads++;
+    return "fresh patch";
+  };
+  expect(await cache.diff(fresh)).toBe("fresh patch");
+  expect(reads).toBe(3);
+  await cache.diff({ ...fresh, head: "d".repeat(40) });
+  expect(reads).toBe(4);
+});
+
+test("lightweight readiness paginates thread flags without loading their bodies or individual checks", async () => {
+  const s = snapshot(),
+    calls: string[][] = [];
+  const client = new Client(async args => {
+    calls.push(args);
+    const next = args.includes("after=next");
+    return JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            headRefOid: s.head,
+            commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE" } } }] },
+            reviewThreads: { nodes: [{ isResolved: next }], pageInfo: { hasNextPage: !next, endCursor: "next" } },
+          },
+        },
+      },
+    });
+  });
+  const status = await client.status(s, false);
+  expect(status.unresolved).toBe(1);
+  expect(status.checkSummary).toBe("failed");
+  expect(calls).toHaveLength(2);
+  expect(calls.every(args => args[1] === "graphql" && !args.join(" ").includes("body"))).toBe(true);
+  await expect(client.status({ ...s, head: "c".repeat(40) }, false)).rejects.toThrow("PR changed");
 });

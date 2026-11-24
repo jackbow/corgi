@@ -7,12 +7,14 @@ import * as subprocess from "./subprocess";
 import { parse, type Ref } from "./pull_request_ref";
 export { parse, type Ref } from "./pull_request_ref";
 
-export const stale_ms = 2 * 24 * 60 * 60 * 1000;
+export const stale_ms = 60_000;
 export const cache_size = 100;
 export function stale(snapshot: Snapshot, now = Date.now()): boolean {
   return snapshot.state !== "MERGED" && (now < snapshot.fetched || now - snapshot.fetched >= stale_ms);
 }
 export type CheckState = "pending" | "failed" | "passed";
+const sections = ["discussion", "checks", "stack"] as const;
+export type Section = (typeof sections)[number];
 export interface Check {
   title: string;
   state: CheckState;
@@ -73,6 +75,15 @@ export interface Snapshot {
   discussionVersion?: number;
   statusFetched?: number;
   unresolved?: number;
+  checkSummary?: CheckState | "none";
+  loaded?: Section[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+export function loaded(snapshot: Snapshot, section: Section): boolean {
+  return snapshot.loaded
+    ? snapshot.loaded.includes(section)
+    : section !== "discussion" || snapshot.discussionVersion === 1;
 }
 export function orderedStack(snapshot: Snapshot): StackEntry[] {
   const current: StackEntry = {
@@ -149,7 +160,7 @@ export function checkState(status: unknown, conclusion: unknown): CheckState {
   return ["success", "neutral", "skipped"].includes(string(conclusion)) ? "passed" : "failed";
 }
 const fields =
-  "title,body,state,isDraft,mergeable,mergeStateStatus,reviewDecision,autoMergeRequest,headRefOid,baseRefOid,headRefName,baseRefName,reviewRequests,labels";
+  "title,body,state,isDraft,mergeable,mergeStateStatus,reviewDecision,autoMergeRequest,headRefOid,baseRefOid,headRefName,baseRefName,reviewRequests,labels,createdAt,updatedAt";
 
 const identifier = (value: unknown): string | undefined =>
   typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? String(value) : undefined;
@@ -338,7 +349,6 @@ export class Client {
     return [...entries.values()].filter(p => p.url !== current.url);
   }
   async fetch(ref: Ref): Promise<Snapshot> {
-    const endpoint = `repos/${ref.repo}`;
     const meta = object(JSON.parse(await this.execute(["pr", "view", ref.url, "--json", fields])));
     const state = meta.state;
     if (state !== "OPEN" && state !== "CLOSED" && state !== "MERGED")
@@ -347,27 +357,6 @@ export class Client {
       base = string(meta.baseRefOid);
     if (![head, base].every(sha => /^[a-f0-9]{40,64}$/i.test(sha)))
       throw new Error("GitHub returned an invalid PR revision");
-    const [discussion, threads, reviews, checks, stack] = await Promise.all([
-      this.pages(`${endpoint}/issues/${ref.number}/comments`),
-      this.threads(ref),
-      this.pages(`${endpoint}/pulls/${ref.number}/reviews`),
-      this.checks(ref, head),
-      this.stack({
-        ...ref,
-        title: string(meta.title),
-        headBranch: string(meta.headRefName),
-        baseBranch: string(meta.baseRefName),
-        state,
-        draft: meta.isDraft === true,
-      }),
-    ]);
-    const latestReviews = new Map<string, Review>();
-    for (const value of reviews) {
-      const r = object(value),
-        state = string(r.state);
-      if (state !== "COMMENTED" && state !== "PENDING")
-        latestReviews.set(login(r.user), { author: login(r.user), state });
-    }
     return {
       ref,
       title: string(meta.title),
@@ -389,16 +378,65 @@ export class Client {
         })
         .filter(Boolean),
       labels: array(meta.labels).map(value => string(object(value).name)),
-      reviews: [...latestReviews.values()],
-      comments: [...discussion.map(comment), ...reviews.filter(value => string(object(value).body)).map(comment)].sort(
-        (a, b) => b.at.localeCompare(a.at),
-      ),
-      threads,
-      checks,
-      unresolved: threads.filter(t => !t.resolved).length,
-      stack,
-      discussionVersion: 1,
+      reviews: [],
+      comments: [],
+      threads: [],
+      checks: [],
+      stack: [],
+      loaded: [],
+      createdAt: string(meta.createdAt),
+      updatedAt: string(meta.updatedAt),
       fetched: Date.now(),
+    };
+  }
+  async section(snapshot: Snapshot, section: Section): Promise<Snapshot> {
+    const ref = snapshot.ref;
+    let details: Partial<Snapshot>;
+    switch (section) {
+      case "checks":
+        details = { checks: await this.checks(ref, snapshot.head) };
+        break;
+      case "stack":
+        details = {
+          stack: await this.stack({
+            ...ref,
+            title: snapshot.title,
+            headBranch: snapshot.headBranch,
+            baseBranch: snapshot.baseBranch,
+            state: snapshot.state,
+            draft: snapshot.draft,
+          }),
+        };
+        break;
+      case "discussion": {
+        const [discussion, threads, reviews] = await Promise.all([
+          this.pages(`repos/${ref.repo}/issues/${ref.number}/comments`),
+          this.threads(ref),
+          this.pages(`repos/${ref.repo}/pulls/${ref.number}/reviews`),
+        ]);
+        const latest = new Map<string, Review>();
+        for (const value of reviews) {
+          const r = object(value),
+            state = string(r.state);
+          if (state !== "COMMENTED" && state !== "PENDING") latest.set(login(r.user), { author: login(r.user), state });
+        }
+        details = {
+          reviews: [...latest.values()],
+          comments: [
+            ...discussion.map(comment),
+            ...reviews.filter(value => string(object(value).body)).map(comment),
+          ].sort((a, b) => b.at.localeCompare(a.at)),
+          threads,
+          unresolved: threads.filter(t => !t.resolved).length,
+          discussionVersion: 1,
+        };
+        break;
+      }
+    }
+    return {
+      ...snapshot,
+      ...details,
+      loaded: sections.filter(s => s === section || loaded(snapshot, s)),
     };
   }
   private async checks(ref: Ref, head: string): Promise<Check[]> {
@@ -436,62 +474,44 @@ export class Client {
       ...latestStatuses.values(),
     ];
   }
-  async status(snapshot: Snapshot): Promise<Snapshot> {
-    const ref = snapshot.ref;
-    const meta = object(
-      JSON.parse(
-        await this.execute([
-          "pr",
-          "view",
-          ref.url,
-          "--json",
-          "state,isDraft,mergeable,mergeStateStatus,reviewDecision,autoMergeRequest,headRefOid,baseRefOid,headRefName,baseRefName",
-        ]),
-      ),
-    );
-    const state = meta.state,
-      head = string(meta.headRefOid),
-      base = string(meta.baseRefOid);
-    if (
-      (state !== "OPEN" && state !== "CLOSED" && state !== "MERGED") ||
-      ![head, base].every(sha => /^[a-f0-9]{40,64}$/i.test(sha))
-    )
-      throw new Error("GitHub returned invalid PR readiness");
-    const [checks, threads] = await Promise.all([this.checks(ref, head), this.threadStatus(ref)]);
-    return {
-      ...snapshot,
-      state,
-      draft: meta.isDraft === true,
-      mergeable: string(meta.mergeable),
-      mergeState: string(meta.mergeStateStatus),
-      decision: string(meta.reviewDecision),
-      autoMerge: meta.autoMergeRequest != null,
-      head,
-      base,
-      headBranch: string(meta.headRefName),
-      baseBranch: string(meta.baseRefName),
-      checks,
-      unresolved: threads,
-      statusFetched: Date.now(),
-    };
-  }
-  private async threadStatus(ref: Ref): Promise<number> {
-    const [owner, name] = ref.repo.split("/");
+  async status(snapshot: Snapshot, refresh = true): Promise<Snapshot> {
+    const fresh = refresh ? await this.fetch(snapshot.ref) : snapshot;
+    const ref = fresh.ref,
+      [owner, name] = ref.repo.split("/");
     let after = "",
-      unresolved = 0;
+      unresolved = 0,
+      checkSummary: Snapshot["checkSummary"];
     do {
       const data = await this.graphql(
-        "query($owner:String!,$name:String!,$number:Int!,$after:String) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { reviewThreads(first:100,after:$after) { nodes { isResolved } pageInfo { hasNextPage endCursor } } } } }",
+        "query($owner:String!,$name:String!,$number:Int!,$after:String) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { headRefOid commits(last:1) { nodes { commit { statusCheckRollup { state } } } } reviewThreads(first:100,after:$after) { nodes { isResolved } pageInfo { hasNextPage endCursor } } } } }",
         { owner, name, number: ref.number, ...(after ? { after } : {}) },
       );
-      const connection = object(object(object(data.repository).pullRequest).reviewThreads);
-      if (!Array.isArray(connection.nodes)) throw new Error("GitHub did not return review threads");
+      const pr = object(object(data.repository).pullRequest);
+      if (pr.headRefOid !== fresh.head) throw Error("PR changed while loading readiness; refresh to retry");
+      const rollup = object(object(object(array(object(pr.commits).nodes)[0]).commit).statusCheckRollup);
+      switch (rollup.state) {
+        case "SUCCESS":
+          checkSummary = "passed";
+          break;
+        case "FAILURE":
+        case "ERROR":
+          checkSummary = "failed";
+          break;
+        case "PENDING":
+        case "EXPECTED":
+          checkSummary = "pending";
+          break;
+        default:
+          checkSummary = "none";
+      }
+      const connection = object(pr.reviewThreads);
+      if (!Array.isArray(connection.nodes)) throw Error("GitHub did not return review threads");
       unresolved += connection.nodes.filter(t => object(t).isResolved !== true).length;
       const info = object(connection.pageInfo);
       after = info.hasNextPage ? string(info.endCursor) : "";
-      if (info.hasNextPage && !after) throw new Error("GitHub returned an invalid threads cursor");
+      if (info.hasNextPage && !after) throw Error("GitHub returned an invalid threads cursor");
     } while (after);
-    return unresolved;
+    return { ...fresh, checkSummary, unresolved, statusFetched: Date.now() };
   }
   diff(snapshot: Snapshot): Promise<string> {
     return this.execute([
@@ -590,12 +610,105 @@ let lastAccess = 0;
 export class Cache {
   private memory = new Map<string, Snapshot>();
   private flights = new Map<string, Promise<Snapshot>>();
+  private details = new Map<string, Promise<Snapshot>>();
+  private patches = new Map<string, string>();
+  private patchFlights = new Map<string, Promise<string>>();
+  private wanted = new Map<string, Ref>();
+  private prefetched = new Set<string>();
+  private prefetching = 0;
   constructor(
     readonly client = new Client(),
     readonly directory = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "corgi", "pull-requests"),
   ) {}
   private file(ref: Ref): string {
     return join(this.directory, createHash("sha256").update(ref.url).digest("hex") + ".json");
+  }
+  async get(ref: Ref): Promise<Snapshot> {
+    const cached = await this.cached(ref);
+    return cached && !stale(cached) ? cached : this.refresh(ref);
+  }
+  prefetch(refs: Ref[]): void {
+    for (const ref of refs.slice(0, cache_size)) {
+      if (this.prefetched.has(ref.url)) continue;
+      this.prefetched.add(ref.url);
+      while (this.prefetched.size > cache_size) this.prefetched.delete(this.prefetched.values().next().value!);
+      this.wanted.set(ref.url, ref);
+      if (this.wanted.size > cache_size) this.wanted.delete(this.wanted.keys().next().value!);
+    }
+    while (this.prefetching < 2 && this.wanted.size) {
+      const ref = this.wanted.values().next().value!;
+      this.wanted.delete(ref.url);
+      this.prefetching++;
+      void this.get(ref)
+        .catch(() => {})
+        .finally(() => {
+          this.prefetching--;
+          this.prefetch([]);
+        });
+    }
+  }
+  section(snapshot: Snapshot, section: Section): Promise<Snapshot> {
+    const current = this.memory.get(snapshot.ref.url) ?? snapshot;
+    if (loaded(current, section)) return Promise.resolve(current);
+    const key = `${current.ref.url}:${current.fetched}:${current.head}:${current.base}:${section}`;
+    const pending = this.details.get(key);
+    if (pending) return pending;
+    const flight = this.client
+      .section(current, section)
+      .then(async fresh => {
+        const latest = this.memory.get(current.ref.url) ?? current;
+        if (latest.head !== current.head || latest.base !== current.base || latest.fetched !== current.fetched)
+          return latest;
+        const next = { ...latest, loaded: sections.filter(s => s === section || loaded(latest, s)) };
+        switch (section) {
+          case "discussion":
+            Object.assign(next, {
+              comments: fresh.comments,
+              threads: fresh.threads,
+              reviews: fresh.reviews,
+              unresolved: fresh.unresolved,
+              discussionVersion: 1,
+            });
+            break;
+          case "checks":
+            next.checks = fresh.checks;
+            break;
+          case "stack":
+            next.stack = fresh.stack;
+            break;
+        }
+        await this.put(next);
+        return next;
+      })
+      .finally(() => this.details.delete(key));
+    this.details.set(key, flight);
+    return flight;
+  }
+  diff(snapshot: Snapshot): Promise<string> {
+    const key = `${snapshot.ref.repo}:${snapshot.base}:${snapshot.head}`;
+    const cached = this.patches.get(key);
+    if (cached !== undefined) {
+      this.patches.delete(key);
+      this.patches.set(key, cached);
+      return Promise.resolve(cached);
+    }
+    const pending = this.patchFlights.get(key);
+    if (pending) return pending;
+    const flight = this.client
+      .diff(snapshot)
+      .then(patch => {
+        this.patches.set(key, patch);
+        let bytes = [...this.patches.values()].reduce((sum, value) => sum + Buffer.byteLength(value), 0);
+        while (bytes > 32 * 1024 * 1024 || this.patches.size > cache_size) {
+          const first = this.patches.keys().next().value!;
+          bytes -= Buffer.byteLength(this.patches.get(first)!);
+          this.patches.delete(first);
+        }
+        return patch;
+      })
+      .finally(() => this.patchFlights.delete(key));
+    this.patchFlights.set(key, flight);
+    return flight;
   }
   async cached(ref: Ref): Promise<Snapshot | null> {
     let snapshot = this.memory.get(ref.url);
@@ -609,7 +722,7 @@ export class Cache {
       }
     }
     const newer = this.memory.get(ref.url);
-    if (newer && newer.fetched > snapshot.fetched) snapshot = newer;
+    if (newer && newer.fetched >= snapshot.fetched) snapshot = newer;
     this.remember(snapshot);
     void this.retain(ref);
     return snapshot;
@@ -627,13 +740,22 @@ export class Cache {
     this.flights.set(ref.url, flight);
     return flight;
   }
-  async status(snapshot: Snapshot): Promise<Snapshot> {
+  async status(snapshot: Snapshot, refresh = true): Promise<Snapshot> {
     const base = await (this.flights.get(snapshot.ref.url) ?? Promise.resolve(snapshot));
-    const fresh = await this.client.status(base);
+    const fresh = await this.client.status(base, refresh);
     const latest = this.memory.get(snapshot.ref.url);
     if (latest && latest.fetched > base.fetched) return latest;
-    await this.put(fresh);
-    return fresh;
+    const next =
+      !refresh && latest
+        ? {
+            ...latest,
+            checkSummary: fresh.checkSummary,
+            unresolved: fresh.unresolved,
+            statusFetched: fresh.statusFetched,
+          }
+        : fresh;
+    await this.put(next);
+    return next;
   }
   private async put(snapshot: Snapshot): Promise<void> {
     this.remember(snapshot);
@@ -693,6 +815,10 @@ function validSnapshot(value: unknown, ref: Ref): value is Snapshot {
     (v.unresolved === undefined ||
       (typeof v.unresolved === "number" && Number.isSafeInteger(v.unresolved) && v.unresolved >= 0)) &&
     (v.discussionVersion === undefined || v.discussionVersion === 1) &&
+    (v.loaded === undefined ||
+      (Array.isArray(v.loaded) && v.loaded.every(s => ["discussion", "checks", "stack"].includes(string(s))))) &&
+    (v.checkSummary === undefined || ["none", "pending", "failed", "passed"].includes(string(v.checkSummary))) &&
+    ["createdAt", "updatedAt"].every(key => v[key] === undefined || typeof v[key] === "string") &&
     (v.statusFetched === undefined || (typeof v.statusFetched === "number" && Number.isFinite(v.statusFetched))) &&
     typeof v.fetched === "number" &&
     Number.isFinite(v.fetched) &&

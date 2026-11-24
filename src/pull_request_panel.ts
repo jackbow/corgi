@@ -60,6 +60,10 @@ export class Panel {
   conflictStarting = false;
   conflictSession: string | null = null;
   statusError = "";
+  diffLoading = false;
+  diffGeneration = 0;
+  private loading = new Set<pr.Section>();
+  private sectionErrors = new Map<pr.Section, string>();
   busy = false;
   error = "";
   confirmation: { snapshot: pr.Snapshot; kind: "merge" | "enable-auto" } | null = null;
@@ -146,6 +150,8 @@ export class Panel {
         this.error = posted ? i18n.t`Comment posted; refresh failed: ${message}` : message;
     } finally {
       this.busy = false;
+      void this.loadVisible();
+      if (this.snapshot && !this.snapshot.statusFetched) void this.refreshStatus(false);
       this.changed();
     }
   }
@@ -157,6 +163,8 @@ export class Panel {
     this.error = "";
     const generation = ++this.generation;
     this.statusRefreshing = false;
+    this.loading = new Set();
+    this.sectionErrors.clear();
     if (!same) {
       this.compose = null;
       this.snapshot = null;
@@ -178,7 +186,7 @@ export class Panel {
         this.snapshot = cached;
         this.changed();
       }
-      if (!force && cached && cached.discussionVersion === 1 && !pr.stale(cached)) return;
+      if (!force && cached && !pr.stale(cached)) return;
       this.refreshing = true;
       this.changed();
       const snapshot = await this.cache.refresh(ref);
@@ -188,11 +196,14 @@ export class Panel {
     } finally {
       if (generation === this.generation) {
         this.refreshing = false;
+        void this.loadVisible();
+        if (this.snapshot && (!this.snapshot.statusFetched || Date.now() - this.snapshot.statusFetched >= pr.stale_ms))
+          void this.refreshStatus(false);
         this.changed();
       }
     }
   }
-  async refreshStatus(): Promise<void> {
+  async refreshStatus(refresh = true): Promise<void> {
     if (!this.snapshot || this.statusRefreshing || this.refreshing || this.busy) return;
     const snapshot = this.snapshot,
       generation = this.generation;
@@ -200,14 +211,56 @@ export class Panel {
     this.statusError = "";
     this.changed();
     try {
-      const fresh = await this.cache.status(snapshot);
-      if (generation === this.generation && this.ref?.url === fresh.ref.url) this.snapshot = fresh;
+      const fresh = await this.cache.status(snapshot, refresh);
+      if (generation === this.generation && this.ref?.url === fresh.ref.url) {
+        this.snapshot = fresh;
+        void this.loadVisible();
+      }
     } catch (error) {
       if (generation === this.generation) this.statusError = (error as Error).message;
     } finally {
       if (generation === this.generation) this.statusRefreshing = false;
       this.changed();
     }
+  }
+  private async loadVisible(): Promise<void> {
+    if (this.tab !== "overview") await this.loadSection(this.tab);
+    if (this.tab === "overview" && this.checksOpen) await this.loadSection("checks");
+  }
+  private async loadSection(section: pr.Section): Promise<void> {
+    const snapshot = this.snapshot,
+      generation = this.generation,
+      loading = this.loading;
+    if (!snapshot || pr.loaded(snapshot, section) || loading.has(section)) return;
+    loading.add(section);
+    this.sectionErrors.delete(section);
+    this.changed();
+    try {
+      const fresh = await this.cache.section(snapshot, section);
+      if (
+        generation === this.generation &&
+        this.ref?.url === fresh.ref.url &&
+        this.snapshot?.fetched === snapshot.fetched
+      )
+        this.snapshot = fresh;
+    } catch (error) {
+      if (generation === this.generation) this.sectionErrors.set(section, (error as Error).message);
+    } finally {
+      loading.delete(section);
+      if (
+        generation === this.generation &&
+        this.snapshot &&
+        (this.snapshot.fetched !== snapshot.fetched ||
+          this.snapshot.head !== snapshot.head ||
+          this.snapshot.base !== snapshot.base)
+      )
+        void this.loadVisible();
+      this.changed();
+    }
+  }
+  toggleChecks(): void {
+    this.checksOpen = !this.checksOpen;
+    if (this.checksOpen) void this.loadSection("checks");
   }
   async mutate(mutation: pr.Mutation, snapshot = this.snapshot): Promise<void> {
     if (!snapshot || this.busy) return;
@@ -224,6 +277,8 @@ export class Panel {
       if (this.ref?.url === snapshot.ref.url) this.error = (error as Error).message;
     } finally {
       this.busy = false;
+      void this.loadVisible();
+      if (this.snapshot && !this.snapshot.statusFetched) void this.refreshStatus(false);
       this.changed();
     }
   }
@@ -241,14 +296,14 @@ export class Panel {
       return;
     this.confirmation = { snapshot: this.snapshot, kind };
     this.top = this.cursor = 0;
-    this.selected = this.snapshot.stack.length ? 6 : 5;
+    this.selected = 6;
   }
   selectTab(value: string): void {
     if (value !== "overview" && value !== "discussion" && value !== "stack") return;
-    if (value === "stack" && !this.snapshot?.stack.length) return;
     this.tab = value;
     this.confirmation = null;
     this.top = this.cursor = this.selected = 0;
+    void this.loadVisible();
   }
   rows(width: number): Row[] {
     width = Math.max(4, width);
@@ -357,6 +412,14 @@ export class Panel {
       prose(i18n.t`Loading from GitHub…`, "muted");
       return rows;
     }
+    if (this.tab !== "overview" && !pr.loaded(s, this.tab)) {
+      prose(
+        this.sectionErrors.get(this.tab) || i18n.t`Loading from GitHub…`,
+        this.sectionErrors.has(this.tab) ? "hot" : "muted",
+      );
+      button("[ " + i18n.t`Refresh` + " · r ]", action("refresh"), "muted");
+      return rows;
+    }
     if (this.tab === "overview") {
       section(i18n.t`Merge readiness`);
       const actionable = !this.busy && !this.refreshing && !this.statusRefreshing && !this.error && !this.statusError;
@@ -409,12 +472,24 @@ export class Panel {
         state => s.checks.filter(check => check.state === state).length,
       );
       const [pending, failed, passed] = counts;
-      button(
-        i18n.t`Checks: ${passed} passed · ${failed} failed · ${pending} pending →`,
-        action("checks"),
-        failed ? "hot" : pending ? "warm" : "accent",
-      );
-      if (this.checksOpen) {
+      if (pr.loaded(s, "checks"))
+        button(
+          i18n.t`Checks: ${passed} passed · ${failed} failed · ${pending} pending →`,
+          action("checks"),
+          failed ? "hot" : pending ? "warm" : "accent",
+        );
+      else
+        button(
+          i18n.t`Checks` + " · " + (s.checkSummary ? human(s.checkSummary) : "…") + " →",
+          action("checks"),
+          s.checkSummary === "failed" ? "hot" : "muted",
+        );
+      if (this.checksOpen && !pr.loaded(s, "checks"))
+        prose(
+          this.sectionErrors.get("checks") || i18n.t`Loading from GitHub…`,
+          this.sectionErrors.has("checks") ? "hot" : "muted",
+        );
+      if (this.checksOpen && pr.loaded(s, "checks")) {
         for (const check of s.checks.filter(check => check.state !== "passed")) {
           const label = (check.state === "failed" ? "✕ " : "◌ ") + clean(check.title);
           if (check.state === "failed" && check.id && !this.busy)
@@ -723,7 +798,7 @@ export class Panel {
         position = stack.findIndex(p => p.url === s.ref.url) + 1,
         total = stack.length;
       tabs.push(["stack", i18n.t`Stack (${position}/${total})`]);
-    }
+    } else tabs.push(["stack", i18n.t`Stack`]);
     const tabWidths = tabs.map(([, label]) => tui.visibleWidth(label) + 2),
       spare = inner - tabWidths.reduce((total, width) => total + width, 0);
     let offset = 0;
@@ -798,11 +873,13 @@ export class Panel {
       s?.state === "MERGED" ? i18n.t`Already merged` : s?.state === "CLOSED" ? i18n.t`PR is closed` : "";
     const info = this.error
       ? clean(this.error)
-      : this.busy
-        ? i18n.t`Updating GitHub…`
-        : this.refreshing
-          ? i18n.t`Refreshing cached view…`
-          : restriction || i18n.t`Updated: ${updated}`;
+      : this.diffLoading
+        ? i18n.t`Loading diff…`
+        : this.busy
+          ? i18n.t`Updating GitHub…`
+          : this.refreshing
+            ? i18n.t`Refreshing cached view…`
+            : restriction || i18n.t`Updated: ${updated}`;
     lines[height - 2] = ink(
       pad(" " + info + (this.top + this.bodyHeight < this.visible.length ? "  ↓" : ""), inner),
       this.error ? "hot" : "muted",

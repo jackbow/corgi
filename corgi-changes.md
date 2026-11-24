@@ -46,6 +46,11 @@ Application changes added during development.
 
 ## GitHub PR viewer
 
+- Option-click a GitHub PR link in chat to open its diff directly. Plain clicks open details; Cmd-click stays with the terminal’s browser handler. `corgi action pull-request-diff URL` also opens a linked diff directly.
+- Detected chat PR links prefetch basic metadata with two background requests at a time, sharing reads with the conversation list and viewer. Repeated mentions are deduplicated; open PR metadata is refreshed on access after one minute.
+- The overview displays metadata immediately, then adds aggregate CI state and unresolved-thread counts independently. Discussion bodies and reviews, recursive stack discovery, and individual CI checks load only when their tab or check expansion opens, with separate loading and error states.
+- Diff loading needs only metadata and pinned base/head revisions. Pressing `d` during initial loading queues it; closing or leaving the viewer cancels its pending navigation. Patches share in-flight reads and a viewer-local cache bounded to 32 MiB, keyed by repository and both revisions.
+
 - Discussion comments can be sent to the conversation's agent input with the PR link, author, file/line range, old-side/outdated markers, and GitHub's saved code context. Sending pastes without submitting; shell panes copy the comment instead.
 - Review threads show numbered diff previews where GitHub provides them. **Reply to thread** posts a native review reply; **New comment** (`c`) posts a PR-wide comment. The multiline composer uses Enter for a new line and Tab to select **Post to GitHub** or **Cancel**. Failed posts retain the draft; a successful post clears it even if refreshing fails.
 
@@ -58,7 +63,7 @@ Application changes added during development.
 - PR and local/remote diff views survive viewer restarts and conversation resumes, including navigation and diff layout, keyed by provider session identity.
 - Readiness shows unresolved comments, compact **Mark ready** and **Merge** buttons, and a **Resolve conflicts with Codex** button that launches a background `gpt-6.1-sol` agent at medium effort to resolve in an isolated worktree and push the fix.
 - **Merge** uses `gh pr merge --auto` with the displayed head: merge immediately when allowed or wait for requirements. A popup warns about stacked dependents before confirming.
-- `s` refreshes readiness/checks without reloading discussion, description, or stack; `r` still refreshes everything. The Stack tab only appears for stacks and displays the current position, such as **Stack (2/3)**.
+- `s` refreshes metadata and the lightweight readiness summary; expanded details reload on demand. `r` refreshes metadata, readiness, and the currently opened details. The Stack tab is always available and shows the current position after loading, such as **Stack (2/3)**.
 - Cmd+Shift+G toggles the conversation’s PR viewer, preserving its navigation; the shortcut is customizable.
 - Merge readiness, checks, reviewers, labels, discussion entries, stack, and merge confirmations use the description-style rounded cards.
 - Framed, theme-aware pi-tui panel with Overview, Discussion, and Stack tabs, rendered Markdown, mouse hover/click/scroll interactions, fixed navigation controls, and readiness actions.
@@ -70,7 +75,7 @@ Application changes added during development.
 - Stack views follow branch dependencies from base PRs to dependents, with titles, a current-PR marker, and separate sibling branches.
 - PR details and remote diffs stay with their conversation, retaining tabs, scroll, and thread filters when switching chats.
 - Draft status is orange, with an inline **Draft [ Mark ready - v ]** control in merge readiness; the clickable PR-number header and bottom **Open** control open GitHub (`o`); the diff control is labeled **Diff** (`d`).
-- PullApprove approval summaries published as GitHub statuses appear in the overview using the existing `gh` login.
+- PullApprove approval summaries published as GitHub statuses appear after expanding CI checks, using the existing `gh` login.
 - Description content has its own framed heading. Draft and closed PRs explain why merge controls are disabled, and unavailable mergeability is labeled explicitly.
 - Merge controls use GitHub's branch rules; merging asks for a method before submitting.
 - **Open diff** displays the PR's pinned revisions in the existing diff viewer without changing the checkout. `Z` loads missing context from GitHub on demand and toggles whole files/hunks, reusing loaded content. Failed loads preserve readable hunks and can be retried. **PR details** or `P` returns to the PR panel.

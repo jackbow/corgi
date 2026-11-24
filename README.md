@@ -14,7 +14,9 @@ This fork extends [tals/corgi:main](https://github.com/tals/corgi/tree/main)
 with the workflows below. See [corgi-changes.md](corgi-changes.md) for the detailed
 feature list and behavior changes.
 
-- **GitHub PR viewer:** open PR links in a conversation's persistent viewer,
+- **GitHub PR viewer:** click PR links for details or Option-click for a direct
+  diff. Chat links prefetch basic metadata; the overview shows merge blockers,
+  while discussion, stack, and individual CI checks load when opened. Use the viewer to
   inspect checks, reviews, discussions, and stacked PRs, retry failed checks,
   and mark ready or merge. Reply to review threads, post PR comments, and send
   comments to the agent with file, line, and code context.

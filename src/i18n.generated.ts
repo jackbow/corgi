@@ -728,6 +728,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["List, diff"]': () => `列表、差异`,
     '["Live handoff unavailable for this session; turn it off to copy."]': () =>
       `此会话不支持进程接管；关闭接管即可复制。`,
+    '["Loading diff…"]': () => `正在加载差异…`,
     '["Loading from GitHub…"]': () => `正在从 GitHub 加载…`,
     '["Loading full-file context…"]': () => `正在加载完整文件内容…`,
     '["Loading pane…"]': () => `正在加载窗格…`,
@@ -1051,6 +1052,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
     '["Split layout approximated"]': () => `已近似还原分屏布局`,
     '["Split right"]': () => `向右分屏`,
     '["Squash and merge"]': () => `压缩并合并`,
+    '["Stack"]': () => `堆叠`,
     '["Stack (","/",")"]': (v0, v1) => `堆叠 (${v0}/${v1})`,
     '["Stack · base → dependent PRs"]': () => `堆叠 · 基础 → 依赖 PR`,
     '["Star"]': () => `收藏`,
@@ -2288,6 +2290,7 @@ ${v1} 使用该账号。
     '["List, diff"]': () => `一覧・差分`,
     '["Live handoff unavailable for this session; turn it off to copy."]': () =>
       `このセッションは実行中の引き継ぎに非対応です。オフにするとコピーできます。`,
+    '["Loading diff…"]': () => `差分を読み込み中…`,
     '["Loading from GitHub…"]': () => `GitHubから読み込み中…`,
     '["Loading full-file context…"]': () => `ファイル全体を読み込み中…`,
     '["Loading pane…"]': () => `ペインを読み込み中…`,
@@ -2620,6 +2623,7 @@ ${v1} 使用该账号。
     '["Split layout approximated"]': () => `分割レイアウトを近い形で再現`,
     '["Split right"]': () => `右に分割`,
     '["Squash and merge"]': () => `スカッシュしてマージ`,
+    '["Stack"]': () => `スタック`,
     '["Stack (","/",")"]': (v0, v1) => `スタック (${v0}/${v1})`,
     '["Stack · base → dependent PRs"]': () => `スタック · ベース → 依存PR`,
     '["Star"]': () => `スター`,
@@ -3858,6 +3862,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["List, diff"]': () => `목록, 차이`,
     '["Live handoff unavailable for this session; turn it off to copy."]': () =>
       `이 세션은 실행 중인 프로세스를 인계할 수 없습니다. 인계를 끄면 복사합니다.`,
+    '["Loading diff…"]': () => `차이점 불러오는 중…`,
     '["Loading from GitHub…"]': () => `GitHub에서 불러오는 중…`,
     '["Loading full-file context…"]': () => `파일 전체 내용 불러오는 중…`,
     '["Loading pane…"]': () => `창 불러오는 중…`,
@@ -4187,6 +4192,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
     '["Split layout approximated"]': () => `분할 배치를 유사하게 복원함`,
     '["Split right"]': () => `오른쪽으로 분할`,
     '["Squash and merge"]': () => `스쿼시 병합`,
+    '["Stack"]': () => `스택`,
     '["Stack (","/",")"]': (v0, v1) => `스택 (${v0}/${v1})`,
     '["Stack · base → dependent PRs"]': () => `스택 · 기반 → 종속 PR`,
     '["Star"]': () => `즐겨찾기`,
@@ -5839,6 +5845,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["List, diff"]': () => `Список, изменения`,
     '["Live handoff unavailable for this session; turn it off to copy."]': () =>
       `Передача процессов для этого сеанса недоступна; отключите её для копирования.`,
+    '["Loading diff…"]': () => `Загрузка изменений…`,
     '["Loading from GitHub…"]': () => `Загрузка из GitHub…`,
     '["Loading full-file context…"]': () => `Загрузка полного содержимого файла…`,
     '["Loading pane…"]': () => `Загрузка панели…`,
@@ -6197,6 +6204,7 @@ profile/ID, имя копии или command/N — как в выводе launch
     '["Split layout approximated"]': () => `Расположение панелей приблизительное`,
     '["Split right"]': () => `Разделить вправо`,
     '["Squash and merge"]': () => `Объединить коммиты и слить`,
+    '["Stack"]': () => `Стек`,
     '["Stack (","/",")"]': (v0, v1) => `Стек (${v0}/${v1})`,
     '["Stack · base → dependent PRs"]': () => `Стек · база → зависимые PR`,
     '["Star"]': () => `В избранное`,

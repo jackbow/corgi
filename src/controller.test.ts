@@ -57,6 +57,7 @@ function controller(
 ): any {
   const s: any = new Controller({ request: transport(daemon).request });
   s.machine.profiles.loaded = true;
+  s.pr_cache.prefetch = () => {};
   s.conversation_prs.readDetails = async () => ({
     title: "Fix widgets",
     createdAt: "2026-11-01T12:00:00Z",
@@ -2410,7 +2411,7 @@ for (const kind of ["local diff", "PR diff", "PR details"] as const)
         await Promise.resolve();
         if (kind === "PR diff") {
           await s.perform({ name: "pull-request-diff" });
-          await Promise.resolve();
+          await Bun.sleep(0);
         } else s.pull_request.fullscreen = true;
       }
       s.frame();
@@ -2510,7 +2511,7 @@ test("PR diff notes keep shortcut letters while typing and paste into the agent 
     await Promise.resolve();
     s.pull_request.fullscreen = false;
     await s.perform({ name: "pull-request-diff" });
-    await Promise.resolve();
+    await Bun.sleep(0);
     expect(s.review.fullscreen).toBe(true);
     await s.reviewKey({ text: "C" });
     for (const text of body) await s.reviewKey({ text });
@@ -4891,7 +4892,7 @@ test("the conversation diff toggle reopens its PR diff and refreshes changed rev
     await s.perform({ name: "pull-request", value: snapshot.ref.url });
     await Promise.resolve();
     await s.perform({ name: "pull-request-diff" });
-    await Promise.resolve();
+    await Bun.sleep(0);
     const diff = s.review;
     s.keyboard = "pane";
     await s.perform({ name: "review" });
@@ -4981,7 +4982,7 @@ test("PR diffs use the displayed revisions in the existing viewer and return to 
     await s.perform({ name: "pull-request", value: snapshot.ref.url });
     await Promise.resolve();
     await s.perform({ name: "pull-request-diff" });
-    await Promise.resolve();
+    await Bun.sleep(0);
     expect(s.review.remote).toBe(snapshot.ref.url);
     expect(s.review.open).toBe(true);
     expect(s.pull_request.open).toBe(false);
@@ -7673,7 +7674,7 @@ test("PR views and remote diffs follow conversations and retain independent navi
     expect(first.top).toBe(7);
     expect(first.unresolvedOnly).toBe(true);
     await s.perform({ name: "pull-request-diff" });
-    await Promise.resolve();
+    await Bun.sleep(0);
     const diff = s.review;
     expect(diff.remote).toBe(a.ref.url);
     s.focusPane(2);
@@ -7944,14 +7945,14 @@ test("previous PR diff reloads its patch and restores navigation when the conver
     await first.perform({ name: "pull-request", value: snapshot.ref.url });
     await Promise.resolve();
     await first.perform({ name: "pull-request-diff" });
-    await Promise.resolve();
+    await Bun.sleep(0);
     const saved = first.review.saved();
     first.review.restoreView({ ...saved, path: "app.ts", split: true, top: 3, cur: 4 });
     viewer.close(first);
     first = null;
     second = open(202);
     for (let i = 0; i < 6; i++) {
-      await Promise.resolve();
+      await Bun.sleep(0);
       second.followReview();
     }
     expect(second.review.remote).toBe(snapshot.ref.url);
@@ -8115,6 +8116,154 @@ test("Cmd+Ctrl+G toggles PR list visibility on every press without taking agent 
     await s.input(bytes("\x1b[103;13u"));
     expect(s.conversation_prs.open).toBe(false);
     expect(s.conversation_prs.focused).toBe(false);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("Option-click opens a PR diff without waiting for readiness or detail sections", async () => {
+  const { s, click, done } = linking("https://github.com/acme/app/pull/12/files"),
+    snapshot = prSnapshot(),
+    metadata = Promise.withResolvers<typeof snapshot>(),
+    patch = Promise.withResolvers<string>();
+  const cache = s.pull_request.cache,
+    diffs: string[] = [];
+  cache.cached = async () => null;
+  cache.refresh = () => metadata.promise;
+  cache.status = () => new Promise(() => {});
+  cache.section = () => {
+    throw Error("Details should remain lazy");
+  };
+  cache.client.diff = (value: typeof snapshot) => {
+    diffs.push(value.head);
+    return patch.promise;
+  };
+  try {
+    await click(8);
+    expect(s.pull_request.open).toBe(true);
+    expect(s.pull_request.fullscreen).toBe(true);
+    expect(s.pull_request.diffLoading).toBe(true);
+    expect(s.pull_request.snapshot).toBeNull();
+    expect(s.keyboard).toBe("review");
+    expect(s.effects.filter((effect: any) => "open_url" in effect)).toEqual([]);
+    metadata.resolve({ ...snapshot, loaded: [], statusFetched: undefined });
+    await Bun.sleep(0);
+    expect(diffs).toEqual([snapshot.head]);
+    expect(s.pull_request.statusRefreshing).toBe(true);
+    const terminal = new NativeTerminal(s.width, s.height);
+    try {
+      terminal.feed(s.frame());
+      expect(terminal.text()).toContain("Loading diff");
+    } finally {
+      terminal.destroy();
+    }
+    patch.resolve("diff --git a/app.ts b/app.ts\n@@ -1 +1 @@\n-old\n+new\n");
+    await Bun.sleep(0);
+    expect(s.review.remote).toBe(snapshot.ref.url);
+    expect(s.review.fullscreen).toBe(true);
+    expect(s.pull_request.open).toBe(false);
+  } finally {
+    done();
+  }
+});
+
+for (const cancel of ["pull-request-close", "pull-request-leave", "switch-conversation"])
+  test(`a pending diff cannot reopen after ${cancel}`, async () => {
+    const { s } = steering(),
+      snapshot = prSnapshot(),
+      pending = Promise.withResolvers<string>();
+    s.focusPane(1);
+    s.pull_request.cache.cached = async () => snapshot;
+    s.pull_request.cache.client.diff = () => pending.promise;
+    try {
+      await s.perform({ name: "pull-request", value: snapshot.ref.url });
+      await s.perform({ name: "pull-request-diff" });
+      expect(s.pull_request.diffLoading).toBe(true);
+      if (cancel === "switch-conversation") s.focusPane(2);
+      else await s.perform({ name: cancel });
+      pending.resolve("diff --git a/app.ts b/app.ts\n@@ -1 +1 @@\n-old\n+new\n");
+      await Bun.sleep(0);
+      expect(s.review.remote).toBeNull();
+      s.focusPane(1);
+      expect(s.pull_request.diffLoading).toBe(false);
+    } finally {
+      viewer.close(s);
+    }
+  });
+
+test("pressing d while basic metadata loads queues the diff", async () => {
+  const { s } = steering(),
+    snapshot = prSnapshot(),
+    metadata = Promise.withResolvers<typeof snapshot>();
+  const cache = s.pull_request.cache;
+  let reads = 0;
+  cache.cached = async () => null;
+  cache.refresh = () => metadata.promise;
+  cache.client.diff = async () => {
+    reads++;
+    return "diff --git a/app.ts b/app.ts\n@@ -1 +1 @@\n-old\n+new\n";
+  };
+  try {
+    await s.perform({ name: "pull-request", value: snapshot.ref.url });
+    await s.perform({ name: "pull-request-diff" });
+    expect(reads).toBe(0);
+    expect(s.pull_request.diffLoading).toBe(true);
+    metadata.resolve(snapshot);
+    await Bun.sleep(0);
+    expect(reads).toBe(1);
+    expect(s.review.remote).toBe(snapshot.ref.url);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("chat PR mentions prefetch metadata even with the PR list closed", () => {
+  const s = controller(),
+    world = folders("/repo"),
+    snapshot = prSnapshot(),
+    prefetched: string[] = [];
+  world.panes[0].agent = {
+    ...world.panes[0].agent,
+    provider: "codex",
+    pull_requests: [{ ...snapshot.ref, mentioned: 1 }],
+  } as any;
+  s.pr_cache.prefetch = (refs: { url: string }[]) => prefetched.push(...refs.map(ref => ref.url));
+  try {
+    s.receiveSnapshot(world);
+    expect(s.conversation_prs.open).toBe(false);
+    expect(prefetched).toEqual([snapshot.ref.url]);
+    expect(s.pull_request.open).toBe(false);
+  } finally {
+    viewer.close(s);
+  }
+});
+
+test("a late diff response cannot clear a newer PR's loading state", async () => {
+  const { s } = steering(),
+    first = prSnapshot(),
+    second = prSnapshot(13),
+    oldPatch = Promise.withResolvers<string>(),
+    newPatch = Promise.withResolvers<string>();
+  const cache = s.pull_request.cache;
+  second.head = "c".repeat(40);
+  cache.cached = async (ref: typeof first.ref) => (ref.number === first.ref.number ? first : second);
+  cache.client.diff = (snapshot: typeof first) =>
+    snapshot.ref.number === first.ref.number ? oldPatch.promise : newPatch.promise;
+  const patch = "diff --git a/app.ts b/app.ts\n@@ -1 +1 @@\n-old\n+new\n";
+  try {
+    await s.perform({ name: "pull-request-diff", value: first.ref.url });
+    await Bun.sleep(0);
+    await s.perform({ name: "pull-request-diff", value: second.ref.url });
+    await Bun.sleep(0);
+    oldPatch.resolve(patch);
+    await Bun.sleep(0);
+    expect(s.pull_request.ref.url).toBe(second.ref.url);
+    expect(s.pull_request.diffLoading).toBe(true);
+    expect(s.review.remote).toBeNull();
+    newPatch.resolve(patch);
+    await Bun.sleep(0);
+    expect(s.pull_request.diffLoading).toBe(false);
+    expect(s.review.remote).toBe(second.ref.url);
   } finally {
     viewer.close(s);
   }

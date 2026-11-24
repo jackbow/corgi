@@ -36,3 +36,11 @@ test("agent scope can be toggled without a pane", () => {
   expect(needsPane(action)).toBe(false);
   expect(title(action)).toBe("Toggle workspace / all agents");
 });
+
+test("the PR diff action accepts a link or the current PR", () => {
+  expect(parse("pull-request-diff", "https://github.com/acme/app/pull/12")).toEqual({
+    name: "pull-request-diff",
+    value: "https://github.com/acme/app/pull/12",
+  });
+  expect(parse("pull-request-diff")).toEqual({ name: "pull-request-diff", value: "" });
+});

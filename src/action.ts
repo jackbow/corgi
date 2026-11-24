@@ -114,7 +114,7 @@ export const specs: Record<string, string> = {
   "pull-request-status": "void",
   "pull-request-conflicts": "void",
   "pull-request-browser": "void",
-  "pull-request-diff": "void",
+  "pull-request-diff": "[]const u8",
   "pull-request-tab": "[]const u8",
   "pull-request-checks": "void",
   "pull-request-comment": "void",

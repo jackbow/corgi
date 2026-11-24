@@ -488,7 +488,7 @@ test("readiness has compact actions, unresolved count and independent refresh wh
   expect(click(p, rows, "2 unresolved comments")).toEqual({ name: "pull-request-tab", value: "discussion" });
   expect(text).not.toContain("not reported");
   expect(text).not.toContain("Auto-merge:");
-  expect(text).not.toContain("Stack");
+  expect(text).toContain("Stack");
   s.draft = true;
   expect(click(p, screen(p, 90, 55), "Mark ready - v")).toEqual({ name: "pull-request-ready" });
   s.autoMerge = true;
@@ -664,7 +664,7 @@ test("in-flight comment stays bound to its original PR when the viewer navigates
   expect(p.busy).toBe(false);
 });
 
-test("legacy cached discussion refetches file context even for merged PRs", async () => {
+test("legacy cached discussion loads file context on demand even for merged PRs", async () => {
   const p = new Panel(),
     old = snapshot(),
     fresh = snapshot();
@@ -672,11 +672,15 @@ test("legacy cached discussion refetches file context even for merged PRs", asyn
   delete old.discussionVersion;
   let reads = 0;
   p.cache.cached = async () => old;
-  p.cache.refresh = async () => {
+  p.cache.section = async (_, section) => {
+    expect(section).toBe("discussion");
     reads++;
     return fresh;
   };
   await p.show(old.ref);
+  expect(reads).toBe(0);
+  p.selectTab("discussion");
+  await Bun.sleep(0);
   expect(reads).toBe(1);
   expect(p.snapshot?.discussionVersion).toBe(1);
 });
@@ -709,4 +713,83 @@ test("long pasted drafts scroll to the caret while keeping the posting controls 
   p.key({ named: "home" });
   p.key({ named: "up" });
   expect(p.compose?.area.position().row).toBe(28);
+});
+
+test("overview renders before readiness and loads only opened sections", async () => {
+  const basic = { ...snapshot(), loaded: [] as ("discussion" | "checks" | "stack")[], statusFetched: undefined },
+    cache = new Cache(),
+    p = new Panel(cache),
+    readiness = deferred<typeof basic>();
+  const calls: string[] = [],
+    details = new Map<string, ReturnType<typeof deferred<typeof basic>>>();
+  cache.cached = async () => basic;
+  cache.status = () => readiness.promise;
+  cache.section = (_, section) => {
+    calls.push(section);
+    const pending = deferred<typeof basic>();
+    details.set(section, pending);
+    return pending.promise;
+  };
+  await p.show(basic.ref);
+  expect(p.snapshot?.title).toBe(basic.title);
+  expect(p.statusRefreshing).toBe(true);
+  expect(calls).toEqual([]);
+  let text = screen(p, 90, 45).join("\n");
+  expect(text).toContain("Approval pending");
+  expect(text).not.toContain("0 passed");
+  readiness.resolve({ ...basic, checkSummary: "failed", unresolved: 2 });
+  await Bun.sleep(0);
+  text = screen(p, 90, 45).join("\n");
+  expect(text).toContain("Failed");
+  expect(text).toContain("2 unresolved comments");
+  p.toggleChecks();
+  expect(calls).toEqual(["checks"]);
+  expect(screen(p).join("\n")).not.toContain("All checks passed");
+  details.get("checks")!.resolve({ ...basic, loaded: ["checks"], checks: [{ title: "lint", state: "failed" }] });
+  await Bun.sleep(0);
+  p.selectTab("discussion");
+  expect(calls).toEqual(["checks", "discussion"]);
+  expect(screen(p).join("\n")).not.toContain("No comments");
+  details.get("discussion")!.reject(Error("discussion offline"));
+  await Bun.sleep(0);
+  expect(screen(p).join("\n")).toContain("discussion offline");
+  expect(p.error).toBe("");
+  expect(p.key({ text: "d" })).toEqual({ name: "pull-request-diff" });
+  p.selectTab("stack");
+  expect(calls).toEqual(["checks", "discussion", "stack"]);
+  expect(screen(p).join("\n")).not.toContain("No related PRs");
+  const next = snapshot(13);
+  cache.cached = async () => ({ ...next, loaded: [] });
+  await p.show(next.ref);
+  details.get("stack")!.resolve({ ...basic, loaded: ["stack"] });
+  await Bun.sleep(0);
+  expect(p.snapshot?.ref.url).toBe(next.ref.url);
+});
+
+test("a refresh reloads the open section after an older section request finishes", async () => {
+  const old = { ...snapshot(), loaded: [] as ("discussion" | "checks" | "stack")[] },
+    fresh = { ...old, fetched: old.fetched + 1 },
+    p = new Panel(),
+    pending = deferred<typeof old>();
+  let reads = 0;
+  p.ref = old.ref;
+  p.snapshot = old;
+  p.cache.section = async (snapshot, section) => {
+    expect(section).toBe("discussion");
+    reads++;
+    return reads === 1
+      ? pending.promise
+      : {
+          ...snapshot,
+          loaded: ["discussion"],
+          comments: [{ author: "alice", at: "now", path: "", body: "fresh comment" }],
+        };
+  };
+  p.cache.status = async () => fresh;
+  p.selectTab("discussion");
+  await p.refreshStatus();
+  pending.resolve({ ...old, loaded: ["discussion"] });
+  await Bun.sleep(0);
+  expect(reads).toBe(2);
+  expect(p.snapshot?.comments[0].body).toBe("fresh comment");
 });

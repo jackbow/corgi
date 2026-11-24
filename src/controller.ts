@@ -238,6 +238,7 @@ interface PortClick {
   px: number;
   py: number;
   drag_selects: boolean;
+  diff: boolean;
   cancelled: boolean;
   /** The press time. */
   at: number;
@@ -249,6 +250,7 @@ const portClick = (fields: Partial<PortClick> & { x: number; y: number }): PortC
   px: 0,
   py: 0,
   drag_selects: false,
+  diff: false,
   cancelled: false,
   at: milliTimestamp(),
   ...fields,
@@ -666,7 +668,15 @@ export class Controller {
   }
   private local_review = new panel.Panel();
   private pr_cache = new pullRequest.Cache();
-  private conversation_pr_panel = new conversationPRPanel.Panel();
+  private conversation_pr_panel = new conversationPRPanel.Panel(async ref => {
+    const snapshot = await this.pr_cache.get(ref);
+    return {
+      title: snapshot.title,
+      state: snapshot.state,
+      createdAt: snapshot.createdAt ?? "",
+      updatedAt: snapshot.updatedAt ?? "",
+    };
+  });
   private conversation_pr_owner = "";
   private conversation_pr_visibility = new Map<string, boolean>();
   get conversation_prs(): conversationPRPanel.Panel {
@@ -3924,9 +3934,14 @@ export class Controller {
         this.pr_diff_generation++;
         this.pull_request.open = false;
         this.pull_request.fullscreen = false;
+        this.pull_request.diffLoading = false;
         this.giveKeyboard("pane");
         break;
       case "pull-request-leave":
+        if (this.pull_request.diffLoading) {
+          this.pr_diff_generation++;
+          this.pull_request.diffLoading = false;
+        }
         this.pull_request.fullscreen = false;
         this.giveKeyboard("pane");
         break;
@@ -3982,7 +3997,10 @@ export class Controller {
         if (this.pull_request.ref) this.effects.push({ open_url: this.pull_request.ref.url });
         break;
       case "pull-request-diff":
-        this.openPullRequestDiff();
+        if (act.value) {
+          const ref = pullRequest.parse(String(act.value));
+          if (ref) this.openPullRequest(ref, true);
+        } else this.openPullRequestDiff();
         break;
       case "pull-request-tab":
         this.pull_request.selectTab(String(act.value));
@@ -4037,7 +4055,7 @@ export class Controller {
         this.pull_request.top = 0;
         break;
       case "pull-request-checks":
-        this.pull_request.checksOpen = !this.pull_request.checksOpen;
+        this.pull_request.toggleChecks();
         break;
       case "pull-request-thread": {
         const p = this.pull_request,
@@ -4583,65 +4601,71 @@ export class Controller {
     }
     this.effects.push(effect);
   }
-  private openPullRequest(ref: pullRequest.Ref): void {
+  private openPullRequest(ref: pullRequest.Ref, diff = false): void {
     this.conversation_prs.focused = false;
     this.pr_diff_generation++;
     this.review.hide();
     this.review.preview(null);
-    void this.pull_request.show(ref);
-    if (this.sidebarView([]).panel === 0) this.pull_request.fullscreen = true;
+    const loading = this.pull_request.show(ref);
+    this.pull_request.diffLoading = false;
+    if (diff) this.openPullRequestDiff(undefined, loading);
+    if (diff || this.sidebarView([]).panel === 0) this.pull_request.fullscreen = true;
     this.giveKeyboard("review");
     this.selection = null;
     this.cancelDividers();
     this.dirty = true;
   }
-  private openPullRequestDiff(saved?: panel.Saved): void {
+  private openPullRequestDiff(saved?: panel.Saved, loading?: Promise<void>): void {
     const p = this.pull_request,
-      snapshot = p.snapshot;
-    if (!snapshot || p.busy) return;
+      ref = p.ref;
+    if (!ref || p.busy || p.diffLoading) return;
     const generation = ++this.pr_diff_generation;
-    p.busy = true;
+    const request = ++p.diffGeneration;
+    p.diffLoading = true;
     p.error = "";
     const destination = this.reviewTarget(),
       owner = this.reviewOwner();
-    void p.cache.client
-      .diff(snapshot)
-      .then(patch => {
-        if (
-          generation !== this.pr_diff_generation ||
-          this.reviewOwner() !== owner ||
-          !p.open ||
-          p.ref?.url !== snapshot.ref.url
-        )
-          return;
-        const files = remoteDiff.files(patch);
-        const review = new panel.Panel();
-        review.changed = this.local_review.changed;
-        review.summarized = this.local_review.summarized;
-        review.resized = this.local_review.resized;
-        this.pr_diffs.set(owner, review);
-        this.pr_diff_sources.set(owner, { snapshot, checked: Date.now(), checking: false });
-        review.showRemote(
-          snapshot.ref.url,
-          `${snapshot.ref.repo} #${snapshot.ref.number}`,
-          snapshot.base,
-          snapshot.head,
-          files,
-          destination,
-          async file =>
-            remoteDiff.context(
-              file,
-              await p.cache.client.content(snapshot, file.change.path, file.change.kind === "deleted"),
-            ),
-        );
-        if (saved) {
-          review.restoreView(saved);
-          this.deferred_pr_diffs.delete(owner);
-        }
-        p.open = false;
-        this.review.toggleFullscreen();
-        this.giveKeyboard("review");
-      })
+    void (async () => {
+      if (loading) await loading;
+      const snapshot = p.snapshot && !p.refreshing ? p.snapshot : await p.cache.get(ref);
+      if (generation !== this.pr_diff_generation || this.reviewOwner() !== owner || !p.open || p.ref?.url !== ref.url)
+        return;
+      const patch = await p.cache.diff(snapshot);
+      if (
+        generation !== this.pr_diff_generation ||
+        this.reviewOwner() !== owner ||
+        !p.open ||
+        p.ref?.url !== snapshot.ref.url
+      )
+        return;
+      const files = remoteDiff.files(patch);
+      const review = new panel.Panel();
+      review.changed = this.local_review.changed;
+      review.summarized = this.local_review.summarized;
+      review.resized = this.local_review.resized;
+      this.pr_diffs.set(owner, review);
+      this.pr_diff_sources.set(owner, { snapshot, checked: Date.now(), checking: false });
+      review.showRemote(
+        snapshot.ref.url,
+        `${snapshot.ref.repo} #${snapshot.ref.number}`,
+        snapshot.base,
+        snapshot.head,
+        files,
+        destination,
+        async file =>
+          remoteDiff.context(
+            file,
+            await p.cache.client.content(snapshot, file.change.path, file.change.kind === "deleted"),
+          ),
+      );
+      if (saved) {
+        review.restoreView(saved);
+        this.deferred_pr_diffs.delete(owner);
+      }
+      p.open = false;
+      this.review.toggleFullscreen();
+      this.giveKeyboard("review");
+    })()
       .catch(error => {
         if (generation === this.pr_diff_generation) {
           p.error = (error as Error).message;
@@ -4649,7 +4673,7 @@ export class Controller {
         }
       })
       .finally(() => {
-        p.busy = false;
+        if (request === p.diffGeneration) p.diffLoading = false;
         this.dirty = true;
         this.wake();
       });
@@ -4701,7 +4725,7 @@ export class Controller {
     this.wake();
     try {
       const snapshot = await this.pr_cache.refresh(source.snapshot.ref),
-        patch = await this.pr_cache.client.diff(snapshot),
+        patch = await this.pr_cache.diff(snapshot),
         files = remoteDiff.files(patch);
       if (this.pr_diffs.get(owner) !== review || !review.remote || review.remote !== snapshot.ref.url) return;
       review.showRemote(
@@ -8867,7 +8891,12 @@ export class Controller {
       } else {
         if (x !== click.x || y !== click.y) click.cancelled = true;
         if (release) {
-          if (!click.cancelled && (button === 0 || button === 16)) {
+          if (!click.cancelled && (button === 0 || button === 8 || button === 16)) {
+            if (click.diff) {
+              await this.perform({ name: "pull-request-diff", value: click.url });
+              cl.port_click = null;
+              return;
+            }
             if (click.menu !== null) {
               this.port_menu = new sidebar.PortMenu(click.menu);
               this.dirty = true;
@@ -9649,10 +9678,11 @@ export class Controller {
       // them. Cmd-click stays with the host's OSC 8 handler. SGR mouse
       // events expose Ctrl, but do not encode the Command modifier.
       const plain_link = button === 0 && !term.mouseEvents();
-      if (!release && (button === 16 || plain_link) && !this.copy_mode) {
+      if (!release && (button === 8 || button === 16 || plain_link) && !this.copy_mode) {
         for (const link of term.hyperlinks()) {
           if (link.row !== y - p.rect.y || x - p.rect.x < link.start || x - p.rect.x >= link.end) continue;
           if (!openableLink(link.uri)) continue;
+          if (button === 8 && !pullRequest.parse(link.uri)) continue;
           cl.port_click = portClick({
             x,
             y,
@@ -9661,6 +9691,7 @@ export class Controller {
             px: x - p.rect.x,
             py: y - p.rect.y,
             drag_selects: plain_link,
+            diff: button === 8,
           });
           return;
         }
@@ -9738,6 +9769,7 @@ export class Controller {
   receiveSnapshot(snapshot: any, machine = this.machine): void {
     if (machine !== this.machine) {
       machine.runtime.receive(machine.connection, snapshot);
+      this.prefetchPRs(machine);
       return;
     }
     const had = this.runtime.workspaces.items.length > 0;
@@ -9747,6 +9779,7 @@ export class Controller {
     const previous_token = had ? this.model().revision : 0n;
     const was_archived = had && this.current().archived;
     this.runtime.receive(this.connection, snapshot);
+    this.prefetchPRs(machine);
     if (this.current().archived && (!was_archived || !had)) {
       const active = this.runtime.workspaces.items.find(w => !w.archived);
       if (active) this.switchWorkspace(active.id);
@@ -9787,6 +9820,13 @@ export class Controller {
     }
     this.reconcile();
     this.observeFocus();
+  }
+  private prefetchPRs(machine: Machine): void {
+    this.pr_cache.prefetch([
+      ...machine.runtime.panes.flatMap(pane => pane.agent.pull_requests),
+      ...machine.runtime.sessions.flatMap(session => session.agent?.pull_requests ?? []),
+      ...machine.runtime.corgi_sessions.flatMap(session => session.agent?.pull_requests ?? []),
+    ]);
   }
   reconcile(): void {
     if (this.agent_picker && this.agent_picker.workspace !== this.current().id) this.agent_picker = null;
