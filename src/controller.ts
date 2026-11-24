@@ -8454,6 +8454,54 @@ export class Controller {
   private cancelDividers(): void {
     if (this.input_state.divider) this.input_state.divider.cancelled = true;
   }
+  private async reviewMouse(button: number, x: number, y: number, release: boolean): Promise<boolean> {
+    const review_rect = this.reviewRect();
+    if (this.pull_request.open && review_rect && !review_rect.contains(x, y) && !this.review_pressed)
+      this.pull_request.mouse(35, x, y);
+    if (
+      review_rect !== null &&
+      (review_rect.contains(x, y) || this.review_pressed) &&
+      !this.hasMenu() &&
+      !this.editingName()
+    ) {
+      this.pointer = { x, y };
+      if (!release && (button & 0xe0) === 0) this.giveKeyboard("review");
+      if (this.pull_request.open) {
+        if (!release && button === 0) this.review_pressed = true;
+        if (!release && button === 0 && x === review_rect.x && !this.reviewFullscreen()) this.review_drag = true;
+        else {
+          const command = this.pull_request.mouse(button, x, y, release);
+          if (command) await this.perform(command);
+        }
+        if (release) {
+          this.ui_mouse_down = false;
+          this.review_pressed = false;
+        }
+        this.dirty = true;
+        return true;
+      }
+      if (!release && button === 0) {
+        this.ui_mouse_down = true;
+        if (x === review_rect.x && !this.reviewFullscreen()) this.review_drag = true;
+        else {
+          this.review_pressed = true;
+          this.review.mouse("press", x, y);
+          await this.reviewEffect(this.review.takeEffect());
+        }
+      } else if (!release && button === 32) this.review.mouse("drag", x, y);
+      else if (!release && button === 35) this.review.mouse("move", x, y);
+      else if (!release && (button === 64 || button === 65))
+        this.review.mouse(button === 64 ? "wheel_up" : "wheel_down", x, y);
+      else if (release) {
+        this.review_pressed = false;
+        this.ui_mouse_down = false;
+        this.review.mouse("release", x, y);
+      }
+      this.dirty = true;
+      return true;
+    }
+    return false;
+  }
   private async mouse(seq: string): Promise<void> {
     const cl = this.input_state;
     const fields = seq.slice(3, seq.length - 1).split(";");
@@ -8656,6 +8704,7 @@ export class Controller {
       this.dirty = true;
       return;
     }
+    if (this.reviewFullscreen() && (await this.reviewMouse(button, x, y, release))) return;
     // A press in the open rename field changes nothing; anywhere else it
     // closes the field unsaved and then does what it would have done.
     if (this.inline_rename && !release && (button & 0xe0) === 0) {
@@ -8990,51 +9039,7 @@ export class Controller {
       this.dirty = true;
       return;
     }
-    const review_rect = this.reviewRect();
-    if (this.pull_request.open && review_rect && !review_rect.contains(x, y) && !this.review_pressed)
-      this.pull_request.mouse(35, x, y);
-    if (
-      review_rect !== null &&
-      (review_rect.contains(x, y) || this.review_pressed) &&
-      !this.hasMenu() &&
-      !this.editingName()
-    ) {
-      this.pointer = { x, y };
-      if (!release && (button & 0xe0) === 0) this.giveKeyboard("review");
-      if (this.pull_request.open) {
-        if (!release && button === 0) this.review_pressed = true;
-        if (!release && button === 0 && x === review_rect.x && !this.reviewFullscreen()) this.review_drag = true;
-        else {
-          const command = this.pull_request.mouse(button, x, y, release);
-          if (command) await this.perform(command);
-        }
-        if (release) {
-          this.ui_mouse_down = false;
-          this.review_pressed = false;
-        }
-        this.dirty = true;
-        return;
-      }
-      if (!release && button === 0) {
-        this.ui_mouse_down = true;
-        if (x === review_rect.x && !this.reviewFullscreen()) this.review_drag = true;
-        else {
-          this.review_pressed = true;
-          this.review.mouse("press", x, y);
-          await this.reviewEffect(this.review.takeEffect());
-        }
-      } else if (!release && button === 32) this.review.mouse("drag", x, y);
-      else if (!release && button === 35) this.review.mouse("move", x, y);
-      else if (!release && (button === 64 || button === 65))
-        this.review.mouse(button === 64 ? "wheel_up" : "wheel_down", x, y);
-      else if (release) {
-        this.review_pressed = false;
-        this.ui_mouse_down = false;
-        this.review.mouse("release", x, y);
-      }
-      this.dirty = true;
-      return;
-    }
+    if (await this.reviewMouse(button, x, y, release)) return;
     // Finish the captured selection before hit testing the release location.
     if (release && (button & 3) === 0 && this.selection) {
       const sel = this.selection;
@@ -10532,6 +10537,7 @@ export class Controller {
   /** No modal, drag, or selection is claiming the pointer right now. */
   private hoverIdle(): boolean {
     return (
+      !this.reviewFullscreen() &&
       !(this.pointer !== null && this.conversationPRRect()?.contains(this.pointer.x, this.pointer.y)) &&
       this.signin_exit === null &&
       !this.hasMenu() &&

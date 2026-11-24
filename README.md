@@ -28,7 +28,8 @@ feature list and behavior changes.
   Preview both backgrounds, save or cancel, and recolor open views immediately.
 - **Diff viewing:** local and PR diffs open fullscreen, with Cmd+Shift+Enter
   switching to pane mode. Resize, hide, search, expand, or collapse the file
-  tree; use the draggable change minimap in full-file views. Tests start hidden
+  tree; use the draggable change minimap in full-file views. Fullscreen views capture
+  mouse input and suppress background hover cards. Tests start hidden
   (`t` toggles them); `Z` toggles full-file context. PR diffs support refresh,
   stale indicators, and reopening with Cmd+Shift+B, retaining navigation and notes.
 - **CLI and task orchestration:** compact `list`/`ls` output, detailed

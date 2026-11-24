@@ -47,6 +47,7 @@ import { snapshot as prSnapshot } from "./fixtures/pull_request";
 import { Store as ReviewStore } from "./review_state";
 import * as machine_input from "./machine_input";
 import * as terminal_info from "./terminal_info";
+import { Work } from "./trackers/resources";
 
 /** A controller whose daemon answers with `daemon`; by default it expects no requests. */
 function controller(
@@ -2371,6 +2372,89 @@ test("Command shortcuts open review and zoom it without changing pane layout", a
     viewer.close(s);
   }
 });
+
+for (const kind of ["local diff", "PR diff", "PR details"] as const)
+  test(`fullscreen ${kind} captures mouse input above hidden sidebar rows`, async () => {
+    const { s } = steering();
+    const snapshot = prSnapshot();
+    s.width = 160;
+    s.height = 50;
+    s.focusPane(1);
+    s.prefs.resources.enabled = true;
+    s.runtime.resources.workspaces = [Object.assign(new Work(1), { known: true, cpu: 25 })];
+    const entries = s.sidebarEntries(),
+      side = s.sidebarView(entries),
+      rows = s.workspaceRows();
+    const cells: { x: number; y: number; kind: string }[] = [];
+    for (let y = 0; y < s.height; y++) {
+      for (let x = 1; x < side.width; x++) {
+        const hit = side.hit(x, y);
+        const kind =
+          hit.tag === "workspace" && hit.workspace === 1
+            ? "workspace"
+            : hit.tag === "entry" && entries[hit.entry].target.pane === 2
+              ? "agent"
+              : sidebar.resourceAt(side, rows, x, y)
+                ? "resource"
+                : null;
+        if (kind && !cells.some(cell => cell.kind === kind)) cells.push({ x, y, kind });
+      }
+    }
+    expect(cells.map(cell => cell.kind).sort()).toEqual(["agent", "resource", "workspace"]);
+    s.pull_request.cache.cached = async () => snapshot;
+    s.pull_request.cache.client.diff = async () => "diff --git a/app.ts b/app.ts\n@@ -1 +1 @@\n-old\n+new\n";
+    try {
+      if (kind === "local diff") await s.perform({ name: "review" });
+      else {
+        await s.perform({ name: "pull-request", value: snapshot.ref.url });
+        await Promise.resolve();
+        if (kind === "PR diff") {
+          await s.perform({ name: "pull-request-diff" });
+          await Promise.resolve();
+        } else s.pull_request.fullscreen = true;
+      }
+      s.frame();
+      expect(s.reviewFullscreen()).toBe(true);
+      s.link_tooltip.move();
+      s.link_tooltip.ready({ resource: 1 }, 0);
+      s.link_tooltip.ready({ resource: 1 }, 1000);
+      const card = s.resourceRect();
+      expect(card).not.toBeNull();
+      cells.unshift({ x: card.x + 2, y: card.y + 2, kind: "card" });
+      const panel = kind === "PR details" ? s.pull_request : s.review,
+        mouse = spyOn(panel, "mouse");
+      try {
+        for (const { x, y } of cells) {
+          for (const button of [35, 0, 32, 64, 65]) {
+            await s.mouse(`\x1b[<${button};${x + 1};${y + 1}M`);
+            await s.mouse(`\x1b[<0;${x + 1};${y + 1}m`);
+          }
+          expect(s.current().id).toBe(1);
+          expect(s.focused().id).toBe(1);
+          expect(s.workspace_drag).toBeNull();
+          expect(s.agent_drag).toBeNull();
+          expect(s.review_drag).toBe(false);
+        }
+        expect(mouse).toHaveBeenCalledTimes(cells.length * 10);
+        expect(s.keyboard).toBe("review");
+        // A previously armed hover must also disappear without another move.
+        const resource = cells.find(cell => cell.kind === "resource")!;
+        s.pointer = resource;
+        s.link_tooltip.move();
+        s.link_tooltip.ready({ resource: 1 }, 0);
+        s.link_tooltip.ready({ resource: 1 }, 1000);
+        expect(s.link_tooltip.shown).toBe(true);
+        expect(s.linkTooltipReady()).toBe(false);
+        expect(s.link_tooltip.target).toBeNull();
+        s.frame();
+        expect(s.resourceDetail()).toBeNull();
+      } finally {
+        mouse.mockRestore();
+      }
+    } finally {
+      viewer.close(s);
+    }
+  });
 
 test("folder completion arrows and Tab stay in the review field", async () => {
   const { s, sent } = steering();
