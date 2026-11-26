@@ -33,7 +33,7 @@ feature list and behavior changes.
   switching to pane mode. Choose a repo or subfolder on the selected machine.
   Resize, hide, search, expand, or collapse the file
   tree; use the draggable change minimap in full-file views. Fullscreen views capture
-  mouse input and suppress background hover cards. Tests start hidden
+  mouse input, disable hidden workspace and agent hit targets, and suppress background hover cards. Tests start hidden
   (`t` toggles them); `Z` toggles full-file context. PR diffs support refresh,
   stale indicators, and reopening with Cmd+Shift+B, retaining navigation and notes.
 - **CLI and task orchestration:** compact `list`/`ls` output, detailed

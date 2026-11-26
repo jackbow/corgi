@@ -1415,7 +1415,7 @@ export class Controller {
     const folded = !this.sidebar_open;
     if (folded && list === null) return;
     this.sidebar_open = true;
-    if (this.sidebarView([]).width === 0) {
+    if (sidebar.View.widthFor(this.width, true, this.height, this.agent_picker !== null) === 0) {
       this.sidebar_open = !folded;
       return;
     }
@@ -1673,6 +1673,10 @@ export class Controller {
       )
       .withEntries(entries)
       .withRename(this.inline_rename);
+    if (this.reviewFullscreen()) {
+      view.width = 0;
+      view.drawer = null;
+    }
     view.scope_label = this.scopeLabel();
     view.workspace_scope = this.machineScope();
     view.corgi_badge = this.host.corgi_badge;
@@ -9252,7 +9256,11 @@ export class Controller {
       this.dirty = true;
       return;
     }
-    if (this.reviewFullscreen() && (await this.reviewMouse(button, x, y, release))) return;
+    if (this.reviewFullscreen()) {
+      // The fullscreen panel covers the sidebar, including its keyboard cursor and drawer.
+      if (this.sidebar_focus) this.giveKeyboard("review");
+      if (await this.reviewMouse(button, x, y, release)) return;
+    }
     // A press in the open rename field puts the caret there, or selects the
     // name on a double-click; anywhere else it closes the field unsaved and
     // then does what it would have done.

@@ -47,6 +47,7 @@ import * as viewer from "./viewer";
 import { agent, type Pane } from "./mirror";
 import * as summaries from "./review/summaries";
 import * as sidebar from "./sidebar";
+import * as sidebarFocus from "./sidebar_focus";
 import * as render from "./render";
 import * as modelPicker from "./model_picker";
 import * as subprocess from "./subprocess";
@@ -2840,10 +2841,86 @@ for (const kind of ["local diff", "PR diff", "PR details"] as const)
         expect(s.link_tooltip.target).toBeNull();
         s.frame();
         expect(s.resourceDetail()).toBeNull();
+        s.name_dialog = Dialog.init({ rename: 1 }, "name");
+        const press = spyOn(s.name_dialog, "press").mockReturnValue("none"),
+          calls = mouse.mock.calls.length;
+        try {
+          await mouseInput(s, "\x1b[<0;80;25M");
+          expect(press).toHaveBeenCalledTimes(1);
+          expect(mouse).toHaveBeenCalledTimes(calls);
+          expect(s.current().id).toBe(1);
+          expect(s.focused().id).toBe(1);
+        } finally {
+          press.mockRestore();
+          s.name_dialog = null;
+        }
       } finally {
         mouse.mockRestore();
       }
     } finally {
+      viewer.close(s);
+    }
+  });
+
+for (const state of ["prefix", "sidebar cursor", "sidebar drawer"] as const)
+  test(`fullscreen file selection captures clicks with a hidden ${state}`, async () => {
+    const { s, sent } = steering(),
+      snapshot = prSnapshot();
+    s.width = 160;
+    s.height = 50;
+    s.focusPane(1);
+    const entries = s.sidebarEntries(),
+      hidden = s.sidebarView(entries),
+      workspaces = s.workspaceRows();
+    s.pull_request.cache.cached = async () => snapshot;
+    s.pull_request.cache.client.diff = async () =>
+      Array.from(
+        { length: 40 },
+        (_, i) =>
+          `diff --git a/file${String(i).padStart(2, "0")}.ts b/file${String(i).padStart(2, "0")}.ts\n@@ -1 +1 @@\n-old${i}\n+new${i}\n`,
+      ).join("");
+    const terminal = new NativeTerminal(s.width, s.height);
+    try {
+      await s.perform({ name: "pull-request-diff", value: snapshot.ref.url });
+      await Bun.sleep(0);
+      terminal.feed(s.frame());
+      expect(s.review.fullscreen).toBe(true);
+      const rows = terminal.text().split("\n"),
+        cells = rows.flatMap((row, y) => {
+          const file = row.match(/file\d+\.ts/);
+          if (!file || file.index! >= 32) return [];
+          const x = file.index!,
+            hit = hidden.hit(x, y);
+          const target =
+            hit.tag === "workspace" && workspaces[hit.workspace]?.id === s.workspaceRef(2)
+              ? "workspace"
+              : hit.tag === "entry" && entries[hit.entry].target === viewerRef.pane(s.machine.id, 2)
+                ? "agent"
+                : null;
+          return target ? [{ x, y, path: file[0], target }] : [];
+        });
+      expect([...new Set(cells.map(cell => cell.target))].sort()).toEqual(["agent", "workspace"]);
+      for (const { x, y, path } of cells) {
+        if (state === "prefix") await s.input(bytes("\x02"));
+        else
+          s.sidebar_focus = new sidebarFocus.State(
+            { workspace: s.workspaceRef(1) },
+            state === "sidebar drawer" ? "workspaces" : null,
+          );
+        await s.input(bytes(`\x1b[<0;${x + 1};${y + 1}M\x1b[<0;${x + 1};${y + 1}m`));
+        expect(s.current().id).toBe(1);
+        expect(s.focused().id).toBe(1);
+        expect(s.review.review(-3).path).toBe(path);
+        expect(s.review.fullscreen).toBe(true);
+        expect(s.prefix).toBe(false);
+        expect(s.sidebar_focus).toBeNull();
+        expect(s.workspace_drag).toBeNull();
+        expect(s.agent_drag).toBeNull();
+      }
+      expect(s.sidebarView(entries).width).toBe(0);
+      expect(sent).toEqual([]);
+    } finally {
+      terminal.destroy();
       viewer.close(s);
     }
   });
